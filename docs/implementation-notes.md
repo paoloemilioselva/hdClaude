@@ -608,3 +608,122 @@ version, and compares it against the active environment's Python. The check is
 therefore derived rather than hard-coded, and stays correct when `USDROOT`
 changes — a hard-coded "3.12" is right until the day someone points the scripts
 at a different USD build.
+
+---
+
+## 2026-09-06 — Replacing `emitPixelStage` also means owning its token substitutions
+
+**Expected.** `PathTracerShaderGenerator::emitPixelStage` had to replace the
+stock GLSL pixel stage in order to emit `hdclaude_material_shade` instead of
+`main`. Everything else the stock stage did was believed to be rasteriser
+scaffolding this target does not want.
+
+**Actually true.** `GlslShaderGenerator::emitPixelStage` also sets the
+`$fileTransformUv` token substitution, immediately before emitting node
+function definitions. Every stock `mx_image_*.glsl` opens with
+`#include "lib/$fileTransformUv"`, so without that assignment the include is
+unresolvable and generation fails with:
+
+```
+Could not find include file: 'lib\$fileTransformUv'
+```
+
+The failure is invisible until a *textured* material is generated. The three
+materials the closure and generation tests use are untextured, so the whole
+suite passed while every textured material in a real asset failed to generate.
+The first gallery scene surfaced it immediately: ten of its twenty materials.
+
+**Changed.** `emitPixelStage` sets the substitution itself, before
+`emitFunctionDefinitions`. The general lesson is recorded here because it will
+recur: overriding a MaterialX emission hook inherits responsibility for the
+side effects the base implementation performed, not only for the code it wrote.
+
+---
+
+## 2026-09-06 — A generated material that samples textures faults the device
+
+**Expected.** A material hdClaude cannot fully support would render
+incorrectly — wrong colour, missing detail — but would still render.
+
+**Actually true.** MaterialX emits `uniform sampler2D` for an `<image>` node's
+file input. hdClaude binds no texture descriptors, so the pipeline's descriptor
+set has nothing at that binding. Sampling an unbound descriptor is undefined
+behaviour, and on this driver it is not a wrong colour: it is
+`VK_ERROR_DEVICE_LOST` on the first dispatch, which then poisons the sticky
+device-lost latch and takes every subsequent frame with it.
+
+**Changed.** `HdClaudeMaterialCompiler` inspects the generated shader's uniform
+blocks for ports of type `FILENAME` and refuses such a material by name,
+falling back to the mesh's displayColor. The check is against the *generated
+shader* rather than the Hydra network, because what matters is what the emitted
+code actually reads.
+
+This is also why the refusal is distinguished from a compile failure: a
+textured material is a known gap, not a defect, and raising `TF_RUNTIME_ERROR`
+for every textured asset would bury the failures that are real.
+
+---
+
+## 2026-09-06 — Progressive rendering exhausted the descriptor pools
+
+**Expected.** `PathTracer::Render` allocating a descriptor set per pipeline per
+call was fine; the pools hold eight sets each.
+
+**Actually true.** It was fine only because nothing had ever called `Render`
+more than a few times. The Hydra render pass traces a slice of the sample
+budget per execute, so a 64-sample image at four samples per frame is sixteen
+calls, and the eighth failed with `VK_ERROR_OUT_OF_POOL_MEMORY`.
+
+**Changed.** `ComputePipeline::ResetSets` returns a pool's sets, and `Render`
+resets every pool before allocating. This is safe because every submit `Render`
+makes is waited on before it returns, so no set can still be in flight.
+
+Allocating once and rewriting descriptors only when a resource generation
+changes would be better still, and is recorded in the roadmap rather than done
+here: it needs the descriptor-generation tracking to be authoritative first.
+
+---
+
+## 2026-09-06 — Retrying a failed frame forever is worse than committing it
+
+**Expected.** `docs/lessons-from-hdcodex.md` C3 says a failed revision must be
+retried rather than committed, because hdCodex marked a failed frame converged
+and left the viewport permanently stale.
+
+**Actually true.** The opposite extreme is just as bad. When the device was
+lost on the first frame, the render pass correctly declined to converge — and
+`usdrecord`, which renders until convergence, never returned. The process sat
+at 19 seconds of CPU over eleven minutes with a dead GPU, producing nothing and
+printing nothing.
+
+**Changed.** A failure is retried a bounded number of times
+(`kMaxConsecutiveFailures`, currently three) and then reported as converged
+with an error naming what happened. A transient fault still recovers; a
+deterministic one stops. The counter resets on any successful frame.
+
+The underlying rule is that *both* failure modes are silent to a user: one
+shows a stale image forever, the other shows nothing forever. Neither is
+acceptable, so the renderer has to say what went wrong and then let the host
+proceed.
+
+---
+
+## 2026-09-06 — The first gallery render is black, and that is the scene
+
+**Not a defect, but worth recording so it is not rediscovered.**
+
+`gallery/shader_ball_gold.usda` renders pure black from its authored camera —
+`luminance min 0.00000 max 0.00000` straight out of the tracer, not out of the
+AOV. The same scene from `usdrecord`'s default framing camera renders correctly
+lit, 100% of pixels non-black, mean luminance 0.21.
+
+The asset is a sealed studio set: the camera is inside a closed box lit
+entirely by `RectLight` prims. hdClaude does not consume UsdLux yet, and its
+stand-in sun and sky are outside the box, so no ray reaches anything emissive
+and every path returns zero. The renderer is behaving correctly on a scene it
+cannot yet light.
+
+The diagnostic that settled it is worth keeping: with `HDCLAUDE_TRACE=1` the
+render pass reports the luminance range of what the tracer returned, before the
+AOV or any display transform sees it. A black viewport has two very different
+causes, and that one line separates them.

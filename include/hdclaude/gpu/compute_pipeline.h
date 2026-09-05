@@ -70,6 +70,15 @@ class ComputePipeline {
     /// may still be consuming.
     VkDescriptorSet AllocateSet();
 
+    /// Return every set allocated from this pipeline's pool.
+    ///
+    /// The pool is small and fixed, so a renderer that allocates per frame
+    /// exhausts it within a few frames. The caller must be certain no
+    /// submission still references a set from this pool -- which for hdClaude
+    /// means every submit has been waited on -- because resetting a pool
+    /// invalidates its sets immediately.
+    void ResetSets();
+
     /// Point a storage-buffer binding at a buffer.
     void WriteBuffer(VkDescriptorSet set, std::uint32_t binding,
                      const VulkanBuffer& buffer,

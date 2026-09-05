@@ -390,6 +390,26 @@ std::vector<float> PathTracer::Render(std::uint32_t width, std::uint32_t height,
 
     const std::uint32_t paths = width * height;
 
+    // Return last frame's sets before taking new ones.
+    //
+    // Every submit this function makes is waited on before it returns, so no
+    // set from a previous call can still be in flight here. Without the reset
+    // the fixed-size pools are exhausted after a handful of progressive
+    // frames, which is exactly how this surfaced: a one-shot render never
+    // reached the limit.
+    //
+    // Allocating once and rewriting only on a resource change would be
+    // cheaper still; it is recorded in docs/roadmap.md rather than done here,
+    // because it needs the descriptor-generation tracking to be authoritative.
+    _raygen.ResetSets();
+    _extend.ResetSets();
+    _environment.ResetSets();
+    _shadow.ResetSets();
+    _film.ResetSets();
+    for (ComputePipeline& pipeline : _shade) {
+        pipeline.ResetSets();
+    }
+
     // Descriptor sets are allocated per pipeline but written identically: the
     // binding table is shared, so every kernel sees the same state.
     VkDescriptorSet raygenSet = _raygen.AllocateSet();
@@ -412,10 +432,15 @@ std::vector<float> PathTracer::Render(std::uint32_t width, std::uint32_t height,
         WriteDescriptors(shadeSets[i], _shade[i]);
     }
 
-    // Clear the film once; samples accumulate into it.
-    _context.SubmitImmediate([&](VkCommandBuffer command) {
-        vkCmdFillBuffer(command, _accumulation.Handle(), 0, VK_WHOLE_SIZE, 0);
-    });
+    // Clear the film once; samples accumulate into it. A progressive caller
+    // asks not to, and its samples land on top of what is already there.
+    // EnsureResolution reallocates on a resolution change, so a continued
+    // accumulation can never read a film of the wrong size.
+    if (settings.resetAccumulation) {
+        _context.SubmitImmediate([&](VkCommandBuffer command) {
+            vkCmdFillBuffer(command, _accumulation.Handle(), 0, VK_WHOLE_SIZE, 0);
+        });
+    }
 
     FrameBlock block{};
     std::memcpy(block.cameraToWorld, camera.cameraToWorld, sizeof(block.cameraToWorld));
@@ -437,7 +462,7 @@ std::vector<float> PathTracer::Render(std::uint32_t width, std::uint32_t height,
     const std::uint32_t pixelGroupsY = (height + 7) / 8;
 
     for (std::uint32_t sample = 0; sample < settings.samplesPerPixel; ++sample) {
-        block.sampleIndex = sample;
+        block.sampleIndex = settings.firstSample + sample;
 
         for (std::uint32_t bounce = 0; bounce < settings.maxBounces; ++bounce) {
             block.bounce = bounce;

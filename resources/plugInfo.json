@@ -1,0 +1,20 @@
+{
+  "Plugins": [
+    {
+      "Info": {
+        "Types": {
+          "HdClaudeRendererPlugin": {
+            "bases": ["HdRendererPlugin"],
+            "displayName": "Claude GPU Path Tracer",
+            "priority": 100
+          }
+        }
+      },
+      "LibraryPath": "../hdClaude.dll",
+      "Name": "hdClaude",
+      "ResourcePath": "resources",
+      "Root": "..",
+      "Type": "library"
+    }
+  ]
+}

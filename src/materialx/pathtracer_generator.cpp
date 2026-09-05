@@ -367,6 +367,22 @@ void PathTracerShaderGenerator::emitPixelStage(const ShaderGraph& graph,
     emitLine("float " + string(kOpacityGlobal) + " = 1.0", stage);
     emitLineBreak(stage);
 
+    // --- Token substitutions ---------------------------------------------------
+    //
+    // The stock `mx_image_*.glsl` implementations open with
+    // `#include "lib/$fileTransformUv"`, and the substitution that resolves it
+    // is set by GlslShaderGenerator::emitPixelStage -- which this target
+    // replaces. Setting it here rather than inheriting it is the cost of
+    // owning the pixel stage; without it every material containing an <image>
+    // node fails to generate with an unresolved include, which is to say every
+    // textured material in a real asset.
+    //
+    // It must precede emitFunctionDefinitions, which is where those includes
+    // are emitted.
+    _tokenSubstitutions[ShaderGenerator::T_FILE_TRANSFORM_UV] =
+        context.getOptions().fileTextureVerticalFlip ? "mx_transform_uv_vflip.glsl"
+                                                     : "mx_transform_uv.glsl";
+
     // --- Node function definitions ------------------------------------------
     emitFunctionDefinitions(graph, context, stage);
 

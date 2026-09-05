@@ -41,6 +41,20 @@ struct RenderSettings {
     std::uint32_t samplesPerPixel = 64;
     std::uint32_t maxBounces = 4;
 
+    /// Index of the first sample this call traces.
+    ///
+    /// Progressive rendering is expressed as a sequence of calls that continue
+    /// where the last left off, so an interactive host can spend a few
+    /// milliseconds at a time instead of blocking for a whole image. The index
+    /// seeds the sampler, so continuing at the right offset is what keeps the
+    /// sequence decorrelated rather than re-tracing the same paths.
+    std::uint32_t firstSample = 0;
+
+    /// Clear the film before tracing. False continues an accumulation, which
+    /// is only correct when the scene, the camera and the resolution are all
+    /// unchanged since the previous call.
+    bool resetAccumulation = true;
+
     float environmentColor[3] = {0.05f, 0.07f, 0.10f};
     float sunDirection[3] = {0.4f, 0.7f, 0.5f};
     float sunAngularRadius = 0.02f;

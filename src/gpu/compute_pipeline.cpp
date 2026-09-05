@@ -221,6 +221,16 @@ VkDescriptorSet ComputePipeline::AllocateSet()
     return set;
 }
 
+void ComputePipeline::ResetSets()
+{
+    if (_pool == VK_NULL_HANDLE || _context == nullptr ||
+        _context->IsDeviceLost()) {
+        return;
+    }
+    _context->Check(vkResetDescriptorPool(_context->Device(), _pool, 0),
+                    "vkResetDescriptorPool(" + _debugName + ")");
+}
+
 void ComputePipeline::WriteBuffer(VkDescriptorSet set, std::uint32_t binding,
                                   const VulkanBuffer& buffer,
                                   VkDescriptorType type) const
