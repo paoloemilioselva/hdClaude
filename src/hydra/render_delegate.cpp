@@ -178,8 +178,17 @@ void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
         }
     }
 
+    // Read once, at construction: a change of refinement level changes the
+    // geometry every mesh publishes, so it is a delegate-wide decision rather
+    // than something the render pass can vary per frame. Changing it means a
+    // new delegate, which is what a host does when it applies a render setting
+    // that alters the scene.
+    const int subdivisionLevel =
+        std::clamp(TfGetenvInt("HDCLAUDE_SUBDIVISION_LEVEL", 2), 0, 6);
+
     _renderParam = std::make_unique<HdClaudeRenderParam>(
-        _store.get(), _materialCompiler.get(), _texturePool.get());
+        _store.get(), _materialCompiler.get(), _texturePool.get(),
+        subdivisionLevel);
 }
 
 const TfTokenVector& HdClaudeRenderDelegate::GetSupportedRprimTypes() const

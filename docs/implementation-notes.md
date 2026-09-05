@@ -979,3 +979,42 @@ image after the film is read back. It defaults to zero, so the AOV carries the
 radiance the renderer computed and a host with its own display transform is
 unaffected; and because it is applied after resolve rather than during
 accumulation, changing it costs no samples.
+
+---
+
+## 2026-09-06 — Subdivision refines on the CPU, and that is a choice
+
+hdClaude refines uniformly through OpenSubdiv and traces the refined cage. The
+alternatives -- evaluating limit patches at intersection time, or feature-
+adaptive tessellation -- are a different project, and one that only starts to
+pay for itself once displacement exists. What made the CPU route the right
+first answer is that a ray tracer needs an explicit surface to build an
+acceleration structure over either way.
+
+Three details are easy to get wrong and each shows up as a plausible-looking
+image rather than as an error.
+
+**Authored normals and UVs belong to the control cage.** After refinement they
+describe a mesh that no longer exists. Their array lengths happen to be checked
+against the vertex count elsewhere in Sync, so a refined mesh would simply fail
+that check and fall through -- silently, and only for meshes whose refined
+vertex count differed. They are now not consulted at all when a mesh is
+refined.
+
+**The coarse adjacency does not describe the refined cage**, so smooth normals
+come from the refined triangles directly. The accumulated face normals are left
+unnormalised on purpose: the cross product's length is twice the triangle's
+area, which weights each face by its size and stops a sliver from dominating a
+vertex it barely touches.
+
+**A GeomSubset is authored on the control cage.** Walking
+`GetFaceParentFace` back up the refinement levels is what keeps a subset
+selecting the right refined triangles; without it, a two-subset mesh at level
+two assigns materials to faces that no longer correspond to anything the asset
+authored. The subset path and the unsubdivided path now produce the same two
+things -- indices and a coarse face per triangle -- so everything downstream is
+written once.
+
+The refinement level is read once, at delegate construction, because it changes
+the geometry every mesh publishes rather than anything the render pass can vary
+per frame.

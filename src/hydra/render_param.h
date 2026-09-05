@@ -18,10 +18,12 @@ class HdClaudeRenderParam final : public HdRenderParam {
   public:
     HdClaudeRenderParam(HdClaudeSceneStore* store,
                         HdClaudeMaterialCompiler* materialCompiler,
-                        HdClaudeTexturePool* texturePool)
+                        HdClaudeTexturePool* texturePool,
+                        int subdivisionLevel)
         : _store(store),
           _materialCompiler(materialCompiler),
-          _texturePool(texturePool)
+          _texturePool(texturePool),
+          _subdivisionLevel(subdivisionLevel)
     {
     }
 
@@ -29,10 +31,19 @@ class HdClaudeRenderParam final : public HdRenderParam {
     HdClaudeMaterialCompiler* MaterialCompiler() const { return _materialCompiler; }
     HdClaudeTexturePool* TexturePool() const { return _texturePool; }
 
+    /// Uniform refinement depth for meshes whose scheme asks for it. Zero
+    /// renders the control cage.
+    ///
+    /// Read at Sync rather than at render time because refinement changes the
+    /// geometry itself: the acceleration structure is built from the refined
+    /// cage, so the level is part of what a prim publishes.
+    int SubdivisionLevel() const { return _subdivisionLevel; }
+
   private:
     HdClaudeSceneStore* _store;
     HdClaudeMaterialCompiler* _materialCompiler;
     HdClaudeTexturePool* _texturePool;
+    int _subdivisionLevel = 0;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

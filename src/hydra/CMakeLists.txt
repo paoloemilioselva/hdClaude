@@ -22,6 +22,7 @@ add_library(hdClaude MODULE
     render_pass.cpp
     renderer_plugin.cpp
     scene_store.cpp
+    subdivision.cpp
     texture_loader.cpp
 )
 

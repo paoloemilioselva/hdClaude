@@ -3,6 +3,7 @@
 #include "material_compiler.h"
 #include "render_param.h"
 #include "scene_store.h"
+#include "subdivision.h"
 #include "trace.h"
 
 #include "pxr/base/gf/matrix4d.h"
@@ -196,16 +197,52 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
         return;
     }
 
-    // --- Triangulation -------------------------------------------------------
-    // HdMeshUtil owns the face-varying and index bookkeeping, including the
-    // coarse-face index each triangle came from, which is what per-face
-    // material subsets will need.
-    HdMeshUtil meshUtil(&topology, id);
-    VtVec3iArray triangleIndices;
-    VtIntArray primitiveParams;
-    meshUtil.ComputeTriangleIndices(&triangleIndices, &primitiveParams);
+    // --- Subdivision or triangulation ------------------------------------------
+    //
+    // A mesh whose scheme asks for subdivision is refined and the refined cage
+    // is traced. Both routes end in the same two things -- triangle indices and
+    // the coarse face behind each triangle -- so everything downstream, subsets
+    // included, is written once.
+    std::vector<std::uint32_t> indices;
+    std::vector<int> coarseFaces;
 
-    if (triangleIndices.empty()) {
+    const int subdivisionLevel = param->SubdivisionLevel();
+    bool subdivided = false;
+    if (subdivisionLevel > 0 && HdClaudeWantsSubdivision(topology)) {
+        const HdClaudeRefinedMesh refined =
+            HdClaudeSubdivide(topology, points, subdivisionLevel);
+        if (refined.Valid()) {
+            points = refined.positions;
+            indices = refined.indices;
+            coarseFaces = refined.coarseFaces;
+            subdivided = true;
+        }
+        // An invalid result means "render the control cage": a mesh that
+        // cannot be refined should still appear, and the reason is traced.
+    }
+
+    if (!subdivided) {
+        // HdMeshUtil owns the face-varying and index bookkeeping, including the
+        // coarse-face index each triangle came from.
+        HdMeshUtil meshUtil(&topology, id);
+        VtVec3iArray triangleIndices;
+        VtIntArray primitiveParams;
+        meshUtil.ComputeTriangleIndices(&triangleIndices, &primitiveParams);
+
+        indices.reserve(triangleIndices.size() * 3);
+        for (const GfVec3i& triangle : triangleIndices) {
+            indices.push_back(static_cast<std::uint32_t>(triangle[0]));
+            indices.push_back(static_cast<std::uint32_t>(triangle[1]));
+            indices.push_back(static_cast<std::uint32_t>(triangle[2]));
+        }
+        coarseFaces.reserve(primitiveParams.size());
+        for (const int faceParam : primitiveParams) {
+            coarseFaces.push_back(
+                HdMeshUtil::DecodeFaceIndexFromCoarseFaceParam(faceParam));
+        }
+    }
+
+    if (indices.empty()) {
         param->SceneStore()->RemoveMesh(id);
         *dirtyBits = HdChangeTracker::Clean;
         return;
@@ -236,11 +273,9 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
             }
         }
 
-        entry.triangleSubsets.assign(triangleIndices.size(), -1);
-        for (std::size_t t = 0; t < primitiveParams.size(); ++t) {
-            const int face = HdMeshUtil::DecodeFaceIndexFromCoarseFaceParam(
-                primitiveParams[t]);
-            const auto found = faceSubset.find(face);
+        entry.triangleSubsets.assign(coarseFaces.size(), -1);
+        for (std::size_t t = 0; t < coarseFaces.size(); ++t) {
+            const auto found = faceSubset.find(coarseFaces[t]);
             if (found != faceSubset.end()) {
                 entry.triangleSubsets[t] = found->second;
             }
@@ -248,12 +283,7 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     }
 
     entry.prototype.positions = std::move(points);
-    entry.prototype.indices.reserve(triangleIndices.size() * 3);
-    for (const GfVec3i& triangle : triangleIndices) {
-        entry.prototype.indices.push_back(static_cast<std::uint32_t>(triangle[0]));
-        entry.prototype.indices.push_back(static_cast<std::uint32_t>(triangle[1]));
-        entry.prototype.indices.push_back(static_cast<std::uint32_t>(triangle[2]));
-    }
+    entry.prototype.indices = std::move(indices);
 
     // --- Normals -------------------------------------------------------------
     // Authored normals if the mesh has vertex-interpolated ones; otherwise
@@ -261,11 +291,49 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     // falling back to flat shading matters for the shader balls, whose
     // silhouettes are the whole point of the asset.
     std::vector<float> normals;
-    const VtValue normalsValue = sceneDelegate->Get(id, HdTokens->normals);
+    // Authored normals belong to the control cage. After refinement they
+    // describe a mesh that no longer exists, so they are not consulted.
+    const VtValue normalsValue =
+        subdivided ? VtValue() : sceneDelegate->Get(id, HdTokens->normals);
     const std::size_t vertexCount = entry.prototype.VertexCount();
     if (ExtractPoints(normalsValue, normals) &&
         normals.size() == vertexCount * 3) {
         entry.prototype.normals = std::move(normals);
+    } else if (subdivided) {
+        // The coarse adjacency does not describe the refined cage, so normals
+        // come from the refined triangles: accumulate each triangle's normal
+        // at its corners, then normalise.
+        entry.prototype.normals.assign(vertexCount * 3, 0.0f);
+        const std::vector<float>& p = entry.prototype.positions;
+        for (std::size_t t = 0; t + 2 < entry.prototype.indices.size(); t += 3) {
+            const std::uint32_t a = entry.prototype.indices[t];
+            const std::uint32_t b = entry.prototype.indices[t + 1];
+            const std::uint32_t c = entry.prototype.indices[t + 2];
+            const GfVec3f pa(p[a * 3], p[a * 3 + 1], p[a * 3 + 2]);
+            const GfVec3f pb(p[b * 3], p[b * 3 + 1], p[b * 3 + 2]);
+            const GfVec3f pc(p[c * 3], p[c * 3 + 1], p[c * 3 + 2]);
+            // Left unnormalised: the cross product's length is twice the
+            // triangle's area, which weights each face by its size and keeps a
+            // sliver from dominating a vertex it barely touches.
+            const GfVec3f faceNormal = GfCross(pb - pa, pc - pa);
+            for (const std::uint32_t corner : {a, b, c}) {
+                entry.prototype.normals[corner * 3 + 0] += faceNormal[0];
+                entry.prototype.normals[corner * 3 + 1] += faceNormal[1];
+                entry.prototype.normals[corner * 3 + 2] += faceNormal[2];
+            }
+        }
+        for (std::size_t i = 0; i < vertexCount; ++i) {
+            GfVec3f n(entry.prototype.normals[i * 3],
+                      entry.prototype.normals[i * 3 + 1],
+                      entry.prototype.normals[i * 3 + 2]);
+            const float length = n.GetLength();
+            if (length > 1e-12f) {
+                n /= length;
+            }
+            entry.prototype.normals[i * 3 + 0] = n[0];
+            entry.prototype.normals[i * 3 + 1] = n[1];
+            entry.prototype.normals[i * 3 + 2] = n[2];
+        }
     } else {
         Hd_VertexAdjacency adjacency;
         adjacency.BuildAdjacencyTable(&topology);
@@ -293,7 +361,10 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     // Vertex-interpolated `st` only for now. Face-varying UVs need
     // ComputeTriangulatedFaceVaryingPrimvar and a vertex split, which is
     // recorded as remaining work rather than approximated here.
-    for (const TfToken& name : {TfToken("st"), TfToken("uv")}) {
+    const std::vector<TfToken> uvNames =
+        subdivided ? std::vector<TfToken>{}
+                   : std::vector<TfToken>{TfToken("st"), TfToken("uv")};
+    for (const TfToken& name : uvNames) {
         const VtValue uvValue = sceneDelegate->Get(id, name);
         if (uvValue.IsHolding<VtVec2fArray>()) {
             const VtVec2fArray& uvs = uvValue.UncheckedGet<VtVec2fArray>();
@@ -359,9 +430,10 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
         entry.material = generated;
     }
 
-    HdClaudeTrace("mesh <%s>: %zu vertices, %zu triangles, %zu instances, "
+    HdClaudeTrace("mesh <%s>%s: %zu vertices, %zu triangles, %zu instances, "
                   "normals %s, uvs %s, %zu subsets",
-                  id.GetText(), entry.prototype.VertexCount(),
+                  id.GetText(), subdivided ? " [subdivided]" : "",
+                  entry.prototype.VertexCount(),
                   entry.prototype.TriangleCount(), entry.transforms.size(),
                   entry.prototype.normals.empty() ? "no" : "yes",
                   entry.prototype.uvs.empty() ? "no" : "yes",
