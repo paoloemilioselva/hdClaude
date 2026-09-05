@@ -10,6 +10,46 @@ result. An entry is added whenever a design document has to be corrected.
 
 ---
 
+## 2026-09-05 — The `surface` node builds ClosureData, and builds it for a rasteriser
+
+**Expected.** Overriding the `pbrlib` closure nodes plus a generator subclass
+would be enough to emit a path-tracing shader.
+
+**Actually true.** `ClosureData` is not constructed by the closures. It is
+constructed by the **`surface` node**, in
+`source/MaterialXGenHw/Nodes/HwSurfaceNode.cpp`, and that construction encodes a
+rasteriser's whole structure:
+
+```cpp
+// HwSurfaceNode.cpp
+:181  makeClosureData(CLOSURE_TYPE_INDIRECT,     L, V, N, P, occlusion)
+:211  makeClosureData(CLOSURE_TYPE_EMISSION,     L, V, N, P, occlusion)
+:237  makeClosureData(CLOSURE_TYPE_TRANSMISSION, L, V, N, P, occlusion)
+:302  makeClosureData(CLOSURE_TYPE_REFLECTION,   L, V, N, P, occlusion)
+```
+
+The `REFLECTION` construction sits inside a loop over `u_lightData`, and the
+`INDIRECT` one calls the prefiltered-environment path. Neither is meaningful to
+a path tracer, which supplies its own direction and its own light sample from
+the integrator.
+
+**Changed.** hdClaude adds a C++ node implementation,
+`PathTracerSurfaceNode`, registered by the generator and declared as
+`<implementation nodedef="ND_surface" target="genglsl_pt"/>`. It emits a body
+that calls the BSDF and EDF with the **caller-supplied** `closureData` — no
+light loop, no environment lookup.
+
+This is a small amount of code but it was not in the plan, and it is the piece
+that actually turns a rasterisation shader graph into a path-tracing one. The
+closure overrides supply sampling; this supplies the *calling convention*.
+
+Note also that the stock `surface` node has no GLSL file at all — its
+declaration is bodiless (`<implementation name="IM_surface_genglsl"
+nodedef="ND_surface" target="genglsl" />`) because the implementation is
+entirely C++. hdClaude's is the same shape.
+
+---
+
 ## 2026-09-05 — Buffer device addresses need an explicit int64 extension
 
 A `uint64_t` holding a buffer device address requires

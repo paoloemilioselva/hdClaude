@@ -271,7 +271,25 @@ and hdClaude does the same for its extended field list. A mismatch between the
 struct and the substitution is a compile error rather than a silent
 miscompile — the desired failure mode.
 
-**3. The generator itself.**
+**3. The `surface` node's calling convention.** `ClosureData` is constructed
+not by the closures but by the **`surface` node**, in
+`MaterialXGenHw/Nodes/HwSurfaceNode.cpp` — and that construction encodes a
+rasteriser: the `REFLECTION` case sits inside a loop over `u_lightData`, and the
+`INDIRECT` case calls the prefiltered environment. Neither is meaningful to a
+path tracer, which supplies its own direction and its own light sample.
+
+hdClaude therefore adds `PathTracerSurfaceNode`, a C++ node implementation
+registered by the generator and declared as
+`<implementation nodedef="ND_surface" target="genglsl_pt"/>`. It emits a body
+calling the BSDF and EDF with the **caller-supplied** `closureData`: no light
+loop, no environment lookup. The stock `surface` implementation is likewise
+bodiless in XML and entirely C++, so this follows the same shape.
+
+The closure overrides supply *sampling*; this supplies the **calling
+convention**. Both are needed, and this one is the smaller and less obvious of
+the two.
+
+**4. The generator itself.**
 `hdclaude::PathTracerShaderGenerator : public MaterialX::VkShaderGenerator`
 overrides target identity and emission:
 
@@ -370,6 +388,7 @@ gate every change to this target.
 | `mix`, `add`, `layer`, `multiply_bsdf_*` combinators | done |
 | remaining 15 of the 22-file override set | not started |
 | `PathTracerSyntax` / `PathTracerShaderGenerator` | not started |
+| `PathTracerSurfaceNode` (the calling convention) | not started |
 | glslang compilation and the material program cache | cache done; compiler not started |
 | the acceptance tests in §8 | not started |
 
