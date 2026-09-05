@@ -1,0 +1,331 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+# Focused subdivision regression layout, read left-to-right:
+# indexed face-varying UVs, creases/corners, Loop topology,
+# holes, per-face material subsets, and bilinear displacement.
+def Xform "World"
+{
+    def Camera "camera"
+    {
+        float2 clippingRange = (0.1, 100)
+        float focalLength = 50
+        float horizontalAperture = 36
+        float verticalAperture = 36
+        matrix4d xformOp:transform = (
+            (1, 0, 0, 0),
+            (0, 0.970143, -0.242536, 0),
+            (0, 0.242536, 0.970143, 0),
+            (0, 4.5, 18, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    def DistantLight "key"
+    {
+        color3f inputs:color = (1, 0.94, 0.82)
+        float inputs:intensity = 3
+        float inputs:angle = 1
+        matrix4d xformOp:transform = (
+            (0.866025, -0.353553, 0.353553, 0),
+            (0.5, 0.612372, -0.612372, 0),
+            (0, 0.707107, 0.707107, 0),
+            (0, 0, 0, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    def DomeLight "fill"
+    {
+        color3f inputs:color = (0.12, 0.18, 0.28)
+        float inputs:intensity = 0.7
+    }
+
+    def Scope "Looks"
+    {
+        def Material "checker"
+        {
+            token outputs:mtlx:surface.connect = </World/Looks/checker/surface.outputs:out>
+
+            def Shader "surface"
+            {
+                uniform token info:id = "ND_standard_surface_surfaceshader"
+                color3f inputs:base_color.connect = </World/Looks/checker/image.outputs:out>
+                float inputs:specular_roughness = 0.4
+                token outputs:out
+            }
+
+            def Shader "st"
+            {
+                uniform token info:id = "ND_geompropvalue_vector2"
+                string inputs:geomprop = "st"
+                float2 outputs:out
+            }
+
+            def Shader "image"
+            {
+                uniform token info:id = "ND_image_color3"
+                asset inputs:file = @newzealand_height_map.png@ (
+                    colorSpace = "raw"
+                )
+                float2 inputs:texcoord.connect = </World/Looks/checker/st.outputs:out>
+                color3f outputs:out
+            }
+        }
+
+        def Material "crease"
+        {
+            token outputs:mtlx:surface.connect = </World/Looks/crease/surface.outputs:out>
+            def Shader "surface"
+            {
+                uniform token info:id = "ND_standard_surface_surfaceshader"
+                color3f inputs:base_color = (0.95, 0.24, 0.04)
+                float inputs:specular_roughness = 0.28
+                token outputs:out
+            }
+        }
+
+        def Material "loop"
+        {
+            token outputs:mtlx:surface.connect = </World/Looks/loop/surface.outputs:out>
+            def Shader "surface"
+            {
+                uniform token info:id = "ND_standard_surface_surfaceshader"
+                color3f inputs:base_color = (0.2, 0.75, 0.95)
+                float inputs:metalness = 0.15
+                float inputs:specular_roughness = 0.32
+                token outputs:out
+            }
+        }
+
+        def Material "hole"
+        {
+            token outputs:mtlx:surface.connect = </World/Looks/hole/surface.outputs:out>
+            def Shader "surface"
+            {
+                uniform token info:id = "ND_standard_surface_surfaceshader"
+                color3f inputs:base_color = (0.12, 0.72, 0.28)
+                float inputs:specular_roughness = 0.5
+                token outputs:out
+            }
+        }
+
+        def Material "subsetLeft"
+        {
+            token outputs:mtlx:surface.connect = </World/Looks/subsetLeft/surface.outputs:out>
+            def Shader "surface"
+            {
+                uniform token info:id = "ND_standard_surface_surfaceshader"
+                color3f inputs:base_color = (0.95, 0.72, 0.04)
+                float inputs:specular_roughness = 0.38
+                token outputs:out
+            }
+        }
+
+        def Material "subsetRight"
+        {
+            token outputs:mtlx:surface.connect = </World/Looks/subsetRight/surface.outputs:out>
+            def Shader "surface"
+            {
+                uniform token info:id = "ND_standard_surface_surfaceshader"
+                color3f inputs:base_color = (0.62, 0.12, 0.88)
+                float inputs:specular_roughness = 0.38
+                token outputs:out
+            }
+        }
+
+        def Material "displaced"
+        {
+            token outputs:mtlx:surface.connect = </World/Looks/displaced/surface.outputs:out>
+            token outputs:mtlx:displacement.connect = </World/Looks/displaced/displacement.outputs:out>
+
+            def Shader "surface"
+            {
+                uniform token info:id = "ND_standard_surface_surfaceshader"
+                color3f inputs:base_color = (0.95, 0.22, 0.5)
+                float inputs:specular_roughness = 0.34
+                token outputs:out
+            }
+
+            def Shader "st"
+            {
+                uniform token info:id = "ND_geompropvalue_vector2"
+                string inputs:geomprop = "st"
+                float2 outputs:out
+            }
+
+            def Shader "u"
+            {
+                uniform token info:id = "ND_extract_vector2"
+                int inputs:index = 0
+                float2 inputs:in.connect = </World/Looks/displaced/st.outputs:out>
+                float outputs:out
+            }
+
+            def Shader "center"
+            {
+                uniform token info:id = "ND_subtract_float"
+                float inputs:in1.connect = </World/Looks/displaced/u.outputs:out>
+                float inputs:in2 = 0.5
+                float outputs:out
+            }
+
+            def Shader "displacement"
+            {
+                uniform token info:id = "ND_displacement_float"
+                float inputs:displacement.connect = </World/Looks/displaced/center.outputs:out>
+                float inputs:scale = 1.1
+                token outputs:out
+            }
+        }
+    }
+
+    def Mesh "indexedUvCube" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [
+            0, 1, 2, 3, 4, 7, 6, 5,
+            0, 4, 5, 1, 1, 5, 6, 2,
+            2, 6, 7, 3, 4, 0, 3, 7
+        ]
+        rel material:binding = </World/Looks/checker>
+        point3f[] points = [
+            (-4.7, 1.0, -0.9), (-2.7, 1.0, -0.9),
+            (-2.7, 3.0, -0.9), (-4.7, 3.0, -0.9),
+            (-4.7, 1.0, 1.1), (-2.7, 1.0, 1.1),
+            (-2.7, 3.0, 1.1), (-4.7, 3.0, 1.1)
+        ]
+        texCoord2f[] primvars:st = [
+            (0, 0), (1, 0), (1, 1), (0, 1)
+        ] (
+            interpolation = "faceVarying"
+        )
+        int[] primvars:st:indices = [
+            0, 1, 2, 3, 0, 1, 2, 3,
+            0, 1, 2, 3, 0, 1, 2, 3,
+            0, 1, 2, 3, 0, 1, 2, 3
+        ]
+        uniform token subdivisionScheme = "catmullClark"
+    }
+
+    def Mesh "creasedCube" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] cornerIndices = [0]
+        float[] cornerSharpnesses = [10]
+        int[] creaseIndices = [
+            0, 1, 1, 2, 2, 3, 3, 0,
+            4, 5, 5, 6, 6, 7, 7, 4,
+            0, 4, 1, 5, 2, 6, 3, 7
+        ]
+        int[] creaseLengths = [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
+        float[] creaseSharpnesses = [6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6]
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [
+            0, 1, 2, 3, 4, 7, 6, 5,
+            0, 4, 5, 1, 1, 5, 6, 2,
+            2, 6, 7, 3, 4, 0, 3, 7
+        ]
+        rel material:binding = </World/Looks/crease>
+        point3f[] points = [
+            (-1, 1.0, -1), (1, 1.0, -1),
+            (1, 3.0, -1), (-1, 3.0, -1),
+            (-1, 1.0, 1), (1, 1.0, 1),
+            (1, 3.0, 1), (-1, 3.0, 1)
+        ]
+        uniform token subdivisionScheme = "catmullClark"
+    }
+
+    def Mesh "loopTetrahedron" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [3, 3, 3, 3]
+        int[] faceVertexIndices = [0, 1, 2, 0, 3, 1, 0, 2, 3, 1, 3, 2]
+        rel material:binding = </World/Looks/loop>
+        point3f[] points = [
+            (4.0, 3.25, 1.0), (2.75, 0.9, 1.0),
+            (2.75, 3.0, -1.0), (5.2, 1.25, -1.0)
+        ]
+        uniform token subdivisionScheme = "loop"
+    }
+
+    def Mesh "holedGrid" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4, 4, 4, 4]
+        int[] faceVertexIndices = [
+            0, 1, 4, 3, 1, 2, 5, 4,
+            3, 4, 7, 6, 4, 5, 8, 7
+        ]
+        int[] holeIndices = [3]
+        rel material:binding = </World/Looks/hole>
+        point3f[] points = [
+            (-4.9, -3.3, 0), (-3.7, -3.3, 0), (-2.5, -3.3, 0),
+            (-4.9, -2.1, 0), (-3.7, -2.1, 0), (-2.5, -2.1, 0),
+            (-4.9, -0.9, 0), (-3.7, -0.9, 0), (-2.5, -0.9, 0)
+        ]
+        uniform token subdivisionScheme = "catmullClark"
+    }
+
+    def Mesh "materialSubsets" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4, 4]
+        int[] faceVertexIndices = [0, 1, 4, 3, 1, 2, 5, 4]
+        point3f[] points = [
+            (-1.4, -3.3, 0), (0, -3.3, 0), (1.4, -3.3, 0),
+            (-1.4, -0.9, 0), (0, -0.9, 0), (1.4, -0.9, 0)
+        ]
+        uniform token subdivisionScheme = "catmullClark"
+        uniform token subsetFamily:materialBind:familyType = "partition"
+
+        def GeomSubset "left" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            uniform token elementType = "face"
+            uniform token familyName = "materialBind"
+            int[] indices = [0]
+            rel material:binding = </World/Looks/subsetLeft>
+        }
+
+        def GeomSubset "right" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            uniform token elementType = "face"
+            uniform token familyName = "materialBind"
+            int[] indices = [1]
+            rel material:binding = </World/Looks/subsetRight>
+        }
+    }
+
+    def Mesh "bilinearDisplacement" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        rel material:binding = </World/Looks/displaced>
+        point3f[] points = [
+            (2.6, -3.3, 0), (4.9, -3.3, 0),
+            (4.9, -0.9, 0), (2.6, -0.9, 0)
+        ]
+        texCoord2f[] primvars:st = [
+            (0, 0), (1, 0), (1, 1), (0, 1)
+        ] (
+            interpolation = "faceVarying"
+        )
+        uniform token subdivisionScheme = "bilinear"
+    }
+}

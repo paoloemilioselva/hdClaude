@@ -1,0 +1,12 @@
+#usda 1.0
+(
+    startTimeCode = 1246.0
+    endTimeCode = 1246.0
+    timeCodesPerSecond = 24.0
+    framesPerSecond = 24.0
+    metersPerUnit = 1.0
+    upAxis = "Y"
+    subLayers = [
+        @C:\Users\paolo\Desktop\code\collectiveproject001\shots\s001_001\index.usda@,
+    ]
+)

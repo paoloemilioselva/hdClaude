@@ -1,0 +1,26 @@
+#usda 1.0
+(
+    "Created by UsdView"
+    customLayerData = {
+        string License = "CC BY 4.0"
+        string Version = "1.1"
+    }
+    defaultPrim = "standard_shader_ball_scene"
+    endTimeCode = 3
+    framesPerSecond = 24
+    metersPerUnit = 0.01
+    startTimeCode = 3
+    subLayers = [
+        @C:\Users\paolo\Desktop\code\assets\full_assets\StandardShaderBall\standard_shader_ball_scene.usda@
+    ]
+    timeCodesPerSecond = 24
+    upAxis = "Y"
+)
+
+over "standard_shader_ball_scene" (
+    variants = {
+        string example_material = "mtlx_glass"
+    }
+)
+{
+}

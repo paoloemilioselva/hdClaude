@@ -1,0 +1,17 @@
+#usda 1.0
+(
+    metersPerUnit = 1.0
+    upAxis = "Y"
+    subLayers = [
+        @C:\Users\paolo\Desktop\code\assets\full_assets\StandardShaderBall\standard_shader_ball_scene.usda@,
+    ]
+)
+
+over "standard_shader_ball_scene" (
+    variants = {
+        string example_material = "mtlx_bubblegum"
+    }
+)
+{
+
+}

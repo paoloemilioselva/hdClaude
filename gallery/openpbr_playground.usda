@@ -1,0 +1,8 @@
+#usda 1.0
+(
+    metersPerUnit = 1.0
+    upAxis = "Y"
+    subLayers = [
+        @C:\Users\paolo\Desktop\code\OpenPBRShaderPlayground\ShdrPlygrnd\ShdrPlygrnd_OpenPBR.usda@,
+    ]
+)

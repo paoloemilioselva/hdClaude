@@ -1,0 +1,19 @@
+#usda 1.0
+(
+    metersPerUnit = 1.0
+    upAxis = "Z"
+    subLayers = [
+        @C:\Users\paolo\Desktop\openusd\Kitchen_set\Kitchen_set_instanced.usd@,
+    ]
+)
+
+def Camera "renderCam"
+{
+    float2 clippingRange = (0.1, 1000)
+    float focalLength = 60
+    float horizontalAperture = 37.0
+    token projection = "perspective"
+    float verticalAperture = 22.1
+    matrix4d xformOp:transform = ( (0.35836794954530016, 0.9335804264972017, 2.0035760306340611e-16, 0), (-0.1137748335931116, 0.04367406670853454, 0.992546151641322, 0), (0.9266216595674619, -0.355696729192779, 0.12186934340514743, 0), (726.471672960961, -236.60471070649513, 167.33027086028784, 1) )
+    uniform token[] xformOpOrder = ["xformOp:transform"]
+}

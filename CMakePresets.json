@@ -1,0 +1,43 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "dev",
+      "displayName": "Developer build (full delegate)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/dev",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "core-only",
+      "displayName": "Core only (no GPU, no OpenUSD)",
+      "inherits": "dev",
+      "binaryDir": "${sourceDir}/build/core-only",
+      "cacheVariables": {
+        "HDCLAUDE_BUILD_HYDRA_PLUGIN": "OFF",
+        "HDCLAUDE_ENABLE_VULKAN": "OFF",
+        "HDCLAUDE_ENABLE_MATERIALX": "OFF"
+      }
+    },
+    {
+      "name": "dev-dlss",
+      "displayName": "Developer build with NVIDIA DLSS",
+      "inherits": "dev",
+      "binaryDir": "${sourceDir}/build/dev-dlss",
+      "cacheVariables": { "HDCLAUDE_ENABLE_DLSS": "ON" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev", "configurePreset": "dev" },
+    { "name": "core-only", "configurePreset": "core-only" },
+    { "name": "dev-dlss", "configurePreset": "dev-dlss" }
+  ],
+  "testPresets": [
+    { "name": "dev", "configurePreset": "dev", "output": { "outputOnFailure": true } },
+    { "name": "core-only", "configurePreset": "core-only", "output": { "outputOnFailure": true } }
+  ]
+}

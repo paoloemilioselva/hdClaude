@@ -1,0 +1,154 @@
+# hdClaude roadmap and phase tracker
+
+Status: live. Last revised 2026-09-05.
+
+This is the durable progress record. Update the tracker, the evidence column,
+and the decision log **in the same commit** as the work they describe. A phase
+is not complete because its API exists; it is complete when its exit gate passes
+and the evidence is recorded here.
+
+## How to resume
+
+1. Read the decision log and the phase tracker below.
+2. Inspect the worktree and recent commits. **Never assume this document is
+   newer than the code.**
+3. Run `compile.bat`, the full test suite, and `validate_usd.bat` before
+   changing renderer behaviour.
+4. Work one reviewable phase boundary at a time.
+5. Re-render and commit the full gallery after every render-affecting change.
+6. Record timing, image, validation, and hardware evidence in the phase entry.
+
+## Phase tracker
+
+Allowed states: `Not started`, `In progress`, `Blocked`, `Complete`, `Deferred`.
+A blocked phase must name what blocks it.
+
+| # | Phase | State | Evidence |
+| --- | --- | --- | --- |
+| 0 | Repository, build system, environment, documentation | In progress | - |
+| 1 | Core library: hashing, shader cache, spectral tables, display transform | Not started | - |
+| 2 | Vulkan context, memory, resource rules, validation gate | Not started | - |
+| 3 | Geometry pipeline: meshes, BLAS/TLAS, instancing, subdivision | Not started | - |
+| 4 | `genglsl_pt` MaterialX target: eval, sample, pdf, combinators | Not started | - |
+| 5 | Wavefront integrator: queues, sort, per-material dispatch | Not started | - |
+| 6 | Spectral transport, lights, MIS, film | Not started | - |
+| 7 | Hydra delegate: adapters, render pass, AOVs, settings | Not started | - |
+| 8 | Gallery parity with hdCodex baselines | Not started | - |
+| 9 | Interactive contract: frame identity, per-slot resources, real overlap | Not started | - |
+| 10 | Temporal foundation: jitter, motion vectors, guides, history reset | Not started | - |
+| 11 | Renderer-native reconstruction fallback (any Vulkan device) | Not started | - |
+| 12 | NVIDIA NGX bootstrap and runtime support query | Not started | - |
+| 13 | DLSS Super Resolution and DLAA | Blocked | Requires 10, 12 |
+| 14 | DLSS Ray Reconstruction | Blocked | Requires 4, 10, 12, 13 |
+| 15 | SER (`VK_NV_ray_tracing_invocation_reorder`) in `extend` | Not started | - |
+| 16 | GPU displacement through the generated MaterialX program | Not started | - |
+| 17 | External-memory AOV interop for Hgi hosts | Not started | - |
+
+Phases 13 and 14 are the two hdCodex never reached. They are deliberately late:
+each depends on guide buffers that are only meaningful once phases 4-10 are
+correct, and feeding a reconstructor from a broken estimator is explicitly a
+non-goal.
+
+## Exit gates
+
+Each gate is a claim that can fail. "The code exists" is never a gate.
+
+**Phase 0.** `compile.bat` configures and builds the core-only preset from a
+clean clone with no manual dependency steps. `setup_usd_env.bat` reports a clear,
+actionable failure for each missing dependency rather than failing later inside a
+tool. All committed documents cross-reference consistently.
+
+**Phase 1.** Unit tests pass with no GPU and no OpenUSD present. Spectral round
+trip: sRGB primaries and a set of Munsell reflectances upsample and re-integrate
+to within 1e-3 dE2000. The shader cache is proven to miss on every component of
+its key.
+
+**Phase 2.** A validation-enabled run of the full suite reports zero validation
+errors **and the test fails if the count is nonzero** (rule R8). Device-loss
+simulation leaves the latch set, every subsequent entry point refuses, and the
+destructor completes without issuing a wait.
+
+**Phase 3.** Prototype BLAS reuse, in-place TLAS update, and in-place BLAS update
+under stable-topology deformation are each asserted by reading back GPU state,
+not a CPU shadow (rule R7). Subdivision preserves creases, corners, holes,
+orientation, face-varying seams, and material subsets against a committed
+baseline.
+
+**Phase 4.** The four acceptance items in
+[materialx-codegen.md](materialx-codegen.md) §8: every gallery material compiles
+with no fallback, white furnace within 0.5%, chi-squared sample/pdf agreement,
+and sample-pdf self-consistency — for every closure **and every combinator**.
+
+**Phase 5.** Per-material dispatch is observed to scale: adding a large
+procedural nodegraph to one object changes that object's shading cost and not
+the frame's. Queue counters are GPU-written and never read back by the CPU
+during a frame.
+
+**Phase 6.** Furnace test at scene scale. Analytic light comparisons for each
+`UsdLux` type. Spectral: a dispersion scene matches an analytic reference; a
+metamer pair renders as distinct under two illuminants.
+
+**Phase 7.** A render-pass-level test drives move -> move -> stop -> move against
+a stub scene and asserts a frame reaches the AOV on every moving frame (rule R7;
+this is the test whose absence hid hdCodex A2/A1/N1/N8). Failure paths assert
+`IsConverged()` stays false and the revision is retried.
+
+**Phase 8.** Every gallery scene renders, and the image gate in the gallery
+script passes against a committed baseline (rule R9). Timings, GPU, driver, and
+TDR values recorded (rule R11).
+
+**Phase 9.** GPU timestamps prove frame N+1's trace overlaps frame N's readback —
+measured across a *queue*, not within one command buffer, since a whole-buffer
+barrier's first synchronisation scope includes everything already submitted to
+the queue. This is the exact claim hdCodex could not make (finding N3); it is
+achievable here only because of Rule 1.
+
+**Phase 10.** Jitter sequence, motion vectors, and history reset are validated
+against a synthetic scene with known motion. Motion vectors are correct under
+instancing and deformation, or the phase does not close.
+
+**Phase 11.** The native fallback improves a fixed-sample interactive image
+measurably (SSIM against the converged reference) on a device with no DLSS.
+
+**Phase 12.** Runtime support query returns a correct answer on a supported and
+an unsupported device, and the renderer runs unchanged when DLSS is absent.
+
+**Phase 13.** DLAA at native resolution is compared against the converged
+reference by SSIM and by a temporal-stability metric. Reference mode output is
+bit-identical with DLSS present and absent.
+
+**Phase 14.** Ray Reconstruction fed only by guides produced by MaterialX
+closures (never by a surface-model name). Reference mode remains unaffected.
+
+## Decision log
+
+Decisions are recorded when made, with the reason, and are not silently
+reversed.
+
+| Date | Decision | Reason |
+| --- | --- | --- |
+| 2026-09-05 | Wavefront integrator, not a megakernel | A megakernel must contain the union of all material code; with real compiled MaterialX programs that destroys occupancy frame-wide ([architecture.md](architecture.md) §2) |
+| 2026-09-05 | `VK_KHR_ray_query` in compute, not `VK_KHR_ray_tracing_pipeline` | In a wavefront design the SBT buys nothing already gained by separating shading from traversal, and costs portability plus a second shader-compilation path |
+| 2026-09-05 | MaterialX `genglsl_pt` derived target, not a lowered closure ABI | Full MaterialX fidelity including arbitrary pattern and procedural graphs; the documented extension mechanism (`targetdef inherit`) |
+| 2026-09-05 | Four hero wavelengths, not three | `vec4` is the natural GPU register width; better hero MIS; and the interactive preview must not change estimator (hdCodex N9) |
+| 2026-09-05 | Separate reference and interactive storage | Sharing one buffer caused four hdCodex findings at once ([lessons](lessons-from-hdcodex.md) C1) |
+| 2026-09-05 | Single `BeginFrame(FrameDescription)` entry point | Independent setters caused five hdCodex findings ([lessons](lessons-from-hdcodex.md) C2) |
+| 2026-09-05 | CPU readback is the Hydra AOV adapter; interop is a later phase | No public OpenUSD API crosses a device boundary for a `VkImage`. Decided now because phases 11 and 17 both depend on the answer (hdCodex D1, which was never decided) |
+| 2026-09-05 | DLSS via NGX directly, not Streamline | A delegate does not own presentation, so Frame Generation and Reflex — Streamline's reason to exist — are out of scope |
+| 2026-09-05 | Dependencies by pinned CMake `FetchContent`, never committed | A fresh clone reproduces the tree; the repository stays small and carries no third-party or proprietary code |
+
+## Open questions
+
+Tracked here rather than decided prematurely.
+
+1. **Sort granularity.** Counting sort per bounce over all active paths, or a
+   partial sort that only separates the few most expensive materials? Decide
+   with a measurement in phase 5, not before.
+2. **Shadow-ray batching depth.** One shadow queue flushed per bounce, or a
+   deeper queue flushed per frame? Interacts with memory footprint at 4K.
+3. **Displacement residency.** GPU displacement (phase 16) multiplies vertex
+   memory by the refinement level. Whether to cache displaced positions or
+   re-evaluate per BLAS build is a memory/time trade to measure.
+4. **Volume rendering.** MaterialX VDFs are declared and generated; hdClaude
+   currently plans homogeneous interior media only. Heterogeneous volumes
+   (`UsdVol`) are not scheduled.

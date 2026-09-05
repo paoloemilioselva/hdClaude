@@ -1,0 +1,35 @@
+#usda 1.0
+(
+    metersPerUnit = 1.0
+    upAxis = "Y"
+    subLayers = [
+        @C:\Users\paolo\Desktop\code\assets\full_assets\OpenChessSet\chess_set.usda@,
+    ]
+)
+
+def DomeLight "sky"
+{
+
+    color3f inputs:color = (1, 1, 1)
+    float inputs:diffuse = 1
+    bool inputs:enableColorTemperature = 0
+    float inputs:exposure = 0
+    float inputs:intensity = 1
+    bool inputs:normalize = 0
+    float inputs:specular = 1
+    asset inputs:texture:file = @C:/Users/paolo/Desktop/openusd/hdr/photo_studio_london_hall_4k.hdr@
+    token inputs:texture:format = "automatic"
+    matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) )
+    uniform token[] xformOpOrder = ["xformOp:transform"]
+}
+
+def Camera "renderCam"
+{
+    float2 clippingRange = (0.1, 1000)
+    float focalLength = 34
+    float horizontalAperture = 37.0
+    token projection = "perspective"
+    float verticalAperture = 22.1
+    matrix4d xformOp:transform = ( (-0.5446390350150273, -2.2204460492503106e-16, -0.8386705679454233, 0), (-0.28684222785171387, 0.9396926207859083, 0.1862775208165936, 0), (0.7880925439686409, 0.3420201433256687, -0.5117932821955791, 0), (0.7371110421155667, 0.27335094181587744, -0.41311664269231907, 1) )
+    uniform token[] xformOpOrder = ["xformOp:transform"]
+}
