@@ -15,6 +15,7 @@ Related documents:
 - [Wavefront integrator](wavefront-integrator.md) — queues, kernels, scheduling.
 - [DLSS integration](dlss-integration.md) — guides, resolution, history.
 - [Lessons from hdCodex](lessons-from-hdcodex.md) — defects inherited as rules.
+- [Implementation notes](implementation-notes.md) — findings that corrected this design.
 
 ## 1. The three commitments
 
@@ -107,7 +108,7 @@ GPU-written counters so the CPU never reads a queue length:
 | `shadow` | any-hit traversal of the shadow-ray queue, film-resolves NEE |
 | `film` | resolve, accumulate, write guides |
 
-### 2.1 Traversal: ray query in compute, plus SER, not an RT pipeline
+### 2.1 Traversal: ray query in compute, not an RT pipeline
 
 Traversal uses `VK_KHR_ray_query` inside the `extend`/`shadow` compute kernels
 rather than `VK_KHR_ray_tracing_pipeline`. In a wavefront design the RT
@@ -115,11 +116,20 @@ pipeline's shader-binding-table dispatch buys nothing — we have already
 separated shading from traversal, which is the whole point of an SBT — while it
 costs portability and a second shader-compilation path.
 
-On hardware that exposes `VK_NV_ray_tracing_invocation_reorder` (Ada and later;
-the development workstation's RTX 5060 Ti is Blackwell) the `extend` kernel
-issues a reorder hint on the hit's material index. This recovers the coherence
-benefit SER gives megakernels, in the kernel where divergence actually is.
-Absence of the extension is a performance path, never a correctness path.
+**Shader Execution Reordering is not used, and cannot be.** An earlier version
+of this document said the `extend` kernel would issue a
+`VK_NV_ray_tracing_invocation_reorder` hint on the hit material index. That is
+not possible: SER's builtins are declared only on the ray-generation,
+closest-hit, and miss stages, never on compute, and the extension additionally
+requires `VK_KHR_ray_tracing_pipeline` to be enabled alongside it. The
+capability is detected and reported, but the extension is not enabled. See
+[implementation-notes.md](implementation-notes.md).
+
+This costs little, for a structural reason: **the per-material sort already
+delivers the execution coherence SER exists to recover.** SER's value is to
+megakernel and RT-pipeline designs, which cannot sort because shading and
+traversal are fused. Having separated them and paid for the sort, hdClaude would
+be buying the same coherence twice.
 
 ### 2.2 Why sorting is not optional here
 

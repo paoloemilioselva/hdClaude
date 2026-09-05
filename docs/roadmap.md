@@ -27,7 +27,7 @@ A blocked phase must name what blocks it.
 | --- | --- | --- | --- |
 | 0 | Repository, build system, environment, documentation | Complete | core-only preset builds and tests from clean; env script verified; 10 gallery stages open |
 | 1 | Core library: hashing, shader cache, spectral tables, display transform | In progress | hashing, shader cache, spectral sampling and sensor; 1222 checks pass |
-| 2 | Vulkan context, memory, resource rules, validation gate | Not started | - |
+| 2 | Vulkan context, memory, resource rules, validation gate | In progress | context, allocator, buffers, images, generations, device-lost latch; 42 GPU checks pass with 0 validation errors on RTX 5060 Ti |
 | 3 | Geometry pipeline: meshes, BLAS/TLAS, instancing, subdivision | Not started | - |
 | 4 | `genglsl_pt` MaterialX target: eval, sample, pdf, combinators | In progress | targetdef, closure protocol, 7 of the 22-file override set |
 | 5 | Wavefront integrator: queues, sort, per-material dispatch | Not started | - |
@@ -40,7 +40,7 @@ A blocked phase must name what blocks it.
 | 12 | NVIDIA NGX bootstrap and runtime support query | Not started | - |
 | 13 | DLSS Super Resolution and DLAA | Blocked | Requires 10, 12 |
 | 14 | DLSS Ray Reconstruction | Blocked | Requires 4, 10, 12, 13 |
-| 15 | SER (`VK_NV_ray_tracing_invocation_reorder`) in `extend` | Not started | - |
+| 15 | ~~SER in `extend`~~ | Deferred | Not possible: SER builtins do not exist on the compute stage, and the per-material sort already provides the coherence. See [implementation-notes.md](implementation-notes.md) |
 | 16 | GPU displacement through the generated MaterialX program | Not started | - |
 | 17 | External-memory AOV interop for Hgi hosts | Not started | - |
 
@@ -141,6 +141,8 @@ reversed.
 | 2026-09-05 | DLSS via NGX directly, not Streamline | A delegate does not own presentation, so Frame Generation and Reflex — Streamline's reason to exist — are out of scope |
 | 2026-09-05 | Dependencies by pinned CMake `FetchContent`, never committed | A fresh clone reproduces the tree; the repository stays small and carries no third-party or proprietary code |
 | 2026-09-05 | Closure sampling returns a direction only; densities are written by the evaluation closure types | MaterialX evaluates a combinator's children *before* the combinator, so a density returned by sampling belongs to that child's own direction and cannot be mixed. Moving densities to evaluation lets every combinator mix them with the weights it already mixes responses with ([materialx-codegen.md](materialx-codegen.md) 2) |
+| 2026-09-05 | SER is not used | Its builtins exist only on ray-tracing-pipeline stages, not compute, and the per-material sort already delivers the coherence SER recovers ([implementation-notes.md](implementation-notes.md)) |
+| 2026-09-05 | On device loss, skip the wait but still destroy objects | `vkDestroyDevice` requires its children to be destroyed first, and destruction stays valid after loss; skipping it faults. Only the unchecked wait contaminates diagnostics |
 | 2026-09-05 | The pbrlib override set is all-or-nothing | MaterialX resolves `#include` relative to the including file, so mixing one upstream closure with one hdClaude closure emits `struct ClosureData` twice. The set is exactly the 22 pbrlib files that include `mx_closure_type.glsl`; no stdlib file does |
 
 ## Open questions

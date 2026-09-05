@@ -58,6 +58,7 @@ The architecture is written down before it is built, and updated as it is.
 | [Wavefront integrator](docs/wavefront-integrator.md) | path state, queues, kernels, scheduling |
 | [DLSS integration](docs/dlss-integration.md) | backends, guides, frame metadata, boundaries |
 | [Lessons from hdCodex](docs/lessons-from-hdcodex.md) | defects inherited from the predecessor as rules |
+| [Implementation notes](docs/implementation-notes.md) | running log of findings that corrected the design |
 | [Building](docs/building.md) | dependencies, environment, toolchain |
 | [Gallery](gallery.md) | versioned baselines, settings, and the machine record |
 

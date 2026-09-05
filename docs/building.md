@@ -74,11 +74,15 @@ cmake --preset dev -DFETCHCONTENT_FULLY_DISCONNECTED=ON
    `VK_KHR_acceleration_structure`, `VK_KHR_buffer_device_address`,
    `VK_KHR_deferred_host_operations`, and descriptor indexing.
 
-5. **Optional: the Vulkan SDK**, for validation layers. `setup_usd_env.bat`
-   finds one under `_deps/`, or falls back to a system `VULKAN_SDK`. Validation
-   is not required to build or render, but it is required to close any phase —
-   and a validation run **fails** on a nonzero error count rather than merely
-   printing (see [lessons](lessons-from-hdcodex.md) R8).
+5. **The Vulkan SDK**, for validation layers. Optional to build and render;
+   **required to run the GPU tests**. `setup_usd_env.bat` finds one under
+   `_deps/`, or falls back to a system `VULKAN_SDK`.
+
+   The GPU test does not merely warn when the layer is missing — it **fails**,
+   naming the missing dependency. A validation gate whose layer is absent
+   passes against a counter nothing can increment, which is lesson R8
+   reproduced inside the fix for R8. See
+   [implementation-notes.md](implementation-notes.md).
 
 ## Building
 

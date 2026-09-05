@@ -74,11 +74,11 @@ path state. Writes all slots to `active`.
 
 ### `extend`
 One `rayQueryEXT` closest-hit traversal per active path. Writes a hit record:
-instance, primitive, barycentrics, and material id. Where
-`VK_NV_ray_tracing_invocation_reorder` is available, issues a reorder hint keyed
-on the material id before writing, so the *next* kernel's memory access pattern
-is already coherent. Where it is not, the sort in the next kernel recovers the
-same coherence at slightly higher cost.
+instance, primitive, barycentrics, and material id.
+
+No Shader Execution Reordering: its builtins do not exist on the compute stage.
+The `sort` kernel below is what provides coherence, and it provides all of it —
+see [architecture.md](architecture.md) §2.1.
 
 ### `sort`
 A three-pass counting sort keyed on material id: count into per-material
@@ -95,12 +95,17 @@ bound to **that material's compiled MaterialX program** (see
    tangent frame, UVs, and any `geomprop` the material's generated code
    declares.
 2. Evaluate the MaterialX program to fill closures.
-3. Next-event estimation: choose a light, evaluate the closure with
-   `CLOSURE_TYPE_REFLECTION`/`TRANSMISSION`, compute the MIS weight against
-   `CLOSURE_TYPE_PT_PDF`, and push a shadow record.
-4. Scatter: `CLOSURE_TYPE_PT_SAMPLE` produces a direction, spectral weight, and
-   pdf. Update throughput, apply Russian roulette after a minimum depth, and
-   push the slot back to `active` if it survives.
+3. Next-event estimation: choose a light, then evaluate the closure once with
+   `CLOSURE_TYPE_REFLECTION`/`TRANSMISSION` at the light direction. That single
+   evaluation yields both `response` and `pdf`, so the MIS weight costs no
+   extra graph traversal. Push a shadow record.
+4. Scatter, in two passes: `CLOSURE_TYPE_PT_SAMPLE` produces a direction, then
+   a second `CLOSURE_TYPE_REFLECTION` evaluation at that direction produces the
+   response and the density to divide by. Two passes rather than one because a
+   combinator can only mix densities of a common direction — see
+   [materialx-codegen.md](materialx-codegen.md) §2. Update throughput, apply
+   Russian roulette after a minimum depth, and push the slot back to `active`
+   if it survives.
 5. Emission: `CLOSURE_TYPE_EMISSION` with the MIS weight against the light
    sampling pdf for the same surface.
 
@@ -157,13 +162,12 @@ was structurally impossible (finding N3).
 Recorded so the order is a decision rather than an accident.
 
 1. Per-material dispatch and compaction — the architecture itself.
-2. SER in `extend` on supporting hardware.
-3. Shadow-ray batching depth (one queue per bounce vs. per frame).
-4. Ray differentials and texture LOD. Untextured-LOD path tracing thrashes the
+2. Shadow-ray batching depth (one queue per bounce vs. per frame).
+3. Ray differentials and texture LOD. Untextured-LOD path tracing thrashes the
    texture cache on minified surfaces; this is usually a larger win than it
    sounds.
-5. Light BVH for many-light scenes, replacing uniform light selection.
-6. Sort granularity — full counting sort vs. partial separation of the most
+4. Light BVH for many-light scenes, replacing uniform light selection.
+5. Sort granularity — full counting sort vs. partial separation of the most
    expensive materials.
 
 Each is measured on the gallery before and after, with the numbers recorded in
