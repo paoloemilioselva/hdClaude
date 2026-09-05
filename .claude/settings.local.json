@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/paolo/Desktop/code/hdCodex/**)",
+      "Read(//c/Users/paolo/Desktop/code/hdCodex/docs/**)",
+      "Read(//c/Users/paolo/Desktop/code/hdCodex/gallery/**)",
+      "Read(//c/Users/paolo/Desktop/code//**)",
+      "Read(//c/Users/paolo/Desktop/code/**)"
+    ]
+  }
+}

@@ -1,0 +1,53 @@
+# ---------------------------------------------------------------------------
+# Build output
+# ---------------------------------------------------------------------------
+/build/
+/out/
+/install/
+/.vs/
+/.vscode/
+/CMakeUserPresets.json
+*.user
+*.suo
+*.pdb
+*.ilk
+*.obj
+*.exe
+
+# ---------------------------------------------------------------------------
+# External dependencies.
+#
+# Nothing under _deps/ is committed. Every dependency is *referenced* by a
+# pinned URL/tag in cmake/Dependencies.cmake (CMake FetchContent) so a fresh
+# clone reproduces the exact same tree with `compile.bat` or a CMake configure.
+# Proprietary SDKs (NVIDIA DLSS) are fetched by the same mechanism and are
+# likewise never committed.
+# ---------------------------------------------------------------------------
+/_deps/
+/deps/
+
+# ---------------------------------------------------------------------------
+# Runtime caches and generated images
+# ---------------------------------------------------------------------------
+/shader-cache/
+/.cache/
+*.exr
+
+# Gallery baselines are versioned JPEGs. Intermediate/diagnostic PNGs are not,
+# with the exception of committed source textures used by gallery scenes.
+*.png
+!gallery/textures/*.png
+
+# ---------------------------------------------------------------------------
+# Secrets. Never commit credentials or API keys.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+*.key
+*.pem
+
+# ---------------------------------------------------------------------------
+# Python helpers
+# ---------------------------------------------------------------------------
+__pycache__/
+*.pyc
