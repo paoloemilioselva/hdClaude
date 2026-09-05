@@ -11,7 +11,7 @@ REM
 REM Overrides, all optional, all honoured if already set:
 REM   USDROOT                 OpenUSD install root
 REM   USDEXTRA                install prefix for hdClaude's own plugin
-REM   HDCLAUDE_VULKAN_SDK     Vulkan SDK root providing validation layers
+REM   HDCLAUDE_VALIDATION_LAYER_DIR  directory holding the validation layer
 REM   HDCLAUDE_DLSS_SDK       NVIDIA DLSS SDK root
 REM   HDCLAUDE_SKIP_PYTHON    set to 1 to skip the Python conformance check
 REM ===========================================================================
@@ -110,23 +110,40 @@ SET "PYTHONPATH=%USDROOT%\lib\python;%USDEXTRA%\lib\python;%PYTHONPATH%"
 SET "PATH=%USDROOT%\bin;%USDEXTRA%\bin;%USDROOT%\lib;%USDEXTRA%\lib;%PATH%"
 
 REM ---------------------------------------------------------------------------
-REM 4. Vulkan SDK - validation layers and glslang tooling.
-REM     Dependencies are fetched into _deps by CMake and are not committed;
-REM     see cmake\Dependencies.cmake. A copy-only SDK provides layers without
-REM     system registration, so VK_LAYER_PATH is set explicitly.
+REM 4. Vulkan validation layer.
+REM     Validation is a gate, not a convenience: the GPU tests fail without it
+REM     (docs\lessons-from-hdcodex.md R8). The layer is built from source into
+REM     _deps by CMake and is never committed; see cmake\ValidationLayers.cmake.
+REM     A source-built or copy-only layer has no system registration, so
+REM     VK_LAYER_PATH is set explicitly.
+REM
+REM     Search order: an explicit override, the source-built layer, a
+REM     copy-only SDK under _deps, then a system SDK.
 REM ---------------------------------------------------------------------------
-IF DEFINED HDCLAUDE_VULKAN_SDK GOTO have_vulkan_sdk
-FOR /D %%D IN ("%HDCLAUDE_ROOT%\_deps\vulkan-sdk-*") DO (
-  IF EXIST "%%~D\Bin\VkLayer_khronos_validation.json" SET "HDCLAUDE_VULKAN_SDK=%%~D"
-)
-IF NOT DEFINED HDCLAUDE_VULKAN_SDK IF DEFINED VULKAN_SDK (
-  IF EXIST "%VULKAN_SDK%\Bin\VkLayer_khronos_validation.json" SET "HDCLAUDE_VULKAN_SDK=%VULKAN_SDK%"
+IF DEFINED HDCLAUDE_VALIDATION_LAYER_DIR GOTO have_validation_layer
+
+IF EXIST "%HDCLAUDE_ROOT%\_deps\validation-layers\install\bin\VkLayer_khronos_validation.json" (
+  SET "HDCLAUDE_VALIDATION_LAYER_DIR=%HDCLAUDE_ROOT%\_deps\validation-layers\install\bin"
+  GOTO have_validation_layer
 )
 
-:have_vulkan_sdk
-IF DEFINED HDCLAUDE_VULKAN_SDK IF EXIST "%HDCLAUDE_VULKAN_SDK%\Bin\VkLayer_khronos_validation.json" (
-  SET "VK_LAYER_PATH=%HDCLAUDE_VULKAN_SDK%\Bin;%VK_LAYER_PATH%"
-  SET "PATH=%HDCLAUDE_VULKAN_SDK%\Bin;%PATH%"
+FOR /D %%D IN ("%HDCLAUDE_ROOT%\_deps\vulkan-sdk-*") DO (
+  IF EXIST "%%~D\Bin\VkLayer_khronos_validation.json" (
+    SET "HDCLAUDE_VULKAN_SDK=%%~D"
+    SET "HDCLAUDE_VALIDATION_LAYER_DIR=%%~D\Bin"
+  )
+)
+IF NOT DEFINED HDCLAUDE_VALIDATION_LAYER_DIR IF DEFINED VULKAN_SDK (
+  IF EXIST "%VULKAN_SDK%\Bin\VkLayer_khronos_validation.json" (
+    SET "HDCLAUDE_VULKAN_SDK=%VULKAN_SDK%"
+    SET "HDCLAUDE_VALIDATION_LAYER_DIR=%VULKAN_SDK%\Bin"
+  )
+)
+
+:have_validation_layer
+IF DEFINED HDCLAUDE_VALIDATION_LAYER_DIR IF EXIST "%HDCLAUDE_VALIDATION_LAYER_DIR%\VkLayer_khronos_validation.json" (
+  SET "VK_LAYER_PATH=%HDCLAUDE_VALIDATION_LAYER_DIR%;%VK_LAYER_PATH%"
+  SET "PATH=%HDCLAUDE_VALIDATION_LAYER_DIR%;%PATH%"
 )
 
 REM ---------------------------------------------------------------------------

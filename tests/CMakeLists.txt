@@ -24,8 +24,18 @@ if(HDCLAUDE_ENABLE_VULKAN)
   add_test(NAME gpu COMMAND hdClaudeGpuTests)
 
   # Validation is a gate, not a console message (docs/lessons-from-hdcodex.md
-  # R8). The test binary enables the layer itself and fails on a nonzero error
-  # count; this makes that explicit for anyone reading the test definition.
-  set_tests_properties(gpu PROPERTIES
-      ENVIRONMENT "HDCLAUDE_ENABLE_VULKAN_VALIDATION=1")
+  # R8). The test binary enables the layer and fails both on a nonzero error
+  # count and when the layer is unavailable, so the environment is pointed at
+  # whichever layer the configure located or built.
+  set(_gpu_test_env "HDCLAUDE_ENABLE_VULKAN_VALIDATION=1")
+  if(HDCLAUDE_VALIDATION_LAYER_DIR)
+    list(APPEND _gpu_test_env "VK_LAYER_PATH=${HDCLAUDE_VALIDATION_LAYER_DIR}")
+  endif()
+  set_tests_properties(gpu PROPERTIES ENVIRONMENT "${_gpu_test_env}")
+
+  # The layer must exist before the test runs, so the test binary depends on
+  # the external build rather than relying on build order by accident.
+  if(TARGET hdClaudeValidationLayers)
+    add_dependencies(hdClaudeGpuTests hdClaudeValidationLayers)
+  endif()
 endif()

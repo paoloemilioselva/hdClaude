@@ -10,6 +10,58 @@ result. An entry is added whenever a design document has to be corrected.
 
 ---
 
+## 2026-09-05 — The validation layer is a dependency, so it is built like one
+
+**Expected.** The Khronos validation layer would be a developer's local Vulkan
+SDK install, discovered if present.
+
+**Actually true.** That does not hold here, because validation is a *gate*: the
+GPU tests fail without the layer, by design. A dependency that a test suite
+cannot run without is not an optional local install — it is a dependency, and
+leaving it out of the build meant a fresh clone could not run its own tests.
+
+**Changed.** `Vulkan-ValidationLayers` is now built from source like everything
+else: pinned to the same `vulkan-sdk-*` tag as Vulkan-Headers, volk, and
+glslang, built into the gitignored dependency tree, never committed. Opt-in via
+`HDCLAUDE_BUILD_VALIDATION_LAYERS` or the `dev-validation` preset, because the
+first build is long — roughly four minutes on this workstation, incremental
+afterwards.
+
+`ExternalProject` rather than `FetchContent`, for two reasons. The layers
+configure their own dependency set (SPIRV-Headers, SPIRV-Tools) through
+`UPDATE_DEPS`, so using their known-good revisions avoids pinning a second set
+that could disagree with theirs. And they set enough CMake globals that
+`add_subdirectory` would leak configuration into hdClaude's own targets.
+
+Discovery order is now: an explicit `HDCLAUDE_VALIDATION_LAYER_DIR`, the
+source-built tree, a copy-only SDK under `_deps`, then a system `VULKAN_SDK`.
+Whatever is found is passed to the GPU test as `VK_LAYER_PATH` by CTest, so the
+tests need no manual environment. When nothing is found the configure summary
+says `Validation layer ... NOT FOUND (GPU tests will fail)`, rather than letting
+it surface later as a puzzling test result.
+
+Verified both directions: `ctest` passes with the layer auto-discovered and no
+manual environment, and the test binary run without `VK_LAYER_PATH` refuses and
+names the fix.
+
+---
+
+## 2026-09-05 — Batch files silently lost their CRLF endings
+
+Editing the `.bat` files with tools that write LF left them with Unix line
+endings. `cmd.exe` requires CRLF in batch files: labels and `GOTO` break, and
+the failure is a cascade of "'...' is not recognized as an internal or external
+command" for fragments of the file's own text, which does not obviously point at
+line endings.
+
+`.gitattributes` already declares `*.bat text eol=crlf`, so a fresh clone is
+correct and only the local working tree was affected — which is the worse case,
+because the problem is invisible in review while breaking the machine it was
+edited on. All `.bat` files are normalised, and this is worth re-checking after
+any bulk edit of them.
+
+---
+
 ## 2026-09-05 — The `surface` node builds ClosureData, and builds it for a rasteriser
 
 **Expected.** Overriding the `pbrlib` closure nodes plus a generator subclass

@@ -333,8 +333,10 @@ int main()
                      "FAIL: Vulkan validation was requested but the Khronos "
                      "validation layer is not available, so the validation "
                      "gate below would pass without checking anything.\n"
-                     "      Install the Vulkan SDK, or set HDCLAUDE_VULKAN_SDK "
-                     "to one. See docs/building.md.\n");
+                     "      Build it from source with 'compile.bat "
+                     "dev-validation', or configure with\n"
+                     "      -DHDCLAUDE_BUILD_VALIDATION_LAYERS=ON. "
+                     "See docs/building.md.\n");
         return 1;
     }
 

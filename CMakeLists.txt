@@ -19,6 +19,8 @@ option(HDCLAUDE_BUILD_HYDRA_PLUGIN "Build the OpenUSD Hydra render delegate" ON)
 option(HDCLAUDE_ENABLE_VULKAN      "Build the Vulkan ray-query GPU backend" ON)
 option(HDCLAUDE_ENABLE_MATERIALX   "Build the MaterialX genglsl_pt shader generator" ON)
 option(HDCLAUDE_ENABLE_DLSS        "Build the optional NVIDIA DLSS reconstruction backend" OFF)
+option(HDCLAUDE_BUILD_VALIDATION_LAYERS
+       "Build the Khronos Vulkan validation layers from source" OFF)
 option(HDCLAUDE_WARNINGS_AS_ERRORS "Treat hdClaude compiler warnings as errors" OFF)
 
 set(HDCLAUDE_OPENUSD_ROOT "$ENV{USDROOT}" CACHE PATH
@@ -75,6 +77,46 @@ add_subdirectory(src/core)
 
 if(HDCLAUDE_ENABLE_VULKAN)
   include(Dependencies)
+
+  # ---------------------------------------------------------------------------
+  # Validation layers.
+  #
+  # Validation is a gate, not a convenience: the GPU tests fail without it
+  # (docs/lessons-from-hdcodex.md R8). So the layer is located here, and if it
+  # cannot be located the configure says exactly how to obtain it rather than
+  # letting the failure surface later as a puzzling test failure.
+  #
+  # Search order: an explicit override, an already-built source tree, a
+  # discovered SDK. Building from source is opt-in because it is a long build.
+  # ---------------------------------------------------------------------------
+  set(HDCLAUDE_VALIDATION_LAYER_DIR "" CACHE PATH
+      "Directory containing VkLayer_khronos_validation.json")
+
+  if(HDCLAUDE_BUILD_VALIDATION_LAYERS)
+    include(ValidationLayers)
+  elseif(NOT HDCLAUDE_VALIDATION_LAYER_DIR)
+    foreach(_candidate
+            "$ENV{HDCLAUDE_VULKAN_SDK}/Bin"
+            "$ENV{VULKAN_SDK}/Bin"
+            "$ENV{VULKAN_SDK}/bin"
+            "${HDCLAUDE_DEPS_DIR}/validation-layers/install/bin")
+      if(NOT HDCLAUDE_VALIDATION_LAYER_DIR AND
+         EXISTS "${_candidate}/VkLayer_khronos_validation.json")
+        set(HDCLAUDE_VALIDATION_LAYER_DIR "${_candidate}" CACHE PATH "" FORCE)
+      endif()
+    endforeach()
+  endif()
+
+  if(HDCLAUDE_VALIDATION_LAYER_DIR AND NOT HDCLAUDE_BUILD_VALIDATION_LAYERS)
+    message(STATUS "hdClaude: validation layer found at ${HDCLAUDE_VALIDATION_LAYER_DIR}")
+  elseif(NOT HDCLAUDE_BUILD_VALIDATION_LAYERS)
+    message(STATUS
+        "hdClaude: no Vulkan validation layer found. The GPU tests will fail "
+        "without one, by design. Configure with "
+        "-DHDCLAUDE_BUILD_VALIDATION_LAYERS=ON to build it from source, or set "
+        "VULKAN_SDK / HDCLAUDE_VALIDATION_LAYER_DIR. See docs/building.md.")
+  endif()
+
   add_subdirectory(src/gpu)
 endif()
 
@@ -120,5 +162,14 @@ message(STATUS "  Hydra plugin ....... ${HDCLAUDE_BUILD_HYDRA_PLUGIN}")
 message(STATUS "  Vulkan backend ..... ${HDCLAUDE_ENABLE_VULKAN}")
 message(STATUS "  MaterialX genglsl_pt ${HDCLAUDE_ENABLE_MATERIALX}")
 message(STATUS "  NVIDIA DLSS ........ ${HDCLAUDE_ENABLE_DLSS}")
+if(HDCLAUDE_ENABLE_VULKAN)
+  if(HDCLAUDE_BUILD_VALIDATION_LAYERS)
+    message(STATUS "  Validation layer ... building from source")
+  elseif(HDCLAUDE_VALIDATION_LAYER_DIR)
+    message(STATUS "  Validation layer ... ${HDCLAUDE_VALIDATION_LAYER_DIR}")
+  else()
+    message(STATUS "  Validation layer ... NOT FOUND (GPU tests will fail)")
+  endif()
+endif()
 message(STATUS "  Testing ............ ${BUILD_TESTING}")
 message(STATUS "")

@@ -17,14 +17,24 @@ of third-party or proprietary code.
 | volk | CMake `FetchContent` | `HDCLAUDE_VULKAN_SDK_TAG` |
 | VulkanMemoryAllocator | CMake `FetchContent` | `HDCLAUDE_VMA_TAG` |
 | glslang | CMake `FetchContent` | `HDCLAUDE_VULKAN_SDK_TAG` |
+| Vulkan-ValidationLayers | CMake `ExternalProject`, opt-in | `HDCLAUDE_VULKAN_SDK_TAG` |
 | NVIDIA DLSS SDK | CMake `FetchContent`, optional | `HDCLAUDE_DLSS_TAG` |
 | **OpenUSD** | **external prebuilt install** | discovered by `setup_usd_env.bat` |
 | MaterialX | from inside the OpenUSD distribution | — |
 | OpenSubdiv | from inside the OpenUSD distribution | — |
 
-Vulkan-Headers, volk, and glslang are held at the same Vulkan SDK release tag so
-that headers, loader metadata, and the SPIR-V compiler cannot disagree about
-what Vulkan 1.3 and SPIR-V 1.6 mean.
+Vulkan-Headers, volk, glslang, and the validation layers are held at the same
+Vulkan SDK release tag, so the headers, the loader metadata, the SPIR-V
+compiler, and the layer that validates our use of all three cannot disagree
+about what Vulkan 1.3 and SPIR-V 1.6 mean.
+
+The validation layers use `ExternalProject` rather than `FetchContent` because
+they configure their own dependency set (SPIRV-Headers, SPIRV-Tools) through
+`UPDATE_DEPS`, and they set enough CMake globals that `add_subdirectory` would
+leak configuration into hdClaude's own targets. `ExternalProject` gives them a
+separate configure, a separate build, and an install prefix that
+`VK_LAYER_PATH` can point at. Their known-good SPIRV-Tools revision is used
+rather than a second set of pins that could disagree with theirs.
 
 MaterialX and OpenSubdiv come from **inside** the OpenUSD distribution rather
 than being fetched separately. Two MaterialX copies in one process is an ODR
@@ -74,21 +84,36 @@ cmake --preset dev -DFETCHCONTENT_FULLY_DISCONNECTED=ON
    `VK_KHR_acceleration_structure`, `VK_KHR_buffer_device_address`,
    `VK_KHR_deferred_host_operations`, and descriptor indexing.
 
-5. **The Vulkan SDK**, for validation layers. Optional to build and render;
-   **required to run the GPU tests**. `setup_usd_env.bat` finds one under
-   `_deps/`, or falls back to a system `VULKAN_SDK`.
-
-   The GPU test does not merely warn when the layer is missing — it **fails**,
-   naming the missing dependency. A validation gate whose layer is absent
-   passes against a counter nothing can increment, which is lesson R8
-   reproduced inside the fix for R8. See
+5. **The Vulkan validation layer.** Optional to build and render; **required
+   to run the GPU tests**, which fail rather than warn when it is absent. A
+   validation gate whose layer is missing passes against a counter nothing can
+   increment — lesson R8 reproduced inside the fix for R8, see
    [implementation-notes.md](implementation-notes.md).
+
+   Nothing needs to be installed by hand. Build it from source like every other
+   dependency:
+
+   ```bat
+   compile.bat dev-validation
+   ```
+
+   or configure any preset with `-DHDCLAUDE_BUILD_VALIDATION_LAYERS=ON`. It is
+   opt-in because it is a long first build — SPIRV-Tools dominates — and
+   incremental afterwards.
+
+   The configure locates a layer in this order: an explicit
+   `HDCLAUDE_VALIDATION_LAYER_DIR`, an already-built `_deps` tree, then a
+   system `VULKAN_SDK`. Whatever it finds is passed to the GPU test as
+   `VK_LAYER_PATH`, so an installed SDK works without the source build. If it
+   finds nothing, the configure says so and says how to fix it, rather than
+   letting the failure surface later as a puzzling test result.
 
 ## Building
 
 ```bat
 compile.bat core-only      :: dependency-free core and its tests; no GPU, no USD
 compile.bat                :: the full delegate ("dev" preset)
+compile.bat dev-validation :: the full delegate, building the validation layer
 compile.bat dev-dlss       :: with the optional NVIDIA DLSS backend
 compile.bat clean          :: remove the build tree, then build "dev"
 ```
@@ -132,7 +157,13 @@ one recorded in `pxrConfig.cmake`. The message prints both, plus the recorded
 interpreter path. Activate a matching environment, or set
 `HDCLAUDE_SKIP_PYTHON=1` if the task does not use the Python bindings.
 
-**A dependency fetch fails.** Check network access, or populate `_deps/` from
+**"Validation layer ... NOT FOUND" in the configure summary.** The GPU tests
+will fail, by design. Either build the layer from source
+(`-DHDCLAUDE_BUILD_VALIDATION_LAYERS=ON`) or point
+`HDCLAUDE_VALIDATION_LAYER_DIR` at a directory containing
+`VkLayer_khronos_validation.json`.
+
+**A dependency fetch fails. Check network access, or populate `_deps/` from
 another machine and configure with `FETCHCONTENT_FULLY_DISCONNECTED=ON`. A DLSS
 fetch failure is not an error: the feature turns itself off and the build
 continues, because DLSS is never a requirement of the default build.

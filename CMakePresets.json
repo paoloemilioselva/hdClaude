@@ -1,6 +1,10 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
   "configurePresets": [
     {
       "name": "dev",
@@ -24,20 +28,63 @@
       }
     },
     {
+      "name": "dev-validation",
+      "displayName": "Developer build with the validation layer built from source",
+      "inherits": "dev",
+      "binaryDir": "${sourceDir}/build/dev-validation",
+      "cacheVariables": {
+        "HDCLAUDE_BUILD_VALIDATION_LAYERS": "ON"
+      }
+    },
+    {
       "name": "dev-dlss",
       "displayName": "Developer build with NVIDIA DLSS",
       "inherits": "dev",
       "binaryDir": "${sourceDir}/build/dev-dlss",
-      "cacheVariables": { "HDCLAUDE_ENABLE_DLSS": "ON" }
+      "cacheVariables": {
+        "HDCLAUDE_ENABLE_DLSS": "ON"
+      }
     }
   ],
   "buildPresets": [
-    { "name": "dev", "configurePreset": "dev" },
-    { "name": "core-only", "configurePreset": "core-only" },
-    { "name": "dev-dlss", "configurePreset": "dev-dlss" }
+    {
+      "name": "dev",
+      "configurePreset": "dev"
+    },
+    {
+      "name": "core-only",
+      "configurePreset": "core-only"
+    },
+    {
+      "name": "dev-validation",
+      "configurePreset": "dev-validation"
+    },
+    {
+      "name": "dev-dlss",
+      "configurePreset": "dev-dlss"
+    }
   ],
   "testPresets": [
-    { "name": "dev", "configurePreset": "dev", "output": { "outputOnFailure": true } },
-    { "name": "core-only", "configurePreset": "core-only", "output": { "outputOnFailure": true } }
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "core-only",
+      "configurePreset": "core-only",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "dev-validation",
+      "configurePreset": "dev-validation",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
   ]
 }
