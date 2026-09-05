@@ -849,3 +849,54 @@ transmissive material that goes dark at the depth limit reads as a shading bug.
 computation, and both were invisible to tests that check magnitudes. A closure
 that documents an ordering requirement -- read the side before you flip -- is
 stating a precondition its caller can violate silently.
+
+---
+
+## 2026-09-06 — Textures, and why they are bindless
+
+**The collision that forced the design.** MaterialX's stock Vulkan binding
+context emits the public uniform block and every sampler into **set 0**, at
+bindings it counts from zero. Set 0 is the path state. So every generated
+material -- textured or not -- declared `layout(std140, binding=1) uniform
+PublicUniforms_pixel` on top of `pathOrigin`, a storage buffer. It never
+faulted only because that block is dead once SHADER_INTERFACE_REDUCED has baked
+the values, and a textured material put a `sampler2D` on top of
+`pathDirection`, which is the lost device recorded above.
+
+**What replaced it.** `PathTracerShaderGenerator::emitUniforms` claims no
+descriptors at all:
+
+- a sampler uniform becomes `#define <name> hdclaude_textures[i]`, an index
+  into one shared array, so the stock `mx_image_*.glsl` files work unchanged --
+  `texture(name, uv)` still expands to a sampler expression;
+- a value uniform becomes a plain global at its default, because nothing reads
+  it after the values are baked and it needs no storage.
+
+**Local indices, shared pool.** The generator numbers each material's samplers
+from zero, so two materials both use index 0 for different images. Each
+material's descriptor set is therefore written with its own image array, mapped
+through `CompiledMaterial::textureSlots` into a scene-wide pool that holds each
+distinct image once. Local numbering keeps the generator independent of the
+scene; the pool keeps one image one upload.
+
+**Where the array is declared.** In the generated material, not in
+`path_state.glsl`. The shade kernel is *appended* to the material, so anything
+`path_state.glsl` declares arrives hundreds of lines after the material body
+that samples it. That produced `'hdclaude_textures' : undeclared identifier`
+and is worth remembering as a general property of this pipeline: the material
+comes first, and anything the material needs must be emitted by the generator.
+
+**Resolving the path.** `hdMtlx` writes the *authored* asset path into the
+document -- it calls `SdfAssetPath::GetAssetPath` -- so `../maps/uvgrid.exr`
+stays relative and no resolver can anchor it afterwards. The resolved path
+lives in the Hydra network, where USD anchored it against the authoring layer.
+The two are joined by reproducing the name rather than pattern-matching it:
+hdMtlx names a MaterialX node `HdMtlxCreateNameFromPath(hdNodePath)`, which is
+the path's last element, and MaterialX names a sampler after its node and
+input. Both halves are public API.
+
+**Unused slots are written.** Every element of the array gets the magenta
+placeholder rather than being left undefined. An undefined descriptor is
+undefined behaviour the instant a shader indexes it, and on this driver that is
+a lost device rather than a wrong pixel -- so an out-of-range index in
+generated code should show up as obvious magenta.

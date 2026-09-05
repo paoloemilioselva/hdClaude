@@ -221,6 +221,23 @@ VkDescriptorSet ComputePipeline::AllocateSet()
     return set;
 }
 
+void ComputePipeline::WriteSampledImageArray(
+    VkDescriptorSet set, std::uint32_t binding,
+    const std::vector<VkDescriptorImageInfo>& images) const
+{
+    if (images.empty() || _context == nullptr) {
+        return;
+    }
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet = set;
+    write.dstBinding = binding;
+    write.dstArrayElement = 0;
+    write.descriptorCount = static_cast<std::uint32_t>(images.size());
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = images.data();
+    vkUpdateDescriptorSets(_context->Device(), 1, &write, 0, nullptr);
+}
+
 void ComputePipeline::ResetSets()
 {
     if (_pool == VK_NULL_HANDLE || _context == nullptr ||

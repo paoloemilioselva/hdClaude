@@ -124,6 +124,7 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
 void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
 {
     _store = std::make_unique<HdClaudeSceneStore>();
+    _texturePool = std::make_unique<HdClaudeTexturePool>();
     _resourceRegistry = std::make_shared<HdResourceRegistry>();
 
     // Seed the defaults for anything the host did not set, so a
@@ -177,7 +178,7 @@ void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
     }
 
     _renderParam = std::make_unique<HdClaudeRenderParam>(
-        _store.get(), _materialCompiler.get());
+        _store.get(), _materialCompiler.get(), _texturePool.get());
 }
 
 const TfTokenVector& HdClaudeRenderDelegate::GetSupportedRprimTypes() const
@@ -401,7 +402,11 @@ VtDictionary HdClaudeRenderDelegate::GetRenderStats() const
     // the console. A renderer that quietly substitutes a material and mentions
     // it once at startup is a renderer whose output cannot be trusted later.
     if (_store) {
-        const std::vector<std::string> reports = _store->FallbackReports();
+        std::vector<std::string> reports = _store->FallbackReports();
+        if (_texturePool) {
+            const std::vector<std::string>& failures = _texturePool->Failures();
+            reports.insert(reports.end(), failures.begin(), failures.end());
+        }
         if (!reports.empty()) {
             VtStringArray asArray(reports.begin(), reports.end());
             stats["materialFallbacks"] = VtValue(asArray);

@@ -10,9 +10,13 @@
 
 #include "pxr/base/gf/vec3f.h"
 #include "pxr/base/tf/diagnostic.h"
+#include "pxr/base/tf/getenv.h"
 #include "pxr/imaging/hd/tokens.h"
 #include "pxr/imaging/hdMtlx/hdMtlx.h"
 
+#include <filesystem>
+#include <map>
+#include <fstream>
 #include <utility>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -35,46 +39,76 @@ bool IsMaterialXSurface(const TfToken& nodeType)
            name == "UsdPreviewSurface_to_MaterialX";
 }
 
-/// Names the texture-sampling uniforms a generated shader declares.
+/// The asset path behind a generated texture uniform.
 ///
-/// hdClaude does not bind texture descriptors yet, and a compute pipeline whose
-/// shader samples an unbound descriptor does not draw something wrong -- it
-/// faults the device. So a material that needs textures is refused here, by
-/// name, rather than compiled into a pipeline that takes the GPU down on its
-/// first dispatch.
+/// The generator names its samplers after the MaterialX node and input they
+/// came from -- `mtlximage1_file` for the `file` input of node `mtlximage1` --
+/// so the document is searched for the input whose variable name the generator
+/// used. Going back to the document rather than trusting the uniform's baked
+/// default matters because hdMtlx resolves asset paths as it builds it.
+/// Resolved asset paths, keyed by the uniform name the generator will produce.
 ///
-/// Checked against the generated shader's own uniform blocks rather than
-/// against the Hydra network, because what matters is what the generated code
-/// actually reads.
-std::vector<std::string> TextureUniforms(const mx::ShaderPtr& shader)
+/// hdMtlx writes the *authored* asset path into the document -- it calls
+/// SdfAssetPath::GetAssetPath -- so a relative path stays relative and no
+/// resolver can anchor it afterwards. The Hydra network is where the resolved
+/// path lives, because USD resolved it against the layer that authored it.
+///
+/// The join is not a guess: hdMtlx names a MaterialX node
+/// HdMtlxCreateNameFromPath(hdNodePath), which is the path's last element, and
+/// MaterialX names a sampler uniform after its node and input. Both halves are
+/// public API, so this reproduces the name rather than pattern-matching it.
+std::map<std::string, std::string> ResolvedTexturePaths(
+    const HdMaterialNetwork2& network, const HdMtlxTexturePrimvarData& mxHdData)
 {
-    std::vector<std::string> names;
-    const mx::ShaderStage& stage = shader->getStage(mx::Stage::PIXEL);
-    for (const auto& [blockName, block] : stage.getUniformBlocks()) {
-        if (!block) {
+    std::map<std::string, std::string> resolved;
+    for (const SdfPath& texturePath : mxHdData.hdTextureNodes) {
+        const auto node = network.nodes.find(texturePath);
+        if (node == network.nodes.end()) {
             continue;
         }
-        for (std::size_t i = 0; i < block->size(); ++i) {
-            const mx::ShaderPort* port = (*block)[i];
-            if (port && port->getType() == mx::Type::FILENAME) {
-                names.push_back(port->getVariable());
+        const std::string mxNodeName = HdMtlxCreateNameFromPath(texturePath);
+        for (const auto& [parameter, value] : node->second.parameters) {
+            if (!value.IsHolding<SdfAssetPath>()) {
+                continue;
+            }
+            const SdfAssetPath& asset = value.UncheckedGet<SdfAssetPath>();
+            std::string path = asset.GetResolvedPath();
+            if (path.empty()) {
+                path = asset.GetAssetPath();
+            }
+            resolved[mx::createValidName(mxNodeName + "_" +
+                                         parameter.GetString())] = path;
+        }
+    }
+    return resolved;
+}
+
+std::string ResolveTexturePath(const mx::DocumentPtr& document,
+                               const std::string& uniformName)
+{
+    // The whole tree, not just the document's own children: hdMtlx wraps a
+    // material's pattern nodes in a nodegraph, so every <image> in a real
+    // asset is a grandchild rather than a child.
+    for (const mx::ElementPtr& element : document->traverseTree()) {
+        mx::NodePtr node = element ? element->asA<mx::Node>() : nullptr;
+        if (!node) {
+            continue;
+        }
+        for (const mx::InputPtr& input : node->getInputs()) {
+            if (input->getType() != "filename") {
+                continue;
+            }
+            // MaterialX builds the uniform name by joining the node and input
+            // names with an underscore, after replacing characters GLSL cannot
+            // take. Comparing on that join is what ties the two together.
+            const std::string candidate =
+                mx::createValidName(node->getName() + "_" + input->getName());
+            if (candidate == uniformName) {
+                return input->getResolvedValueString();
             }
         }
     }
-    return names;
-}
-
-/// Join a handful of names for a diagnostic.
-std::string JoinNames(const std::vector<std::string>& names)
-{
-    std::string joined;
-    for (std::size_t i = 0; i < names.size(); ++i) {
-        if (i > 0) {
-            joined += ", ";
-        }
-        joined += names[i];
-    }
-    return joined;
+    return std::string();
 }
 
 }  // namespace
@@ -93,11 +127,9 @@ HdClaudeMaterialCompiler::HdClaudeMaterialCompiler(std::string shadeKernel)
 
 hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
     mx::DocumentPtr document, const std::string& name, std::string* error,
-    bool* unsupported)
+    std::vector<std::string>* texturePaths,
+    const std::map<std::string, std::string>* resolvedTextures)
 {
-    if (unsupported) {
-        *unsupported = false;
-    }
     // Caller holds _mutex: this touches the shared library document, the
     // generator, and glslang, none of which are thread-safe.
     hdclaude::CompiledMaterial result;
@@ -130,22 +162,50 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
             return result;
         }
 
-        const std::vector<std::string> textures = TextureUniforms(shader);
-        if (!textures.empty()) {
-            if (unsupported) {
-                *unsupported = true;
-            }
-            if (error) {
-                *error = "the material samples textures (" +
-                         JoinNames(textures) +
-                         "), which hdClaude does not bind yet; shaded with "
-                         "displayColor instead";
-            }
-            return result;
+        const std::string generated = shader->getSourceCode(mx::Stage::PIXEL);
+
+        // HDCLAUDE_DUMP_SHADERS=<dir> writes every generated material there,
+        // before the support checks, so a material that is refused can still
+        // be read. Generated code is the one artefact in this pipeline nobody
+        // ever sees unless it fails to compile, and by then the compiler
+        // message is about a symbol rather than about what was generated.
+        if (const std::string dumpDir = TfGetenv("HDCLAUDE_DUMP_SHADERS");
+            !dumpDir.empty()) {
+            std::error_code code;
+            std::filesystem::create_directories(dumpDir, code);
+            std::ofstream out(std::filesystem::path(dumpDir) /
+                              (name + ".comp.glsl"));
+            out << generated;
         }
 
-        const std::string source =
-            shader->getSourceCode(mx::Stage::PIXEL) + _shadeKernel;
+        // The textures this material samples, in the order the generator
+        // assigned their array indices. The caller loads them and publishes
+        // them at those indices; the generator is the authority on the order,
+        // so the two cannot drift apart.
+        if (texturePaths) {
+            if (auto* ptGenerator =
+                    dynamic_cast<hdclaude::PathTracerShaderGenerator*>(
+                        generator.get())) {
+                for (const std::string& uniform : ptGenerator->TextureOrder()) {
+                    // The network's resolved path first; the document's
+                    // authored one only when the network had nothing, which
+                    // happens for a material hdClaude built itself.
+                    std::string path;
+                    if (resolvedTextures) {
+                        const auto found = resolvedTextures->find(uniform);
+                        if (found != resolvedTextures->end()) {
+                            path = found->second;
+                        }
+                    }
+                    if (path.empty()) {
+                        path = ResolveTexturePath(document, uniform);
+                    }
+                    texturePaths->push_back(path);
+                }
+            }
+        }
+
+        const std::string source = generated + _shadeKernel;
 
         hdclaude::GlslCompileOptions options;
         options.moduleName = name;
@@ -266,11 +326,13 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::Compile(
     }
 
     mx::DocumentPtr document;
+    std::map<std::string, std::string> resolvedTextures;
     try {
         HdMtlxTexturePrimvarData mxHdData;
         document = HdMtlxCreateMtlxDocumentFromHdNetwork(
             network, terminalNode->second, terminalPath, path, _libraries,
             &mxHdData);
+        resolvedTextures = ResolvedTexturePaths(network, mxHdData);
     } catch (const std::exception& error) {
         result.fallbackReason =
             std::string("could not build a MaterialX document: ") + error.what();
@@ -286,19 +348,16 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::Compile(
     }
 
     std::string error;
-    bool unsupported = false;
-    result.material = CompileDocument(document, name, &error, &unsupported);
+    result.material = CompileDocument(document, name, &error,
+                                      &result.texturePaths, &resolvedTextures);
     if (result.material.spirv.empty()) {
         // A material that fails to compile names itself, the prim, and the
         // compiler message. It is not silently replaced with something that
-        // looks plausible. A material hdClaude simply cannot run yet is
-        // reported by the prim as a fallback instead -- it is a known gap, not
-        // a defect, and raising it as an error here would bury the real ones.
+        // looks plausible.
         result.fallbackReason = error;
-        if (!unsupported) {
-            TF_RUNTIME_ERROR("hdClaude: material <%s> did not compile: %s",
-                             path.GetText(), error.c_str());
-        }
+        result.texturePaths.clear();
+        TF_RUNTIME_ERROR("hdClaude: material <%s> did not compile: %s",
+                         path.GetText(), error.c_str());
         lock.unlock();
         result.material = CompileDiffuse(fallbackColor, name + "_fallback");
     }

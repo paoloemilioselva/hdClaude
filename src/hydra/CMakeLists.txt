@@ -22,6 +22,7 @@ add_library(hdClaude MODULE
     render_pass.cpp
     renderer_plugin.cpp
     scene_store.cpp
+    texture_loader.cpp
 )
 
 target_include_directories(hdClaude PRIVATE
@@ -35,9 +36,11 @@ target_link_libraries(hdClaude
         hdClaude::Core
         hdClaude::Gpu
         hdClaude::MaterialX
+        ar
         hd
         hdMtlx
         hf
+        hio
         plug
         pxOsd
         sdf

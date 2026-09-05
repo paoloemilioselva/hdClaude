@@ -185,13 +185,23 @@ void HdClaudeRenderPass::_Execute(
     // --- Scene upload ----------------------------------------------------------
     if (!_hasUploaded || _uploadedRevision != framing.sceneRevision) {
         std::vector<hdclaude::CompiledMaterial> materials;
-        const hdclaude::Scene scene = store->Snapshot(materials);
+        hdclaude::Scene scene = store->Snapshot(materials);
+
+        // The texture pool is the delegate's, not the store's: it is filled
+        // during material Sync and is shared by every material that names the
+        // same image, so it is copied into the snapshot here rather than
+        // duplicated per material.
+        if (HdClaudeTexturePool* pool = _renderDelegate->TexturePool()) {
+            scene.textures = pool->Images();
+        }
         HdClaudeTrace("snapshot: %zu prototypes, %zu instances, %zu triangles, "
-                      "%zu materials, %zu lights, environment %.3f %.3f %.3f%s",
+                      "%zu materials, %zu lights, %zu textures, "
+                      "environment %.3f %.3f %.3f%s",
                       scene.prototypes.size(), scene.instances.size(),
                       scene.TotalTriangles(), materials.size(),
-                      scene.lights.size(), scene.environmentColor[0],
-                      scene.environmentColor[1], scene.environmentColor[2],
+                      scene.lights.size(), scene.textures.size(),
+                      scene.environmentColor[0], scene.environmentColor[1],
+                      scene.environmentColor[2],
                       scene.hasDomeLight ? " (dome light)" : "");
         std::copy(std::begin(scene.environmentColor),
                   std::end(scene.environmentColor), std::begin(_environmentColor));

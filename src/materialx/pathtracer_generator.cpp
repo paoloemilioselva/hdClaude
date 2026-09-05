@@ -250,6 +250,93 @@ bool PathTracerShaderGenerator::nodeNeedsClosureData(const ShaderNode& node) con
            node.hasClassification(ShaderNode::Classification::SURFACE);
 }
 
+void PathTracerShaderGenerator::emitUniforms(GenContext& context,
+                                             ShaderStage& stage) const
+{
+    _textureOrder.clear();
+
+    // The array is declared here, in the material itself, rather than in
+    // path_state.glsl. The shade kernel is *appended* to the generated
+    // material, so anything path_state.glsl declares comes after the code that
+    // uses it -- the material body samples its textures hundreds of lines
+    // before the include would land. No other kernel samples a texture, and a
+    // shader need not declare every binding its layout contains.
+    size_t textureCount = 0;
+    for (const auto& entry : stage.getUniformBlocks())
+    {
+        const VariableBlock& uniforms = *entry.second;
+        if (uniforms.getName() == HW::LIGHT_DATA)
+        {
+            continue;
+        }
+        for (ShaderPort* uniform : uniforms.getVariableOrder())
+        {
+            if (uniform->getType() == Type::FILENAME)
+            {
+                ++textureCount;
+            }
+        }
+    }
+
+    if (textureCount > 0)
+    {
+        emitComment("Shared texture array; see shaders/path_state.glsl", stage);
+        emitLine("layout(set = 0, binding = 16) uniform sampler2D "
+                 "hdclaude_textures[" + std::to_string(kTextureCapacity) + "]",
+                 stage);
+        emitLineBreak(stage);
+    }
+
+    for (const auto& entry : stage.getUniformBlocks())
+    {
+        const VariableBlock& uniforms = *entry.second;
+        if (uniforms.empty() || uniforms.getName() == HW::LIGHT_DATA)
+        {
+            continue;
+        }
+
+        emitComment("Uniform block " + uniforms.getName() +
+                        ", declared without descriptors",
+                    stage);
+
+        for (ShaderPort* uniform : uniforms.getVariableOrder())
+        {
+            if (uniform->getType() == Type::FILENAME)
+            {
+                // An index into the shared array, not a descriptor of its own.
+                // `texture(name, uv)` in the stock mx_image_* implementations
+                // then expands to a lookup in the array with no change to
+                // those files.
+                const size_t index = _textureOrder.size();
+                _textureOrder.push_back(uniform->getVariable());
+                emitLine("#define " + uniform->getVariable() +
+                             " hdclaude_textures[" + std::to_string(index) + "]",
+                         stage, false);
+                continue;
+            }
+
+            // A plain global at its default value. Nothing reads these once
+            // SHADER_INTERFACE_REDUCED has baked the values a node uses, but
+            // the declarations must exist for the generated code to compile.
+            emitLineBegin(stage);
+            emitVariableDeclaration(uniform, EMPTY_STRING, context, stage, true);
+            emitString(Syntax::SEMICOLON, stage);
+            emitLineEnd(stage, false);
+        }
+        emitLineBreak(stage);
+    }
+
+    if (_textureOrder.size() > kTextureCapacity)
+    {
+        throw mx::ExceptionShaderGenError(
+            "This material declares " + std::to_string(_textureOrder.size()) +
+            " textures; hdClaude's shared array holds " +
+            std::to_string(kTextureCapacity) +
+            ". Raise kTextureCapacity in pathtracer_generator.h and "
+            "kHdClaudeTextureCapacity in shaders/path_state.glsl together.");
+    }
+}
+
 void PathTracerShaderGenerator::emitInputs(GenContext& context,
                                            ShaderStage& stage) const
 {

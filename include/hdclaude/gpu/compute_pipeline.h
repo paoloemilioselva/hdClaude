@@ -89,6 +89,16 @@ class ComputePipeline {
                            const VulkanImage& image,
                            VkImageLayout layout = VK_IMAGE_LAYOUT_GENERAL) const;
 
+    /// Fill a sampled-image array binding, one write for the whole array.
+    ///
+    /// Every element is written, including the unused tail: a descriptor that
+    /// is declared but never written is undefined behaviour the moment a
+    /// shader indexes it, and an out-of-range index in generated code is
+    /// exactly the sort of thing that should produce a wrong pixel rather than
+    /// a lost device.
+    void WriteSampledImageArray(VkDescriptorSet set, std::uint32_t binding,
+                                const std::vector<VkDescriptorImageInfo>& images) const;
+
     /// Bind and dispatch. `groups` is the workgroup count, not the thread
     /// count -- the kernel's own `local_size` decides the rest.
     void Dispatch(VkCommandBuffer command, VkDescriptorSet set,

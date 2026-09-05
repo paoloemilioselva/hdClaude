@@ -22,6 +22,8 @@
 // MaterialX 1.39.3 header layout -- the version inside OpenUSD 26.03. 1.39.6
 // moved the hardware-generator pieces into MaterialXGenHw and renamed
 // SurfaceNodeGlsl to HwSurfaceNode; see docs/implementation-notes.md.
+#include "hdclaude/gpu/scene.h"
+
 #include <MaterialXGenGlsl/GlslShaderGenerator.h>
 #include <MaterialXGenGlsl/Nodes/SurfaceNodeGlsl.h>
 #include <MaterialXGenGlsl/VkShaderGenerator.h>
@@ -148,11 +150,45 @@ class PathTracerShaderGenerator : public mx::VkShaderGenerator {
     /// fills, not as a rasteriser's interpolated stage connectors. The block
     /// MaterialX already computed is emitted as that struct, so the material
     /// declares exactly the geometry it uses and nothing more.
+    /// Emit the material's uniforms without claiming a descriptor binding.
+    ///
+    /// The stock Vulkan binding context puts the public uniform block and every
+    /// sampler into set 0 at bindings it counts from zero -- straight on top of
+    /// the path state, which owns set 0. Two things follow.
+    ///
+    /// Sampler uniforms become indices into one shared texture array rather
+    /// than separate descriptors: `#define <name> hdclaude_textures[i]`. One
+    /// array is bound for the whole scene, so adding a texture never changes a
+    /// pipeline layout, and the index is baked into the material that uses it.
+    ///
+    /// Value uniforms become plain globals initialised to their defaults.
+    /// SHADER_INTERFACE_REDUCED has already baked every value a node reads, so
+    /// the block exists only to satisfy declarations and needs no storage.
+    void emitUniforms(mx::GenContext& context, mx::ShaderStage& stage) const override;
+
+  public:
+    /// Texture uniform names, in the order their array indices were assigned.
+    ///
+    /// The caller needs this to know which image belongs at which index, and
+    /// taking it from the generator rather than re-deriving it from the shader
+    /// means the two orderings cannot drift apart.
+    const std::vector<std::string>& TextureOrder() const { return _textureOrder; }
+
+  protected:
+
     void emitInputs(mx::GenContext& context, mx::ShaderStage& stage) const override;
 
     /// A compute stage has no pixel outputs. Results leave through the ABI.
     void emitOutputs(mx::GenContext& context, mx::ShaderStage& stage) const override;
+
+  private:
+    /// Filled during emitUniforms, which is const because MaterialX's emission
+    /// interface is. One generator serves one generate() call, so this is the
+    /// texture order of the material just produced.
+    mutable std::vector<std::string> _textureOrder;
 };
+
+
 
 /// Name of the generated struct carrying interpolated geometry into shading.
 inline constexpr const char* kSurfaceHitStruct = "SurfaceHit";

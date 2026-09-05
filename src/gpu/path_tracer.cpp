@@ -49,6 +49,18 @@ std::vector<BindingDescription> KernelBindings()
 
     bindings.push_back(storage(14, "instances"));
     bindings.push_back(storage(15, "lights"));
+
+    // The shared texture array. Every kernel carries the binding because every
+    // kernel shares one descriptor set layout, even though only `shade` reads
+    // it; a layout that varied per kernel would mean a descriptor set per
+    // kernel rather than one written identically for all of them.
+    BindingDescription textures;
+    textures.binding = 16;
+    textures.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    textures.count = kTextureCapacity;
+    textures.debugName = "hdclaude_textures";
+    bindings.push_back(textures);
+
     return bindings;
 }
 
@@ -228,9 +240,145 @@ PathTracer::PathTracer(const VulkanContext& context, VulkanAllocator& allocator,
     _film = build("film.comp.glsl", 0);
 
     _accelerator = std::make_unique<SceneAccelerator>(context, allocator);
+
+    // --- Texture sampling ----------------------------------------------------
+    // One sampler for every texture. Per-texture wrap and filter modes are a
+    // MaterialX image-node parameter, and honouring them needs either a
+    // sampler per combination or the address handling moved into the shader;
+    // that choice is recorded in docs/roadmap.md rather than guessed at. Repeat
+    // addressing and linear filtering are what an authored texture almost
+    // always wants, and are what the stock mx_image_* defaults assume.
+    VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
+    context.Check(vkCreateSampler(context.Device(), &samplerInfo, nullptr, &_sampler),
+                  "vkCreateSampler(textures)");
+
+    // A one-pixel placeholder for every unused slot. Opaque magenta rather than
+    // black or white: a material that samples a texture hdClaude failed to load
+    // should look obviously wrong rather than plausibly dark.
+    TextureImage placeholder;
+    placeholder.width = 1;
+    placeholder.height = 1;
+    placeholder.rgba = {255, 0, 255, 255};
+    placeholder.debugName = "texture.placeholder";
+    _placeholderTexture = UploadTexture(placeholder);
+
+    UploadTextures({});
 }
 
-PathTracer::~PathTracer() = default;
+PathTracer::~PathTracer()
+{
+    // The sampler outlives every descriptor that referenced it only because
+    // this runs after the caller has waited on all work; the context's
+    // device-lost latch is honoured by skipping the wait, never the destroy.
+    if (_sampler != VK_NULL_HANDLE) {
+        vkDestroySampler(_context.Device(), _sampler, nullptr);
+        _sampler = VK_NULL_HANDLE;
+    }
+}
+
+VulkanImage PathTracer::UploadTexture(const TextureImage& texture)
+{
+    ImageDescription description;
+    description.width = texture.width;
+    description.height = texture.height;
+    // sRGB decode in hardware rather than in the shader. MaterialX generates
+    // no linearisation of its own -- it assumes the sampler returns linear --
+    // so doing it here is what makes an authored colour map mean what it says.
+    description.format = texture.srgb ? VK_FORMAT_R8G8B8A8_SRGB
+                                      : VK_FORMAT_R8G8B8A8_UNORM;
+    description.usage =
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    description.debugName = texture.debugName;
+
+    VulkanImage image(_allocator, description);
+
+    const VkDeviceSize size =
+        static_cast<VkDeviceSize>(texture.rgba.size());
+    BufferDescription staging;
+    staging.size = size;
+    staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    staging.domain = BufferDomain::HostUpload;
+    staging.debugName = texture.debugName + ".staging";
+    VulkanBuffer upload(_allocator, staging);
+    upload.Write(texture.rgba.data(), size);
+
+    _context.SubmitImmediate([&](VkCommandBuffer command) {
+        image.RecordBarrier(command, VK_IMAGE_LAYOUT_UNDEFINED,
+                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                            VK_PIPELINE_STAGE_2_COPY_BIT, 0,
+                            VK_ACCESS_2_TRANSFER_WRITE_BIT);
+
+        VkBufferImageCopy region{};
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent = {texture.width, texture.height, 1};
+        vkCmdCopyBufferToImage(command, upload.Handle(), image.Handle(),
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+        image.RecordBarrier(command, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                            VK_PIPELINE_STAGE_2_COPY_BIT,
+                            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    });
+
+    return image;
+}
+
+void PathTracer::UploadTextures(const std::vector<TextureImage>& textures)
+{
+    _texturePool.clear();
+    _texturePool.reserve(textures.size());
+    for (const TextureImage& texture : textures) {
+        if (!texture.Valid()) {
+            // A texture that failed to decode still occupies its pool slot, so
+            // every material's slot table keeps pointing at the right
+            // neighbours. The slot resolves to the placeholder.
+            _texturePool.push_back(VulkanImage());
+            continue;
+        }
+        _texturePool.push_back(UploadTexture(texture));
+    }
+}
+
+std::vector<VkDescriptorImageInfo> PathTracer::TextureBindingsFor(
+    int material) const
+{
+    // Every element is written, the unused tail included. A declared
+    // descriptor that is never written is undefined the moment a shader
+    // indexes it, and an out-of-range index in generated code should give a
+    // wrong pixel rather than a lost device.
+    std::vector<VkDescriptorImageInfo> bindings(kTextureCapacity);
+
+    const std::vector<std::uint32_t>* slots = nullptr;
+    if (material >= 0 &&
+        static_cast<std::size_t>(material) < _materialTextureSlots.size()) {
+        slots = &_materialTextureSlots[static_cast<std::size_t>(material)];
+    }
+
+    for (std::uint32_t i = 0; i < kTextureCapacity; ++i) {
+        VkImageView view = _placeholderTexture.View();
+        if (slots != nullptr && i < slots->size()) {
+            const std::uint32_t pool = (*slots)[i];
+            if (pool < _texturePool.size() && _texturePool[pool].Valid()) {
+                view = _texturePool[pool].View();
+            }
+        }
+        bindings[i].sampler = _sampler;
+        bindings[i].imageView = view;
+        bindings[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+    return bindings;
+}
 
 void PathTracer::SetScene(const Scene& scene,
                           const std::vector<CompiledMaterial>& materials)
@@ -311,16 +459,22 @@ void PathTracer::SetScene(const Scene& scene,
         _lightCount = static_cast<std::uint32_t>(scene.lights.size());
     }
 
+    // --- Textures ------------------------------------------------------------
+    UploadTextures(scene.textures);
+
     // --- Shading pipelines --------------------------------------------------
     // One per material. Each is that material's generated program joined to the
     // shade kernel, so the dispatch contains only that material's code.
     const std::vector<BindingDescription> bindings = KernelBindings();
     _shade.clear();
     _shade.reserve(materials.size());
+    _materialTextureSlots.clear();
+    _materialTextureSlots.reserve(materials.size());
     for (const CompiledMaterial& material : materials) {
         _shade.push_back(ComputePipeline(_context, material.spirv, bindings,
                                          sizeof(std::uint32_t),
                                          "shade." + material.debugName));
+        _materialTextureSlots.push_back(material.textureSlots);
     }
 }
 
@@ -381,7 +535,7 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
 }
 
 void PathTracer::WriteDescriptors(VkDescriptorSet set,
-                                  const ComputePipeline& pipeline)
+                                  const ComputePipeline& pipeline, int material)
 {
     pipeline.WriteBuffer(set, 0, _frameUniforms, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
     pipeline.WriteBuffer(set, 1, _origin);
@@ -413,6 +567,7 @@ void PathTracer::WriteDescriptors(VkDescriptorSet set,
 
     pipeline.WriteBuffer(set, 14, _instanceTable);
     pipeline.WriteBuffer(set, 15, _lightTable);
+    pipeline.WriteSampledImageArray(set, 16, TextureBindingsFor(material));
 }
 
 std::vector<float> PathTracer::Render(std::uint32_t width, std::uint32_t height,
@@ -463,7 +618,9 @@ std::vector<float> PathTracer::Render(std::uint32_t width, std::uint32_t height,
     WriteDescriptors(shadowSet, _shadow);
     WriteDescriptors(filmSet, _film);
     for (std::size_t i = 0; i < _shade.size(); ++i) {
-        WriteDescriptors(shadeSets[i], _shade[i]);
+        // Each material's set carries its own textures, which is what lets the
+        // generator number a material's samplers from zero.
+        WriteDescriptors(shadeSets[i], _shade[i], static_cast<int>(i));
     }
 
     // Clear the film once; samples accumulate into it. A progressive caller

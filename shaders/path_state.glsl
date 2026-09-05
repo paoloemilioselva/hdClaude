@@ -165,6 +165,29 @@ layout(set = 0, binding = 15, scalar) readonly buffer LightTable {
     Light values[];
 } lights;
 
+// --- Textures ---------------------------------------------------------------
+//
+// One shared array for the whole scene rather than a descriptor per material.
+// A generated material refers to its images by index -- the generator emits
+// `#define <sampler> hdclaude_textures[i]` -- so adding a texture changes no
+// pipeline layout, and the stock mx_image_* implementations are used unchanged
+// because `texture(name, uv)` still expands to a sampler expression.
+//
+// The capacity is fixed because every kernel shares one descriptor set layout
+// and that layout is built before any texture is known. It must match
+// kTextureCapacity in include/hdclaude/gpu/scene.h.
+//
+// Every slot is written, unused ones with a placeholder: an undefined
+// descriptor is undefined behaviour, and on this driver that is a lost device
+// rather than a wrong colour.
+//
+// The array itself is *not* declared here. The shade kernel is appended to a
+// generated material, so a declaration in this file would come hundreds of
+// lines after the material body that samples it. The generator emits the
+// declaration instead, and only for a material that has textures; no other
+// kernel samples one, and a shader need not declare every binding in its
+// layout.
+
 // --- Sampling ---------------------------------------------------------------
 
 // PCG hash, stateless: any dimension is reproducible from the seed without

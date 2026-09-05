@@ -18,10 +18,13 @@
 #include <MaterialXCore/Document.h>
 
 #include "pxr/imaging/hd/material.h"
+#include "pxr/usd/sdf/assetPath.h"
 #include "pxr/usd/sdf/path.h"
 
+#include <map>
 #include <mutex>
 #include <string>
+#include <vector>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -37,6 +40,10 @@ class HdClaudeMaterialCompiler {
         /// Empty when the authored network compiled. Otherwise says why it did
         /// not, in terms a user can act on.
         std::string fallbackReason;
+        /// Asset paths of the textures the material samples, in the order the
+        /// generator assigned their local indices. The caller loads these and
+        /// fills in `material.textureSlots`.
+        std::vector<std::string> texturePaths;
     };
 
     /// Compile a Hydra material network.
@@ -58,14 +65,14 @@ class HdClaudeMaterialCompiler {
   private:
     /// Generate and compile one MaterialX document.
     ///
-    /// `unsupported` distinguishes "hdClaude cannot run this material yet"
-    /// -- a known gap, reported as a fallback -- from "this material should
-    /// have worked and did not", which is an error. Collapsing the two would
-    /// either bury real failures or cry wolf about every textured asset.
-    hdclaude::CompiledMaterial CompileDocument(MaterialX::DocumentPtr document,
-                                               const std::string& name,
-                                               std::string* error,
-                                               bool* unsupported = nullptr);
+    /// `resolvedTextures` maps a generated sampler's uniform name to the
+    /// resolved asset path Hydra supplied, which is the only place a relative
+    /// path can still be anchored.
+    hdclaude::CompiledMaterial CompileDocument(
+        MaterialX::DocumentPtr document, const std::string& name,
+        std::string* error,
+        std::vector<std::string>* texturePaths = nullptr,
+        const std::map<std::string, std::string>* resolvedTextures = nullptr);
 
     /// Serialises generation and compilation.
     ///

@@ -135,6 +135,35 @@ struct Light {
     float area = 0.0f;
 };
 
+/// Slots in the shared texture array.
+///
+/// Fixed rather than sized to the scene, because every kernel shares one
+/// descriptor set layout and that layout is built before any texture is known.
+/// Must match kHdClaudeTextureCapacity in shaders/path_state.glsl; the
+/// MaterialX generator reads this constant so only those two can disagree.
+inline constexpr std::uint32_t kTextureCapacity = 128;
+
+/// One decoded texture, ready to upload.
+///
+/// Plain bytes with no image library in the interface: decoding belongs to the
+/// Hydra layer, which already has OpenUSD's image plugins, and the GPU layer
+/// stays free of both OpenUSD and any codec.
+struct TextureImage {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    /// Tightly packed RGBA8, `width * height * 4` bytes, top row first.
+    std::vector<std::uint8_t> rgba;
+    /// True if the bytes are sRGB-encoded and want hardware decode.
+    bool srgb = false;
+    std::string debugName;
+
+    bool Valid() const
+    {
+        return width > 0 && height > 0 &&
+               rgba.size() == static_cast<std::size_t>(width) * height * 4;
+    }
+};
+
 /// An immutable published scene.
 ///
 /// Published as a whole so the renderer never observes a half-updated scene.
@@ -145,6 +174,9 @@ struct Scene {
     std::vector<MeshPrototype> prototypes;
     std::vector<MeshInstance> instances;
     std::vector<Light> lights;
+
+    /// Textures, indexed by the array index a generated material refers to.
+    std::vector<TextureImage> textures;
 
     /// Radiance returned by a ray that leaves the scene. A dome light sets
     /// this; without one it is the stand-in sky.

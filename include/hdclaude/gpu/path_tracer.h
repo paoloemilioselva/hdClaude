@@ -66,6 +66,15 @@ struct RenderSettings {
 struct CompiledMaterial {
     std::vector<std::uint32_t> spirv;
     std::string debugName;
+
+    /// Where this material's textures live in the scene's texture pool.
+    ///
+    /// The generator numbers a material's samplers from zero, so index i in
+    /// the generated code means "this material's i-th texture". That local
+    /// index is resolved against this table when the material's descriptor set
+    /// is written, which is what lets two materials both use local index 0 for
+    /// different images while one pool holds each distinct image once.
+    std::vector<std::uint32_t> textureSlots;
 };
 
 /// Resolves `#include` directives in the kernel sources.
@@ -113,7 +122,15 @@ class PathTracer {
 
   private:
     void EnsureResolution(std::uint32_t width, std::uint32_t height);
-    void WriteDescriptors(VkDescriptorSet set, const ComputePipeline& pipeline);
+    void UploadTextures(const std::vector<TextureImage>& textures);
+    VulkanImage UploadTexture(const TextureImage& texture);
+
+    /// The image array a material's descriptor set should be written with.
+    /// `material` indexes the compiled materials; a negative index means a
+    /// kernel that never samples, which gets placeholders throughout.
+    std::vector<VkDescriptorImageInfo> TextureBindingsFor(int material) const;
+    void WriteDescriptors(VkDescriptorSet set, const ComputePipeline& pipeline,
+                          int material = -1);
 
     const VulkanContext& _context;
     VulkanAllocator& _allocator;
@@ -126,6 +143,14 @@ class PathTracer {
     std::uint32_t _instanceCount = 0;
     VulkanBuffer _lightTable;
     std::uint32_t _lightCount = 0;
+
+    // The scene's texture pool: each distinct image once, referred to by a
+    // material's textureSlots.
+    std::vector<VulkanImage> _texturePool;
+    VulkanImage _placeholderTexture;
+    VkSampler _sampler = VK_NULL_HANDLE;
+    /// Per-material texture slots, parallel to _shade.
+    std::vector<std::vector<std::uint32_t>> _materialTextureSlots;
 
     ComputePipeline _raygen;
     ComputePipeline _extend;

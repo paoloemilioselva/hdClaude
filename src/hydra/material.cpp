@@ -3,6 +3,7 @@
 #include "material_compiler.h"
 #include "render_param.h"
 #include "scene_store.h"
+#include "texture_loader.h"
 
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/imaging/hd/sceneDelegate.h"
@@ -51,6 +52,16 @@ void HdClaudeMaterial::Sync(HdSceneDelegate* sceneDelegate,
                 GfVec3f(0.5f, 0.5f, 0.5f));
         entry.compiled = std::move(compiled.material);
         entry.fallbackReason = std::move(compiled.fallbackReason);
+
+        // The generator numbered this material's samplers from zero; the pool
+        // turns each asset path into a slot shared with every other material
+        // that names the same image.
+        if (HdClaudeTexturePool* pool = param->TexturePool()) {
+            entry.compiled.textureSlots.reserve(compiled.texturePaths.size());
+            for (const std::string& assetPath : compiled.texturePaths) {
+                entry.compiled.textureSlots.push_back(pool->Acquire(assetPath));
+            }
+        }
     } else {
         entry.fallbackReason =
             "the material prim carries no HdMaterialNetworkMap";

@@ -4,6 +4,7 @@
 #include "material_compiler.h"
 #include "render_param.h"
 #include "scene_store.h"
+#include "texture_loader.h"
 
 #include "hdclaude/gpu/path_tracer.h"
 #include "hdclaude/gpu/vulkan_context.h"
@@ -71,6 +72,7 @@ class HDCLAUDE_API HdClaudeRenderDelegate final : public HdRenderDelegate {
 
     hdclaude::PathTracer* PathTracer() const { return _pathTracer.get(); }
     HdClaudeSceneStore* SceneStore() const { return _store.get(); }
+    HdClaudeTexturePool* TexturePool() const { return _texturePool.get(); }
 
     /// Why the renderer is not usable, or empty if it is. The render pass shows
     /// this rather than rendering a black frame with no explanation.
@@ -82,6 +84,7 @@ class HDCLAUDE_API HdClaudeRenderDelegate final : public HdRenderDelegate {
     void Initialize(const HdRenderSettingsMap& settingsMap);
 
     std::unique_ptr<HdClaudeSceneStore> _store;
+    std::unique_ptr<HdClaudeTexturePool> _texturePool;
     std::unique_ptr<HdClaudeMaterialCompiler> _materialCompiler;
     std::unique_ptr<HdClaudeRenderParam> _renderParam;
     HdResourceRegistrySharedPtr _resourceRegistry;
