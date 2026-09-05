@@ -371,10 +371,21 @@ The target is accepted when, on the gallery:
    `PT_SAMPLE`-produced direction is finite and nonzero. A combinator that
    reports a zero density for a direction one of its lobes can produce is an
    infinite path weight.
-5. Combinator mixture densities integrate to one over the sphere. This is the
-   test that catches the §4 mistake -- a combinator returning the selected
-   child's density instead of the mixture passes items 2 and 3 and fails this
-   one.
+5. For every closure and combinator, the reported density integrated over the
+   sphere **plus** the probability of sampling a direction the closure reports
+   zero density for comes to one.
+
+   The second term is not slack. A visible-normal sampler can reflect about a
+   microfacet tilted far enough that the result falls below the horizon, where
+   the closure cannot scatter; those samples are discarded with weight zero and
+   the estimator stays unbiased, but their probability mass is missing from the
+   integral. At roughness 0.8 that is 37% of samples, so the bare integral is
+   0.62 and entirely correct. See
+   [implementation-notes.md](implementation-notes.md).
+
+   This is still the test that catches the §4 mistake: a combinator returning
+   the selected child's density instead of the mixture passes items 2 and 3 and
+   fails this one.
 
 Items 2-5 are unit tests that run without a scene and without OpenUSD, and they
 gate every change to this target.
@@ -395,7 +406,9 @@ gate every change to this target.
 | glslang compilation and the SPIR-V cache | done |
 | **end-to-end: graph → GLSL → SPIR-V** | **done** |
 | all 22 pbrlib closure overrides | done |
-| the acceptance tests in §8 | not started |
+| compute pipeline and dispatch | done |
+| **the acceptance tests in §8, on the GPU** | **energy and density done** |
+| chi-squared sampling agreement (item 3) | not started |
 
 The override set is complete, and the surface shaders real assets use compile:
 

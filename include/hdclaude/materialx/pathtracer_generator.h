@@ -110,6 +110,18 @@ class PathTracerShaderGenerator : public mx::VkShaderGenerator {
 
     const mx::string& getTarget() const override { return TARGET; }
 
+    /// Generate, enforcing the options this target requires.
+    ///
+    /// `hwSpecularEnvironmentMethod`, `hwMaxActiveLightSources` and the rest are
+    /// not caller preferences here. A prefiltered environment, a light loop, a
+    /// shadow map and an ambient-occlusion map are all rasteriser state that a
+    /// path tracer supplies itself, and leaving any of them enabled emits
+    /// uniforms and samplers into the material's descriptor interface -- part of
+    /// the ABI -- that no kernel can fill. Forcing them here means a caller
+    /// cannot forget one.
+    mx::ShaderPtr generate(const mx::string& name, mx::ElementPtr element,
+                           mx::GenContext& context) const override;
+
     static const mx::string TARGET;
 
     /// Whether a node's generated function takes `closureData` as a parameter.
@@ -144,6 +156,14 @@ class PathTracerShaderGenerator : public mx::VkShaderGenerator {
 
 /// Name of the generated struct carrying interpolated geometry into shading.
 inline constexpr const char* kSurfaceHitStruct = "SurfaceHit";
+
+/// Name of the generated function that fills it.
+///
+/// The struct's members are whatever geometry the material actually reads, so
+/// they differ per material and a kernel cannot assign them by name. The
+/// generator emits this setter with exactly the assignments that apply, and
+/// every kernel calls it regardless of which material it was linked against.
+inline constexpr const char* kSurfaceHitSetter = "hdclaude_set_surface_hit";
 
 /// Search path the generator resolves `#include` directives against.
 ///

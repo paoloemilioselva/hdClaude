@@ -209,6 +209,39 @@ PathTracerShaderGenerator::PathTracerShaderGenerator(TypeSystemPtr typeSystem)
     // mtlx/pbrlib/genglsl_pt/lib/mx_closure_type.glsl.
 }
 
+ShaderPtr PathTracerShaderGenerator::generate(const string& name,
+                                              ElementPtr element,
+                                              GenContext& context) const
+{
+    GenOptions& options = context.getOptions();
+
+    // No prefiltered environment: the indirect closure branches that would use
+    // one are dropped, and leaving this enabled adds u_envMatrix,
+    // u_envRadiance, u_envIrradiance and their companions to the private
+    // uniform block for nothing to read.
+    options.hwSpecularEnvironmentMethod = SPECULAR_ENVIRONMENT_NONE;
+
+    // No light loop: a path tracer supplies its own light sample through
+    // closureData. Non-zero here also makes MaterialX emit light node
+    // implementations that construct their own ClosureData.
+    options.hwMaxActiveLightSources = 0;
+
+    // No rasteriser shadow or occlusion maps; visibility comes from shadow rays.
+    options.hwShadowMap = false;
+    options.hwAmbientOcclusion = false;
+
+    // Analytic directional albedo. The table and Monte Carlo variants both
+    // assume a rasteriser's environment, and the table adds two more uniforms.
+    options.hwDirectionalAlbedoMethod = DIRECTIONAL_ALBEDO_ANALYTIC;
+
+    // These generate whole alternative shaders, not materials.
+    options.hwWriteAlbedoTable = false;
+    options.hwWriteEnvPrefilter = false;
+    options.hwWriteDepthMoments = false;
+
+    return VkShaderGenerator::generate(name, element, context);
+}
+
 bool PathTracerShaderGenerator::nodeNeedsClosureData(const ShaderNode& node) const
 {
     // Everything upstream threads it through, plus shader and surface nodes.
@@ -239,8 +272,44 @@ void PathTracerShaderGenerator::emitInputs(GenContext& context,
 
             // Declared under the instance name the generated expressions use,
             // so `vd.normalWorld` resolves without rewriting any node output.
-            emitLine(string(kSurfaceHitStruct) + " " + vertexData.getInstance(),
-                     stage);
+            const string& instance = vertexData.getInstance();
+            emitLine(string(kSurfaceHitStruct) + " " + instance, stage);
+            emitLineBreak(stage);
+
+            // A setter with exactly the assignments this material needs.
+            //
+            // The struct's members depend on which geometry the material reads,
+            // so a kernel cannot assign them by name without knowing the
+            // material -- a diffuse-only material has no tangent, and writing
+            // one is a compile error. Emitting the setter here moves that
+            // knowledge to the only place that has it.
+            emitComment("Filled by the shade kernel; members vary by material", stage);
+            emitLine("void " + string(kSurfaceHitSetter) +
+                         "(vec3 P, vec3 N, vec3 T)",
+                     stage, false);
+            emitScopeBegin(stage);
+            for (std::size_t i = 0; i < vertexData.size(); ++i) {
+                const ShaderPort* port = vertexData[i];
+                const string& variable = port->getVariable();
+                if (variable == HW::T_POSITION_WORLD ||
+                    variable.find("positionWorld") != string::npos) {
+                    emitLine(instance + "." + variable + " = P", stage);
+                } else if (variable == HW::T_NORMAL_WORLD ||
+                           variable.find("normalWorld") != string::npos) {
+                    emitLine(instance + "." + variable + " = N", stage);
+                } else if (variable.find("tangentWorld") != string::npos) {
+                    emitLine(instance + "." + variable + " = T", stage);
+                } else if (variable.find("bitangentWorld") != string::npos) {
+                    emitLine(instance + "." + variable + " = cross(N, T)", stage);
+                } else {
+                    // Anything else -- texture coordinates, geomprops -- is the
+                    // kernel's to fill directly, because only it knows the value.
+                    emitLine(instance + "." + variable + " = " +
+                                 instance + "." + variable,
+                             stage);
+                }
+            }
+            emitScopeEnd(stage);
             emitLineBreak(stage);
         }
     }

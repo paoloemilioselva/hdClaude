@@ -141,18 +141,18 @@ layout(local_size_x = 64) in;
 
 void main()
 {
-    // Geometry the kernel would interpolate from the hit record.
-    vd.normalWorld = vec3(0.0, 0.0, 1.0);
-    vd.positionWorld = vec3(0.0);
-    vd.tangentWorld = vec3(1.0, 0.0, 0.0);
+    // Geometry the kernel would interpolate from the hit record. Assigned
+    // through the generated setter, because the SurfaceHit struct holds only
+    // the members this particular material reads.
+    hdclaude_set_surface_hit(vec3(0.0), vec3(0.0, 0.0, 1.0), vec3(1.0, 0.0, 0.0));
 
     // Per-invocation path state the closures read.
     hdclaude_wavelengths = vec4(450.0, 550.0, 600.0, 650.0);
     hdclaude_sample_u = vec3(0.31, 0.62, 0.47);
 
     vec3 V = normalize(vec3(0.0, 0.4, 1.0));
-    vec3 N = vd.normalWorld;
-    vec3 P = vd.positionWorld;
+    vec3 N = vec3(0.0, 0.0, 1.0);
+    vec3 P = vec3(0.0);
 
     // Pass 1: choose a direction.
     ClosureData sampleData =

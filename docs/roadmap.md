@@ -27,9 +27,9 @@ A blocked phase must name what blocks it.
 | --- | --- | --- | --- |
 | 0 | Repository, build system, environment, documentation | Complete | core-only preset builds and tests from clean; env script verified; 10 gallery stages open |
 | 1 | Core library: hashing, shader cache, spectral tables, display transform | In progress | hashing, shader cache, spectral sampling and sensor; 1222 checks pass |
-| 2 | Vulkan context, memory, resource rules, validation gate | In progress | context, allocator, buffers, images, generations, device-lost latch; 42 GPU checks pass with 0 validation errors on RTX 5060 Ti |
+| 2 | Vulkan context, memory, resource rules, validation gate | In progress | context, allocator, buffers, images, generations, device-lost latch, compute pipelines and dispatch; validation clean on RTX 5060 Ti |
 | 3 | Geometry pipeline: meshes, BLAS/TLAS, instancing, subdivision | Not started | - |
-| 4 | `genglsl_pt` MaterialX target: eval, sample, pdf, combinators | In progress | all 22 overrides done; `standard_surface` and `open_pbr_surface` generate and compile to SPIR-V. Remaining: the numerical acceptance tests |
+| 4 | `genglsl_pt` MaterialX target: eval, sample, pdf, combinators | In progress | all 22 overrides; `standard_surface` and `open_pbr_surface` compile; energy and probability-mass validated on GPU for 10 closures and combinators. Remaining: chi-squared agreement |
 | 5 | Wavefront integrator: queues, sort, per-material dispatch | Not started | - |
 | 6 | Spectral transport, lights, MIS, film | Not started | - |
 | 7 | Hydra delegate: adapters, render pass, AOVs, settings | Not started | - |
@@ -139,6 +139,7 @@ reversed.
 | 2026-09-05 | Single `BeginFrame(FrameDescription)` entry point | Independent setters caused five hdCodex findings ([lessons](lessons-from-hdcodex.md) C2) |
 | 2026-09-05 | CPU readback is the Hydra AOV adapter; interop is a later phase | No public OpenUSD API crosses a device boundary for a `VkImage`. Decided now because phases 11 and 17 both depend on the answer (hdCodex D1, which was never decided) |
 | 2026-09-05 | DLSS via NGX directly, not Streamline | A delegate does not own presentation, so Frame Generation and Reflex — Streamline's reason to exist — are out of scope |
+| 2026-09-05 | The density invariant includes discarded probability mass | A visible-normal sampler can produce directions below the horizon, which the closure cannot scatter into. The reported density integrates to one *minus* that mass, and asserting a bare integral of one would have driven a real bug into correct closures ([implementation-notes.md](implementation-notes.md)) |
 | 2026-09-05 | Shader and surface nodes thread `closureData` too | Replacing the surface node's calling convention means a shader *nodegraph* must pass it through, or its generated function references an undeclared identifier ([implementation-notes.md](implementation-notes.md)) |
 | 2026-09-05 | Subsurface and volume closures publish parameters; the integrator transports | A random walk and volumetric absorption happen along paths inside a medium, not at a surface. Mirrors MaterialX's own OSL target, which emits a closure and leaves transport to the renderer |
 | 2026-09-05 | MaterialX 1.39.3 is the version of record | It is what OpenUSD 26.03 ships and what hdClaude links; 1.39.6 differs in headers, closure signatures, throughput semantics, and helpers ([implementation-notes.md](implementation-notes.md)) |

@@ -9,6 +9,7 @@
 # ---------------------------------------------------------------------------
 
 add_library(hdClaudeGpu STATIC
+    compute_pipeline.cpp
     glsl_compiler.cpp
     vulkan_context.cpp
     vulkan_memory.cpp

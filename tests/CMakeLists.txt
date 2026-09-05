@@ -47,4 +47,24 @@ if(HDCLAUDE_ENABLE_MATERIALX)
   target_link_libraries(hdClaudeMaterialXTests PRIVATE hdClaude::MaterialX)
   target_include_directories(hdClaudeMaterialXTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   add_test(NAME materialx COMMAND hdClaudeMaterialXTests)
+
+  # The phase 4 acceptance gate: generate each closure, compile it with a
+  # validation kernel, and run it on the GPU. Asks whether the shading is
+  # *right*, where every other test asks whether it compiles.
+  add_executable(hdClaudeClosureValidationTests closure_validation_tests.cpp)
+  target_link_libraries(hdClaudeClosureValidationTests PRIVATE hdClaude::MaterialX)
+  target_include_directories(hdClaudeClosureValidationTests
+      PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_compile_definitions(hdClaudeClosureValidationTests PRIVATE
+      HDCLAUDE_VALIDATION_KERNEL="${CMAKE_CURRENT_SOURCE_DIR}/closure_validation.comp.glsl")
+  add_test(NAME closure_validation COMMAND hdClaudeClosureValidationTests)
+
+  set(_validation_env "HDCLAUDE_ENABLE_VULKAN_VALIDATION=1")
+  if(HDCLAUDE_VALIDATION_LAYER_DIR)
+    list(APPEND _validation_env "VK_LAYER_PATH=${HDCLAUDE_VALIDATION_LAYER_DIR}")
+  endif()
+  set_tests_properties(closure_validation PROPERTIES ENVIRONMENT "${_validation_env}")
+  if(TARGET hdClaudeValidationLayers)
+    add_dependencies(hdClaudeClosureValidationTests hdClaudeValidationLayers)
+  endif()
 endif()

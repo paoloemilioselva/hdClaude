@@ -10,6 +10,85 @@ result. An entry is added whenever a design document has to be corrected.
 
 ---
 
+## 2026-09-05 — A VNDF density does not integrate to one, and that is correct
+
+**Expected.** The acceptance test in `materialx-codegen.md` §8 said "combinator
+mixture densities integrate to one over the sphere". The first implementation
+asserted exactly that, and every GGX-based closure failed it:
+
+```
+conductor (roughness 0.8)   density 0.6246
+conductor (roughness 0.4)   density 0.8602
+dielectric                  density 0.9122
+```
+
+**Actually true.** The closures were right and the assertion was wrong. A
+visible-normal sampler reflects the view direction about a sampled microfacet
+normal, and on a rough surface that normal can be tilted far enough that the
+result lands *below the horizon*, where the closure cannot scatter. Those
+samples are discarded with weight zero and the estimator stays unbiased — but
+the probability mass they carry is exactly what is missing from the density
+integral.
+
+The arithmetic is unambiguous:
+
+| closure | density | discarded | sum |
+|---|---:|---:|---:|
+| conductor, roughness 0.8 | 0.6234 | 0.3749 | 0.9983 |
+| conductor, roughness 0.4 | 0.8607 | 0.1376 | 0.9984 |
+| dielectric | 0.9146 | 0.0836 | 0.9982 |
+| `mix(conductor, diffuse)` | 0.9292 | 0.0692 | 0.9984 |
+| `add(diffuse, conductor)` | 0.8990 | 0.0985 | 0.9975 |
+| `layer(dielectric, diffuse)` | 0.9959 | 0.0019 | 0.9978 |
+
+**Changed.** The invariant asserted is now
+
+    integral of the reported density  +  P(sampler yields a zero-density direction)  =  1
+
+which is what actually has to hold, and which a combinator reporting a selected
+child's density instead of the mixture still fails. §8 of the codegen document
+is corrected to state it that way.
+
+Worth keeping: a bare density integral of 0.62 looks catastrophic and is
+perfectly correct. The instinct to "fix" the closures at that point would have
+introduced a real bug to satisfy a wrong test.
+
+One residual limitation, recorded rather than hidden: the density integral is
+estimated by uniform sampling of the sphere, which is a poor estimator for a
+narrow lobe. At roughness 0.1 a GGX lobe covers about 1% of the sphere, so 1% of
+samples carry the whole integral and the measured sum is 0.94 rather than 1.00.
+Narrow lobes therefore get a looser tolerance, and the energy check — which
+importance samples, and so does not suffer this — is what constrains them.
+
+---
+
+## 2026-09-05 — The overflow that produced a plausible number
+
+Raising the validation sample count from 2^18 to 2^20 without lowering the
+fixed-point scale wrapped a 32-bit accumulator. The result was not obviously
+broken:
+
+```
+burley_diffuse   albedo 1.0056   ->   albedo 0.0056
+layer            albedo 1.0001   ->   albedo 0.0001
+```
+
+1.0056 × 2^20 × 4096 = 4.319e9 against a 4.295e9 limit, and the wrapped
+remainder divides back to exactly 0.0056. Two closures silently reported an
+albedo three orders of magnitude too low, and the *test still passed*, because
+an albedo below one is what the energy check is looking for.
+
+The bound is `scale × samples × mean < 2^32`, and its three terms drift
+independently as a test is tuned. So the host now checks the raw accumulators
+against three quarters of the range and fails on saturation, rather than relying
+on that arithmetic staying correct. The scale is documented with the bound
+beside it.
+
+A guard that detects the condition beats a comment asserting it cannot happen —
+the comment was already there, and was already wrong.
+
+---
+
 ## 2026-09-05 — Replacing the surface node changes who needs `closureData`
 
 **Expected.** Overriding the `surface` node so it evaluates against the caller's
