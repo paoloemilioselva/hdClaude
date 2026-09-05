@@ -18,6 +18,16 @@ if(HDCLAUDE_ENABLE_VULKAN)
   target_include_directories(hdClaudeGlslCompilerTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   add_test(NAME glsl_compiler COMMAND hdClaudeGlslCompilerTests)
 
+  # Geometry and traversal. Scenes are built programmatically, never read from
+  # USD: the GPU backend has no USD dependency and geometry reaches it only
+  # through the Scene struct the Hydra mesh adapter fills.
+  add_executable(hdClaudeGeometryTests geometry_tests.cpp)
+  target_link_libraries(hdClaudeGeometryTests PRIVATE hdClaude::Gpu)
+  target_include_directories(hdClaudeGeometryTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_compile_definitions(hdClaudeGeometryTests PRIVATE
+      HDCLAUDE_TRAVERSAL_KERNEL="${CMAKE_CURRENT_SOURCE_DIR}/traversal.comp.glsl")
+  add_test(NAME geometry COMMAND hdClaudeGeometryTests)
+
   add_executable(hdClaudeGpuTests gpu_tests.cpp)
   target_link_libraries(hdClaudeGpuTests PRIVATE hdClaude::Gpu)
   target_include_directories(hdClaudeGpuTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -32,11 +42,13 @@ if(HDCLAUDE_ENABLE_VULKAN)
     list(APPEND _gpu_test_env "VK_LAYER_PATH=${HDCLAUDE_VALIDATION_LAYER_DIR}")
   endif()
   set_tests_properties(gpu PROPERTIES ENVIRONMENT "${_gpu_test_env}")
+  set_tests_properties(geometry PROPERTIES ENVIRONMENT "${_gpu_test_env}")
 
   # The layer must exist before the test runs, so the test binary depends on
   # the external build rather than relying on build order by accident.
   if(TARGET hdClaudeValidationLayers)
     add_dependencies(hdClaudeGpuTests hdClaudeValidationLayers)
+    add_dependencies(hdClaudeGeometryTests hdClaudeValidationLayers)
   endif()
 endif()
 
