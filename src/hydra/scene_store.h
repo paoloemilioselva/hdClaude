@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <map>
 #include <mutex>
+#include <string>
 #include <vector>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -40,6 +41,21 @@ struct HdClaudeMaterialEntry {
     std::string fallbackReason;
 };
 
+/// A light as published by its Hydra prim.
+///
+/// A dome light is not an emitter in the light table: it supplies the radiance
+/// a ray sees on leaving the scene, which the environment kernel already
+/// returns. Keeping both cases in one entry means the store has a single map
+/// keyed by prim path, so removal and revision bumping do not have to know
+/// which kind a path was.
+struct HdClaudeLightEntry {
+    hdclaude::Light light;
+    bool isDome = false;
+    float environmentColor[3] = {0.0f, 0.0f, 0.0f};
+    /// What about this light is not honoured as authored, if anything.
+    std::string report;
+};
+
 /// Thread-safe accumulator and snapshot source.
 class HdClaudeSceneStore {
   public:
@@ -53,6 +69,9 @@ class HdClaudeSceneStore {
 
     /// True if a material prim of this path has been published.
     bool HasMaterial(const SdfPath& id) const;
+
+    void PublishLight(const SdfPath& id, HdClaudeLightEntry entry);
+    void RemoveLight(const SdfPath& id);
 
     // --- Consumption, from the render pass ------------------------------------
 
@@ -77,6 +96,7 @@ class HdClaudeSceneStore {
     mutable std::mutex _mutex;
     std::map<SdfPath, HdClaudeMeshEntry> _meshes;
     std::map<SdfPath, HdClaudeMaterialEntry> _materials;
+    std::map<SdfPath, HdClaudeLightEntry> _lights;
     hdclaude::CompiledMaterial _fallback;
     bool _hasFallback = false;
     std::uint64_t _revision = 1;

@@ -48,6 +48,7 @@ std::vector<BindingDescription> KernelBindings()
     bindings.push_back(tlas);
 
     bindings.push_back(storage(14, "instances"));
+    bindings.push_back(storage(15, "lights"));
     return bindings;
 }
 
@@ -64,6 +65,8 @@ struct FrameBlock {
     float aspect;
     std::uint32_t pathCount;
     std::uint32_t bounce;
+    std::uint32_t lightCount;
+    std::uint32_t pad0;
 };
 
 /// Mirrors InstanceGeometry in path_state.glsl.
@@ -278,6 +281,36 @@ void PathTracer::SetScene(const Scene& scene,
         });
     }
 
+    // --- Light table --------------------------------------------------------
+    // Always allocated, even when the scene has no lights: a descriptor set
+    // must point at a real buffer, and a null binding is a validation error
+    // rather than an empty table. The kernels read frame.lightCount, not the
+    // buffer's size, so a one-entry placeholder is never sampled.
+    {
+        const std::size_t count = std::max<std::size_t>(1, scene.lights.size());
+        const VkDeviceSize size = count * sizeof(Light);
+
+        BufferDescription staging;
+        staging.size = size;
+        staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        staging.domain = BufferDomain::HostUpload;
+        staging.debugName = "lightTable.staging";
+        VulkanBuffer upload(_allocator, staging);
+
+        std::vector<Light> table = scene.lights;
+        table.resize(count);
+        upload.Write(table.data(), size);
+
+        _lightTable = MakeStorage(_allocator, size, "lightTable");
+        _context.SubmitImmediate([&](VkCommandBuffer command) {
+            VkBufferCopy region{};
+            region.size = size;
+            vkCmdCopyBuffer(command, upload.Handle(), _lightTable.Handle(), 1,
+                            &region);
+        });
+        _lightCount = static_cast<std::uint32_t>(scene.lights.size());
+    }
+
     // --- Shading pipelines --------------------------------------------------
     // One per material. Each is that material's generated program joined to the
     // shade kernel, so the dispatch contains only that material's code.
@@ -379,6 +412,7 @@ void PathTracer::WriteDescriptors(VkDescriptorSet set,
     vkUpdateDescriptorSets(_context.Device(), 1, &write, 0, nullptr);
 
     pipeline.WriteBuffer(set, 14, _instanceTable);
+    pipeline.WriteBuffer(set, 15, _lightTable);
 }
 
 std::vector<float> PathTracer::Render(std::uint32_t width, std::uint32_t height,
@@ -456,6 +490,7 @@ std::vector<float> PathTracer::Render(std::uint32_t width, std::uint32_t height,
     block.tanHalfFov = camera.tanHalfFov;
     block.aspect = camera.aspect;
     block.pathCount = paths;
+    block.lightCount = _lightCount;
 
     const std::uint32_t pathGroups = (paths + 63) / 64;
     const std::uint32_t pixelGroupsX = (width + 7) / 8;

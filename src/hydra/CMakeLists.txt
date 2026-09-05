@@ -13,6 +13,7 @@
 
 add_library(hdClaude MODULE
     camera.cpp
+    light.cpp
     material.cpp
     material_compiler.cpp
     mesh.cpp
@@ -43,6 +44,7 @@ target_link_libraries(hdClaude
         tf
         trace
         usd
+        usdLux
         vt
 )
 

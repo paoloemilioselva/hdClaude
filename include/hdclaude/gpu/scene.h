@@ -81,6 +81,60 @@ struct MeshInstance {
     bool visible = true;
 };
 
+/// What kind of emitter a Light is. Mirrors `path_state.glsl`.
+enum class LightType : std::uint32_t {
+    /// Infinitely distant, an angular radius wide. UsdLuxDistantLight.
+    Distant = 0,
+    /// A sphere of `radius` at `position`. UsdLuxSphereLight.
+    Sphere = 1,
+    /// A rectangle spanned by `uAxis` and `vAxis`, emitting along `direction`.
+    /// UsdLuxRectLight.
+    Rect = 2,
+    /// A disk of `radius` in the plane normal to `direction`. UsdLuxDiskLight.
+    Disk = 3,
+};
+
+/// One analytic light.
+///
+/// Analytic rather than geometric: hdClaude's lights are not in the
+/// acceleration structure, so only next-event estimation finds them and there
+/// is no double counting to weigh away. That costs variance on glossy
+/// reflections of large area lights, which is the price of not needing MIS in
+/// the first implementation, and is recorded in docs/roadmap.md.
+///
+/// Field order and padding mirror the GLSL struct exactly. `scalar` layout
+/// packs a vec3 followed by a float into 16 bytes, which is why every vec3 here
+/// is followed by a scalar rather than by another vector.
+struct Light {
+    /// World-space centre. Unused by Distant.
+    float position[3] = {0.0f, 0.0f, 0.0f};
+    /// Sphere and disk radius, in world units.
+    float radius = 0.0f;
+
+    /// The direction the light emits *along*: USD's -Z of the light's
+    /// transform. A surface is lit from `-direction`.
+    float direction[3] = {0.0f, 0.0f, -1.0f};
+    /// Distant light angular radius, in radians.
+    float angularRadius = 0.0f;
+
+    /// Emitted radiance: colour * intensity * 2^exposure, already divided by
+    /// area when the light asked to be normalised.
+    float radiance[3] = {1.0f, 1.0f, 1.0f};
+    std::uint32_t type = static_cast<std::uint32_t>(LightType::Distant);
+
+    /// Half-extent along the rectangle's local X, in world space.
+    float uAxis[3] = {1.0f, 0.0f, 0.0f};
+    /// Whether this light is occluded by geometry. A light with shadows
+    /// disabled still needs a shadow ray slot, so this is a flag rather than a
+    /// separate list.
+    std::uint32_t castsShadows = 1;
+
+    /// Half-extent along the rectangle's local Y, in world space.
+    float vAxis[3] = {0.0f, 1.0f, 0.0f};
+    /// Surface area, for the area-to-solid-angle conversion. Zero for Distant.
+    float area = 0.0f;
+};
+
 /// An immutable published scene.
 ///
 /// Published as a whole so the renderer never observes a half-updated scene.
@@ -90,6 +144,15 @@ struct MeshInstance {
 struct Scene {
     std::vector<MeshPrototype> prototypes;
     std::vector<MeshInstance> instances;
+    std::vector<Light> lights;
+
+    /// Radiance returned by a ray that leaves the scene. A dome light sets
+    /// this; without one it is the stand-in sky.
+    float environmentColor[3] = {0.05f, 0.07f, 0.10f};
+    /// True once a dome light has supplied the environment, so the render pass
+    /// knows not to apply its stand-in on top.
+    bool hasDomeLight = false;
+
     std::uint64_t revision = 0;
 
     std::size_t TotalTriangles() const;

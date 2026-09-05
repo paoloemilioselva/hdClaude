@@ -187,9 +187,14 @@ void HdClaudeRenderPass::_Execute(
         std::vector<hdclaude::CompiledMaterial> materials;
         const hdclaude::Scene scene = store->Snapshot(materials);
         HdClaudeTrace("snapshot: %zu prototypes, %zu instances, %zu triangles, "
-                      "%zu materials",
+                      "%zu materials, %zu lights, environment %.3f %.3f %.3f%s",
                       scene.prototypes.size(), scene.instances.size(),
-                      scene.TotalTriangles(), materials.size());
+                      scene.TotalTriangles(), materials.size(),
+                      scene.lights.size(), scene.environmentColor[0],
+                      scene.environmentColor[1], scene.environmentColor[2],
+                      scene.hasDomeLight ? " (dome light)" : "");
+        std::copy(std::begin(scene.environmentColor),
+                  std::end(scene.environmentColor), std::begin(_environmentColor));
         try {
             tracer->SetScene(scene, materials);
             HdClaudeTrace("scene published");
@@ -217,7 +222,12 @@ void HdClaudeRenderPass::_Execute(
     hdclaude::RenderSettings settings;
     settings.maxBounces = maxBounces;
 
-    // Scale the stand-in sky and sun. Both default to 1, so this changes
+    // The environment the scene published: a dome light's radiance, or the
+    // stand-in sky when the stage has none.
+    std::copy(std::begin(_environmentColor), std::end(_environmentColor),
+              std::begin(settings.environmentColor));
+
+    // Scale the sky and the stand-in sun. Both default to 1, so this changes
     // nothing until a user asks it to.
     const float environmentIntensity = std::max(
         0.0f, _renderDelegate->GetRenderSetting<float>(

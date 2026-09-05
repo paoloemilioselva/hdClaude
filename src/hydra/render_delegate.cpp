@@ -1,6 +1,7 @@
 #include "render_delegate.h"
 
 #include "camera.h"
+#include "light.h"
 #include "material.h"
 #include "mesh.h"
 #include "render_buffer.h"
@@ -17,6 +18,7 @@
 #include "pxr/imaging/hd/resourceRegistry.h"
 #include "pxr/imaging/hd/tokens.h"
 
+#include <algorithm>
 #include <filesystem>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -35,11 +37,34 @@ const TfTokenVector kSupportedRprimTypes = {
     HdPrimTypeTokens->mesh,
 };
 
-const TfTokenVector kSupportedSprimTypes = {
-    HdPrimTypeTokens->camera,
-    HdPrimTypeTokens->material,
-    HdPrimTypeTokens->extComputation,
+/// Light types hdClaude samples. A type absent from this list is never created
+/// by Hydra, so an unsupported light is simply not in the scene rather than
+/// present and ignored.
+const TfTokenVector kSupportedLightTypes = {
+    HdPrimTypeTokens->rectLight,  HdPrimTypeTokens->diskLight,
+    HdPrimTypeTokens->sphereLight, HdPrimTypeTokens->distantLight,
+    HdPrimTypeTokens->domeLight,
 };
+
+TfTokenVector MakeSupportedSprimTypes()
+{
+    TfTokenVector types = {
+        HdPrimTypeTokens->camera,
+        HdPrimTypeTokens->material,
+        HdPrimTypeTokens->extComputation,
+    };
+    types.insert(types.end(), kSupportedLightTypes.begin(),
+                 kSupportedLightTypes.end());
+    return types;
+}
+
+const TfTokenVector kSupportedSprimTypes = MakeSupportedSprimTypes();
+
+bool IsSupportedLightType(const TfToken& type)
+{
+    return std::find(kSupportedLightTypes.begin(), kSupportedLightTypes.end(),
+                     type) != kSupportedLightTypes.end();
+}
 
 const TfTokenVector kSupportedBprimTypes = {
     HdPrimTypeTokens->renderBuffer,
@@ -245,6 +270,9 @@ HdSprim* HdClaudeRenderDelegate::CreateSprim(const TfToken& typeId,
         // in its bind pose.
         return new HdExtComputation(sprimId);
     }
+    if (IsSupportedLightType(typeId)) {
+        return new HdClaudeLight(typeId, sprimId);
+    }
     TF_WARN("hdClaude: unsupported sprim type <%s>", typeId.GetText());
     return nullptr;
 }
@@ -259,6 +287,9 @@ HdSprim* HdClaudeRenderDelegate::CreateFallbackSprim(const TfToken& typeId)
     }
     if (typeId == HdPrimTypeTokens->extComputation) {
         return new HdExtComputation(SdfPath::EmptyPath());
+    }
+    if (IsSupportedLightType(typeId)) {
+        return new HdClaudeLight(typeId, SdfPath::EmptyPath());
     }
     return nullptr;
 }

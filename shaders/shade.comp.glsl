@@ -167,40 +167,124 @@ void main()
     pathRadiance.values[path] += throughput * hdclaude_emission;
 
     // --- Next-event estimation ----------------------------------------------
-    // One sun sample. Evaluating the closure at the light direction yields both
-    // the response and the density in a single graph traversal, which is what
-    // the closure protocol was shaped to allow (docs/materialx-codegen.md 2).
-    vec3 sunDirection = normalize(frame.sunDirection.xyz);
-    if (dot(sunDirection, point.geometricNormal) > 0.0)
+    //
+    // One light per bounce, chosen uniformly. Evaluating the closure at the
+    // light direction yields both the response and the density in a single
+    // graph traversal, which is what the closure protocol was shaped to allow
+    // (docs/materialx-codegen.md 2).
+    //
+    // Choosing uniformly rather than by power is deliberate for now: a power
+    // heuristic needs a distribution rebuilt whenever a light changes, and
+    // getting that stale is a much subtler bug than the extra variance.
+    //
+    // No MIS. hdClaude's lights are analytic and absent from the acceleration
+    // structure, so a scattered ray cannot hit one and there is nothing to
+    // double count. Emissive *geometry* is found by the scattered ray and its
+    // emission is added on hit, above.
+    if (frame.lightCount > 0u)
     {
-        hdclaude_sample_u = vec3(hdclaude_random(rng), hdclaude_random(rng),
-                                 hdclaude_random(rng));
-        ClosureData lightData = ClosureData(CLOSURE_TYPE_REFLECTION, sunDirection,
-                                            V, point.shadingNormal,
-                                            point.position, 1.0);
-        hdclaude_material_shade(lightData);
+        uint lightIndex = min(uint(hdclaude_random(rng) * float(frame.lightCount)),
+                              frame.lightCount - 1u);
+        float selectionPdf = 1.0 / float(frame.lightCount);
 
-        // A delta closure has no finite response at any single direction, so
-        // next-event estimation contributes nothing and the scattered ray is
-        // what finds the light.
-        if (hdclaude_bsdf.isDelta < 0.5)
+        vec2 lightU = vec2(hdclaude_random(rng), hdclaude_random(rng));
+        LightSample lightSample =
+            hdclaude_sample_light(lightIndex, point.position, lightU);
+
+        if (lightSample.pdf > 0.0 &&
+            dot(lightSample.direction, point.geometricNormal) > 0.0)
         {
-            vec3 contribution = throughput * hdclaude_bsdf.response *
-                                frame.sunRadiance.rgb;
-            if (dot(contribution, contribution) > 0.0)
+            hdclaude_sample_u = vec3(hdclaude_random(rng), hdclaude_random(rng),
+                                     hdclaude_random(rng));
+            ClosureData lightData = ClosureData(CLOSURE_TYPE_REFLECTION,
+                                                lightSample.direction, V,
+                                                point.shadingNormal,
+                                                point.position, 1.0);
+            hdclaude_material_shade(lightData);
+
+            // A delta closure has no finite response at any single direction,
+            // so next-event estimation contributes nothing to it and the
+            // scattered ray is what finds the light.
+            if (hdclaude_bsdf.isDelta < 0.5)
             {
-                uint index = atomicAdd(counters.shadowCount, 1u);
-                if (index < frame.pathCount)
+                // The estimator, written out: the closure's response already
+                // carries the cosine -- every MaterialX reflection response
+                // does -- so what remains is the emitted radiance divided by
+                // the density of having chosen this direction, which is the
+                // light's solid-angle density times the chance of having
+                // picked this light.
+                vec3 contribution = throughput * hdclaude_bsdf.response *
+                                    lightSample.radiance /
+                                    (lightSample.pdf * selectionPdf);
+
+                if (dot(contribution, contribution) > 0.0)
                 {
-                    ShadowRay ray;
-                    ray.origin = hdclaude_offset_ray(point.position,
-                                                     point.geometricNormal);
-                    ray.direction = sunDirection;
-                    ray.contribution = contribution;
-                    ray.maxDistance = 1.0e30;
-                    ray.path = path;
-                    ray.pad0 = 0u; ray.pad1 = 0u; ray.pad2 = 0u;
-                    shadowRays.values[index] = ray;
+                    if (!lightSample.castsShadows)
+                    {
+                        // Unoccluded by definition: no shadow ray, and the
+                        // contribution lands directly.
+                        pathRadiance.values[path] += contribution;
+                    }
+                    else
+                    {
+                        uint index = atomicAdd(counters.shadowCount, 1u);
+                        if (index < frame.pathCount)
+                        {
+                            ShadowRay ray;
+                            ray.origin = hdclaude_offset_ray(point.position,
+                                                             point.geometricNormal);
+                            ray.direction = lightSample.direction;
+                            ray.contribution = contribution;
+                            // Stop just short of the light so the light's own
+                            // backing geometry, if the scene has any, does not
+                            // occlude it.
+                            ray.maxDistance = lightSample.distance * 0.9999;
+                            ray.path = path;
+                            ray.pad0 = 0u; ray.pad1 = 0u; ray.pad2 = 0u;
+                            shadowRays.values[index] = ray;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    else
+    {
+        // No lights in the scene: the stand-in sun.
+        //
+        // Kept as a fallback rather than deleted, because a stage with no
+        // UsdLux prim at all -- a bare mesh dropped into usdview, or a unit
+        // test -- would otherwise render as a silhouette against the sky with
+        // no way to tell a lighting gap from a shading bug.
+        vec3 sunDirection = normalize(frame.sunDirection.xyz);
+        if (dot(sunDirection, point.geometricNormal) > 0.0)
+        {
+            hdclaude_sample_u = vec3(hdclaude_random(rng), hdclaude_random(rng),
+                                     hdclaude_random(rng));
+            ClosureData lightData = ClosureData(CLOSURE_TYPE_REFLECTION, sunDirection,
+                                                V, point.shadingNormal,
+                                                point.position, 1.0);
+            hdclaude_material_shade(lightData);
+
+            if (hdclaude_bsdf.isDelta < 0.5)
+            {
+                vec3 contribution = throughput * hdclaude_bsdf.response *
+                                    frame.sunRadiance.rgb;
+                if (dot(contribution, contribution) > 0.0)
+                {
+                    uint index = atomicAdd(counters.shadowCount, 1u);
+                    if (index < frame.pathCount)
+                    {
+                        ShadowRay ray;
+                        ray.origin = hdclaude_offset_ray(point.position,
+                                                         point.geometricNormal);
+                        ray.direction = sunDirection;
+                        ray.contribution = contribution;
+                        ray.maxDistance = 1.0e30;
+                        ray.path = path;
+                        ray.pad0 = 0u; ray.pad1 = 0u; ray.pad2 = 0u;
+                        shadowRays.values[index] = ray;
+                    }
                 }
             }
         }

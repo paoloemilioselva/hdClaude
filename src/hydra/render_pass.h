@@ -59,6 +59,11 @@ class HDCLAUDE_API HdClaudeRenderPass final : public HdRenderPass {
     std::uint64_t _uploadedRevision = 0;
     bool _hasUploaded = false;
 
+    /// The environment radiance the published scene carries, remembered
+    /// because the snapshot is only taken when the revision changes while the
+    /// render settings are read every frame.
+    float _environmentColor[3] = {0.05f, 0.07f, 0.10f};
+
     /// Consecutive failed executes. Bounds the retry so a deterministic
     /// failure cannot hold a render-until-converged host forever.
     static constexpr unsigned int kMaxConsecutiveFailures = 3;

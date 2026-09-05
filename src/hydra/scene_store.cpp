@@ -32,6 +32,21 @@ void HdClaudeSceneStore::RemoveMaterial(const SdfPath& id)
     }
 }
 
+void HdClaudeSceneStore::PublishLight(const SdfPath& id, HdClaudeLightEntry entry)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    _lights[id] = std::move(entry);
+    ++_revision;
+}
+
+void HdClaudeSceneStore::RemoveLight(const SdfPath& id)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (_lights.erase(id) > 0) {
+        ++_revision;
+    }
+}
+
 bool HdClaudeSceneStore::HasMaterial(const SdfPath& id) const
 {
     std::lock_guard<std::mutex> lock(_mutex);
@@ -102,6 +117,27 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
         }
     }
 
+    // Lights, and the environment a dome light supplies.
+    //
+    // Several dome lights are legal in USD and rare in practice; their
+    // radiances are summed, which is what a renderer that treated each as a
+    // real emitter would arrive at, rather than silently honouring one.
+    for (const auto& [path, entry] : _lights) {
+        if (entry.isDome) {
+            if (!scene.hasDomeLight) {
+                scene.hasDomeLight = true;
+                scene.environmentColor[0] = 0.0f;
+                scene.environmentColor[1] = 0.0f;
+                scene.environmentColor[2] = 0.0f;
+            }
+            for (int i = 0; i < 3; ++i) {
+                scene.environmentColor[i] += entry.environmentColor[i];
+            }
+        } else {
+            scene.lights.push_back(entry.light);
+        }
+    }
+
     scene.revision = _revision;
     return scene;
 }
@@ -113,6 +149,11 @@ std::vector<std::string> HdClaudeSceneStore::FallbackReports() const
     for (const auto& [path, entry] : _materials) {
         if (!entry.fallbackReason.empty()) {
             reports.push_back(path.GetString() + ": " + entry.fallbackReason);
+        }
+    }
+    for (const auto& [path, entry] : _lights) {
+        if (!entry.report.empty()) {
+            reports.push_back(path.GetString() + ": " + entry.report);
         }
     }
     return reports;

@@ -727,3 +727,58 @@ The diagnostic that settled it is worth keeping: with `HDCLAUDE_TRACE=1` the
 render pass reports the luminance range of what the tracer returned, before the
 AOV or any display transform sees it. A black viewport has two very different
 causes, and that one line separates them.
+
+---
+
+## 2026-09-06 — Lights are analytic, which is what makes MIS unnecessary for now
+
+**Decision, recorded so the reasoning survives.**
+
+hdClaude's UsdLux lights are not geometry: they are not in the acceleration
+structure, and a scattered ray cannot hit one. Only next-event estimation finds
+a light.
+
+That is what lets the first implementation skip multiple importance sampling
+entirely. There is no second strategy finding the same light, so there is
+nothing to weight against. Emissive *geometry* is different -- a scattered ray
+does hit it, and its emission is added on hit -- and the two mechanisms do not
+overlap.
+
+The cost is variance: a glossy reflection of a large rect light is found only
+by the light sample, so it is noisier than it would be with BSDF sampling and
+MIS. That is a quality issue at high roughness contrast rather than a bias, and
+it is the right trade against implementing MIS before the estimator itself is
+validated.
+
+Light selection is uniform rather than power-weighted for the same reason: a
+power distribution must be rebuilt whenever any light changes, and a stale one
+is a far subtler defect than extra noise.
+
+**What this means for the light table.** `castsShadows` is a flag on the light
+rather than a separate list, so a light with `shadowEnable` off contributes
+directly without a shadow ray. Rectangle and disk lights emit from one face;
+the sampler rejects the back side rather than doubling the light.
+
+---
+
+## 2026-09-06 — UsdLux `normalize`, and why extents are read from the transform
+
+Two details worth stating because both are easy to get subtly wrong and neither
+announces itself.
+
+`inputs:normalize` makes a light's total power independent of its size, so the
+*radiance* it emits falls as its area grows. hdClaude divides by area at
+publication rather than at sampling time, so the GPU never needs to know the
+flag existed.
+
+A light's width, height and radius are authored in its own space, and its
+transform may scale it. Reading `inputs:width` alone would light a scaled
+studio set as though it were unscaled. The extents are therefore built by
+transforming the light's local axes and taking their world lengths, which is
+also what makes the area used for the density agree with the area actually
+sampled.
+
+`inputs:enableColorTemperature` is deliberately not applied. Blackbody
+conversion belongs with the spectral upsampling in phase 6; an RGB
+approximation now would have to be unlearned, and hdClaude does not approximate
+where it can wait.
