@@ -25,11 +25,11 @@ A blocked phase must name what blocks it.
 
 | # | Phase | State | Evidence |
 | --- | --- | --- | --- |
-| 0 | Repository, build system, environment, documentation | In progress | - |
-| 1 | Core library: hashing, shader cache, spectral tables, display transform | Not started | - |
+| 0 | Repository, build system, environment, documentation | Complete | core-only preset builds and tests from clean; env script verified; 10 gallery stages open |
+| 1 | Core library: hashing, shader cache, spectral tables, display transform | In progress | hashing, shader cache, spectral sampling and sensor; 1222 checks pass |
 | 2 | Vulkan context, memory, resource rules, validation gate | Not started | - |
 | 3 | Geometry pipeline: meshes, BLAS/TLAS, instancing, subdivision | Not started | - |
-| 4 | `genglsl_pt` MaterialX target: eval, sample, pdf, combinators | Not started | - |
+| 4 | `genglsl_pt` MaterialX target: eval, sample, pdf, combinators | In progress | targetdef, closure protocol, 7 of the 22-file override set |
 | 5 | Wavefront integrator: queues, sort, per-material dispatch | Not started | - |
 | 6 | Spectral transport, lights, MIS, film | Not started | - |
 | 7 | Hydra delegate: adapters, render pass, AOVs, settings | Not started | - |
@@ -74,10 +74,14 @@ not a CPU shadow (rule R7). Subdivision preserves creases, corners, holes,
 orientation, face-varying seams, and material subsets against a committed
 baseline.
 
-**Phase 4.** The four acceptance items in
-[materialx-codegen.md](materialx-codegen.md) §8: every gallery material compiles
-with no fallback, white furnace within 0.5%, chi-squared sample/pdf agreement,
-and sample-pdf self-consistency — for every closure **and every combinator**.
+**Phase 4.** All 22 pbrlib overrides present (the set is all-or-nothing; see
+[materialx-codegen.md](materialx-codegen.md) §3), and the five acceptance items
+in §8 of that document: every gallery material compiles with no fallback, white
+furnace within 0.5%, chi-squared agreement between sampling and the reported
+density, a finite nonzero density at every sampled direction, and combinator
+mixture densities that integrate to one — for every closure **and every
+combinator**. The last item is the one that catches a combinator reporting the
+selected child's density instead of the mixture.
 
 **Phase 5.** Per-material dispatch is observed to scale: adding a large
 procedural nodegraph to one object changes that object's shading cost and not
@@ -136,6 +140,8 @@ reversed.
 | 2026-09-05 | CPU readback is the Hydra AOV adapter; interop is a later phase | No public OpenUSD API crosses a device boundary for a `VkImage`. Decided now because phases 11 and 17 both depend on the answer (hdCodex D1, which was never decided) |
 | 2026-09-05 | DLSS via NGX directly, not Streamline | A delegate does not own presentation, so Frame Generation and Reflex — Streamline's reason to exist — are out of scope |
 | 2026-09-05 | Dependencies by pinned CMake `FetchContent`, never committed | A fresh clone reproduces the tree; the repository stays small and carries no third-party or proprietary code |
+| 2026-09-05 | Closure sampling returns a direction only; densities are written by the evaluation closure types | MaterialX evaluates a combinator's children *before* the combinator, so a density returned by sampling belongs to that child's own direction and cannot be mixed. Moving densities to evaluation lets every combinator mix them with the weights it already mixes responses with ([materialx-codegen.md](materialx-codegen.md) 2) |
+| 2026-09-05 | The pbrlib override set is all-or-nothing | MaterialX resolves `#include` relative to the including file, so mixing one upstream closure with one hdClaude closure emits `struct ClosureData` twice. The set is exactly the 22 pbrlib files that include `mx_closure_type.glsl`; no stdlib file does |
 
 ## Open questions
 
