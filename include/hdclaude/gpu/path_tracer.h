@@ -149,6 +149,8 @@ class PathTracer {
     // material's textureSlots.
     std::vector<VulkanImage> _texturePool;
     VulkanImage _placeholderTexture;
+    VulkanImage _domeTexture;
+    float _domeWorldToLight[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     VkSampler _sampler = VK_NULL_HANDLE;
     /// Per-material texture slots, parallel to _shade.
     std::vector<std::vector<std::uint32_t>> _materialTextureSlots;

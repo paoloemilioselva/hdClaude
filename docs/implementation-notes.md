@@ -927,3 +927,55 @@ The per-triangle indices live in their own buffer, *not* in the BLAS. A
 material index changes whenever the material set changes, and folding it into
 the acceleration structure would invalidate the fingerprint that lets a static
 scene republish without rebuilding anything.
+
+---
+
+## 2026-09-06 — Completing UsdLux, and a double count the stand-in sun was hiding
+
+**What arrived.** Cylinder lights, UsdLuxShapingAPI's cone and focus terms,
+colour temperature, and a dome light's latitude-longitude environment map. With
+rect, disk, sphere, distant and dome that is the whole of UsdLux's analytic set;
+what remains is IES profiles, light filters, and geometry lights, each reported
+by name when a scene uses one.
+
+**Shaping multiplies radiance, not density.** A cone changes how much light
+leaves in a direction; it does not change how the sampler chose that direction.
+Folding the falloff into the solid-angle density instead would make a spot
+light's estimator wrong exactly where the cone cuts off -- which is the part of
+a spot light anyone looks at.
+
+**Colour temperature tints without brightening.** The blackbody fit is
+normalised to unit luminance before it multiplies the light's colour, so
+raising the temperature changes hue and nothing else. A fit that is not
+normalised makes the temperature control double as an exposure control, and the
+two are then impossible to separate in an authored scene.
+
+**The dome map is its own sampler, not an array element.** The environment
+kernel has no generated material in front of it, and the texture array is
+declared by the generator, so the environment kernel has no array to index. A
+dedicated binding is simpler than making the array visible to every kernel.
+
+**The double count.** The environment kernel added the stand-in sun's disc on
+every bounce while the shade kernel also estimated that sun by next-event
+estimation, so any path that scattered and then struck the disc counted it
+twice. The disc is now added on the camera ray only. A path leaving a delta
+closure gets neither, because next-event estimation skips a delta and the
+environment test cannot tell that it did -- that is precisely the gap multiple
+importance sampling closes, and it is why the sun stays documented as a
+fallback rather than promoted to a light.
+
+---
+
+## 2026-09-06 — Exposure is a control, not a fudge
+
+The gallery renders were blown out, and the tempting fix -- quietly scaling the
+lighting -- would have made hdClaude disagree with every other renderer on what
+an authored intensity means.
+
+`usdrecord` already applies an sRGB transfer function by default, so the
+brightness was not a missing encode: a 4K studio HDRI at unit intensity really
+does clip. The answer is an exposure control, in stops, applied to the resolved
+image after the film is read back. It defaults to zero, so the AOV carries the
+radiance the renderer computed and a host with its own display transform is
+unaffected; and because it is applied after resolve rather than during
+accumulation, changing it costs no samples.

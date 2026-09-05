@@ -33,7 +33,8 @@ layout(set = 0, binding = 0, scalar) uniform FrameBlock {
     uint  pathCount;
     uint  bounce;               // current bounce, 0 for camera rays
     uint  lightCount;           // entries in the light table
-    uint  pad0;
+    uint  hasDomeTexture;       // 1 when hdclaude_dome holds an environment map
+    mat4  domeWorldToLight;     // takes a world direction into the dome's frame
 } frame;
 
 // --- Path state -------------------------------------------------------------
@@ -158,6 +159,7 @@ layout(set = 0, binding = 14, scalar) readonly buffer InstanceTable {
 #define HDCLAUDE_LIGHT_SPHERE  1u
 #define HDCLAUDE_LIGHT_RECT    2u
 #define HDCLAUDE_LIGHT_DISK    3u
+#define HDCLAUDE_LIGHT_CYLINDER 4u
 
 struct Light {
     vec3  position;       // world centre; unused by a distant light
@@ -174,6 +176,11 @@ struct Light {
 
     vec3  vAxis;          // rectangle half-extent along local Y, world space
     float area;
+
+    float coneCosAngle;   // cosine of the shaping cone, -1 when unshaped
+    float coneSoftness;   // 0 hard edge, 1 falloff across the whole cone
+    float focus;          // focus exponent about the axis, 0 for uniform
+    float pad0;
 };
 layout(set = 0, binding = 15, scalar) readonly buffer LightTable {
     Light values[];
@@ -201,6 +208,30 @@ layout(set = 0, binding = 15, scalar) readonly buffer LightTable {
 // declaration instead, and only for a material that has textures; no other
 // kernel samples one, and a shader need not declare every binding in its
 // layout.
+//
+// The dome light's environment map is the exception: it is a single sampler
+// rather than an array element, because the kernel that reads it -- the
+// environment kernel -- has no generated material in front of it and so no
+// array declaration. A placeholder is bound when the scene has no dome map,
+// and frame.hasDomeTexture says whether to look.
+layout(set = 0, binding = 17) uniform sampler2D hdclaude_dome;
+
+/// Radiance leaving the scene along `direction`.
+vec3 hdclaude_environment(vec3 direction)
+{
+    if (frame.hasDomeTexture == 0u)
+    {
+        return frame.environmentColor.rgb;
+    }
+
+    // Latitude-longitude, in the dome's own frame. USD's dome has +Y up and
+    // wraps u about -Z, and the decoded image rows run bottom-up, so v = 1 is
+    // straight up.
+    vec3 d = normalize((frame.domeWorldToLight * vec4(direction, 0.0)).xyz);
+    float u = atan(d.x, -d.z) * (1.0 / 6.28318530718) + 0.5;
+    float v = 1.0 - acos(clamp(d.y, -1.0, 1.0)) * (1.0 / 3.14159265359);
+    return texture(hdclaude_dome, vec2(u, v)).rgb * frame.environmentColor.rgb;
+}
 
 // --- Sampling ---------------------------------------------------------------
 
@@ -264,6 +295,50 @@ void hdclaude_light_basis(vec3 n, out vec3 t, out vec3 b)
     b = vec3(c, sign + n.y * n.y * a, -n.y);
 }
 
+/// UsdLuxShapingAPI falloff for a direction leaving the light.
+///
+/// Applied to the emitted radiance rather than to the density: shaping changes
+/// how much light leaves in a direction, not how the sampler chose it. Folding
+/// it into the density instead would make a spot light's estimator wrong
+/// wherever the cone cuts off.
+float hdclaude_light_shaping(Light light, vec3 outgoing)
+{
+    if (light.coneCosAngle <= -1.0 && light.focus <= 0.0)
+    {
+        return 1.0;
+    }
+
+    float cosTheta = dot(normalize(light.direction), normalize(outgoing));
+    if (cosTheta <= 0.0)
+    {
+        return 0.0;
+    }
+
+    float attenuation = 1.0;
+
+    if (light.coneCosAngle > -1.0)
+    {
+        if (cosTheta < light.coneCosAngle)
+        {
+            return 0.0;
+        }
+        // Softness widens an inner cone inward from the edge, and the falloff
+        // runs smoothly between the two. Softness 0 leaves a hard edge.
+        float inner = mix(1.0, light.coneCosAngle,
+                          clamp(light.coneSoftness, 0.0, 1.0));
+        if (inner > light.coneCosAngle)
+        {
+            attenuation *= smoothstep(light.coneCosAngle, inner, cosTheta);
+        }
+    }
+
+    if (light.focus > 0.0)
+    {
+        attenuation *= pow(cosTheta, light.focus);
+    }
+    return attenuation;
+}
+
 /// Sample light `index` as seen from `position`.
 ///
 /// Area lights are sampled uniformly over their surface and the density is
@@ -325,7 +400,7 @@ LightSample hdclaude_sample_light(uint index, vec3 position, vec2 u)
         point = light.position + light.uAxis * offset.x + light.vAxis * offset.y;
         normal = normalize(light.direction);
     }
-    else   // HDCLAUDE_LIGHT_DISK
+    else if (light.type == HDCLAUDE_LIGHT_DISK)
     {
         float r = light.radius * sqrt(u.x);
         float phi = 6.28318530718 * u.y;
@@ -333,6 +408,25 @@ LightSample hdclaude_sample_light(uint index, vec3 position, vec2 u)
         vec3 t, b;
         hdclaude_light_basis(normal, t, b);
         point = light.position + t * (r * cos(phi)) + b * (r * sin(phi));
+    }
+    else   // HDCLAUDE_LIGHT_CYLINDER
+    {
+        // Uniform over the curved surface only; USD's cylinder light has no
+        // end caps. `uAxis` carries the half-length along the axis.
+        vec3 axis = light.uAxis;
+        float halfLength = length(axis);
+        if (halfLength <= 1.0e-6)
+        {
+            return result;
+        }
+        axis /= halfLength;
+
+        vec3 t, b;
+        hdclaude_light_basis(axis, t, b);
+        float phi = 6.28318530718 * u.y;
+        normal = normalize(t * cos(phi) + b * sin(phi));
+        point = light.position + axis * ((u.x * 2.0 - 1.0) * halfLength) +
+                normal * light.radius;
     }
 
     vec3 toLight = point - position;
@@ -354,7 +448,7 @@ LightSample hdclaude_sample_light(uint index, vec3 position, vec2 u)
 
     result.direction = direction;
     result.distance = distance;
-    result.radiance = light.radiance;
+    result.radiance = light.radiance * hdclaude_light_shaping(light, -direction);
     // Uniform area density 1/A converted to solid angle: d^2 / (cos * A).
     result.pdf = distanceSquared / (cosLight * light.area);
     return result;

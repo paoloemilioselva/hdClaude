@@ -61,6 +61,15 @@ std::vector<BindingDescription> KernelBindings()
     textures.debugName = "hdclaude_textures";
     bindings.push_back(textures);
 
+    // The dome light's environment map, as its own sampler. The environment
+    // kernel has no generated material in front of it, so it has no texture
+    // array to index into.
+    BindingDescription dome;
+    dome.binding = 17;
+    dome.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    dome.debugName = "hdclaude_dome";
+    bindings.push_back(dome);
+
     return bindings;
 }
 
@@ -78,7 +87,8 @@ struct FrameBlock {
     std::uint32_t pathCount;
     std::uint32_t bounce;
     std::uint32_t lightCount;
-    std::uint32_t pad0;
+    std::uint32_t hasDomeTexture;
+    float domeWorldToLight[16];
 };
 
 /// Mirrors InstanceGeometry in path_state.glsl.
@@ -513,6 +523,19 @@ void PathTracer::SetScene(const Scene& scene,
     // --- Textures ------------------------------------------------------------
     UploadTextures(scene.textures);
 
+    // The dome map is bound separately from the array, so it is remembered
+    // here rather than resolved per frame.
+    _domeTexture = VulkanImage();
+    if (scene.domeTexture >= 0 &&
+        static_cast<std::size_t>(scene.domeTexture) < scene.textures.size()) {
+        const TextureImage& dome = scene.textures[scene.domeTexture];
+        if (dome.Valid()) {
+            _domeTexture = UploadTexture(dome);
+        }
+    }
+    std::memcpy(_domeWorldToLight, scene.domeWorldToLight,
+                sizeof(_domeWorldToLight));
+
     // --- Shading pipelines --------------------------------------------------
     // One per material. Each is that material's generated program joined to the
     // shade kernel, so the dispatch contains only that material's code.
@@ -619,6 +642,13 @@ void PathTracer::WriteDescriptors(VkDescriptorSet set,
     pipeline.WriteBuffer(set, 14, _instanceTable);
     pipeline.WriteBuffer(set, 15, _lightTable);
     pipeline.WriteSampledImageArray(set, 16, TextureBindingsFor(material));
+
+    VkDescriptorImageInfo dome{};
+    dome.sampler = _sampler;
+    dome.imageView = _domeTexture.Valid() ? _domeTexture.View()
+                                          : _placeholderTexture.View();
+    dome.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    pipeline.WriteSampledImageArray(set, 17, {dome});
 }
 
 std::vector<float> PathTracer::Render(std::uint32_t width, std::uint32_t height,
@@ -699,6 +729,9 @@ std::vector<float> PathTracer::Render(std::uint32_t width, std::uint32_t height,
     block.aspect = camera.aspect;
     block.pathCount = paths;
     block.lightCount = _lightCount;
+    block.hasDomeTexture = _domeTexture.Valid() ? 1u : 0u;
+    std::memcpy(block.domeWorldToLight, _domeWorldToLight,
+                sizeof(block.domeWorldToLight));
 
     const std::uint32_t pathGroups = (paths + 63) / 64;
     const std::uint32_t pixelGroupsX = (width + 7) / 8;

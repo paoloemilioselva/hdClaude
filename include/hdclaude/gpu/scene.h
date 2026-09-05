@@ -92,6 +92,9 @@ enum class LightType : std::uint32_t {
     Rect = 2,
     /// A disk of `radius` in the plane normal to `direction`. UsdLuxDiskLight.
     Disk = 3,
+    /// A capsule-less cylinder of `radius` and `length` about `uAxis`.
+    /// UsdLuxCylinderLight.
+    Cylinder = 4,
 };
 
 /// One analytic light.
@@ -129,10 +132,21 @@ struct Light {
     /// separate list.
     std::uint32_t castsShadows = 1;
 
-    /// Half-extent along the rectangle's local Y, in world space.
+    /// Half-extent along the rectangle's local Y, in world space. For a
+    /// cylinder this is unused; `uAxis` carries the half-length along its axis.
     float vAxis[3] = {0.0f, 1.0f, 0.0f};
     /// Surface area, for the area-to-solid-angle conversion. Zero for Distant.
     float area = 0.0f;
+
+    /// Cosine of the cone's outer angle from UsdLuxShapingAPI. -1 means the
+    /// light is unshaped and emits over the whole hemisphere.
+    float coneCosAngle = -1.0f;
+    /// Softness of the cone edge, 0 for a hard edge and 1 for a full falloff
+    /// across the cone.
+    float coneSoftness = 0.0f;
+    /// Focus exponent, sharpening emission about the axis. 0 is uniform.
+    float focus = 0.0f;
+    float pad0 = 0.0f;
 };
 
 /// Slots in the shared texture array.
@@ -184,6 +198,13 @@ struct Scene {
     /// True once a dome light has supplied the environment, so the render pass
     /// knows not to apply its stand-in on top.
     bool hasDomeLight = false;
+
+    /// Latitude-longitude environment map, if the dome light has one. Index
+    /// into `textures`, or -1.
+    int domeTexture = -1;
+    /// World-to-light rotation for the dome, column-major, so a direction can
+    /// be taken into the map's own frame. Identity when the light is unrotated.
+    float domeWorldToLight[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
 
     std::uint64_t revision = 0;
 

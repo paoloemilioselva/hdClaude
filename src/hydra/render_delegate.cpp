@@ -29,7 +29,8 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (maxBounces)
                          (samplesPerFrame)
                          (environmentIntensity)
-                         (sunIntensity));
+                         (sunIntensity)
+                         (exposure));
 
 namespace {
 
@@ -41,9 +42,9 @@ const TfTokenVector kSupportedRprimTypes = {
 /// by Hydra, so an unsupported light is simply not in the scene rather than
 /// present and ignored.
 const TfTokenVector kSupportedLightTypes = {
-    HdPrimTypeTokens->rectLight,  HdPrimTypeTokens->diskLight,
-    HdPrimTypeTokens->sphereLight, HdPrimTypeTokens->distantLight,
-    HdPrimTypeTokens->domeLight,
+    HdPrimTypeTokens->rectLight,     HdPrimTypeTokens->diskLight,
+    HdPrimTypeTokens->sphereLight,   HdPrimTypeTokens->distantLight,
+    HdPrimTypeTokens->cylinderLight, HdPrimTypeTokens->domeLight,
 };
 
 TfTokenVector MakeSupportedSprimTypes()
@@ -371,6 +372,15 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
          VtValue(float(TfGetenvDouble("HDCLAUDE_ENVIRONMENT_INTENSITY", 1.0)))},
         {"Sun intensity", _tokens->sunIntensity,
          VtValue(float(TfGetenvDouble("HDCLAUDE_SUN_INTENSITY", 1.0)))},
+
+        // Exposure, in stops, applied to the resolved image. Zero by default,
+        // so the AOV carries the radiance the renderer computed and nothing is
+        // baked in; a host with its own display transform is unaffected. It
+        // exists because a physically bright environment -- a studio HDRI, say
+        // -- is genuinely blown out at unit exposure, and the alternative to a
+        // control is quietly scaling the lighting instead.
+        {"Exposure", _tokens->exposure,
+         VtValue(float(TfGetenvDouble("HDCLAUDE_EXPOSURE", 0.0)))},
     };
 }
 

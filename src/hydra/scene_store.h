@@ -62,6 +62,10 @@ struct HdClaudeLightEntry {
     hdclaude::Light light;
     bool isDome = false;
     float environmentColor[3] = {0.0f, 0.0f, 0.0f};
+    /// Pool slot of the dome's latitude-longitude map, or -1.
+    int domeTexture = -1;
+    /// World-to-light for the dome, column-major.
+    float domeWorldToLight[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     /// What about this light is not honoured as authored, if anything.
     std::string report;
 };

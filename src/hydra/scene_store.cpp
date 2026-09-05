@@ -1,5 +1,7 @@
 #include "scene_store.h"
 
+#include <algorithm>
+
 PXR_NAMESPACE_OPEN_SCOPE
 
 void HdClaudeSceneStore::PublishMesh(const SdfPath& id, HdClaudeMeshEntry entry)
@@ -154,6 +156,15 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
             }
             for (int i = 0; i < 3; ++i) {
                 scene.environmentColor[i] += entry.environmentColor[i];
+            }
+            // The first dome with a map supplies it. Two textured domes is not
+            // a thing a renderer can composite meaningfully, so the second is
+            // reported rather than silently blended.
+            if (entry.domeTexture >= 0 && scene.domeTexture < 0) {
+                scene.domeTexture = entry.domeTexture;
+                std::copy(std::begin(entry.domeWorldToLight),
+                          std::end(entry.domeWorldToLight),
+                          std::begin(scene.domeWorldToLight));
             }
         } else {
             scene.lights.push_back(entry.light);

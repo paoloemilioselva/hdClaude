@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <limits>
 
@@ -24,7 +25,8 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (maxBounces)
                          (samplesPerFrame)
                          (environmentIntensity)
-                         (sunIntensity));
+                         (sunIntensity)
+                         (exposure));
 
 }  // namespace
 
@@ -313,6 +315,20 @@ void HdClaudeRenderPass::_Execute(
     }
     _consecutiveFailures = 0;
     _samplesCompleted += settings.samplesPerPixel;
+
+    // Exposure last, on the resolved image, so the accumulated film keeps the
+    // radiance the renderer computed and changing exposure costs no samples.
+    const float exposure =
+        _renderDelegate->GetRenderSetting<float>(_tokens->exposure, 0.0f);
+    if (exposure != 0.0f) {
+        const float scale = std::pow(2.0f, exposure);
+        for (std::size_t i = 0; i < image.size(); i += 4) {
+            image[i + 0] *= scale;
+            image[i + 1] *= scale;
+            image[i + 2] *= scale;
+        }
+    }
+
     colorBuffer->Write(image);
     _renderDelegate->RecordFrameTiming(milliseconds, _samplesCompleted);
 
