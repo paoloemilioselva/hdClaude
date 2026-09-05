@@ -352,8 +352,12 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
     return {
         {"Samples per pixel", _tokens->samplesPerPixel,
          VtValue(TfGetenvInt("HDCLAUDE_SAMPLES_PER_PIXEL", 64))},
+        // Eight, not four. A glass ball needs an entry, an exit, and whatever
+        // it refracts through behind it; at four bounces transmissive
+        // materials go dark and read as a shading bug rather than as a depth
+        // limit. render_claude.bat documents the same default.
         {"Max bounces", _tokens->maxBounces,
-         VtValue(TfGetenvInt("HDCLAUDE_MAX_BOUNCES", 4))},
+         VtValue(TfGetenvInt("HDCLAUDE_MAX_BOUNCES", 8))},
         {"Samples per frame", _tokens->samplesPerFrame,
          VtValue(TfGetenvInt("HDCLAUDE_SAMPLES_PER_FRAME", 4))},
 

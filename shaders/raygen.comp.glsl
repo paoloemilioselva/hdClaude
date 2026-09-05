@@ -26,9 +26,14 @@ void main()
 
     // Right-handed camera looking down -Z, matching USD's convention, so a
     // camera transform arriving from Hydra needs no handedness fix-up.
+    //
+    // Row 0 of the film is the *bottom* of the image, which is Hydra's render
+    // buffer convention -- hdEmbree builds its NDC the same way. Negating y
+    // here instead would put row 0 at the top and hand every Hydra host an
+    // upside-down image, which is what it did until this line was corrected.
     vec2 ndc = uv * 2.0 - 1.0;
     vec3 directionCamera = normalize(vec3(ndc.x * frame.tanHalfFov * frame.aspect,
-                                          -ndc.y * frame.tanHalfFov,
+                                          ndc.y * frame.tanHalfFov,
                                           -1.0));
 
     vec3 origin = (frame.cameraToWorld * vec4(0.0, 0.0, 0.0, 1.0)).xyz;

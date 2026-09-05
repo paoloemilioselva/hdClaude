@@ -807,3 +807,45 @@ The same scene now publishes 6516 triangles, the character among them.
 Declaring `HdPrimTypeTokens->extComputation` as a supported sprim was necessary
 but not sufficient: without it the computation does not exist, and with it but
 without reading its output the mesh still stands in its bind pose or vanishes.
+
+---
+
+## 2026-09-06 — The film was upside down, and glass could never leave itself
+
+Two defects a user spotted immediately in the first images, both of which the
+test suite was structurally unable to catch.
+
+**The film.** `raygen` negated NDC y, putting row 0 at the top of the image.
+Hydra's render buffers put row 0 at the *bottom* -- hdEmbree builds its NDC
+without the negation, which is the reference worth trusting here. Every image
+hdClaude handed a Hydra host was therefore vertically flipped.
+
+No test caught it because every render test asserted on content that is
+symmetric under a flip: a centred quad, a background corner, and a shadow
+searched for by brightness rather than by position. The convention is now
+stated in `PathTracer::Render`'s contract rather than left implicit, the
+debug PPM writer flips on output because PPM is top-down, and the shadow test
+scans the whole image instead of a quadrant so it no longer encodes an
+assumption about which half is which.
+
+**Glass.** `hdclaude_reconstruct` turned both normals to face the incoming ray
+before handing them to the material. `mx_dielectric_bsdf` decides which side of
+an interface it is on from `dot(N, V)` *before* it does its own forward-facing
+flip -- its own comment says so -- so pre-flipping made `entering` true for
+every hit. A ray inside the glass refracted as though entering again and could
+never exit, which is why the glass shader ball rendered as a dull neutral
+solid.
+
+Every MaterialX closure calls `mx_forward_facing_normal` itself, so the fix is
+to stop flipping: `SurfacePoint` now carries the true normals plus a separate
+`frontGeometricNormal` for the decisions that genuinely need a viewer-facing
+one -- ray offsets and which side a light is on.
+
+The default bounce limit went from four to eight at the same time. Four is not
+enough for an entry, an exit, and whatever lies behind the glass, and a
+transmissive material that goes dark at the depth limit reads as a shading bug.
+
+**The general lesson.** Both defects were in a *convention* rather than in a
+computation, and both were invisible to tests that check magnitudes. A closure
+that documents an ordering requirement -- read the side before you flip -- is
+stating a precondition its caller can violate silently.

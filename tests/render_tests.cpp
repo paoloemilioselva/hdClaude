@@ -166,7 +166,13 @@ void SavePpm(const std::vector<float>& image, const std::string& name)
         std::filesystem::temp_directory_path() / ("hdclaude-" + name + ".ppm");
     std::ofstream file(path, std::ios::binary);
     file << "P6\n" << kWidth << " " << kHeight << "\n255\n";
-    for (std::size_t i = 0; i < static_cast<std::size_t>(kWidth) * kHeight; ++i) {
+    // PPM stores its top row first and the renderer's row 0 is the bottom, so
+    // the rows go out in reverse. Without this the debug images are upside
+    // down while the renderer is right, which is a confusing way to hunt a bug.
+    for (std::size_t row = 0; row < kHeight; ++row) {
+      const std::size_t y = kHeight - 1 - row;
+      for (std::size_t x = 0; x < kWidth; ++x) {
+        const std::size_t i = y * kWidth + x;
         for (int c = 0; c < 3; ++c) {
             const float linear = image[i * 4 + static_cast<std::size_t>(c)];
             // sRGB encode for viewing only; the renderer's output is linear.
@@ -178,6 +184,7 @@ void SavePpm(const std::vector<float>& image, const std::string& name)
                 std::min(255.0f, std::max(0.0f, encoded * 255.0f + 0.5f)));
             file.put(static_cast<char>(byte));
         }
+      }
     }
     std::printf("  wrote %s\n", path.string().c_str());
 }
@@ -332,8 +339,8 @@ int main()
             // rather than on transport.
             float brightest = 0.0f;
             float darkestLit = 1.0e9f;
-            for (std::uint32_t y = kHeight / 2; y < kHeight; ++y) {
-                for (std::uint32_t x = kWidth / 2; x < kWidth; ++x) {
+            for (std::uint32_t y = 0; y < kHeight; ++y) {
+                for (std::uint32_t x = 0; x < kWidth; ++x) {
                     const std::size_t i =
                         (static_cast<std::size_t>(y) * kWidth + x) * 4;
                     const Pixel p{image[i], image[i + 1], image[i + 2]};

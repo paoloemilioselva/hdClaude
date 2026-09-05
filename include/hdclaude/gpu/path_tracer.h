@@ -97,7 +97,11 @@ class PathTracer {
     void SetScene(const Scene& scene, const std::vector<CompiledMaterial>& materials);
 
     /// Render `settings.samplesPerPixel` samples and return the resolved image
-    /// as linear RGBA floats, row-major, top row first.
+    /// as linear RGBA floats, row-major.
+    ///
+    /// Row 0 is the *bottom* of the image. That is Hydra's render-buffer
+    /// convention, so the AOV write is a straight copy and nothing downstream
+    /// has to remember to flip.
     std::vector<float> Render(std::uint32_t width, std::uint32_t height,
                               const RenderCamera& camera,
                               const RenderSettings& settings);

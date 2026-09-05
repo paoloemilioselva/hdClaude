@@ -27,10 +27,23 @@ layout(push_constant) uniform ShadeParams {
 } shadeParams;
 
 /// Interpolated geometry at a hit.
+///
+/// The normals are the *true* ones, not turned to face the viewer. A closure
+/// decides which side of an interface it is on from the sign of dot(N, V), so
+/// flipping before the closure sees it makes every refraction look like an
+/// entry and glass can never exit itself. Every MaterialX closure calls
+/// mx_forward_facing_normal itself, so handing over the true normal costs
+/// nothing and is what makes transmission work.
+///
+/// Geometric decisions -- which way to offset a ray, which side a light is on
+/// -- need a viewer-facing normal instead, so it is carried alongside rather
+/// than recomputed at each use.
 struct SurfacePoint {
     vec3 position;
     vec3 shadingNormal;
     vec3 geometricNormal;
+    /// geometricNormal, turned to the side the incoming ray came from.
+    vec3 frontGeometricNormal;
     vec3 tangent;
     vec2 uv;
 };
@@ -85,13 +98,11 @@ SurfacePoint hdclaude_reconstruct(ivec4 record, vec3 rayDirection, vec3 hitPosit
         point.shadingNormal = point.geometricNormal;
     }
 
-    // Face the normals toward the incoming ray. A closed mesh viewed from
-    // inside, or a single-sided quad seen from behind, otherwise shades black.
-    if (dot(point.geometricNormal, rayDirection) > 0.0)
-    {
-        point.geometricNormal = -point.geometricNormal;
-        point.shadingNormal = -point.shadingNormal;
-    }
+    // The viewer-facing copy, for ray offsets and light-side tests. The true
+    // normals above are left alone; see the note on SurfacePoint.
+    point.frontGeometricNormal = dot(point.geometricNormal, rayDirection) > 0.0
+                                     ? -point.geometricNormal
+                                     : point.geometricNormal;
 
     if (geometry.uvs != 0ul)
     {
@@ -192,7 +203,7 @@ void main()
             hdclaude_sample_light(lightIndex, point.position, lightU);
 
         if (lightSample.pdf > 0.0 &&
-            dot(lightSample.direction, point.geometricNormal) > 0.0)
+            dot(lightSample.direction, point.frontGeometricNormal) > 0.0)
         {
             hdclaude_sample_u = vec3(hdclaude_random(rng), hdclaude_random(rng),
                                      hdclaude_random(rng));
@@ -231,8 +242,8 @@ void main()
                         if (index < frame.pathCount)
                         {
                             ShadowRay ray;
-                            ray.origin = hdclaude_offset_ray(point.position,
-                                                             point.geometricNormal);
+                            ray.origin = hdclaude_offset_ray(
+                                point.position, point.frontGeometricNormal);
                             ray.direction = lightSample.direction;
                             ray.contribution = contribution;
                             // Stop just short of the light so the light's own
@@ -257,7 +268,7 @@ void main()
         // test -- would otherwise render as a silhouette against the sky with
         // no way to tell a lighting gap from a shading bug.
         vec3 sunDirection = normalize(frame.sunDirection.xyz);
-        if (dot(sunDirection, point.geometricNormal) > 0.0)
+        if (dot(sunDirection, point.frontGeometricNormal) > 0.0)
         {
             hdclaude_sample_u = vec3(hdclaude_random(rng), hdclaude_random(rng),
                                      hdclaude_random(rng));
@@ -276,8 +287,8 @@ void main()
                     if (index < frame.pathCount)
                     {
                         ShadowRay ray;
-                        ray.origin = hdclaude_offset_ray(point.position,
-                                                         point.geometricNormal);
+                        ray.origin = hdclaude_offset_ray(
+                            point.position, point.frontGeometricNormal);
                         ray.direction = sunDirection;
                         ray.contribution = contribution;
                         ray.maxDistance = 1.0e30;
@@ -354,6 +365,9 @@ void main()
         return;
     }
 
+    // Offset to whichever side the scattered ray actually leaves on, so a
+    // transmitted ray starts inside the surface rather than immediately
+    // re-hitting the face it just passed through.
     pathOrigin.values[path] = hdclaude_offset_ray(
         point.position, dot(L, point.geometricNormal) > 0.0
                             ? point.geometricNormal
