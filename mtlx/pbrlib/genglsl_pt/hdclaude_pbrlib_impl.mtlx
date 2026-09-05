@@ -4,28 +4,43 @@
   <!--
     hdClaude genglsl_pt implementations of the MaterialX pbrlib closure nodes.
 
+    Version of record: MaterialX 1.39.3, the version inside OpenUSD 26.03.
+
     THE OVERRIDE SET IS NOT OPTIONAL AND NOT PARTIAL.
 
-    Every pbrlib GLSL source file that includes `lib/mx_closure_type.glsl` must
-    be overridden here, because that include is resolved relative to the
-    including file's own directory. If a single upstream pbrlib closure is
-    generated alongside an hdClaude one, both `lib/mx_closure_type.glsl` files
-    are emitted and `struct ClosureData` is declared twice ; a compile error,
-    which is the right failure mode, but a hard one.
+    MaterialX resolves a source file's #include relative to that file's own
+    directory, so an upstream pbrlib closure resolves lib/mx_closure_type.glsl
+    to *upstream's* copy. Generating one upstream closure beside one hdClaude
+    closure emits both and declares struct ClosureData twice.
 
-    In MaterialX 1.39 that set is exactly 22 files, enumerated below. No stdlib
-    file includes `mx_closure_type.glsl`, which is what makes the boundary
-    clean: hdClaude overrides the closures and inherits every pattern, math,
-    colour, and procedural node from `genglsl` unchanged.
+    The set is exactly the pbrlib GLSL files that include mx_closure_type.glsl:
+    22 files in 1.39.3, listed below. No stdlib file includes it, which is what
+    keeps the inheritance boundary clean.
 
-    Progress: 7 of 22. The remaining 15 are listed at the end of this file and
-    are tracked as phase 4 in docs/roadmap.md. Generation will not succeed until
-    all 22 are present; this file is committed incomplete on purpose, so the
-    boundary is recorded rather than rediscovered.
+    NODEDEF NAMES DO NOT FOLLOW FILE NAMES. mx_multiply_bsdf_color3.glsl is
+    declared for ND_multiply_bsdfC, not ND_multiply_bsdf_color3. A declaration
+    naming a nodedef that does not exist is ignored SILENTLY: MaterialX uses
+    the stock implementation, and the only symptom is the duplicate ClosureData
+    above. The nodedef names here are taken verbatim from the stock
+    pbrlib_genglsl_impl.mtlx, and tests/materialx_tests.cpp asserts that every
+    one of them resolves.
   -->
 
   <!-- ====================================================================== -->
-  <!-- Diffuse                                                                 -->
+  <!-- Surface: the calling convention                                        -->
+  <!--                                                                        -->
+  <!-- Bodiless by design, exactly as the stock declaration is: implemented    -->
+  <!-- in C++ by hdclaude::PathTracerSurfaceNode, which evaluates the BSDF     -->
+  <!-- and EDF against the caller-supplied closureData instead of building     -->
+  <!-- its own inside a light loop.                                            -->
+  <!-- ====================================================================== -->
+
+  <implementation name="IM_surface_genglsl_pt"
+                  nodedef="ND_surface"
+                  target="genglsl_pt" />
+
+  <!-- ====================================================================== -->
+  <!-- Diffuse                                                                -->
   <!-- ====================================================================== -->
 
   <implementation name="IM_oren_nayar_diffuse_bsdf_genglsl_pt"
@@ -35,7 +50,7 @@
                   target="genglsl_pt" />
 
   <!-- ====================================================================== -->
-  <!-- Specular                                                                -->
+  <!-- Specular                                                               -->
   <!-- ====================================================================== -->
 
   <implementation name="IM_conductor_bsdf_genglsl_pt"
@@ -45,13 +60,7 @@
                   target="genglsl_pt" />
 
   <!-- ====================================================================== -->
-  <!-- Combinators                                                             -->
-  <!--                                                                         -->
-  <!-- These carry the sampling correctness of the whole target. A closure     -->
-  <!-- primitive that samples slightly wrong produces slightly wrong shading;  -->
-  <!-- a combinator that reports the selected child's density instead of the   -->
-  <!-- mixture density makes every MIS weight in the renderer wrong, in a way  -->
-  <!-- that survives convergence and is invisible in an image.                 -->
+  <!-- Combinators                                                            -->
   <!-- ====================================================================== -->
 
   <implementation name="IM_mix_bsdf_genglsl_pt"
@@ -72,45 +81,41 @@
                   function="mx_layer_bsdf"
                   target="genglsl_pt" />
 
-  <implementation name="IM_multiply_bsdf_color3_genglsl_pt"
-                  nodedef="ND_multiply_bsdf_color3"
+  <implementation name="IM_multiply_bsdfC_genglsl_pt"
+                  nodedef="ND_multiply_bsdfC"
                   file="mx_multiply_bsdf_color3.glsl"
                   function="mx_multiply_bsdf_color3"
                   target="genglsl_pt" />
 
-  <implementation name="IM_multiply_bsdf_float_genglsl_pt"
-                  nodedef="ND_multiply_bsdf_float"
+  <implementation name="IM_multiply_bsdfF_genglsl_pt"
+                  nodedef="ND_multiply_bsdfF"
                   file="mx_multiply_bsdf_float.glsl"
                   function="mx_multiply_bsdf_float"
                   target="genglsl_pt" />
 
   <!--
-    ========================================================================
-    STILL TO OVERRIDE - 15 remaining. Phase 4 in docs/roadmap.md.
-    ========================================================================
+    ====================================================================
+    STILL TO OVERRIDE - 15 files. Phase 4 in docs/roadmap.md.
+    ====================================================================
 
-    BSDF primitives:
-      ND_burley_diffuse_bsdf         mx_burley_diffuse_bsdf.glsl
-      ND_translucent_bsdf            mx_translucent_bsdf.glsl
-      ND_dielectric_bsdf             mx_dielectric_bsdf.glsl
-      ND_generalized_schlick_bsdf    mx_generalized_schlick_bsdf.glsl
-      ND_subsurface_bsdf             mx_subsurface_bsdf.glsl
-      ND_sheen_bsdf                  mx_sheen_bsdf.glsl
-      ND_chiang_hair_bsdf            mx_chiang_hair_bsdf.glsl
+    Generation cannot succeed for a material using any of these until the
+    override exists, for the reason at the top of this file.
 
-    EDFs - emission needs no direction sampling, so these are the cheapest of
-    the set; they exist in it only because of the shared ClosureData include:
-      ND_uniform_edf                 mx_uniform_edf.glsl
-      ND_generalized_schlick_edf     mx_generalized_schlick_edf.glsl
-      ND_add_edf                     mx_add_edf.glsl
-      ND_mix_edf                     mx_mix_edf.glsl
-      ND_multiply_edf_color3         mx_multiply_edf_color3.glsl
-      ND_multiply_edf_float          mx_multiply_edf_float.glsl
-
-    VDFs - homogeneous interior media only; heterogeneous volumes are not
-    scheduled (docs/roadmap.md, open question 4):
-      ND_anisotropic_vdf             mx_anisotropic_vdf.glsl
-      ND_layer_vdf                   mx_layer_vdf.glsl
+      mx_add_edf.glsl                    ND_add_edf
+      mx_anisotropic_vdf.glsl            ND_anisotropic_vdf
+      mx_burley_diffuse_bsdf.glsl        ND_burley_diffuse_bsdf
+      mx_chiang_hair_bsdf.glsl           ND_chiang_hair_bsdf, ND_deon_hair_absorption_from_melanin, ND_chiang_hair_absorption_from_color, ND_chiang_hair_roughness
+      mx_dielectric_bsdf.glsl            ND_dielectric_bsdf
+      mx_generalized_schlick_bsdf.glsl   ND_generalized_schlick_bsdf
+      mx_generalized_schlick_edf.glsl    ND_generalized_schlick_edf
+      mx_layer_vdf.glsl                  ND_layer_vdf
+      mx_mix_edf.glsl                    ND_mix_edf
+      mx_multiply_edf_color3.glsl        ND_multiply_edfC
+      mx_multiply_edf_float.glsl         ND_multiply_edfF
+      mx_sheen_bsdf.glsl                 ND_sheen_bsdf
+      mx_subsurface_bsdf.glsl            ND_subsurface_bsdf
+      mx_translucent_bsdf.glsl           ND_translucent_bsdf
+      mx_uniform_edf.glsl                ND_uniform_edf
   -->
 
 </materialx>

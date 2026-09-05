@@ -1,8 +1,10 @@
 # MaterialX code generation: the `genglsl_pt` target
 
 Status: design of record. Last revised 2026-09-05.
-MaterialX version of record: **1.39** (1.39.3 ships inside OpenUSD 26.03;
-1.39.6 is the upstream checkout used as the reference for this design).
+MaterialX version of record: **1.39.3** — the version inside OpenUSD 26.03,
+which hdClaude links and generates with. 1.39.6 differs in header layout,
+closure signatures, throughput semantics, and available helpers; see
+[implementation-notes.md](implementation-notes.md) for the table.
 
 This document specifies how hdClaude executes MaterialX materials. It is the
 implementation of [architecture.md](architecture.md) §1.1: *MaterialX shaders
@@ -382,15 +384,25 @@ gate every change to this target.
 | Piece | State |
 | --- | --- |
 | `targetdef genglsl_pt` | done |
-| extended `ClosureData` / `BSDF` protocol | done |
+| extended `BSDF`; `ClosureData` kept byte-compatible | done |
 | shared sampling helpers | done |
 | `oren_nayar_diffuse_bsdf`, `conductor_bsdf` | done |
 | `mix`, `add`, `layer`, `multiply_bsdf_*` combinators | done |
+| compute-safe `lib/mx_microfacet_diffuse.glsl` | done |
+| `PathTracerSyntax` | done |
+| `PathTracerSurfaceNode` (the calling convention) | done |
+| `PathTracerShaderGenerator` (compute stage, ABI entry point) | done |
+| glslang compilation and the SPIR-V cache | done |
+| **end-to-end: graph → GLSL → SPIR-V** | **done** |
 | remaining 15 of the 22-file override set | not started |
-| `PathTracerSyntax` / `PathTracerShaderGenerator` | not started |
-| `PathTracerSurfaceNode` (the calling convention) | not started |
-| glslang compilation and the material program cache | cache done; compiler not started |
 | the acceptance tests in §8 | not started |
+
+A material combining `oren_nayar_diffuse_bsdf`, two `conductor_bsdf` lobes, and
+the `mix` / `multiply` / `layer` combinators generates and compiles to about
+17,000 SPIR-V words, with the closures evaluated against the caller's
+`closureData` and no rasteriser lighting anywhere in the output. That is the
+architecture proven end to end; what remains is coverage and the numerical
+acceptance tests, not a question of whether the approach works.
 
 Generation cannot succeed until all 22 overrides are present, for the reason in
 §3. Tracked as phase 4 in [roadmap.md](roadmap.md).

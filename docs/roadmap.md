@@ -29,7 +29,7 @@ A blocked phase must name what blocks it.
 | 1 | Core library: hashing, shader cache, spectral tables, display transform | In progress | hashing, shader cache, spectral sampling and sensor; 1222 checks pass |
 | 2 | Vulkan context, memory, resource rules, validation gate | In progress | context, allocator, buffers, images, generations, device-lost latch; 42 GPU checks pass with 0 validation errors on RTX 5060 Ti |
 | 3 | Geometry pipeline: meshes, BLAS/TLAS, instancing, subdivision | Not started | - |
-| 4 | `genglsl_pt` MaterialX target: eval, sample, pdf, combinators | In progress | targetdef, closure protocol, 7 of the 22-file override set |
+| 4 | `genglsl_pt` MaterialX target: eval, sample, pdf, combinators | In progress | syntax, generator, surface node, 7 of 22 overrides; a real graph generates and compiles to SPIR-V end to end |
 | 5 | Wavefront integrator: queues, sort, per-material dispatch | Not started | - |
 | 6 | Spectral transport, lights, MIS, film | Not started | - |
 | 7 | Hydra delegate: adapters, render pass, AOVs, settings | Not started | - |
@@ -139,6 +139,10 @@ reversed.
 | 2026-09-05 | Single `BeginFrame(FrameDescription)` entry point | Independent setters caused five hdCodex findings ([lessons](lessons-from-hdcodex.md) C2) |
 | 2026-09-05 | CPU readback is the Hydra AOV adapter; interop is a later phase | No public OpenUSD API crosses a device boundary for a `VkImage`. Decided now because phases 11 and 17 both depend on the answer (hdCodex D1, which was never decided) |
 | 2026-09-05 | DLSS via NGX directly, not Streamline | A delegate does not own presentation, so Frame Generation and Reflex — Streamline's reason to exist — are out of scope |
+| 2026-09-05 | MaterialX 1.39.3 is the version of record | It is what OpenUSD 26.03 ships and what hdClaude links; 1.39.6 differs in headers, closure signatures, throughput semantics, and helpers ([implementation-notes.md](implementation-notes.md)) |
+| 2026-09-05 | `ClosureData` stays byte-compatible; extra state in globals | 1.39.3 constructs it inline with a fixed argument list, so adding fields breaks every construction site hdClaude does not replace. A global is per-invocation in a compute shader, so it costs nothing |
+| 2026-09-05 | The implementation declarations are generated from the stock ones | Nodedef names do not follow file names, and a wrong one fails silently by falling back to the stock implementation. Deriving them removes the class of error |
+| 2026-09-05 | Screen-space derivatives are never used | Neighbouring lanes in a `shade` dispatch are unrelated paths, so `fwidth` measures nothing. Footprints come from ray differentials |
 | 2026-09-05 | The validation layer is built from source, not assumed installed | Validation is a gate the GPU tests fail without, so it is a dependency rather than an optional local install. Pinned to the same SDK tag as the headers, loader, and compiler ([implementation-notes.md](implementation-notes.md)) |
 | 2026-09-05 | Dependencies by pinned CMake `FetchContent`, never committed | A fresh clone reproduces the tree; the repository stays small and carries no third-party or proprietary code |
 | 2026-09-05 | Closure sampling returns a direction only; densities are written by the evaluation closure types | MaterialX evaluates a combinator's children *before* the combinator, so a density returned by sampling belongs to that child's own direction and cannot be mixed. Moving densities to evaluation lets every combinator mix them with the weights it already mixes responses with ([materialx-codegen.md](materialx-codegen.md) 2) |

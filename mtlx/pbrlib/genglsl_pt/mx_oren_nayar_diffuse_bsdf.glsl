@@ -49,7 +49,7 @@ void mx_oren_nayar_diffuse_bsdf(ClosureData closureData, float weight, vec3 colo
     {
         vec3 X, Y;
         mx_pt_basis(N, X, Y);
-        vec3 local = mx_pt_sample_cosine_hemisphere(closureData.u.xy);
+        vec3 local = mx_pt_sample_cosine_hemisphere(hdclaude_sample_u.xy);
 
         bsdf.sampledL = mx_pt_to_world(local, X, Y, N);
         bsdf.isDelta = 0.0;

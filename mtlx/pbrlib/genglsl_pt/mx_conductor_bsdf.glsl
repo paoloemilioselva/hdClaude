@@ -1,19 +1,28 @@
 // hdClaude genglsl_pt override of conductor_bsdf.
 //
-// As with the diffuse override, the CLOSURE_TYPE_REFLECTION branch is
-// upstream's body unchanged, plus added lines for the density and guides.
+// The CLOSURE_TYPE_REFLECTION branch is MaterialX 1.39.3's body, byte for
+// byte, plus added lines for the density and the reconstruction guides. Only
+// the PT_SAMPLE branch and those lines are hdClaude's.
 //
-// The GGX sampling itself is upstream's: `mx_ggx_importance_sample_VNDF` and
-// `mx_ggx_VNDF_reflection_PDF` already exist in
-// pbrlib/genglsl/lib/mx_microfacet_specular.glsl and are used verbatim. A
-// second GGX implementation that disagreed with MaterialX's own would be a
-// fidelity bug that no test of hdClaude against itself could find.
+// Written against **1.39.3** -- the version inside OpenUSD 26.03, which is what
+// hdClaude links and generates with. 1.39.6 changed this node's signature
+// (adding `retroreflective`) and its energy-compensation argument, so a body
+// copied from the newer upstream would not match the call this generator emits.
+//
+// The GGX sampling is upstream's `mx_ggx_importance_sample_VNDF`, used
+// verbatim. A second GGX implementation that disagreed with MaterialX's own
+// would be a fidelity bug no test of hdClaude against itself could find.
+//
+// CLOSURE_TYPE_INDIRECT is dropped: it exists upstream to look up a prefiltered
+// environment, which is a rasteriser's approximation of the integral a path
+// tracer computes exactly. Leaving it in would give the generated code a
+// second, disagreeing answer for the same quantity.
 
 #include "lib/mx_closure_type.glsl"
 #include "lib/mx_microfacet_specular.glsl"
 #include "lib/mx_pt_sampling.glsl"
 
-void mx_conductor_bsdf(ClosureData closureData, float weight, vec3 ior_n, vec3 ior_k, vec2 roughness, bool retroreflective, float thinfilm_thickness, float thinfilm_ior, vec3 N, vec3 X, int distribution, inout BSDF bsdf)
+void mx_conductor_bsdf(ClosureData closureData, float weight, vec3 ior_n, vec3 ior_k, vec2 roughness, float thinfilm_thickness, float thinfilm_ior, vec3 N, vec3 X, int distribution, inout BSDF bsdf)
 {
     bsdf.throughput = vec3(0.0);
 
@@ -26,7 +35,6 @@ void mx_conductor_bsdf(ClosureData closureData, float weight, vec3 ior_n, vec3 i
     vec3 V = closureData.V;
     vec3 L = closureData.L;
 
-    V = retroreflective ? reflect(-V, N) : V;
     N = mx_forward_facing_normal(N, V);
     float NdotV = clamp(dot(N, V), M_FLOAT_EPS, 1.0);
 
@@ -35,35 +43,33 @@ void mx_conductor_bsdf(ClosureData closureData, float weight, vec3 ior_n, vec3 i
     vec2 safeAlpha = clamp(roughness, M_FLOAT_EPS, 1.0);
     float avgAlpha = mx_average_alpha(safeAlpha);
 
-    int closureType = closureData.closureType;
-
-    // The tangent frame must be built identically in every branch, because the
-    // anisotropic VNDF sample and the anisotropic NDF evaluation are expressed
-    // in it. Upstream builds it inside the reflection branch; hoisting it here
-    // keeps sampling and evaluation on the same frame.
+    // The tangent frame is built once, outside the branches, because the
+    // anisotropic VNDF sample and the anisotropic NDF evaluation must be
+    // expressed in the same frame. Upstream builds it inside the reflection
+    // branch, where sampling cannot reach it.
     vec3 Xa = normalize(X - dot(X, N) * N);
     vec3 Ya = cross(N, Xa);
 
     // ---- hdClaude: importance sampling -------------------------------------
-    // Returns only a direction; see lib/mx_closure_type.glsl for why the
-    // density is produced by the evaluation branch instead.
-    if (closureType == CLOSURE_TYPE_PT_SAMPLE)
+    // Returns only a direction. The density comes from the evaluation branch,
+    // for the reason in lib/mx_closure_type.glsl.
+    if (closureData.closureType == CLOSURE_TYPE_PT_SAMPLE)
     {
         vec3 Vt = mx_pt_to_local(V, Xa, Ya, N);
-        vec3 Ht = mx_ggx_importance_sample_VNDF(closureData.u.xy, Vt, safeAlpha);
+        vec3 Ht = mx_ggx_importance_sample_VNDF(hdclaude_sample_u.xy, Vt, safeAlpha);
         vec3 H = mx_pt_to_world(Ht, Xa, Ya, N);
 
         bsdf.sampledL = reflect(-V, H);
         // A perfectly smooth conductor is a delta lobe: next-event estimation
-        // must be skipped on it and its MIS weight is one. The threshold is the
-        // same alpha clamp the evaluation uses, so the two branches agree about
-        // which surfaces are specular.
+        // must be skipped and its MIS weight is one. The threshold is the same
+        // alpha clamp the evaluation uses, so both branches agree about which
+        // surfaces are specular.
         bsdf.isDelta = avgAlpha <= M_FLOAT_EPS ? 1.0 : 0.0;
         return;
     }
 
-    // ---- Upstream MaterialX evaluation, unchanged ---------------------------
-    if (closureType == CLOSURE_TYPE_REFLECTION)
+    // ---- MaterialX 1.39.3 evaluation, unchanged -----------------------------
+    if (closureData.closureType == CLOSURE_TYPE_REFLECTION)
     {
         vec3 H = normalize(L + V);
 
@@ -76,22 +82,26 @@ void mx_conductor_bsdf(ClosureData closureData, float weight, vec3 ior_n, vec3 i
         float D = mx_ggx_NDF(Ht, safeAlpha);
         float G = mx_ggx_smith_G2(NdotL, NdotV, avgAlpha);
 
-        vec3 comp = mx_ggx_energy_compensation(NdotV, avgAlpha, fd);
+        vec3 comp = mx_ggx_energy_compensation(NdotV, avgAlpha, F);
 
         // Note: NdotL is cancelled out
         bsdf.response = D * F * G * comp * closureData.occlusion * weight / (4.0 * NdotV);
 
         // ---- hdClaude: density and reconstruction guides --------------------
-        // The density is upstream's own VNDF reflection PDF, evaluated on the
-        // same microfacet normal and the same tangent frame the response above
-        // used. Reusing MaterialX's helper rather than deriving a second GGX
-        // density is what keeps sampling and shading in agreement.
+        // The density is evaluated on the same microfacet normal and the same
+        // tangent frame the response above used, from MaterialX's own NDF and
+        // shadowing term. That is what keeps sampling and shading in agreement.
         float G1V = mx_ggx_smith_G1(NdotV, avgAlpha);
         bsdf.pdf = dot(N, L) > 0.0
                        ? mx_ggx_VNDF_reflection_PDF(Ht, safeAlpha, G1V, NdotV)
                        : 0.0;
         bsdf.isDelta = avgAlpha <= M_FLOAT_EPS ? 1.0 : 0.0;
-        bsdf.guideAlbedo = mx_ggx_dir_albedo(NdotV, avgAlpha, fd) * weight;
+
+        // The closure reports its own albedo. No surface-model name is
+        // consulted, which is what lets reconstruction guides work for an
+        // arbitrary authored nodegraph (docs/dlss-integration.md 3).
+        vec3 Fv = mx_compute_fresnel(NdotV, fd);
+        bsdf.guideAlbedo = mx_ggx_dir_albedo(NdotV, avgAlpha, Fv, vec3(1.0)) * weight;
         bsdf.guideRoughness = avgAlpha;
     }
 }

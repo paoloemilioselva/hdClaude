@@ -3,11 +3,14 @@
 // Deliberately thin: everything that MaterialX already provides is used from
 // upstream rather than reimplemented, because a second implementation of GGX
 // that disagrees with MaterialX's own is exactly the kind of divergence this
-// project exists to avoid. In particular
-// `mx_ggx_importance_sample_VNDF` and `mx_ggx_VNDF_reflection_PDF` come from
+// project exists to avoid. `mx_ggx_importance_sample_VNDF`, `mx_ggx_NDF` and
+// `mx_ggx_smith_G1` all come from
 // pbrlib/genglsl/lib/mx_microfacet_specular.glsl unchanged.
+//
+// Version of record: MaterialX 1.39.3, the version inside OpenUSD 26.03.
 
 #include "lib/mx_microfacet.glsl"
+#include "lib/mx_microfacet_specular.glsl"
 
 // --- Frames -----------------------------------------------------------------
 
@@ -79,6 +82,20 @@ vec3 mx_pt_sample_uniform_sphere(vec2 Xi)
 float mx_pt_uniform_sphere_pdf()
 {
     return 0.25 * M_PI_INV;
+}
+
+// --- GGX visible-normal density ---------------------------------------------
+
+// MaterialX 1.39.3 provides mx_ggx_importance_sample_VNDF but not its density;
+// 1.39.6 added mx_ggx_VNDF_reflection_PDF upstream. This is that function, with
+// the same name so the definition can simply be deleted when the OpenUSD
+// distribution moves to a MaterialX that supplies it.
+//
+// Expressed in terms of MaterialX's own mx_ggx_NDF and mx_ggx_smith_G1, so it
+// cannot disagree with the distribution the sampler actually draws from.
+float mx_ggx_VNDF_reflection_PDF(vec3 H, vec2 alpha, float G1V, float NdotV)
+{
+    return mx_ggx_NDF(H, alpha) * G1V / (4.0 * NdotV);
 }
 
 // --- Multiple importance sampling -------------------------------------------

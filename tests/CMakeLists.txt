@@ -39,3 +39,12 @@ if(HDCLAUDE_ENABLE_VULKAN)
     add_dependencies(hdClaudeGpuTests hdClaudeValidationLayers)
   endif()
 endif()
+
+if(HDCLAUDE_ENABLE_MATERIALX)
+  # Generates a material through genglsl_pt and compiles it to SPIR-V. Needs the
+  # MaterialX libraries from the OpenUSD distribution, but no GPU and no stage.
+  add_executable(hdClaudeMaterialXTests materialx_tests.cpp)
+  target_link_libraries(hdClaudeMaterialXTests PRIVATE hdClaude::MaterialX)
+  target_include_directories(hdClaudeMaterialXTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME materialx COMMAND hdClaudeMaterialXTests)
+endif()

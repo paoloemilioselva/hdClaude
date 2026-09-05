@@ -1,12 +1,14 @@
 // hdClaude genglsl_pt override of add_bsdf.
 //
-// Upstream's two lines and its derivation comment are unchanged.
+// MaterialX 1.39.3's body is reproduced verbatim; hdClaude appends the density,
+// the direction selection, and the guide combination. 1.39.3 is the version
+// inside OpenUSD 26.03, and its throughput semantics differ from 1.39.6's --
+// see docs/implementation-notes.md.
 //
 // `add` has no authored weight to select a lobe with, so hdClaude selects with
 // equal probability and reports the matching equal-weight mixture density.
 // Selecting uniformly and reporting a uniform mixture are the same choice made
-// twice; they must not be allowed to drift apart, which is why they sit in the
-// same function.
+// twice; they sit in one function so they cannot drift apart.
 
 #include "lib/mx_closure_type.glsl"
 #include "lib/mx_pt_sampling.glsl"
@@ -14,14 +16,7 @@
 void mx_add_bsdf(ClosureData closureData, BSDF in1, BSDF in2, out BSDF result)
 {
     result.response = in1.response + in2.response;
-
-    // We derive the throughput for closure addition as follows:
-    //   throughput_1 = 1 - dir_albedo_1
-    //   throughput_2 = 1 - dir_albedo_2
-    //   throughput_sum = 1 - (dir_albedo_1 + dir_albedo_2)
-    //                  = 1 - ((1 - throughput_1) + (1 - throughput_2))
-    //                  = throughput_1 + throughput_2 - 1
-    result.throughput = max(in1.throughput + in2.throughput - 1.0, 0.0);
+    result.throughput = in1.throughput + in2.throughput;
 
     // ---- hdClaude ----------------------------------------------------------
     // Responses add, but densities do not: a density must integrate to one, so
@@ -40,7 +35,7 @@ void mx_add_bsdf(ClosureData closureData, BSDF in1, BSDF in2, out BSDF result)
 
     if (closureData.closureType == CLOSURE_TYPE_PT_SAMPLE)
     {
-        float u = closureData.u.z;
+        float u = hdclaude_sample_u.z;
         float selectionPdf;
         if (mx_pt_select_lobe(u, 0.5, selectionPdf))
         {

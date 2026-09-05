@@ -10,6 +10,137 @@ result. An entry is added whenever a design document has to be corrected.
 
 ---
 
+## 2026-09-05 — MaterialX 1.39.3 is the version of record, not 1.39.6
+
+**Expected.** The design was written against a 1.39.6 checkout, on the
+assumption that 1.39.x was 1.39.x.
+
+**Actually true.** OpenUSD 26.03 ships **1.39.3**, and that is what hdClaude
+links and generates with. The differences are not cosmetic:
+
+| | 1.39.3 (ours) | 1.39.6 |
+|---|---|---|
+| Hardware generator headers | `MaterialXGenShader/` | `MaterialXGenHw/` |
+| Surface node class | `SurfaceNodeGlsl` | `HwSurfaceNode` |
+| `conductor_bsdf` signature | no `retroreflective` | has it |
+| `conductor_bsdf` energy compensation | takes `vec3 F` | takes `FresnelData` |
+| `mx_ggx_dir_albedo` | takes `F0`, `F90` | takes `FresnelData` |
+| `mx_ggx_VNDF_reflection_PDF` | **absent** | present |
+| `add_bsdf` throughput | `t1 + t2` | `max(t1 + t2 - 1, 0)` |
+| `layer_bsdf` throughput | `t1 + t2` | `t1 * t2` |
+| `multiply_bsdf` throughput | scaled by the weight | unscaled |
+| `ClosureData` construction | inline, fixed 6 args | `makeClosureData` + a substitution token |
+| `getBsdfInputName()` etc. | absent | present |
+
+**Changed.** Every override was rewritten from the 1.39.3 sources, and the
+version of record is stated in each file. Three consequences worth keeping:
+
+- `mx_ggx_VNDF_reflection_PDF` is defined in
+  `lib/mx_pt_sampling.glsl` under its upstream name, so the definition can be
+  deleted outright when the OpenUSD distribution moves to a MaterialX that
+  supplies it.
+- `layer_bsdf`'s selection probability reads `top.throughput` — the *child's*
+  value, which a leaf closure sets to `1 - directional_albedo` — so it is
+  unaffected by the combinator's own throughput rule changing between versions.
+- `ClosureData` is left **byte-compatible with upstream**. 1.39.3 constructs it
+  inline with a fixed argument list, so adding fields would break every
+  construction site hdClaude does not itself replace. The hero wavelengths and
+  the stratified sample travel in per-invocation globals instead, which costs
+  nothing in a compute shader.
+
+The 1.39.6 checkout remains useful for reading intent, but the sources under
+`<usd>/src/MaterialX-1.39.3` are the ones to consult.
+
+---
+
+## 2026-09-05 — A wrong nodedef name in an implementation fails silently
+
+**Expected.** An implementation declaration naming a nodedef that does not exist
+would be reported.
+
+**Actually true.** It is ignored. MaterialX falls back through target
+inheritance to the stock implementation, generation succeeds, and the only
+symptom is a duplicate `struct ClosureData` at GLSL compile time — because the
+stock closure file pulls in the stock closure header beside ours.
+
+The trap is that nodedef names do not follow file names:
+
+```
+mx_multiply_bsdf_color3.glsl  ->  ND_multiply_bsdfC     (not ND_multiply_bsdf_color3)
+mx_multiply_bsdf_float.glsl   ->  ND_multiply_bsdfF
+```
+
+hdClaude's first declarations used the file-derived names, so the multiply
+overrides did nothing.
+
+**Changed.** `mtlx/pbrlib/genglsl_pt/hdclaude_pbrlib_impl.mtlx` is **generated
+from** the stock `pbrlib_genglsl_impl.mtlx`, taking nodedef, file, and function
+verbatim and changing only the target. Names cannot diverge because they are not
+retyped. The file also carries the authoritative list of the 15 closures still
+to override, with their real nodedef names.
+
+---
+
+## 2026-09-05 — The surface override needs a declaration, or it silently is not used
+
+**Expected.** Registering `PathTracerSurfaceNode` in the generator's constructor
+would be enough for it to be used.
+
+**Actually true.** The C++ registration is keyed by implementation *name*
+(`IM_surface_genglsl_pt`), and that name only exists if an
+`<implementation nodedef="ND_surface" target="genglsl_pt"/>` declares it. Without
+the declaration MaterialX resolves `surface` through target inheritance to the
+stock `SurfaceNodeGlsl`.
+
+hdClaude generated a complete, compiling shader in that state. Its body was the
+rasteriser's: a `u_viewPosition`-based view vector, an "Add environment
+contribution" block, and — worst — a local
+`ClosureData closureData = ClosureData(CLOSURE_TYPE_INDIRECT, ...)` **shadowing
+the caller's parameter**. Every closure would have been evaluated with a closure
+type the integrator never asked for.
+
+**Changed.** The declaration is emitted by the generator script alongside the
+closure ones. More importantly the test now asserts the override *positively*,
+by a marker comment only hdClaude's node emits, and negatively against
+`u_viewPosition`, `Add environment contribution`, and any locally constructed
+`ClosureData`. The original assertions — absence of `u_lightData` and
+`mx_environment_radiance` — all passed while the override was inert, because
+the scene had no lights and our closures had already dropped the indirect
+branch. Absence-only assertions were the wrong shape.
+
+`createVariables` is overridden too, so the material's uniform interface no
+longer declares `u_viewPosition` or the lighting uniforms. Those are part of the
+ABI, and no kernel can meaningfully fill them.
+
+---
+
+## 2026-09-05 — Screen-space derivatives are meaningless in a wavefront kernel
+
+**Actually true.** `mx_microfacet_diffuse.glsl` contains
+
+```glsl
+float curvature = length(fwidth(N)) / length(fwidth(P));
+```
+
+inside `mx_subsurface_scattering_approx`, and a compute shader rejects `fwidth`
+without `GL_KHR_compute_shader_derivatives`.
+
+Enabling that extension would be the wrong fix. Neighbouring lanes in a `shade`
+dispatch are unrelated paths that may be on opposite sides of the scene, not
+adjacent pixels; `fwidth` there measures nothing. The extension would make the
+code compile and silently produce nonsense.
+
+**Changed.** hdClaude carries its own `lib/mx_microfacet_diffuse.glsl`: upstream's
+file with that one function removed. Its only caller is `mx_subsurface_bsdf`,
+which hdClaude will override with a real bounded spectral random walk — the
+transport this function approximates. Until then any path reaching it fails to
+compile with the function named, which is the correct loud failure.
+
+The general rule this sets: texture footprints and curvature in this renderer
+come from ray differentials, never from screen-space derivatives.
+
+---
+
 ## 2026-09-05 — The validation layer is a dependency, so it is built like one
 
 **Expected.** The Khronos validation layer would be a developer's local Vulkan
