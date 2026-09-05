@@ -10,6 +10,25 @@ result. An entry is added whenever a design document has to be corrected.
 
 ---
 
+## 2026-09-05 — Buffer device addresses need an explicit int64 extension
+
+A `uint64_t` holding a buffer device address requires
+`GL_EXT_shader_explicit_arithmetic_types_int64`, which is easy to omit because
+`GL_EXT_buffer_reference` does not imply it. The diagnostic is unhelpful:
+
+```
+ERROR: test.targetFeatures:14: '' :  syntax error, unexpected IDENTIFIER
+```
+
+It points at the declaration, not at the missing extension. Since every
+wavefront kernel reaches its queues and path state through device addresses,
+this would have been rediscovered per kernel. It is asserted once in
+`tests/glsl_compiler_tests.cpp`, in a shader that also exercises scalar block
+layout and non-uniform descriptor indexing, so a misconfigured target
+environment fails there rather than inside the first real kernel.
+
+---
+
 ## 2026-09-05 — SER is unavailable from compute shaders
 
 **Expected.** `docs/architecture.md` §2.1 stated that the `extend` kernel would

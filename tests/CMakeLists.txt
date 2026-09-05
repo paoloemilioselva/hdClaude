@@ -11,6 +11,13 @@ target_include_directories(hdClaudeCoreTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
 add_test(NAME core COMMAND hdClaudeCoreTests)
 
 if(HDCLAUDE_ENABLE_VULKAN)
+  # Compilation needs glslang but neither a GPU nor OpenUSD, so a material's
+  # generated code can be checked for compilability on any machine.
+  add_executable(hdClaudeGlslCompilerTests glsl_compiler_tests.cpp)
+  target_link_libraries(hdClaudeGlslCompilerTests PRIVATE hdClaude::Gpu)
+  target_include_directories(hdClaudeGlslCompilerTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME glsl_compiler COMMAND hdClaudeGlslCompilerTests)
+
   add_executable(hdClaudeGpuTests gpu_tests.cpp)
   target_link_libraries(hdClaudeGpuTests PRIVATE hdClaude::Gpu)
   target_include_directories(hdClaudeGpuTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

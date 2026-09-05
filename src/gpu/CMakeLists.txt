@@ -9,6 +9,7 @@
 # ---------------------------------------------------------------------------
 
 add_library(hdClaudeGpu STATIC
+    glsl_compiler.cpp
     vulkan_context.cpp
     vulkan_memory.cpp
     vulkan_resources.cpp
@@ -29,6 +30,9 @@ target_link_libraries(hdClaudeGpu
         Vulkan::Headers
     PRIVATE
         hdClaudeVma
+        glslang
+        SPIRV
+        glslang-default-resource-limits
 )
 
 # volk loads every entry point at runtime, so nothing links vulkan-1. A machine
