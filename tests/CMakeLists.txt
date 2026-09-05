@@ -53,12 +53,30 @@ if(HDCLAUDE_ENABLE_VULKAN)
 endif()
 
 if(HDCLAUDE_ENABLE_MATERIALX)
+  # MaterialX-linked tests load OpenUSD's DLLs at runtime. ctest does not
+  # inherit whatever PATH a developer happened to set, so the tests carry it
+  # themselves -- otherwise `ctest` fails with 0xC0000135 (DLL not found) while
+  # running the same binary by hand succeeds, which is a confusing way to
+  # discover a missing search path.
+  # Runtime search path for OpenUSD's DLLs, and the validation environment.
+  # Both are defined before any test uses them: a CMake variable read before it
+  # is set expands to nothing and the test silently runs unconfigured.
+  set(_usd_path_modification
+      "PATH=path_list_prepend:${HDCLAUDE_OPENUSD_ROOT}/bin"
+      "PATH=path_list_prepend:${HDCLAUDE_OPENUSD_ROOT}/lib")
+
+  set(_validation_env "HDCLAUDE_ENABLE_VULKAN_VALIDATION=1")
+  if(HDCLAUDE_VALIDATION_LAYER_DIR)
+    list(APPEND _validation_env "VK_LAYER_PATH=${HDCLAUDE_VALIDATION_LAYER_DIR}")
+  endif()
   # Generates a material through genglsl_pt and compiles it to SPIR-V. Needs the
   # MaterialX libraries from the OpenUSD distribution, but no GPU and no stage.
   add_executable(hdClaudeMaterialXTests materialx_tests.cpp)
   target_link_libraries(hdClaudeMaterialXTests PRIVATE hdClaude::MaterialX)
   target_include_directories(hdClaudeMaterialXTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   add_test(NAME materialx COMMAND hdClaudeMaterialXTests)
+  set_tests_properties(materialx PROPERTIES
+      ENVIRONMENT_MODIFICATION "${_usd_path_modification}")
 
   # The phase 4 acceptance gate: generate each closure, compile it with a
   # validation kernel, and run it on the GPU. Asks whether the shading is
@@ -71,11 +89,25 @@ if(HDCLAUDE_ENABLE_MATERIALX)
       HDCLAUDE_VALIDATION_KERNEL="${CMAKE_CURRENT_SOURCE_DIR}/closure_validation.comp.glsl")
   add_test(NAME closure_validation COMMAND hdClaudeClosureValidationTests)
 
-  set(_validation_env "HDCLAUDE_ENABLE_VULKAN_VALIDATION=1")
-  if(HDCLAUDE_VALIDATION_LAYER_DIR)
-    list(APPEND _validation_env "VK_LAYER_PATH=${HDCLAUDE_VALIDATION_LAYER_DIR}")
+  # The first images: a MaterialX material shading real geometry through the
+  # wavefront integrator. Asserts light transport -- lit brighter than unlit, a
+  # shadow darker than its surroundings, a red surface red -- rather than pixel
+  # values, because those hold for any correct renderer and none of them holds
+  # for one that is merely producing output.
+  add_executable(hdClaudeRenderTests render_tests.cpp)
+  target_link_libraries(hdClaudeRenderTests PRIVATE hdClaude::MaterialX)
+  target_include_directories(hdClaudeRenderTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME render COMMAND hdClaudeRenderTests)
+  set_tests_properties(render PROPERTIES
+      ENVIRONMENT "${_validation_env}"
+      ENVIRONMENT_MODIFICATION "${_usd_path_modification}")
+  if(TARGET hdClaudeValidationLayers)
+    add_dependencies(hdClaudeRenderTests hdClaudeValidationLayers)
   endif()
-  set_tests_properties(closure_validation PROPERTIES ENVIRONMENT "${_validation_env}")
+
+  set_tests_properties(closure_validation PROPERTIES
+      ENVIRONMENT "${_validation_env}"
+      ENVIRONMENT_MODIFICATION "${_usd_path_modification}")
   if(TARGET hdClaudeValidationLayers)
     add_dependencies(hdClaudeClosureValidationTests hdClaudeValidationLayers)
   endif()

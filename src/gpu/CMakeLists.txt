@@ -12,6 +12,7 @@ add_library(hdClaudeGpu STATIC
     acceleration_structure.cpp
     compute_pipeline.cpp
     glsl_compiler.cpp
+    path_tracer.cpp
     vulkan_context.cpp
     vulkan_memory.cpp
     vulkan_resources.cpp
@@ -44,5 +45,11 @@ target_compile_definitions(hdClaudeGpu PUBLIC VK_NO_PROTOTYPES)
 if(WIN32)
   target_compile_definitions(hdClaudeGpu PUBLIC VK_USE_PLATFORM_WIN32_KHR)
 endif()
+
+# The kernel sources are read at runtime rather than embedded, so a shader can
+# be edited and re-run without relinking. The Hydra plugin installs them beside
+# itself; this is the in-tree location.
+target_compile_definitions(hdClaudeGpu PUBLIC
+    HDCLAUDE_SHADER_DIR="${CMAKE_SOURCE_DIR}/shaders")
 
 set_target_properties(hdClaudeGpu PROPERTIES POSITION_INDEPENDENT_CODE ON)

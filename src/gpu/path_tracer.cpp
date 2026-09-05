@@ -1,0 +1,529 @@
+#include "hdclaude/gpu/path_tracer.h"
+
+#include <cstring>
+#include <fstream>
+#include <sstream>
+#include <unordered_set>
+
+namespace hdclaude {
+namespace {
+
+/// Descriptor bindings, matching shaders/path_state.glsl. Declared once and
+/// shared by every kernel, so the layouts cannot disagree and a set written for
+/// one pipeline is valid for another.
+std::vector<BindingDescription> KernelBindings()
+{
+    auto storage = [](std::uint32_t binding, const char* name) {
+        BindingDescription description;
+        description.binding = binding;
+        description.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        description.debugName = name;
+        return description;
+    };
+
+    std::vector<BindingDescription> bindings;
+    BindingDescription uniform;
+    uniform.binding = 0;
+    uniform.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    uniform.debugName = "frame";
+    bindings.push_back(uniform);
+
+    bindings.push_back(storage(1, "pathOrigin"));
+    bindings.push_back(storage(2, "pathDirection"));
+    bindings.push_back(storage(3, "pathThroughput"));
+    bindings.push_back(storage(4, "pathRadiance"));
+    bindings.push_back(storage(5, "pathPixel"));
+    bindings.push_back(storage(6, "pathRng"));
+    bindings.push_back(storage(7, "hits"));
+    bindings.push_back(storage(8, "counters"));
+    bindings.push_back(storage(9, "activeQueue"));
+    bindings.push_back(storage(10, "nextActiveQueue"));
+    bindings.push_back(storage(11, "shadowRays"));
+    bindings.push_back(storage(12, "accumulation"));
+
+    BindingDescription tlas;
+    tlas.binding = 13;
+    tlas.type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    tlas.debugName = "sceneTlas";
+    bindings.push_back(tlas);
+
+    bindings.push_back(storage(14, "instances"));
+    return bindings;
+}
+
+/// Mirrors the FrameBlock uniform in path_state.glsl, scalar layout.
+struct FrameBlock {
+    float cameraToWorld[16];
+    float environmentColor[4];
+    float sunDirection[4];
+    float sunRadiance[4];
+    std::uint32_t resolution[2];
+    std::uint32_t sampleIndex;
+    std::uint32_t maxBounces;
+    float tanHalfFov;
+    float aspect;
+    std::uint32_t pathCount;
+    std::uint32_t bounce;
+};
+
+/// Mirrors InstanceGeometry in path_state.glsl.
+struct InstanceGeometry {
+    std::uint64_t positions;
+    std::uint64_t indices;
+    std::uint64_t normals;
+    std::uint64_t uvs;
+    float objectToWorld[12];
+    float worldToObject[12];
+    std::uint32_t material;
+    std::uint32_t pad[3];
+};
+
+VulkanBuffer MakeStorage(VulkanAllocator& allocator, VkDeviceSize size,
+                         const char* name)
+{
+    BufferDescription description;
+    description.size = size;
+    description.usage =
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    description.domain = BufferDomain::DeviceLocal;
+    description.debugName = name;
+    return VulkanBuffer(allocator, description);
+}
+
+/// Invert a 3x4 rigid-plus-scale transform.
+///
+/// Written out rather than pulled from a matrix library because the GPU side
+/// needs the inverse *transpose* for normals, and a wrong inverse under
+/// non-uniform scale produces normals that are subtly off in a way that reads
+/// as a shading bug rather than a transform bug.
+void InvertTransform3x4(const float m[12], float out[12])
+{
+    const float a = m[0], b = m[1], c = m[2];
+    const float d = m[4], e = m[5], f = m[6];
+    const float g = m[8], h = m[9], i = m[10];
+
+    const float det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    const float inv = det != 0.0f ? 1.0f / det : 0.0f;
+
+    out[0] = (e * i - f * h) * inv;
+    out[1] = (c * h - b * i) * inv;
+    out[2] = (b * f - c * e) * inv;
+    out[4] = (f * g - d * i) * inv;
+    out[5] = (a * i - c * g) * inv;
+    out[6] = (c * d - a * f) * inv;
+    out[8] = (d * h - e * g) * inv;
+    out[9] = (b * g - a * h) * inv;
+    out[10] = (a * e - b * d) * inv;
+
+    const float tx = m[3], ty = m[7], tz = m[11];
+    out[3] = -(out[0] * tx + out[1] * ty + out[2] * tz);
+    out[7] = -(out[4] * tx + out[5] * ty + out[6] * tz);
+    out[11] = -(out[8] * tx + out[9] * ty + out[10] * tz);
+}
+
+void Barrier(VkCommandBuffer command)
+{
+    // A blunt whole-pipeline barrier between kernels. The wavefront stages are
+    // strictly sequential -- each reads what the previous wrote -- so there is
+    // nothing to overlap within a bounce, and a finer barrier would buy nothing
+    // while adding a way to be wrong.
+    VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+
+    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dependency.memoryBarrierCount = 1;
+    dependency.pMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier2(command, &dependency);
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+
+std::string ResolveKernelIncludes(const std::filesystem::path& directory,
+                                  const std::string& source)
+{
+    std::istringstream input(source);
+    std::ostringstream output;
+    std::string line;
+    while (std::getline(input, line)) {
+        const std::size_t directive = line.find("#include \"");
+        if (directive == std::string::npos) {
+            output << line << '\n';
+            continue;
+        }
+        const std::size_t begin = directive + 10;
+        const std::size_t end = line.find('"', begin);
+        if (end == std::string::npos) {
+            output << line << '\n';
+            continue;
+        }
+        const std::string name = line.substr(begin, end - begin);
+        std::ifstream included(directory / name);
+        if (!included) {
+            // Left in place so glslang reports the unresolved include with the
+            // file named, rather than failing later on a missing declaration.
+            output << line << '\n';
+            continue;
+        }
+        std::ostringstream contents;
+        contents << included.rdbuf();
+        output << ResolveKernelIncludes(directory, contents.str());
+    }
+    return output.str();
+}
+
+std::string LoadKernel(const std::filesystem::path& directory,
+                       const std::string& name)
+{
+    std::ifstream file(directory / name);
+    std::ostringstream contents;
+    contents << file.rdbuf();
+    return ResolveKernelIncludes(directory, contents.str());
+}
+
+// ---------------------------------------------------------------------------
+
+PathTracer::PathTracer(const VulkanContext& context, VulkanAllocator& allocator,
+                       std::filesystem::path shaderDirectory)
+    : _context(context),
+      _allocator(allocator),
+      _shaderDirectory(std::move(shaderDirectory))
+{
+    context.RequireLive("PathTracer");
+
+    _shadeKernelSource = LoadKernel(_shaderDirectory, "shade.comp.glsl");
+    if (_shadeKernelSource.empty()) {
+        throw VulkanError(VK_ERROR_INITIALIZATION_FAILED,
+                          "shade.comp.glsl not found under " +
+                              _shaderDirectory.string());
+    }
+
+    const std::vector<BindingDescription> bindings = KernelBindings();
+
+    auto build = [&](const char* name, std::uint32_t pushBytes) {
+        const std::string source = LoadKernel(_shaderDirectory, name);
+        GlslCompileOptions options;
+        options.moduleName = name;
+        const GlslCompileResult compiled = _compiler.Compile(source, options);
+        if (!compiled.ok) {
+            throw VulkanError(VK_ERROR_INITIALIZATION_FAILED,
+                              std::string("kernel ") + name + " failed:\n" +
+                                  compiled.log);
+        }
+        return ComputePipeline(context, compiled.spirv, bindings, pushBytes, name);
+    };
+
+    _raygen = build("raygen.comp.glsl", 0);
+    _extend = build("extend.comp.glsl", 0);
+    _environment = build("environment.comp.glsl", 0);
+    _shadow = build("shadow.comp.glsl", 0);
+    _film = build("film.comp.glsl", 0);
+
+    _accelerator = std::make_unique<SceneAccelerator>(context, allocator);
+}
+
+PathTracer::~PathTracer() = default;
+
+void PathTracer::SetScene(const Scene& scene,
+                          const std::vector<CompiledMaterial>& materials)
+{
+    _context.RequireLive("PathTracer::SetScene");
+
+    _accelerator->Update(scene);
+
+    // --- Instance table -----------------------------------------------------
+    // Built in the same order the accelerator emits instances, because the
+    // custom index a ray query reports is an index into this table.
+    std::vector<InstanceGeometry> table;
+    table.reserve(scene.instances.size());
+
+    for (const MeshInstance& instance : scene.instances) {
+        const BottomLevelStructure* blas = _accelerator->Blas(instance.prototype);
+        if (blas == nullptr) {
+            continue;
+        }
+        InstanceGeometry entry{};
+        entry.positions = blas->Positions().DeviceAddress();
+        entry.indices = blas->Indices().DeviceAddress();
+        entry.normals = blas->Normals().Valid() ? blas->Normals().DeviceAddress() : 0;
+        entry.uvs = blas->Uvs().Valid() ? blas->Uvs().DeviceAddress() : 0;
+        std::memcpy(entry.objectToWorld, instance.transform.m, sizeof(entry.objectToWorld));
+        InvertTransform3x4(instance.transform.m, entry.worldToObject);
+        entry.material = instance.material;
+        table.push_back(entry);
+    }
+    _instanceCount = static_cast<std::uint32_t>(table.size());
+
+    if (!table.empty()) {
+        const VkDeviceSize size = table.size() * sizeof(InstanceGeometry);
+        BufferDescription staging;
+        staging.size = size;
+        staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        staging.domain = BufferDomain::HostUpload;
+        staging.debugName = "instanceTable.staging";
+        VulkanBuffer upload(_allocator, staging);
+        upload.Write(table.data(), size);
+
+        _instanceTable = MakeStorage(_allocator, size, "instanceTable");
+        _context.SubmitImmediate([&](VkCommandBuffer command) {
+            VkBufferCopy region{};
+            region.size = size;
+            vkCmdCopyBuffer(command, upload.Handle(), _instanceTable.Handle(), 1,
+                            &region);
+        });
+    }
+
+    // --- Shading pipelines --------------------------------------------------
+    // One per material. Each is that material's generated program joined to the
+    // shade kernel, so the dispatch contains only that material's code.
+    const std::vector<BindingDescription> bindings = KernelBindings();
+    _shade.clear();
+    _shade.reserve(materials.size());
+    for (const CompiledMaterial& material : materials) {
+        _shade.push_back(ComputePipeline(_context, material.spirv, bindings,
+                                         sizeof(std::uint32_t),
+                                         "shade." + material.debugName));
+    }
+}
+
+void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
+{
+    if (width == _width && height == _height) {
+        return;
+    }
+
+    const std::uint32_t paths = width * height;
+
+    // Built into locals and published together, so a failure part-way leaves
+    // the previous resolution's buffers intact rather than a half-resized set
+    // (docs/architecture.md 6 rule 1).
+    VulkanBuffer origin = MakeStorage(_allocator, paths * 12, "path.origin");
+    VulkanBuffer direction = MakeStorage(_allocator, paths * 12, "path.direction");
+    VulkanBuffer throughput = MakeStorage(_allocator, paths * 12, "path.throughput");
+    VulkanBuffer radiance = MakeStorage(_allocator, paths * 12, "path.radiance");
+    VulkanBuffer pixel = MakeStorage(_allocator, paths * 4, "path.pixel");
+    VulkanBuffer rng = MakeStorage(_allocator, paths * 4, "path.rng");
+    VulkanBuffer hits = MakeStorage(_allocator, paths * 16, "path.hits");
+    VulkanBuffer counters = MakeStorage(_allocator, 16, "counters");
+    VulkanBuffer activeQueue = MakeStorage(_allocator, paths * 4, "queue.active");
+    VulkanBuffer nextQueue = MakeStorage(_allocator, paths * 4, "queue.nextActive");
+    VulkanBuffer shadowRays = MakeStorage(_allocator, paths * 64, "queue.shadow");
+    VulkanBuffer accumulation = MakeStorage(_allocator, paths * 16, "film");
+
+    BufferDescription uniformDescription;
+    uniformDescription.size = sizeof(FrameBlock);
+    uniformDescription.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    uniformDescription.domain = BufferDomain::HostUpload;
+    uniformDescription.debugName = "frame";
+    VulkanBuffer frameUniforms(_allocator, uniformDescription);
+
+    BufferDescription readbackDescription;
+    readbackDescription.size = paths * 16;
+    readbackDescription.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    readbackDescription.domain = BufferDomain::HostReadback;
+    readbackDescription.debugName = "film.readback";
+    VulkanBuffer readback(_allocator, readbackDescription);
+
+    _origin = std::move(origin);
+    _direction = std::move(direction);
+    _throughput = std::move(throughput);
+    _radiance = std::move(radiance);
+    _pixel = std::move(pixel);
+    _rng = std::move(rng);
+    _hits = std::move(hits);
+    _counters = std::move(counters);
+    _activeQueue = std::move(activeQueue);
+    _nextActiveQueue = std::move(nextQueue);
+    _shadowRays = std::move(shadowRays);
+    _accumulation = std::move(accumulation);
+    _frameUniforms = std::move(frameUniforms);
+    _readback = std::move(readback);
+    _width = width;
+    _height = height;
+}
+
+void PathTracer::WriteDescriptors(VkDescriptorSet set,
+                                  const ComputePipeline& pipeline)
+{
+    pipeline.WriteBuffer(set, 0, _frameUniforms, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+    pipeline.WriteBuffer(set, 1, _origin);
+    pipeline.WriteBuffer(set, 2, _direction);
+    pipeline.WriteBuffer(set, 3, _throughput);
+    pipeline.WriteBuffer(set, 4, _radiance);
+    pipeline.WriteBuffer(set, 5, _pixel);
+    pipeline.WriteBuffer(set, 6, _rng);
+    pipeline.WriteBuffer(set, 7, _hits);
+    pipeline.WriteBuffer(set, 8, _counters);
+    pipeline.WriteBuffer(set, 9, _activeQueue);
+    pipeline.WriteBuffer(set, 10, _nextActiveQueue);
+    pipeline.WriteBuffer(set, 11, _shadowRays);
+    pipeline.WriteBuffer(set, 12, _accumulation);
+
+    VkAccelerationStructureKHR tlas = _accelerator->Tlas().Handle();
+    VkWriteDescriptorSetAccelerationStructureKHR accelerationWrite{
+        VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
+    accelerationWrite.accelerationStructureCount = 1;
+    accelerationWrite.pAccelerationStructures = &tlas;
+
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet = set;
+    write.dstBinding = 13;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    write.pNext = &accelerationWrite;
+    vkUpdateDescriptorSets(_context.Device(), 1, &write, 0, nullptr);
+
+    pipeline.WriteBuffer(set, 14, _instanceTable);
+}
+
+std::vector<float> PathTracer::Render(std::uint32_t width, std::uint32_t height,
+                                      const RenderCamera& camera,
+                                      const RenderSettings& settings)
+{
+    _context.RequireLive("PathTracer::Render");
+    EnsureResolution(width, height);
+
+    const std::uint32_t paths = width * height;
+
+    // Descriptor sets are allocated per pipeline but written identically: the
+    // binding table is shared, so every kernel sees the same state.
+    VkDescriptorSet raygenSet = _raygen.AllocateSet();
+    VkDescriptorSet extendSet = _extend.AllocateSet();
+    VkDescriptorSet environmentSet = _environment.AllocateSet();
+    VkDescriptorSet shadowSet = _shadow.AllocateSet();
+    VkDescriptorSet filmSet = _film.AllocateSet();
+    std::vector<VkDescriptorSet> shadeSets;
+    shadeSets.reserve(_shade.size());
+    for (ComputePipeline& pipeline : _shade) {
+        shadeSets.push_back(pipeline.AllocateSet());
+    }
+
+    WriteDescriptors(raygenSet, _raygen);
+    WriteDescriptors(extendSet, _extend);
+    WriteDescriptors(environmentSet, _environment);
+    WriteDescriptors(shadowSet, _shadow);
+    WriteDescriptors(filmSet, _film);
+    for (std::size_t i = 0; i < _shade.size(); ++i) {
+        WriteDescriptors(shadeSets[i], _shade[i]);
+    }
+
+    // Clear the film once; samples accumulate into it.
+    _context.SubmitImmediate([&](VkCommandBuffer command) {
+        vkCmdFillBuffer(command, _accumulation.Handle(), 0, VK_WHOLE_SIZE, 0);
+    });
+
+    FrameBlock block{};
+    std::memcpy(block.cameraToWorld, camera.cameraToWorld, sizeof(block.cameraToWorld));
+    std::memcpy(block.environmentColor, settings.environmentColor, 3 * sizeof(float));
+    std::memcpy(block.sunRadiance, settings.sunRadiance, 3 * sizeof(float));
+    block.sunDirection[0] = settings.sunDirection[0];
+    block.sunDirection[1] = settings.sunDirection[1];
+    block.sunDirection[2] = settings.sunDirection[2];
+    block.sunDirection[3] = settings.sunAngularRadius;
+    block.resolution[0] = width;
+    block.resolution[1] = height;
+    block.maxBounces = settings.maxBounces;
+    block.tanHalfFov = camera.tanHalfFov;
+    block.aspect = camera.aspect;
+    block.pathCount = paths;
+
+    const std::uint32_t pathGroups = (paths + 63) / 64;
+    const std::uint32_t pixelGroupsX = (width + 7) / 8;
+    const std::uint32_t pixelGroupsY = (height + 7) / 8;
+
+    for (std::uint32_t sample = 0; sample < settings.samplesPerPixel; ++sample) {
+        block.sampleIndex = sample;
+
+        for (std::uint32_t bounce = 0; bounce < settings.maxBounces; ++bounce) {
+            block.bounce = bounce;
+            _frameUniforms.Write(&block, sizeof(block));
+
+            _context.SubmitImmediate([&](VkCommandBuffer command) {
+                if (bounce == 0) {
+                    _raygen.Dispatch(command, raygenSet, pixelGroupsX, pixelGroupsY);
+                    Barrier(command);
+                } else {
+                    // Promote the compacted queue into the active one, then
+                    // reset the counters this bounce writes.
+                    //
+                    // Copied rather than swapped so the descriptor sets stay
+                    // valid across bounces: rebinding would mean rewriting
+                    // every set every bounce, and the copy is one pass over an
+                    // index buffer against a bounce of tracing.
+                    //
+                    // Order matters. activeCount must take the previous
+                    // nextActiveCount *before* that counter is zeroed, or the
+                    // bounce dispatches over nothing.
+                    VkBufferCopy queueRegion{};
+                    queueRegion.size = static_cast<VkDeviceSize>(paths) * 4;
+                    vkCmdCopyBuffer(command, _nextActiveQueue.Handle(),
+                                    _activeQueue.Handle(), 1, &queueRegion);
+
+                    VkBufferCopy countRegion{};
+                    countRegion.srcOffset = 4;   // nextActiveCount
+                    countRegion.dstOffset = 0;   // activeCount
+                    countRegion.size = 4;
+                    vkCmdCopyBuffer(command, _counters.Handle(), _counters.Handle(),
+                                    1, &countRegion);
+                    Barrier(command);
+
+                    // nextActiveCount and shadowCount start this bounce at zero.
+                    vkCmdFillBuffer(command, _counters.Handle(), 4, 12, 0);
+                    Barrier(command);
+                }
+
+                _extend.Dispatch(command, extendSet, pathGroups);
+                Barrier(command);
+
+                _environment.Dispatch(command, environmentSet, pathGroups);
+                Barrier(command);
+
+                for (std::size_t i = 0; i < _shade.size(); ++i) {
+                    const auto materialId = static_cast<std::uint32_t>(i);
+                    _shade[i].Dispatch(command, shadeSets[i], pathGroups, 1, 1,
+                                       &materialId, sizeof(materialId));
+                    Barrier(command);
+                }
+
+                _shadow.Dispatch(command, shadowSet, pathGroups);
+                Barrier(command);
+            });
+        }
+
+        _frameUniforms.Write(&block, sizeof(block));
+        _context.SubmitImmediate([&](VkCommandBuffer command) {
+            _film.Dispatch(command, filmSet, pathGroups);
+        });
+    }
+
+    // --- Resolve ------------------------------------------------------------
+    _context.SubmitImmediate([&](VkCommandBuffer command) {
+        VkBufferCopy region{};
+        region.size = static_cast<VkDeviceSize>(paths) * 16;
+        vkCmdCopyBuffer(command, _accumulation.Handle(), _readback.Handle(), 1,
+                        &region);
+    });
+
+    std::vector<float> image(static_cast<std::size_t>(paths) * 4);
+    std::memcpy(image.data(), _readback.MappedData(), image.size() * sizeof(float));
+
+    // Divide by the sample count each pixel actually received.
+    for (std::size_t i = 0; i < paths; ++i) {
+        const float count = image[i * 4 + 3];
+        if (count > 0.0f) {
+            const float inverse = 1.0f / count;
+            image[i * 4 + 0] *= inverse;
+            image[i * 4 + 1] *= inverse;
+            image[i * 4 + 2] *= inverse;
+        }
+        image[i * 4 + 3] = 1.0f;
+    }
+    return image;
+}
+
+}  // namespace hdclaude

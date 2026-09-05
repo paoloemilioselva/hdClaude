@@ -1,0 +1,51 @@
+#version 460
+#include "path_state.glsl"
+
+// Camera rays, one per pixel, and the initial path state.
+//
+// Every slot starts active: compaction happens after the first bounce, so this
+// kernel writes the queue densely rather than through an atomic.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main()
+{
+    uvec2 pixel = gl_GlobalInvocationID.xy;
+    if (pixel.x >= frame.resolution.x || pixel.y >= frame.resolution.y)
+    {
+        return;
+    }
+    uint index = pixel.y * frame.resolution.x + pixel.x;
+
+    uint rng = hdclaude_seed(index, frame.sampleIndex, 0u);
+
+    // Subpixel jitter. Uniform within the pixel: a reconstruction filter is a
+    // film concern and is not folded into the sampling here.
+    vec2 jitter = vec2(hdclaude_random(rng), hdclaude_random(rng));
+    vec2 uv = (vec2(pixel) + jitter) / vec2(frame.resolution);
+
+    // Right-handed camera looking down -Z, matching USD's convention, so a
+    // camera transform arriving from Hydra needs no handedness fix-up.
+    vec2 ndc = uv * 2.0 - 1.0;
+    vec3 directionCamera = normalize(vec3(ndc.x * frame.tanHalfFov * frame.aspect,
+                                          -ndc.y * frame.tanHalfFov,
+                                          -1.0));
+
+    vec3 origin = (frame.cameraToWorld * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+    vec3 direction = normalize((frame.cameraToWorld * vec4(directionCamera, 0.0)).xyz);
+
+    pathOrigin.values[index] = origin;
+    pathDirection.values[index] = direction;
+    pathThroughput.values[index] = vec3(1.0);
+    pathRadiance.values[index] = vec3(0.0);
+    pathPixel.values[index] = index;
+    pathRng.values[index] = rng;
+    activeQueue.values[index] = index;
+
+    if (index == 0u)
+    {
+        counters.activeCount = frame.resolution.x * frame.resolution.y;
+        counters.nextActiveCount = 0u;
+        counters.shadowCount = 0u;
+    }
+}

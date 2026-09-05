@@ -30,7 +30,7 @@ A blocked phase must name what blocks it.
 | 2 | Vulkan context, memory, resource rules, validation gate | In progress | context, allocator, buffers, images, generations, device-lost latch, compute pipelines and dispatch; validation clean on RTX 5060 Ti |
 | 3 | Geometry pipeline: meshes, BLAS/TLAS, instancing, subdivision | In progress | prototypes, fingerprinted BLAS reuse, TLAS instancing, ray-query traversal verified by hit pattern on GPU. Remaining: subdivision, deformation, per-triangle materials |
 | 4 | `genglsl_pt` MaterialX target: eval, sample, pdf, combinators | In progress | all 22 overrides; `standard_surface` and `open_pbr_surface` compile; energy and probability-mass validated on GPU for 10 closures and combinators. Remaining: chi-squared agreement |
-| 5 | Wavefront integrator: queues, sort, per-material dispatch | Not started | - |
+| 5 | Wavefront integrator: queues, sort, per-material dispatch | In progress | raygen, extend, environment, per-material shade, shadow, film; compaction between bounces; images verified for direct lighting, per-material dispatch and cast shadows. Remaining: the material sort, indirect dispatch |
 | 6 | Spectral transport, lights, MIS, film | Not started | - |
 | 7 | Hydra delegate: adapters, render pass, AOVs, settings | Not started | - |
 | 8 | Gallery parity with hdCodex baselines | Not started | - |
@@ -139,6 +139,7 @@ reversed.
 | 2026-09-05 | Single `BeginFrame(FrameDescription)` entry point | Independent setters caused five hdCodex findings ([lessons](lessons-from-hdcodex.md) C2) |
 | 2026-09-05 | CPU readback is the Hydra AOV adapter; interop is a later phase | No public OpenUSD API crosses a device boundary for a `VkImage`. Decided now because phases 11 and 17 both depend on the answer (hdCodex D1, which was never decided) |
 | 2026-09-05 | DLSS via NGX directly, not Streamline | A delegate does not own presentation, so Frame Generation and Reflex — Streamline's reason to exist — are out of scope |
+| 2026-09-05 | Film and shadow accumulation use no atomics, by invariant | Paths map one-to-one onto pixels, so exactly one invocation writes each entry. Tracing several paths per pixel would need `VK_EXT_shader_atomic_float`; the invariant is stated in the shader so the requirement is not discovered by a race |
 | 2026-09-05 | Acceleration-structure reuse is keyed on a geometry fingerprint | Not on prototype index or name: a publication that reorders or renames prototypes must reuse everything, and one that changes a vertex must rebuild only that prototype. The opacity class is part of the fingerprint because it changes the build flags |
 | 2026-09-05 | Traversal is asserted by hit pattern, not hit count | A structure built at the wrong scale, or with a transposed instance transform, still produces hits. Coverage fractions and per-pixel instance identity are what distinguish those from correct traversal |
 | 2026-09-05 | The density invariant includes discarded probability mass | A visible-normal sampler can produce directions below the horizon, which the closure cannot scatter into. The reported density integrates to one *minus* that mass, and asserting a bare integral of one would have driven a real bug into correct closures ([implementation-notes.md](implementation-notes.md)) |
