@@ -8,6 +8,7 @@
 #include "pxr/base/gf/matrix4d.h"
 #include "pxr/base/gf/vec2f.h"
 #include "pxr/base/gf/vec3f.h"
+#include "pxr/imaging/hd/extComputationUtils.h"
 #include "pxr/imaging/hd/meshUtil.h"
 #include "pxr/imaging/hd/smoothNormals.h"
 #include "pxr/imaging/hd/vertexAdjacency.h"
@@ -150,9 +151,44 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     entry.prototype.debugName = id.GetString();
 
     // --- Points -------------------------------------------------------------
+    //
+    // A skinned mesh does not author its deformed points: UsdSkel arrives as an
+    // ExtComputation whose output *is* the points, and `Get(id, points)` on
+    // such a prim returns the rest pose or nothing at all. Reading the computed
+    // primvars first is what makes a deforming character deform instead of
+    // standing in its bind pose -- or, as happened here, vanishing entirely
+    // because the prim published no points and was dropped.
     std::vector<float> points;
-    if (!ExtractPoints(sceneDelegate->Get(id, HdTokens->points), points) ||
-        points.empty()) {
+    bool havePoints = false;
+
+    const HdExtComputationPrimvarDescriptorVector computedPrimvars =
+        sceneDelegate->GetExtComputationPrimvarDescriptors(
+            id, HdInterpolationVertex);
+    if (!computedPrimvars.empty()) {
+        const HdExtComputationUtils::ValueStore computed =
+            HdExtComputationUtils::GetComputedPrimvarValues(computedPrimvars,
+                                                            sceneDelegate);
+        for (const HdExtComputationPrimvarDescriptor& descriptor :
+             computedPrimvars) {
+            if (descriptor.name != HdTokens->points) {
+                continue;
+            }
+            const auto found = computed.find(descriptor.name);
+            if (found != computed.end() &&
+                ExtractPoints(found->second, points) && !points.empty()) {
+                havePoints = true;
+            }
+            break;
+        }
+    }
+
+    if (!havePoints) {
+        havePoints =
+            ExtractPoints(sceneDelegate->Get(id, HdTokens->points), points) &&
+            !points.empty();
+    }
+
+    if (!havePoints) {
         param->SceneStore()->RemoveMesh(id);
         *dirtyBits = HdChangeTracker::Clean;
         return;

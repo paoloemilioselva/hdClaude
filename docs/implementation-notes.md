@@ -782,3 +782,28 @@ sampled.
 conversion belongs with the spectral upsampling in phase 6; an RGB
 approximation now would have to be unlearned, and hdClaude does not approximate
 where it can wait.
+
+---
+
+## 2026-09-06 — A skinned mesh does not author its points
+
+**Expected.** `sceneDelegate->Get(id, HdTokens->points)` returns a mesh's
+points. A prim that returns none has no geometry and can be dropped.
+
+**Actually true.** For a UsdSkel character, the deformed points are the *output
+of an ExtComputation*, and the plain `Get` returns nothing. Dropping such a
+prim is not "it has no geometry": it is discarding the character. In
+`gallery/collectiveproject001.usda` this reduced the scene from its actual
+content to 70 triangles of set dressing, and the deforming character was
+absent rather than visibly wrong -- which is exactly the kind of failure that
+survives a review.
+
+**Changed.** `HdClaudeMesh::Sync` asks for
+`GetExtComputationPrimvarDescriptors(id, HdInterpolationVertex)` first and
+evaluates them through `HdExtComputationUtils::GetComputedPrimvarValues`,
+falling back to the authored points only when no computation supplies them.
+The same scene now publishes 6516 triangles, the character among them.
+
+Declaring `HdPrimTypeTokens->extComputation` as a supported sprim was necessary
+but not sufficient: without it the computation does not exist, and with it but
+without reading its output the mesh still stands in its bind pose or vanishes.
