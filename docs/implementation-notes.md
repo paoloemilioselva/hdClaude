@@ -900,3 +900,30 @@ placeholder rather than being left undefined. An undefined descriptor is
 undefined behaviour the instant a shader indexes it, and on this driver that is
 a lost device rather than a wrong pixel -- so an out-of-range index in
 generated code should show up as obvious magenta.
+
+---
+
+## 2026-09-06 — GeomSubsets without splitting the mesh
+
+A per-face material binding could be implemented by splitting a mesh into one
+prototype per subset. hdClaude does not, because that turns a twenty-subset
+asset into twenty acceleration-structure builds and twenty instances for one
+piece of geometry.
+
+Instead the binding becomes a per-triangle material index.
+`HdMeshUtil::ComputeTriangleIndices` already records the coarse face each
+triangle came from, so mapping faces to subsets and triangles to faces is
+bookkeeping rather than geometry work.
+
+Two placement decisions are worth stating.
+
+The subset's *material path* is what the mesh publishes, not an index. A mesh
+has no way to know which index a material will be assigned, and is routinely
+synced before the material prim exists at all; only the scene store, at
+snapshot time, can resolve one. A subset naming a material that is still
+missing falls back to the mesh's own binding rather than vanishing.
+
+The per-triangle indices live in their own buffer, *not* in the BLAS. A
+material index changes whenever the material set changes, and folding it into
+the acceleration structure would invalidate the fingerprint that lets a static
+scene republish without rebuilding anything.

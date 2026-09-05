@@ -100,12 +100,34 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
         if (mesh.prototype.indices.empty() || !mesh.visible) {
             continue;
         }
+        auto resolve = [&](const SdfPath& binding) -> std::uint32_t {
+            const auto found = materialIndex.find(binding);
+            return found == materialIndex.end() ? 0u : found->second;
+        };
+
         const auto prototype = static_cast<std::uint32_t>(scene.prototypes.size());
         scene.prototypes.push_back(mesh.prototype);
 
-        auto found = materialIndex.find(mesh.material);
-        const std::uint32_t material =
-            found == materialIndex.end() ? 0u : found->second;
+        const std::uint32_t material = resolve(mesh.material);
+
+        // GeomSubsets become a per-triangle material index. Resolved here
+        // rather than at Sync because only the store knows what index a
+        // material path ended up with, and a subset may name a material whose
+        // prim has not been synced yet -- that triangle falls back to the
+        // mesh's own binding rather than disappearing.
+        if (!mesh.triangleSubsets.empty()) {
+            hdclaude::MeshPrototype& published = scene.prototypes.back();
+            published.triangleMaterials.resize(mesh.triangleSubsets.size(),
+                                               material);
+            for (std::size_t i = 0; i < mesh.triangleSubsets.size(); ++i) {
+                const int subset = mesh.triangleSubsets[i];
+                published.triangleMaterials[i] =
+                    (subset >= 0 && static_cast<std::size_t>(subset) <
+                                        mesh.subsetMaterials.size())
+                        ? resolve(mesh.subsetMaterials[subset])
+                        : material;
+            }
+        }
 
         for (const hdclaude::Transform3x4& transform : mesh.transforms) {
             hdclaude::MeshInstance instance;

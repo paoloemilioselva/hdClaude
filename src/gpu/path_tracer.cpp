@@ -87,6 +87,7 @@ struct InstanceGeometry {
     std::uint64_t indices;
     std::uint64_t normals;
     std::uint64_t uvs;
+    std::uint64_t triangleMaterials;
     float objectToWorld[12];
     float worldToObject[12];
     std::uint32_t material;
@@ -390,6 +391,46 @@ void PathTracer::SetScene(const Scene& scene,
     // --- Instance table -----------------------------------------------------
     // Built in the same order the accelerator emits instances, because the
     // custom index a ray query reports is an index into this table.
+    // --- Per-triangle materials ----------------------------------------------
+    // One buffer for the whole scene, with each prototype's run at a known
+    // offset. It is deliberately *not* part of the BLAS: a material index
+    // changes whenever the material set changes, and folding it into the
+    // acceleration structure would throw away the fingerprint reuse that makes
+    // a static scene cheap to republish.
+    std::vector<std::uint32_t> triangleMaterials;
+    std::vector<std::size_t> prototypeMaterialOffset(scene.prototypes.size(),
+                                                     std::size_t(-1));
+    for (std::size_t i = 0; i < scene.prototypes.size(); ++i) {
+        const MeshPrototype& prototype = scene.prototypes[i];
+        if (prototype.triangleMaterials.empty()) {
+            continue;
+        }
+        prototypeMaterialOffset[i] = triangleMaterials.size();
+        triangleMaterials.insert(triangleMaterials.end(),
+                                 prototype.triangleMaterials.begin(),
+                                 prototype.triangleMaterials.end());
+    }
+
+    _triangleMaterials = VulkanBuffer();
+    if (!triangleMaterials.empty()) {
+        const VkDeviceSize size = triangleMaterials.size() * sizeof(std::uint32_t);
+        BufferDescription staging;
+        staging.size = size;
+        staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        staging.domain = BufferDomain::HostUpload;
+        staging.debugName = "triangleMaterials.staging";
+        VulkanBuffer upload(_allocator, staging);
+        upload.Write(triangleMaterials.data(), size);
+
+        _triangleMaterials = MakeStorage(_allocator, size, "triangleMaterials");
+        _context.SubmitImmediate([&](VkCommandBuffer command) {
+            VkBufferCopy region{};
+            region.size = size;
+            vkCmdCopyBuffer(command, upload.Handle(), _triangleMaterials.Handle(),
+                            1, &region);
+        });
+    }
+
     std::vector<InstanceGeometry> table;
     table.reserve(scene.instances.size());
 
@@ -403,6 +444,16 @@ void PathTracer::SetScene(const Scene& scene,
         entry.indices = blas->Indices().DeviceAddress();
         entry.normals = blas->Normals().Valid() ? blas->Normals().DeviceAddress() : 0;
         entry.uvs = blas->Uvs().Valid() ? blas->Uvs().DeviceAddress() : 0;
+
+        entry.triangleMaterials = 0;
+        if (instance.prototype < prototypeMaterialOffset.size() &&
+            prototypeMaterialOffset[instance.prototype] != std::size_t(-1) &&
+            _triangleMaterials.Valid()) {
+            entry.triangleMaterials =
+                _triangleMaterials.DeviceAddress() +
+                prototypeMaterialOffset[instance.prototype] *
+                    sizeof(std::uint32_t);
+        }
         std::memcpy(entry.objectToWorld, instance.transform.m, sizeof(entry.objectToWorld));
         InvertTransform3x4(instance.transform.m, entry.worldToObject);
         entry.material = instance.material;

@@ -148,7 +148,8 @@ void main()
     {
         return;   // missed; the environment kernel owns this path
     }
-    if (instances.values[record.x].material != shadeParams.materialId)
+    if (hdclaude_material_of(instances.values[record.x], record.y) !=
+        shadeParams.materialId)
     {
         return;   // a different material's dispatch owns this path
     }

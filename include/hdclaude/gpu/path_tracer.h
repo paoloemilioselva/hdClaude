@@ -141,6 +141,7 @@ class PathTracer {
     std::unique_ptr<SceneAccelerator> _accelerator;
     VulkanBuffer _instanceTable;
     std::uint32_t _instanceCount = 0;
+    VulkanBuffer _triangleMaterials;
     VulkanBuffer _lightTable;
     std::uint32_t _lightCount = 0;
 

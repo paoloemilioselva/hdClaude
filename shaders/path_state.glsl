@@ -110,6 +110,7 @@ layout(buffer_reference, scalar) readonly buffer PositionBuffer { vec3 values[];
 layout(buffer_reference, scalar) readonly buffer IndexBuffer    { uint values[]; };
 layout(buffer_reference, scalar) readonly buffer NormalBuffer   { vec3 values[]; };
 layout(buffer_reference, scalar) readonly buffer UvBuffer       { vec2 values[]; };
+layout(buffer_reference, scalar) readonly buffer TriMaterialBuffer { uint values[]; };
 
 /// Per-instance geometry, reached by device address so that adding a prototype
 /// does not touch any descriptor set.
@@ -118,6 +119,9 @@ struct InstanceGeometry {
     uint64_t indices;
     uint64_t normals;   // zero if the mesh has no authored normals
     uint64_t uvs;       // zero if the mesh has no texture coordinates
+    // Per-triangle material, from GeomSubsets. Zero when every triangle uses
+    // the instance's own binding, which is the common case.
+    uint64_t triangleMaterials;
     mat3x4 objectToWorld;
     mat3x4 worldToObject;
     uint material;
@@ -125,6 +129,16 @@ struct InstanceGeometry {
     uint pad1;
     uint pad2;
 };
+
+/// The material shading triangle `primitive` of `geometry`.
+uint hdclaude_material_of(InstanceGeometry geometry, int primitive)
+{
+    if (geometry.triangleMaterials != 0ul)
+    {
+        return TriMaterialBuffer(geometry.triangleMaterials).values[primitive];
+    }
+    return geometry.material;
+}
 layout(set = 0, binding = 14, scalar) readonly buffer InstanceTable {
     InstanceGeometry values[];
 } instances;

@@ -9,6 +9,7 @@
 #include "pxr/base/gf/vec2f.h"
 #include "pxr/base/gf/vec3f.h"
 #include "pxr/imaging/hd/extComputationUtils.h"
+#include "pxr/imaging/hd/geomSubset.h"
 #include "pxr/imaging/hd/meshUtil.h"
 #include "pxr/imaging/hd/smoothNormals.h"
 #include "pxr/imaging/hd/vertexAdjacency.h"
@@ -16,6 +17,7 @@
 #include "pxr/imaging/hdMtlx/hdMtlx.h"
 
 #include <algorithm>
+#include <map>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -209,6 +211,42 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
         return;
     }
 
+    // --- GeomSubsets ----------------------------------------------------------
+    // A per-face material binding becomes a per-triangle one, using the coarse
+    // face index HdMeshUtil already recorded for each triangle. Doing it here
+    // rather than splitting the mesh into one prototype per subset keeps a
+    // single acceleration structure per mesh, which is what makes a
+    // twenty-subset asset cost one build rather than twenty.
+    const HdGeomSubsets& subsets = topology.GetGeomSubsets();
+    if (!subsets.empty()) {
+        entry.subsetMaterials.reserve(subsets.size());
+
+        // Coarse face -> subset. A face named by no subset keeps the mesh's own
+        // binding, and a face named by two takes the last, which is what USD's
+        // own ordering implies.
+        std::map<int, int> faceSubset;
+        for (std::size_t i = 0; i < subsets.size(); ++i) {
+            const HdGeomSubset& subset = subsets[i];
+            entry.subsetMaterials.push_back(subset.materialId);
+            if (subset.type != HdGeomSubset::TypeFaceSet) {
+                continue;
+            }
+            for (const int face : subset.indices) {
+                faceSubset[face] = static_cast<int>(i);
+            }
+        }
+
+        entry.triangleSubsets.assign(triangleIndices.size(), -1);
+        for (std::size_t t = 0; t < primitiveParams.size(); ++t) {
+            const int face = HdMeshUtil::DecodeFaceIndexFromCoarseFaceParam(
+                primitiveParams[t]);
+            const auto found = faceSubset.find(face);
+            if (found != faceSubset.end()) {
+                entry.triangleSubsets[t] = found->second;
+            }
+        }
+    }
+
     entry.prototype.positions = std::move(points);
     entry.prototype.indices.reserve(triangleIndices.size() * 3);
     for (const GfVec3i& triangle : triangleIndices) {
@@ -322,11 +360,12 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     }
 
     HdClaudeTrace("mesh <%s>: %zu vertices, %zu triangles, %zu instances, "
-                  "normals %s, uvs %s",
+                  "normals %s, uvs %s, %zu subsets",
                   id.GetText(), entry.prototype.VertexCount(),
                   entry.prototype.TriangleCount(), entry.transforms.size(),
                   entry.prototype.normals.empty() ? "no" : "yes",
-                  entry.prototype.uvs.empty() ? "no" : "yes");
+                  entry.prototype.uvs.empty() ? "no" : "yes",
+                  entry.subsetMaterials.size());
     param->SceneStore()->PublishMesh(id, std::move(entry));
     *dirtyBits = HdChangeTracker::Clean;
 }

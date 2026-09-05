@@ -30,6 +30,16 @@ struct HdClaudeMeshEntry {
     std::vector<hdclaude::Transform3x4> transforms;
     SdfPath material;
     bool visible = true;
+
+    /// Material bound to each GeomSubset, in subset order.
+    ///
+    /// Kept as paths rather than indices because the store assigns indices at
+    /// snapshot time: a mesh has no way to know what index a material will get,
+    /// and may well be synced before that material exists at all.
+    std::vector<SdfPath> subsetMaterials;
+    /// Which entry of `subsetMaterials` owns each triangle, or -1 for the
+    /// mesh's own binding. Empty when the mesh has no subsets.
+    std::vector<int> triangleSubsets;
 };
 
 /// A compiled material, keyed by the path of the Hydra material prim.
