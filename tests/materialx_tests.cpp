@@ -130,6 +130,71 @@ mx::DocumentPtr BuildOverriddenClosureMaterial(mx::DocumentPtr libraries)
     return doc;
 }
 
+/// Stands in for the wavefront `shade` kernel: supplies the workgroup size,
+/// fills the SurfaceHit and the per-invocation path state, and drives the two
+/// passes a scattering event actually performs. Compiling a generated material
+/// with this is what proves the ABI is callable, not merely that the text
+/// parses.
+const char* const kTestKernelHarness = R"(
+// --- test harness standing in for the wavefront shade kernel ----------------
+layout(local_size_x = 64) in;
+
+void main()
+{
+    // Geometry the kernel would interpolate from the hit record.
+    vd.normalWorld = vec3(0.0, 0.0, 1.0);
+    vd.positionWorld = vec3(0.0);
+    vd.tangentWorld = vec3(1.0, 0.0, 0.0);
+
+    // Per-invocation path state the closures read.
+    hdclaude_wavelengths = vec4(450.0, 550.0, 600.0, 650.0);
+    hdclaude_sample_u = vec3(0.31, 0.62, 0.47);
+
+    vec3 V = normalize(vec3(0.0, 0.4, 1.0));
+    vec3 N = vd.normalWorld;
+    vec3 P = vd.positionWorld;
+
+    // Pass 1: choose a direction.
+    ClosureData sampleData =
+        ClosureData(CLOSURE_TYPE_PT_SAMPLE, vec3(0.0), V, N, P, 1.0);
+    hdclaude_material_shade(sampleData);
+    vec3 L = hdclaude_bsdf.sampledL;
+
+    // Pass 2: evaluate f and pdf at that direction.
+    ClosureData evalData =
+        ClosureData(CLOSURE_TYPE_REFLECTION, L, V, N, P, 1.0);
+    hdclaude_material_shade(evalData);
+
+    // Consume every ABI output so nothing is optimised away.
+    float keep = hdclaude_bsdf.response.x + hdclaude_bsdf.pdf +
+                 hdclaude_bsdf.isDelta + hdclaude_bsdf.guideRoughness +
+                 hdclaude_bsdf.guideAlbedo.x + hdclaude_emission.x +
+                 hdclaude_opacity + L.x;
+    if (keep < -1.0e30)
+    {
+        hdclaude_opacity = keep;
+    }
+}
+)";
+
+/// Strip `//` comments, so an assertion about generated *code* is not satisfied
+/// or defeated by prose in a library file's header.
+std::string StripComments(const std::string& source)
+{
+    std::string out;
+    out.reserve(source.size());
+    for (std::size_t i = 0; i < source.size();) {
+        if (source[i] == '/' && i + 1 < source.size() && source[i + 1] == '/') {
+            while (i < source.size() && source[i] != '\n') {
+                ++i;
+            }
+        } else {
+            out.push_back(source[i++]);
+        }
+    }
+    return out;
+}
+
 struct Generated {
     bool ok = false;
     std::string source;
@@ -249,50 +314,84 @@ void TestOverriddenClosuresGenerateAndCompile(const GlslCompiler& compiler)
     // the workgroup size, fills the SurfaceHit, and calls in. Compiling it with
     // that harness is what proves the ABI is callable, rather than only that
     // the text parses.
-    const std::string kernel = generated.source + R"(
-// --- test harness standing in for the wavefront shade kernel ----------------
-layout(local_size_x = 64) in;
-
-void main()
-{
-    // Geometry the kernel would interpolate from the hit record.
-    vd.normalWorld = vec3(0.0, 0.0, 1.0);
-    vd.positionWorld = vec3(0.0);
-    vd.tangentWorld = vec3(1.0, 0.0, 0.0);
-
-    // Per-invocation path state the closures read.
-    hdclaude_wavelengths = vec4(450.0, 550.0, 600.0, 650.0);
-    hdclaude_sample_u = vec3(0.31, 0.62, 0.47);
-
-    vec3 V = normalize(vec3(0.0, 0.4, 1.0));
-    vec3 N = vd.normalWorld;
-    vec3 P = vd.positionWorld;
-
-    // Pass 1: choose a direction.
-    ClosureData sampleData =
-        ClosureData(CLOSURE_TYPE_PT_SAMPLE, vec3(0.0), V, N, P, 1.0);
-    hdclaude_material_shade(sampleData);
-    vec3 L = hdclaude_bsdf.sampledL;
-
-    // Pass 2: evaluate f and pdf at that direction.
-    ClosureData evalData =
-        ClosureData(CLOSURE_TYPE_REFLECTION, L, V, N, P, 1.0);
-    hdclaude_material_shade(evalData);
-
-    // Consume every ABI output so nothing is optimised away.
-    float keep = hdclaude_bsdf.response.x + hdclaude_bsdf.pdf +
-                 hdclaude_bsdf.isDelta + hdclaude_bsdf.guideRoughness +
-                 hdclaude_bsdf.guideAlbedo.x + hdclaude_emission.x +
-                 hdclaude_opacity + L.x;
-    if (keep < -1.0e30)
-    {
-        hdclaude_opacity = keep;
-    }
-}
-)";
+    const std::string kernel = generated.source + kTestKernelHarness;
 
     GlslCompileOptions options;
     options.moduleName = "hdclaude_pt_closures";
+    const GlslCompileResult compiled = compiler.Compile(kernel, options);
+    if (!compiled.ok) {
+        std::fprintf(stderr, "  SPIR-V compilation failed:\n%s\n",
+                     compiled.log.c_str());
+    }
+    CHECK(compiled.ok);
+    if (compiled.ok) {
+        std::printf("  compiled to %zu SPIR-V words\n", compiled.spirv.size());
+    }
+}
+
+/// A material built from a named surface shader, as a real asset would be.
+///
+/// hdClaude has no knowledge of these names anywhere in its code: they reach
+/// the generator as ordinary nodegraphs, and every closure inside them is one
+/// of the 22 overrides. That is the whole claim of
+/// docs/architecture.md 1.1, and this is what tests it.
+mx::DocumentPtr BuildNamedSurfaceMaterial(mx::DocumentPtr libraries,
+                                          const std::string& shaderNode)
+{
+    mx::DocumentPtr doc = mx::createDocument();
+    doc->importLibrary(libraries);
+
+    mx::NodePtr shader = AddNode(doc, shaderNode, "ptShader", "surfaceshader");
+    if (!shader) {
+        return nullptr;
+    }
+    mx::NodePtr material = AddNode(doc, "surfacematerial", "ptMaterial", "material");
+    Connect(material, "surfaceshader", shader);
+    return doc;
+}
+
+void TestNamedSurfaceGeneratesAndCompiles(const GlslCompiler& compiler,
+                                          mx::DocumentPtr libraries,
+                                          const std::string& shaderNode)
+{
+    std::printf("  --- %s ---\n", shaderNode.c_str());
+
+    mx::DocumentPtr doc = BuildNamedSurfaceMaterial(libraries, shaderNode);
+    if (!doc) {
+        std::fprintf(stderr, "  %s is not in this MaterialX distribution\n",
+                     shaderNode.c_str());
+        return;
+    }
+
+    const Generated generated = GenerateMaterial(doc, shaderNode);
+    if (!generated.ok) {
+        std::fprintf(stderr, "  generation failed: %s\n", generated.error.c_str());
+    }
+    CHECK(generated.ok);
+    if (!generated.ok) {
+        return;
+    }
+    SaveForInspection(shaderNode, generated.source);
+
+    // The same structural guarantees as the hand-built graph. A named surface
+    // shader is a large nodegraph, so this is where an unconverted closure or a
+    // stray rasteriser construct would surface.
+    CHECK(generated.source.find("hdclaude_material_shade") != std::string::npos);
+    CHECK(generated.source.find("u_lightData") == std::string::npos);
+    CHECK(generated.source.find("u_viewPosition") == std::string::npos);
+    CHECK(generated.source.find("mx_environment_radiance") == std::string::npos);
+    CHECK(generated.source.find("mx_environment_irradiance") == std::string::npos);
+    CHECK(generated.source.find("ClosureData closureData = ClosureData(") ==
+          std::string::npos);
+    // The screen-space curvature helper must never reach a compute stage.
+    // Checked against code only: hdClaude's own override carries an
+    // explanatory comment that quotes the offending line.
+    CHECK(StripComments(generated.source).find("fwidth") == std::string::npos);
+
+    const std::string kernel = generated.source + kTestKernelHarness;
+
+    GlslCompileOptions options;
+    options.moduleName = shaderNode;
     const GlslCompileResult compiled = compiler.Compile(kernel, options);
     if (!compiled.ok) {
         std::fprintf(stderr, "  SPIR-V compilation failed:\n%s\n",
@@ -321,6 +420,13 @@ int main()
 
     TestTargetIsRegistered();
     TestOverriddenClosuresGenerateAndCompile(compiler);
+
+    // The override set is complete, so real authored surface shaders must now
+    // generate and compile. hdClaude contains no knowledge of these names:
+    // they arrive as ordinary nodegraphs over the 22 overridden closures.
+    mx::DocumentPtr libraries = LoadLibraries();
+    TestNamedSurfaceGeneratesAndCompiles(compiler, libraries, "standard_surface");
+    TestNamedSurfaceGeneratesAndCompiles(compiler, libraries, "open_pbr_surface");
 
     return hdclaude_test::Summarize("hdClaudeMaterialXTests");
 }

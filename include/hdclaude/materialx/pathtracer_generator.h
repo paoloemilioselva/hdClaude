@@ -112,6 +112,19 @@ class PathTracerShaderGenerator : public mx::VkShaderGenerator {
 
     static const mx::string TARGET;
 
+    /// Whether a node's generated function takes `closureData` as a parameter.
+    ///
+    /// Upstream answers yes for BSDF, EDF and VDF nodes only. That is right for
+    /// the stock target, whose surface node *constructs* its own ClosureData and
+    /// so needs nothing passed in. hdClaude's surface node evaluates against the
+    /// caller's, which means a shader nodegraph -- `standard_surface`,
+    /// `open_pbr_surface`, any authored surface graph -- must thread it through
+    /// too, or its generated function body references an undeclared identifier.
+    ///
+    /// Replacing the calling convention is what creates this requirement, so
+    /// this override and PathTracerSurfaceNode belong together.
+    bool nodeNeedsClosureData(const mx::ShaderNode& node) const override;
+
   protected:
     /// Emits a compute stage in place of the pixel stage. The stage *slot* is
     /// still Stage::PIXEL because that is simply where MaterialX puts the

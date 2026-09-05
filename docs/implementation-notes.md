@@ -10,6 +10,74 @@ result. An entry is added whenever a design document has to be corrected.
 
 ---
 
+## 2026-09-05 — Replacing the surface node changes who needs `closureData`
+
+**Expected.** Overriding the `surface` node so it evaluates against the caller's
+`closureData` would be self-contained.
+
+**Actually true.** It was, for a hand-built graph whose surface node sits
+directly in the material. It broke the moment a *named* surface shader was
+tried, because `standard_surface` and `open_pbr_surface` are nodegraphs, and
+MaterialX emits a nodegraph as its own GLSL function:
+
+```
+ERROR: standard_surface:2437: 'closureData' : undeclared identifier
+```
+
+`ClosureCompoundNode` decides whether to thread `closureData` into that
+function's signature and call by asking
+`ShaderGenerator::nodeNeedsClosureData(node)`, and
+`HwShaderGenerator` answers yes for BSDF, EDF and VDF nodes only. That is
+correct for the stock target: its surface node *constructs* its own
+`ClosureData`, so a shader nodegraph never needs one passed in.
+
+hdClaude's does not construct one, so shader and surface nodes must thread it
+too.
+
+**Changed.** `PathTracerShaderGenerator::nodeNeedsClosureData` also returns true
+for `Classification::SHADER` and `Classification::SURFACE`. The override and
+`PathTracerSurfaceNode` belong together: replacing the calling convention is
+what creates the requirement.
+
+The wider point: an extension point can have consequences several layers away
+from where it is applied, and a test on a small hand-built graph will not find
+them. Testing against the named surface shaders real assets use is what did.
+
+---
+
+## 2026-09-05 — Extending BSDF means extending VDF too
+
+**Actually true.** MaterialX 1.39.3 registers `Type::VDF` as an *alias* of the
+BSDF struct — the same type name, no definition of its own — but with a
+**separate copy of the default-value literal**:
+
+```cpp
+registerTypeSyntax(Type::BSDF, AggregateTypeSyntax(this, "BSDF",
+    "BSDF(vec3(0.0),vec3(1.0))", ..., "struct BSDF { ... };"));
+
+registerTypeSyntax(Type::VDF, AggregateTypeSyntax(this, "BSDF",
+    "BSDF(vec3(0.0),vec3(1.0))", EMPTY_STRING));   // no definition, own literal
+```
+
+Re-registering only `Type::BSDF` therefore leaves every VDF variable initialised
+with a two-field literal for an eight-field struct:
+
+```
+ERROR: open_pbr_surface:2626: 'constructor' : Number of constructor parameters
+does not match the number of structure fields
+```
+
+**Changed.** Both types are re-registered, from one shared default-value string
+and one shared definition, so they cannot drift apart.
+
+Worth noting *when* this surfaced. The hand-built closure material and
+`standard_surface` both passed; only `open_pbr_surface` failed, because it is
+the first of the three to use a VDF. A defect reachable by one material in three
+is the argument for testing against the shaders assets actually use rather than
+against a graph written to exercise what was just implemented.
+
+---
+
 ## 2026-09-05 — MaterialX 1.39.3 is the version of record, not 1.39.6
 
 **Expected.** The design was written against a 1.39.6 checkout, on the
@@ -76,8 +144,9 @@ overrides did nothing.
 **Changed.** `mtlx/pbrlib/genglsl_pt/hdclaude_pbrlib_impl.mtlx` is **generated
 from** the stock `pbrlib_genglsl_impl.mtlx`, taking nodedef, file, and function
 verbatim and changing only the target. Names cannot diverge because they are not
-retyped. The file also carries the authoritative list of the 15 closures still
-to override, with their real nodedef names.
+retyped, and the generator is committed as
+`tools/generate_pt_implementations.py` so the same guarantee survives the next
+MaterialX version.
 
 ---
 

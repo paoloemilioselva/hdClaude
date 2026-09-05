@@ -1,0 +1,187 @@
+// hdClaude genglsl_pt override of generalized_schlick_bsdf.
+//
+// Structurally identical to the dielectric override: the same GGX machinery
+// with an artistic Schlick Fresnel in place of the physical dielectric one. The
+// commentary on sampling, on the transmission evaluation replacing upstream's
+// refracted environment lookup, and on why the tangent frame and directional
+// albedo are hoisted, is in mx_dielectric_bsdf.glsl and is not repeated here.
+//
+// MaterialX 1.39.3's REFLECTION branch is verbatim.
+//
+// One difference worth naming: the relative IOR for refraction is recovered
+// from the average F0 through `mx_f0_to_ior`, exactly as upstream does in its
+// own transmission branch. An artistic Fresnel does not carry an IOR, so this
+// is the only definition of "which way does light bend" available, and using
+// anything else would make the refracted direction disagree with the Fresnel
+// weighting applied to it.
+
+#include "lib/mx_closure_type.glsl"
+#include "lib/mx_microfacet_specular.glsl"
+#include "lib/mx_pt_sampling.glsl"
+
+void mx_generalized_schlick_bsdf(ClosureData closureData, float weight, vec3 color0, vec3 color82, vec3 color90, float exponent, vec2 roughness, float thinfilm_thickness, float thinfilm_ior, vec3 N, vec3 X, int distribution, int scatter_mode, inout BSDF bsdf)
+{
+    if (weight < M_FLOAT_EPS)
+    {
+        bsdf.pdf = 0.0;
+        return;
+    }
+    if (closureData.closureType != CLOSURE_TYPE_TRANSMISSION &&
+        closureData.closureType != CLOSURE_TYPE_PT_SAMPLE && scatter_mode == 1)
+    {
+        return;
+    }
+
+    vec3 V = closureData.V;
+    vec3 L = closureData.L;
+
+    bool entering = dot(N, V) > 0.0;
+
+    N = mx_forward_facing_normal(N, V);
+    float NdotV = clamp(dot(N, V), M_FLOAT_EPS, 1.0);
+
+    vec3 safeColor0 = max(color0, 0.0);
+    vec3 safeColor82 = max(color82, 0.0);
+    vec3 safeColor90 = max(color90, 0.0);
+    FresnelData fd = mx_init_fresnel_schlick(safeColor0, safeColor82, safeColor90, exponent, thinfilm_thickness, thinfilm_ior);
+
+    vec2 safeAlpha = clamp(roughness, M_FLOAT_EPS, 1.0);
+    float avgAlpha = mx_average_alpha(safeAlpha);
+
+    // Recovered from the average F0; see the header note.
+    float avgF0 = dot(safeColor0, vec3(1.0 / 3.0));
+    float ior = mx_f0_to_ior(avgF0);
+    float etaI = entering ? 1.0 : ior;
+    float etaT = entering ? ior : 1.0;
+    float etaRatio = etaI / etaT;
+    float etaInv = etaT / etaI;
+
+    bool transmissive = scatter_mode != 0;
+    bool smoothSurface = avgAlpha <= M_FLOAT_EPS;
+
+    vec3 Xa = normalize(X - dot(X, N) * N);
+    vec3 Ya = cross(N, Xa);
+
+    vec3 Fv = mx_compute_fresnel(NdotV, fd);
+    vec3 compV = mx_ggx_energy_compensation(NdotV, avgAlpha, Fv);
+    vec3 dirAlbedoV = mx_ggx_dir_albedo(NdotV, avgAlpha, safeColor0, safeColor90) * compV;
+    float avgDirAlbedo = dot(dirAlbedoV, vec3(1.0 / 3.0));
+    bsdf.throughput = vec3(1.0 - avgDirAlbedo * weight);
+
+    // ---- hdClaude: importance sampling -------------------------------------
+    if (closureData.closureType == CLOSURE_TYPE_PT_SAMPLE)
+    {
+        vec3 Vt = mx_pt_to_local(V, Xa, Ya, N);
+        vec3 Ht = mx_ggx_importance_sample_VNDF(hdclaude_sample_u.xy, Vt, safeAlpha);
+        vec3 H = mx_pt_to_world(Ht, Xa, Ya, N);
+
+        float VdotH = clamp(dot(V, H), M_FLOAT_EPS, 1.0);
+        vec3 Fh = mx_compute_fresnel(VdotH, fd);
+        float reflectProbability =
+            transmissive ? clamp(mx_pt_luminance_weight(Fh), 0.05, 0.95) : 1.0;
+
+        float u = hdclaude_sample_u.z;
+        float selectionPdf;
+        vec3 refracted;
+        if (mx_pt_select_lobe(u, reflectProbability, selectionPdf) ||
+            !mx_pt_refract(V, H, etaRatio, refracted))
+        {
+            bsdf.sampledL = reflect(-V, H);
+        }
+        else
+        {
+            bsdf.sampledL = normalize(refracted);
+        }
+        bsdf.isDelta = smoothSurface ? 1.0 : 0.0;
+        return;
+    }
+
+    // ---- MaterialX 1.39.3 evaluation, unchanged -----------------------------
+    if (closureData.closureType == CLOSURE_TYPE_REFLECTION)
+    {
+        vec3 H = normalize(L + V);
+
+        float NdotL = clamp(dot(N, L), M_FLOAT_EPS, 1.0);
+        float VdotH = clamp(dot(V, H), M_FLOAT_EPS, 1.0);
+
+        vec3 Ht = vec3(dot(H, Xa), dot(H, Ya), dot(H, N));
+
+        vec3  F = mx_compute_fresnel(VdotH, fd);
+        float D = mx_ggx_NDF(Ht, safeAlpha);
+        float G = mx_ggx_smith_G2(NdotL, NdotV, avgAlpha);
+
+        vec3 comp = mx_ggx_energy_compensation(NdotV, avgAlpha, F);
+
+        // Note: NdotL is cancelled out
+        bsdf.response = D * F * G * comp * closureData.occlusion * weight / (4.0 * NdotV);
+
+        // ---- hdClaude: density and reconstruction guides --------------------
+        float G1V = mx_ggx_smith_G1(NdotV, avgAlpha);
+        float reflectProbability =
+            transmissive ? clamp(mx_pt_luminance_weight(F), 0.05, 0.95) : 1.0;
+        bsdf.pdf = dot(N, L) > 0.0
+                       ? mx_ggx_VNDF_reflection_PDF(Ht, safeAlpha, G1V, NdotV) *
+                             reflectProbability
+                       : 0.0;
+        bsdf.isDelta = smoothSurface ? 1.0 : 0.0;
+        bsdf.guideAlbedo = dirAlbedoV * weight;
+        bsdf.guideRoughness = avgAlpha;
+    }
+    else if (closureData.closureType == CLOSURE_TYPE_TRANSMISSION)
+    {
+        if (!transmissive)
+        {
+            bsdf.pdf = 0.0;
+            return;
+        }
+
+        vec3 Ht3 = -(etaI * V + etaT * L);
+        float htLength = length(Ht3);
+        if (htLength < M_FLOAT_EPS)
+        {
+            bsdf.pdf = 0.0;
+            return;
+        }
+        vec3 H = Ht3 / htLength;
+        if (dot(H, N) < 0.0)
+        {
+            H = -H;
+        }
+
+        float VdotH = dot(V, H);
+        float LdotH = dot(L, H);
+        float NdotL = abs(dot(N, L));
+
+        if (VdotH * LdotH > 0.0)
+        {
+            bsdf.pdf = 0.0;
+            return;
+        }
+
+        vec3 Hlocal = vec3(dot(H, Xa), dot(H, Ya), dot(H, N));
+        vec3 F = mx_compute_fresnel(abs(VdotH), fd);
+        float D = mx_ggx_NDF(Hlocal, safeAlpha);
+        float G = mx_ggx_smith_G2(NdotL, NdotV, avgAlpha);
+
+        float denom = etaI * VdotH + etaT * LdotH;
+        denom = denom * denom;
+        float btdf = denom > 0.0
+                         ? (abs(VdotH) * abs(LdotH) * etaT * etaT * D * G) /
+                               (NdotV * denom)
+                         : 0.0;
+
+        bsdf.response = (vec3(1.0) - F) * btdf * weight;
+
+        float G1V = mx_ggx_smith_G1(NdotV, avgAlpha);
+        float pdfH = mx_ggx_NDF(Hlocal, safeAlpha) * G1V * abs(VdotH) /
+                     max(NdotV, M_FLOAT_EPS);
+        float jacobian = mx_pt_refraction_jacobian(VdotH, LdotH, etaInv);
+        float refractProbability =
+            1.0 - clamp(mx_pt_luminance_weight(F), 0.05, 0.95);
+        bsdf.pdf = pdfH * jacobian * refractProbability;
+
+        bsdf.isDelta = smoothSurface ? 1.0 : 0.0;
+        bsdf.guideAlbedo = safeColor0 * weight;
+        bsdf.guideRoughness = avgAlpha;
+    }
+}

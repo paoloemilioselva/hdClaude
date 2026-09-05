@@ -31,30 +31,44 @@ constexpr const char* kOpacityGlobal = "hdclaude_opacity";
 
 PathTracerSyntax::PathTracerSyntax(TypeSystemPtr typeSystem) : VkSyntax(typeSystem)
 {
-    // Re-register BSDF with the path-tracing fields. The default-value string
-    // must list every member in order, which is why `isDelta` is a float: the
-    // expression has to stay a plain aggregate literal.
+    // The extended struct and the literal that default-constructs it. They are
+    // written once and used by both registrations below, because a type and its
+    // default value drifting apart is a miscompile rather than an error.
     //
-    // Field meanings are documented in
-    // mtlx/pbrlib/genglsl_pt/lib/mx_closure_type.glsl, and the two must be
-    // changed together. A mismatch is a compile error rather than a silent
-    // miscompile, which is the failure mode we want.
-    registerTypeSyntax(
-        Type::BSDF,
-        std::make_shared<AggregateTypeSyntax>(
-            this, "BSDF",
-            "BSDF(vec3(0.0),vec3(1.0),vec4(0.0),vec3(0.0),0.0,0.0,vec3(0.0),0.0)",
-            EMPTY_STRING, EMPTY_STRING,
-            "struct BSDF {\n"
-            "    vec3  response;\n"
-            "    vec3  throughput;\n"
-            "    vec4  spectrum;\n"
-            "    vec3  sampledL;\n"
-            "    float pdf;\n"
-            "    float isDelta;\n"
-            "    vec3  guideAlbedo;\n"
-            "    float guideRoughness;\n"
-            "};"));
+    // `isDelta` is a float so this stays a plain aggregate literal. Field
+    // meanings are documented in
+    // mtlx/pbrlib/genglsl_pt/lib/mx_closure_type.glsl, and the two files must
+    // be changed together.
+    static const string kBsdfDefault =
+        "BSDF(vec3(0.0),vec3(1.0),vec4(0.0),vec3(0.0),0.0,0.0,vec3(0.0),0.0)";
+    static const string kBsdfDefinition =
+        "struct BSDF {\n"
+        "    vec3  response;\n"
+        "    vec3  throughput;\n"
+        "    vec4  spectrum;\n"
+        "    vec3  sampledL;\n"
+        "    float pdf;\n"
+        "    float isDelta;\n"
+        "    vec3  guideAlbedo;\n"
+        "    float guideRoughness;\n"
+        "};";
+
+    registerTypeSyntax(Type::BSDF,
+                       std::make_shared<AggregateTypeSyntax>(
+                           this, "BSDF", kBsdfDefault, EMPTY_STRING,
+                           EMPTY_STRING, kBsdfDefinition));
+
+    // VDF must be re-registered too, and it is easy to miss.
+    //
+    // MaterialX 1.39.3 registers VDF as an *alias* of the BSDF struct -- same
+    // type name, no definition of its own -- but with a separate copy of the
+    // default-value literal. Extending BSDF alone therefore leaves every VDF
+    // variable initialised with a two-field literal for an eight-field struct,
+    // which surfaces only when a material actually uses a VDF. OpenPBR does;
+    // Standard Surface does not, so the first three test materials passed.
+    registerTypeSyntax(Type::VDF,
+                       std::make_shared<AggregateTypeSyntax>(
+                           this, "BSDF", kBsdfDefault, EMPTY_STRING));
 }
 
 // ---------------------------------------------------------------------------
@@ -193,6 +207,14 @@ PathTracerShaderGenerator::PathTracerShaderGenerator(TypeSystemPtr typeSystem)
     // this generator does not itself replace. The hero wavelengths and the
     // stratified sample travel in per-invocation globals instead; see
     // mtlx/pbrlib/genglsl_pt/lib/mx_closure_type.glsl.
+}
+
+bool PathTracerShaderGenerator::nodeNeedsClosureData(const ShaderNode& node) const
+{
+    // Everything upstream threads it through, plus shader and surface nodes.
+    return VkShaderGenerator::nodeNeedsClosureData(node) ||
+           node.hasClassification(ShaderNode::Classification::SHADER) ||
+           node.hasClassification(ShaderNode::Classification::SURFACE);
 }
 
 void PathTracerShaderGenerator::emitInputs(GenContext& context,

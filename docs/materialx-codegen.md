@@ -394,15 +394,28 @@ gate every change to this target.
 | `PathTracerShaderGenerator` (compute stage, ABI entry point) | done |
 | glslang compilation and the SPIR-V cache | done |
 | **end-to-end: graph → GLSL → SPIR-V** | **done** |
-| remaining 15 of the 22-file override set | not started |
+| all 22 pbrlib closure overrides | done |
 | the acceptance tests in §8 | not started |
 
-A material combining `oren_nayar_diffuse_bsdf`, two `conductor_bsdf` lobes, and
-the `mix` / `multiply` / `layer` combinators generates and compiles to about
-17,000 SPIR-V words, with the closures evaluated against the caller's
-`closureData` and no rasteriser lighting anywhere in the output. That is the
-architecture proven end to end; what remains is coverage and the numerical
-acceptance tests, not a question of whether the approach works.
+The override set is complete, and the surface shaders real assets use compile:
+
+| Material | SPIR-V words |
+| --- | ---: |
+| hand-built graph over the combinators | 17,165 |
+| `standard_surface` | 33,523 |
+| `open_pbr_surface` | 37,645 |
+
+Each is checked to contain hdClaude's ABI entry point and the surface override's
+own marker, and to contain no rasteriser light loop, no `u_viewPosition`, no
+environment lookup, no `fwidth`, and no locally constructed `ClosureData`.
+
+hdClaude contains no knowledge of the names `standard_surface` or
+`open_pbr_surface` anywhere. They arrive as ordinary nodegraphs over the 22
+overridden closures, which is the whole of the claim in
+[architecture.md](architecture.md) §1.1.
+
+What remains is the numerical acceptance in §8 — furnace, chi-squared, mixture
+densities — not a question of whether the approach works.
 
 Generation cannot succeed until all 22 overrides are present, for the reason in
 §3. Tracked as phase 4 in [roadmap.md](roadmap.md).

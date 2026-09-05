@@ -69,6 +69,27 @@ struct ClosureData {
 vec4 hdclaude_wavelengths = vec4(0.0);  // hero wavelengths, nanometres
 vec3 hdclaude_sample_u = vec3(0.0);     // stratified sample: xy direction, z lobe
 
+// Interior medium, published by anisotropic_vdf and read by the integrator.
+//
+// Volumetric absorption and scattering are integrated *along a ray inside the
+// medium*, not evaluated at a surface, so the closure's job is to record the
+// parameters and the integrator's job is to transport with them. The kernel
+// reads these when a transmission event carries a path through the surface.
+vec3  hdclaude_medium_absorption = vec3(0.0);
+vec3  hdclaude_medium_scattering = vec3(0.0);
+float hdclaude_medium_anisotropy = 0.0;
+float hdclaude_medium_present = 0.0;
+
+// Subsurface, published by subsurface_bsdf on the same principle: the closure
+// supplies the boundary condition and the medium parameters, and the integrator
+// performs the bounded spectral random walk. This mirrors MaterialX's own OSL
+// target, which emits a subsurface_bssrdf closure and leaves transport to the
+// renderer, rather than the genglsl target's screen-space approximation.
+vec3  hdclaude_subsurface_albedo = vec3(0.0);
+vec3  hdclaude_subsurface_radius = vec3(0.0);   // per-channel mean free path
+float hdclaude_subsurface_anisotropy = 0.0;     // Henyey-Greenstein g
+float hdclaude_subsurface_present = 0.0;
+
 // The BSDF struct is extended by hdClaude's Syntax override rather than
 // declared here, because MaterialX registers it as a type syntax in GlslSyntax
 // rather than emitting it from a library file. See

@@ -98,6 +98,50 @@ float mx_ggx_VNDF_reflection_PDF(vec3 H, vec2 alpha, float G1V, float NdotV)
     return mx_ggx_NDF(H, alpha) * G1V / (4.0 * NdotV);
 }
 
+// --- Refraction -------------------------------------------------------------
+
+// Refract V about the microfacet normal H.
+//
+// `eta` is the relative index of refraction, incident over transmitted
+// (eta_i / eta_t), matching GLSL's own `refract`. Returns false on total
+// internal reflection, in which case `L` is not written -- the caller must
+// reflect instead rather than continue with an undefined direction.
+//
+// Written out rather than calling `refract` so the TIR case is reported instead
+// of silently returning a zero vector, which is indistinguishable from a valid
+// direction downstream.
+bool mx_pt_refract(vec3 V, vec3 H, float eta, out vec3 L)
+{
+    float cosThetaI = dot(H, V);
+    float sin2ThetaI = max(0.0, 1.0 - cosThetaI * cosThetaI);
+    float sin2ThetaT = eta * eta * sin2ThetaI;
+    if (sin2ThetaT >= 1.0)
+    {
+        return false;
+    }
+    float cosThetaT = sqrt(1.0 - sin2ThetaT);
+    L = eta * (-V) + (eta * cosThetaI - cosThetaT) * H;
+    return true;
+}
+
+// Jacobian of the half-vector to incident-direction mapping, for transmission.
+//
+// This factor is what converts a density over microfacet normals into a density
+// over directions, and it is the single easiest thing to get wrong in a rough
+// dielectric: omitting it produces an image that looks plausible and is
+// incorrectly weighted everywhere light refracts.
+//
+// `etaT` is transmitted over incident (eta_t / eta_i), the reciprocal of the
+// value `mx_pt_refract` takes -- they are written with opposite conventions
+// because each matches its own standard formulation, so the caller must pass
+// the right one to each.
+float mx_pt_refraction_jacobian(float VdotH, float LdotH, float etaT)
+{
+    float denom = VdotH + etaT * LdotH;
+    denom = denom * denom;
+    return denom > 0.0 ? (etaT * etaT * abs(LdotH)) / denom : 0.0;
+}
+
 // --- Multiple importance sampling -------------------------------------------
 
 // Power heuristic with beta = 2. `nf` and `ng` are the sample counts each

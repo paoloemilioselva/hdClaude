@@ -49,8 +49,20 @@
                   function="mx_oren_nayar_diffuse_bsdf"
                   target="genglsl_pt" />
 
+  <implementation name="IM_burley_diffuse_bsdf_genglsl_pt"
+                  nodedef="ND_burley_diffuse_bsdf"
+                  file="mx_burley_diffuse_bsdf.glsl"
+                  function="mx_burley_diffuse_bsdf"
+                  target="genglsl_pt" />
+
+  <implementation name="IM_translucent_bsdf_genglsl_pt"
+                  nodedef="ND_translucent_bsdf"
+                  file="mx_translucent_bsdf.glsl"
+                  function="mx_translucent_bsdf"
+                  target="genglsl_pt" />
+
   <!-- ====================================================================== -->
-  <!-- Specular                                                               -->
+  <!-- Specular and transmissive                                              -->
   <!-- ====================================================================== -->
 
   <implementation name="IM_conductor_bsdf_genglsl_pt"
@@ -59,8 +71,121 @@
                   function="mx_conductor_bsdf"
                   target="genglsl_pt" />
 
+  <implementation name="IM_dielectric_bsdf_genglsl_pt"
+                  nodedef="ND_dielectric_bsdf"
+                  file="mx_dielectric_bsdf.glsl"
+                  function="mx_dielectric_bsdf"
+                  target="genglsl_pt" />
+
+  <implementation name="IM_generalized_schlick_bsdf_genglsl_pt"
+                  nodedef="ND_generalized_schlick_bsdf"
+                  file="mx_generalized_schlick_bsdf.glsl"
+                  function="mx_generalized_schlick_bsdf"
+                  target="genglsl_pt" />
+
+  <implementation name="IM_sheen_bsdf_genglsl_pt"
+                  nodedef="ND_sheen_bsdf"
+                  file="mx_sheen_bsdf.glsl"
+                  function="mx_sheen_bsdf"
+                  target="genglsl_pt" />
+
+  <!-- ====================================================================== -->
+  <!-- Subsurface and hair                                                    -->
+  <!-- ====================================================================== -->
+
+  <implementation name="IM_subsurface_bsdf_genglsl_pt"
+                  nodedef="ND_subsurface_bsdf"
+                  file="mx_subsurface_bsdf.glsl"
+                  function="mx_subsurface_bsdf"
+                  target="genglsl_pt" />
+
+  <implementation name="IM_chiang_hair_bsdf_genglsl_pt"
+                  nodedef="ND_chiang_hair_bsdf"
+                  file="mx_chiang_hair_bsdf.glsl"
+                  function="mx_chiang_hair_bsdf"
+                  target="genglsl_pt" />
+
+  <implementation name="IM_deon_hair_absorption_from_melanin_genglsl_pt"
+                  nodedef="ND_deon_hair_absorption_from_melanin"
+                  file="mx_chiang_hair_bsdf.glsl"
+                  function="mx_deon_hair_absorption_from_melanin"
+                  target="genglsl_pt" />
+
+  <implementation name="IM_chiang_hair_absorption_from_color_genglsl_pt"
+                  nodedef="ND_chiang_hair_absorption_from_color"
+                  file="mx_chiang_hair_bsdf.glsl"
+                  function="mx_chiang_hair_absorption_from_color"
+                  target="genglsl_pt" />
+
+  <implementation name="IM_chiang_hair_roughness_genglsl_pt"
+                  nodedef="ND_chiang_hair_roughness"
+                  file="mx_chiang_hair_bsdf.glsl"
+                  function="mx_chiang_hair_roughness"
+                  target="genglsl_pt" />
+
+  <!-- ====================================================================== -->
+  <!-- Emission                                                               -->
+  <!-- ====================================================================== -->
+
+  <implementation name="IM_uniform_edf_genglsl_pt"
+                  nodedef="ND_uniform_edf"
+                  file="mx_uniform_edf.glsl"
+                  function="mx_uniform_edf"
+                  target="genglsl_pt" />
+
+  <implementation name="IM_generalized_schlick_edf_genglsl_pt"
+                  nodedef="ND_generalized_schlick_edf"
+                  file="mx_generalized_schlick_edf.glsl"
+                  function="mx_generalized_schlick_edf"
+                  target="genglsl_pt" />
+
+  <implementation name="IM_add_edf_genglsl_pt"
+                  nodedef="ND_add_edf"
+                  file="mx_add_edf.glsl"
+                  function="mx_add_edf"
+                  target="genglsl_pt" />
+
+  <implementation name="IM_mix_edf_genglsl_pt"
+                  nodedef="ND_mix_edf"
+                  file="mx_mix_edf.glsl"
+                  function="mx_mix_edf"
+                  target="genglsl_pt" />
+
+  <implementation name="IM_multiply_edfC_genglsl_pt"
+                  nodedef="ND_multiply_edfC"
+                  file="mx_multiply_edf_color3.glsl"
+                  function="mx_multiply_edf_color3"
+                  target="genglsl_pt" />
+
+  <implementation name="IM_multiply_edfF_genglsl_pt"
+                  nodedef="ND_multiply_edfF"
+                  file="mx_multiply_edf_float.glsl"
+                  function="mx_multiply_edf_float"
+                  target="genglsl_pt" />
+
+  <!-- ====================================================================== -->
+  <!-- Volume                                                                 -->
+  <!-- ====================================================================== -->
+
+  <implementation name="IM_anisotropic_vdf_genglsl_pt"
+                  nodedef="ND_anisotropic_vdf"
+                  file="mx_anisotropic_vdf.glsl"
+                  function="mx_anisotropic_vdf"
+                  target="genglsl_pt" />
+
+  <implementation name="IM_layer_vdf_genglsl_pt"
+                  nodedef="ND_layer_vdf"
+                  file="mx_layer_vdf.glsl"
+                  function="mx_layer_vdf"
+                  target="genglsl_pt" />
+
   <!-- ====================================================================== -->
   <!-- Combinators                                                            -->
+  <!--                                                                        -->
+  <!-- These carry the sampling correctness of the whole target. A closure    -->
+  <!-- primitive that samples slightly wrong produces slightly wrong shading; -->
+  <!-- a combinator that reports the selected child density instead of the -->
+  <!-- mixture density makes every MIS weight in the renderer wrong.          -->
   <!-- ====================================================================== -->
 
   <implementation name="IM_mix_bsdf_genglsl_pt"
@@ -95,27 +220,12 @@
 
   <!--
     ====================================================================
-    STILL TO OVERRIDE - 15 files. Phase 4 in docs/roadmap.md.
+    STILL TO OVERRIDE - 0 files.
     ====================================================================
 
     Generation cannot succeed for a material using any of these until the
     override exists, for the reason at the top of this file.
 
-      mx_add_edf.glsl                    ND_add_edf
-      mx_anisotropic_vdf.glsl            ND_anisotropic_vdf
-      mx_burley_diffuse_bsdf.glsl        ND_burley_diffuse_bsdf
-      mx_chiang_hair_bsdf.glsl           ND_chiang_hair_bsdf, ND_deon_hair_absorption_from_melanin, ND_chiang_hair_absorption_from_color, ND_chiang_hair_roughness
-      mx_dielectric_bsdf.glsl            ND_dielectric_bsdf
-      mx_generalized_schlick_bsdf.glsl   ND_generalized_schlick_bsdf
-      mx_generalized_schlick_edf.glsl    ND_generalized_schlick_edf
-      mx_layer_vdf.glsl                  ND_layer_vdf
-      mx_mix_edf.glsl                    ND_mix_edf
-      mx_multiply_edf_color3.glsl        ND_multiply_edfC
-      mx_multiply_edf_float.glsl         ND_multiply_edfF
-      mx_sheen_bsdf.glsl                 ND_sheen_bsdf
-      mx_subsurface_bsdf.glsl            ND_subsurface_bsdf
-      mx_translucent_bsdf.glsl           ND_translucent_bsdf
-      mx_uniform_edf.glsl                ND_uniform_edf
   -->
 
 </materialx>

@@ -18,22 +18,43 @@ import io, os, re, sys
 
 stock_impl, out_path = sys.argv[1], sys.argv[2]
 
-# The files hdClaude has overridden so far.
-IMPLEMENTED = [
-    'mx_oren_nayar_diffuse_bsdf.glsl',
-    'mx_conductor_bsdf.glsl',
-    'mx_mix_bsdf.glsl',
-    'mx_add_bsdf.glsl',
-    'mx_layer_bsdf.glsl',
-    'mx_multiply_bsdf_color3.glsl',
-    'mx_multiply_bsdf_float.glsl',
-]
-
+# The files hdClaude has overridden. The set is complete: all 22 pbrlib GLSL
+# files that include lib/mx_closure_type.glsl.
 GROUPS = [
-    ('Diffuse', ['mx_oren_nayar_diffuse_bsdf.glsl']),
-    ('Specular', ['mx_conductor_bsdf.glsl']),
-    ('Combinators', ['mx_mix_bsdf.glsl', 'mx_add_bsdf.glsl', 'mx_layer_bsdf.glsl',
-                     'mx_multiply_bsdf_color3.glsl', 'mx_multiply_bsdf_float.glsl']),
+    ('Diffuse', [
+        'mx_oren_nayar_diffuse_bsdf.glsl',
+        'mx_burley_diffuse_bsdf.glsl',
+        'mx_translucent_bsdf.glsl',
+    ]),
+    ('Specular and transmissive', [
+        'mx_conductor_bsdf.glsl',
+        'mx_dielectric_bsdf.glsl',
+        'mx_generalized_schlick_bsdf.glsl',
+        'mx_sheen_bsdf.glsl',
+    ]),
+    ('Subsurface and hair', [
+        'mx_subsurface_bsdf.glsl',
+        'mx_chiang_hair_bsdf.glsl',
+    ]),
+    ('Emission', [
+        'mx_uniform_edf.glsl',
+        'mx_generalized_schlick_edf.glsl',
+        'mx_add_edf.glsl',
+        'mx_mix_edf.glsl',
+        'mx_multiply_edf_color3.glsl',
+        'mx_multiply_edf_float.glsl',
+    ]),
+    ('Volume', [
+        'mx_anisotropic_vdf.glsl',
+        'mx_layer_vdf.glsl',
+    ]),
+    ('Combinators', [
+        'mx_mix_bsdf.glsl',
+        'mx_add_bsdf.glsl',
+        'mx_layer_bsdf.glsl',
+        'mx_multiply_bsdf_color3.glsl',
+        'mx_multiply_bsdf_float.glsl',
+    ]),
 ]
 
 glsl_dir = os.path.dirname(stock_impl)
@@ -112,6 +133,12 @@ covered = set()
 for title, files in GROUPS:
     A('  <!-- ' + '=' * 70 + ' -->')
     A('  <!-- ' + title.ljust(70) + ' -->')
+    if title == 'Combinators':
+        A('  <!--                                                                        -->')
+        A('  <!-- These carry the sampling correctness of the whole target. A closure    -->')
+        A('  <!-- primitive that samples slightly wrong produces slightly wrong shading; -->')
+        A('  <!-- a combinator that reports the selected child density instead of the -->')
+        A('  <!-- mixture density makes every MIS weight in the renderer wrong.          -->')
     A('  <!-- ' + '=' * 70 + ' -->')
     A('')
     for f in files:
@@ -127,7 +154,7 @@ for title, files in GROUPS:
 remaining = [f for f in sorted(by_file) if f not in covered]
 A('  <!--')
 A('    ' + '=' * 68)
-A('    STILL TO OVERRIDE - %d files. Phase 4 in docs/roadmap.md.' % len(remaining))
+A('    STILL TO OVERRIDE - %d files.' % len(remaining))
 A('    ' + '=' * 68)
 A('')
 A('    Generation cannot succeed for a material using any of these until the')
