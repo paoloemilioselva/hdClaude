@@ -116,6 +116,31 @@ ABI, and no kernel can meaningfully fill them.
 
 ## 2026-09-05 — Screen-space derivatives are meaningless in a wavefront kernel
 
+**This is not a MaterialX defect.** Stating it plainly because the shape of the
+finding invites the wrong conclusion. `genglsl` is a *rasterisation* target;
+`fwidth` is well defined in a fragment shader, and the function below is a
+reasonable screen-space approximation there. MaterialX already treats subsurface
+as target-specific and says so — compare the two implementations of the same
+node:
+
+```osl
+// genosl, an offline target: real transport
+bsdf = subsurface_bssrdf(N, weight * albedo, radius, anisotropy);
+```
+
+```glsl
+// genglsl, a rasteriser target: a screen-space approximation, openly labelled
+vec3 sss = mx_subsurface_scattering_approx(N, L, P, color, radius);
+...
+// "For now, we render indirect subsurface as simple indirect diffuse."
+```
+
+The incompatibility is entirely hdClaude's doing: we reuse a fragment-shader
+library from a compute stage it was never written for. That is a good trade —
+inheriting the whole of stdlib is the point of the target — but it means
+inherited assumptions have to be checked, and this is the first one that failed.
+Expect more, and expect them to be *stage* assumptions rather than shading ones.
+
 **Actually true.** `mx_microfacet_diffuse.glsl` contains
 
 ```glsl
