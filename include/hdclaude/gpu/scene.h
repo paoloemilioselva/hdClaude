@@ -165,7 +165,20 @@ struct Light {
     float coneSoftness = 0.0f;
     /// Focus exponent, sharpening emission about the axis. 0 is uniform.
     float focus = 0.0f;
+
+    /// Blackbody temperature in kelvin, or zero when the light does not use
+    /// one.
+    ///
+    /// Carried rather than resolved to a colour on the host, because a
+    /// temperature *is* a spectrum: a light at 2700 K emits Planck's law, and
+    /// collapsing that to an RGB tint before transport is exactly the
+    /// approximation a spectral renderer exists to avoid.
+    float colorTemperature = 0.0f;
+    /// Multiplies the peak-normalised blackbody so it carries the same luminous
+    /// power as the default illuminant. `BlackbodyLuminousScale`.
+    float temperatureScale = 1.0f;
     float pad0 = 0.0f;
+    float pad1 = 0.0f;
 };
 
 /// Slots in the shared texture array.
@@ -267,6 +280,11 @@ struct Scene {
     /// World-to-light rotation for the dome, column-major, so a direction can
     /// be taken into the map's own frame. Identity when the light is unrotated.
     float domeWorldToLight[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    /// Blackbody temperature of the dome, or zero. A dome is an emitter like
+    /// any other and gets the same treatment.
+    float domeColorTemperature = 0.0f;
+    float domeTemperatureScale = 1.0f;
+
     /// And back, for a direction the environment sampler chose *in* the map.
     /// Carried rather than transposed on the GPU: a dome's transform is a
     /// rotation in every scene that means anything, but "in every scene that

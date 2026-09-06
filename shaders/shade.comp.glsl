@@ -336,6 +336,8 @@ void main()
             // whole of it.
             lightSample.pdf = 1.0;
             lightSample.castsShadows = true;
+            lightSample.colorTemperature = 0.0;
+            lightSample.temperatureScale = 1.0;
         }
         else if (environmentSample)
         {
@@ -353,6 +355,8 @@ void main()
             lightSample.radiance = hdclaude_environment(lightSample.direction);
             lightSample.pdf = environmentDirection.pdf;
             lightSample.castsShadows = true;
+            lightSample.colorTemperature = frame.environmentTemperature;
+            lightSample.temperatureScale = frame.environmentTemperatureScale;
         }
         else
         {
@@ -404,7 +408,9 @@ void main()
                 vec4 contribution =
                     throughput *
                     hdclaude_upsample(hdclaude_bsdf.response, lambda) *
-                    hdclaude_upsample_emission(lightSample.radiance, lambda) *
+                    hdclaude_upsample_emission(lightSample.radiance, lambda,
+                                               lightSample.colorTemperature,
+                                               lightSample.temperatureScale) *
                     weight / (lightSample.pdf * selectionPdf);
 
                 if (dot(contribution, contribution) > 0.0)

@@ -781,7 +781,8 @@ sampled.
 `inputs:enableColorTemperature` is deliberately not applied. Blackbody
 conversion belongs with the spectral upsampling in phase 6; an RGB
 approximation now would have to be unlearned, and hdClaude does not approximate
-where it can wait.
+where it can wait. (Superseded on 2026-09-07, when the spectrum arrived and the
+control was implemented as one -- see the entry of that date.)
 
 ---
 
@@ -948,7 +949,9 @@ a spot light anyone looks at.
 normalised to unit luminance before it multiplies the light's colour, so
 raising the temperature changes hue and nothing else. A fit that is not
 normalised makes the temperature control double as an exposure control, and the
-two are then impossible to separate in an authored scene.
+two are then impossible to separate in an authored scene. (The promise survives
+the RGB fit that made it: on 2026-09-07 the tint became a transported spectrum,
+and the normalisation became an equality of luminous integrals.)
 
 **The dome map is its own sampler, not an array element.** The environment
 kernel has no generated material in front of it, and the texture array is
@@ -1951,3 +1954,64 @@ test that identifies something by an exact value is testing the estimator's
 determinism as much as the thing it names, and changing the estimator breaks it.
 The repair is usually to find what the two cases actually differ by, which here
 was better than what it replaced.
+
+
+---
+
+## 2026-09-07 -- A colour temperature is a spectrum, and an RGB tint is a metamer of it
+
+`enableColorTemperature` was the last input still resolved to a colour on the
+host, and it is the one where doing so is least defensible. It is now carried to
+the GPU as a temperature in kelvin and evaluated as Planck's law along the four
+hero wavelengths.
+
+**Why the tint was never equivalent.** Multiplying a light's colour by the
+blackbody's *RGB* gives a light that matches the blackbody under the colour
+matching functions and differs from it everywhere else. That is the definition of
+a metamer, and the difference is not academic: the two spectra light a surface
+whose reflectance varies across the spectrum -- every real surface -- to
+different colours. A renderer that transports four lanes precisely so that
+metamers stop being interchangeable should not manufacture one at the light.
+
+**The illuminant is replaced, not multiplied.** An emitter's RGB is referred to
+some illuminant; by default D65, because that is what an RGB colour means in an
+sRGB pipeline. A light with a temperature is referred to its *blackbody*
+instead. The tempting alternative -- keep D65 and multiply by the blackbody --
+says a 2700 K lamp emits daylight through an amber filter, which is a different
+spectrum from a 2700 K lamp and looks like one.
+
+**Equated on luminous integrals, not on peaks.** UsdLux's control is a colour
+control: enabling it must not change how much light is emitted. The blackbody is
+peak-normalised for numerical reasons, so it needs a scale, and the scale has to
+come from the two illuminants' *luminous* integrals -- the spectrum against
+`ybar`. Matching peaks instead would make every warm light a dim one, because a
+2700 K blackbody peaks around 1070 nm, far outside the visible range, so almost
+none of a peak-normalised 2700 K spectrum lands where the eye is.
+
+**What pins it.** Two tests, because the two claims can fail independently. On
+the host, the spectrum is integrated through the colour matching functions and
+its chromaticity compared against the published Planckian locus at five
+temperatures, landing within 0.0025 in x and y -- which checks Planck's law and
+the colour matching integration *together*, since a wrong constant in either
+moves the answer and neither is likely to move it back onto the locus five times
+over. On the GPU, a lit quad's red-to-blue ratio goes 0.998 neutral, 10.011 at
+2700 K, 0.673 at 9000 K, while its luminance stays 0.2550 in all three. A
+peak-normalised blackbody passes the first of those and fails the second badly,
+which is exactly why the luminance is asserted alongside the hue.
+
+**A test that was true and proved nothing.** The GPU test first drove the quad
+with a unit-radiance distant light of 0.01 rad angular radius. That is an
+irradiance of 3.1e-4, so the quad rendered at a luminance of 1e-4 -- correct
+physics, and a useless place to assert that two luminances agree to within five
+per cent. The light is now scaled by the reciprocal of its own solid angle,
+which puts the neutral render at 0.2550 and makes the agreement mean something.
+An assertion that passes is not the same as an assertion that could have failed.
+
+**What did not change, and the evidence for it.** No gallery scene enables the
+control -- the chess board authors `enableColorTemperature = 0` -- so the
+`kelvin = 0` path must be bit-for-bit what it was. Eight of the ten scenes
+re-render to identical SHA-256 hashes; the two that do not, Collective Project
+and the height map, also differ from each other between two consecutive runs of
+this same build -- Collective Project at an RMS of 5.8e-5 then 7.0e-5 against
+the committed baseline -- so what they show is the gallery's own run-to-run
+nondeterminism and not a change in behaviour.

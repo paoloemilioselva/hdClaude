@@ -65,6 +65,8 @@ struct HdClaudeLightEntry {
     /// Pool slot of the dome's latitude-longitude map, or -1.
     int domeTexture = -1;
     /// World-to-light for the dome, column-major.
+    float domeColorTemperature = 0.0f;
+    float domeTemperatureScale = 1.0f;
     float domeWorldToLight[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     float domeLightToWorld[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     /// What about this light is not honoured as authored, if anything.

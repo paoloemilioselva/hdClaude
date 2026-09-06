@@ -101,6 +101,26 @@ float BlackbodyRadiance(float lambda, float kelvin);
 /// authored intensity supplies the magnitude.
 float NormalizedBlackbody(float lambda, float kelvin);
 
+/// What to multiply `NormalizedBlackbody` by so it carries the same luminous
+/// power as D65.
+///
+/// `enableColorTemperature` tints a light; it does not brighten it. That is a
+/// statement about *luminance*, so the two illuminants have to be equated on
+/// their luminous integrals rather than on their peaks -- a 2700 K blackbody
+/// peaks far outside the visible range, and matching peaks would make a warm
+/// light a dim one.
+float BlackbodyLuminousScale(float kelvin);
+
+/// CIE xy chromaticity of a spectrum's XYZ.
+Vec3 XyzToChromaticity(const Vec3& xyz);
+
+/// XYZ of a blackbody at `kelvin`, normalised so Y = 1.
+///
+/// Exposed for testing: the chromaticity it implies can be checked against the
+/// published Planckian locus, which is what says the spectral form and the
+/// colour matching integration are both right rather than wrong together.
+Vec3 BlackbodyXyz(float kelvin);
+
 /// CIE illuminant E (equal energy).
 inline float IlluminantE(float /*lambda*/) { return 1.0f; }
 

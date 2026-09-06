@@ -5,6 +5,8 @@
 #include "texture_loader.h"
 #include "trace.h"
 
+#include "hdclaude/core/spectrum.h"
+
 #include "pxr/base/gf/matrix4d.h"
 #include "pxr/base/gf/vec3d.h"
 #include "pxr/base/gf/vec3f.h"
@@ -58,53 +60,6 @@ GfVec3f ParamColor(HdSceneDelegate* delegate, const SdfPath& id,
     return fallback;
 }
 
-/// Linear sRGB of a blackbody at `kelvin`, normalised to unit luminance.
-///
-/// UsdLux multiplies the light's colour by this when
-/// `enableColorTemperature` is set. Krystek's rational fit for the Planckian
-/// locus in CIE 1960 uv, converted to xy and then to linear sRGB: accurate to
-/// well under a MacAdam step across 1667-25000 K, which is the whole range a
-/// light is authored in.
-///
-/// Normalising to unit luminance is what makes the control a *colour* rather
-/// than a brightness, so raising the temperature does not also raise exposure.
-GfVec3f BlackbodyRgb(float kelvin)
-{
-    const float t = std::clamp(kelvin, 1667.0f, 25000.0f);
-    const float t2 = t * t;
-    const float t3 = t2 * t;
-
-    const float u = (0.860117757f + 1.54118254e-4f * t + 1.28641212e-7f * t2) /
-                    (1.0f + 8.42420235e-4f * t + 7.08145163e-7f * t2);
-    const float v = (0.317398726f + 4.22806245e-5f * t + 4.20481691e-8f * t2) /
-                    (1.0f - 2.89741816e-5f * t + 1.61456053e-7f * t2);
-
-    const float denominator = 2.0f * u - 8.0f * v + 4.0f;
-    const float x = 3.0f * u / denominator;
-    const float y = 2.0f * v / denominator;
-    const float z = 1.0f - x - y;
-    (void)t3;
-
-    // xyY at Y = 1 to XYZ, then the linear sRGB primaries.
-    const float X = x / std::max(y, 1e-6f);
-    const float Z = z / std::max(y, 1e-6f);
-
-    GfVec3f rgb(3.2404542f * X - 1.5371385f - 0.4985314f * Z,
-                -0.9692660f * X + 1.8760108f + 0.0415560f * Z,
-                0.0556434f * X - 0.2040259f + 1.0572252f * Z);
-
-    rgb[0] = std::max(rgb[0], 0.0f);
-    rgb[1] = std::max(rgb[1], 0.0f);
-    rgb[2] = std::max(rgb[2], 0.0f);
-
-    const float luminance =
-        0.2126f * rgb[0] + 0.7152f * rgb[1] + 0.0722f * rgb[2];
-    if (luminance > 1e-6f) {
-        rgb /= luminance;
-    }
-    return rgb;
-}
-
 void StoreVector(float (&out)[3], const GfVec3f& value)
 {
     out[0] = value[0];
@@ -150,10 +105,7 @@ void HdClaudeLight::Sync(HdSceneDelegate* sceneDelegate,
     }
 
     // --- Emitted radiance -----------------------------------------------------
-    // colour * intensity * 2^exposure, the UsdLux definition. `enableColorTemperature`
-    // is deliberately not applied: blackbody conversion belongs with the
-    // spectral upsampling that phase 6 brings, and applying an RGB
-    // approximation now would have to be unlearned.
+    // colour * intensity * 2^exposure, the UsdLux definition.
     const float intensity =
         Param<float>(sceneDelegate, id, HdLightTokens->intensity, 1.0f);
     const float exposure =
@@ -165,16 +117,28 @@ void HdClaudeLight::Sync(HdSceneDelegate* sceneDelegate,
 
     GfVec3f radiance = color * intensity * std::pow(2.0f, exposure);
 
-    // Colour temperature tints, it does not brighten: BlackbodyRgb is
-    // normalised to unit luminance, so enabling it changes the hue of a light
-    // without changing how much light it emits.
+    // A colour temperature is carried to the GPU as a temperature, not
+    // resolved to a tint here.
+    //
+    // The two are not the same thing. An RGB tint says "multiply the light's
+    // colour by the blackbody's colour", which is a metamer of the real
+    // spectrum and behaves like one: it lights a surface whose reflectance
+    // varies across the spectrum -- which is every real surface -- differently
+    // from the blackbody it stands for. Transporting the spectrum is the whole
+    // reason for the four lanes, and this is the input that most obviously
+    // needs it.
+    //
+    // The scale that comes with it equates the blackbody's luminous integral
+    // with the default illuminant's, so enabling the control changes hue and
+    // not brightness. That is the same promise the RGB tint made by
+    // normalising to unit luminance; it is now kept spectrally.
+    float colorTemperature = 0.0f;
+    float temperatureScale = 1.0f;
     if (Param<bool>(sceneDelegate, id, HdLightTokens->enableColorTemperature,
                     false)) {
-        const float kelvin = Param<float>(
+        colorTemperature = Param<float>(
             sceneDelegate, id, HdLightTokens->colorTemperature, 6500.0f);
-        const GfVec3f tint = BlackbodyRgb(kelvin);
-        radiance = GfVec3f(radiance[0] * tint[0], radiance[1] * tint[1],
-                           radiance[2] * tint[2]);
+        temperatureScale = hdclaude::BlackbodyLuminousScale(colorTemperature);
     }
 
     // --- Placement -------------------------------------------------------------
@@ -187,18 +151,20 @@ void HdClaudeLight::Sync(HdSceneDelegate* sceneDelegate,
     std::string entryReport;
 
     hdclaude::Light light;
+    light.colorTemperature = colorTemperature;
+    light.temperatureScale = temperatureScale;
     StoreVector(light.position, position);
     StoreVector(light.direction, emitDirection);
     light.castsShadows =
         Param<bool>(sceneDelegate, id, HdLightTokens->shadowEnable, true) ? 1u : 0u;
 
     if (_lightType == HdPrimTypeTokens->domeLight) {
-        // Not an emitter: the environment a ray sees when it leaves the scene.
-        // A textured dome is not applied -- hdClaude binds no textures -- so
-        // only the constant colour contributes, and the difference is reported
-        // rather than passed off as the authored environment.
+        // Not an emitter in the light table: the environment a ray sees when it
+        // leaves the scene, sampled by the environment strategy instead.
         HdClaudeLightEntry entry;
         entry.isDome = true;
+        entry.domeColorTemperature = colorTemperature;
+        entry.domeTemperatureScale = temperatureScale;
         StoreVector(entry.environmentColor, radiance);
 
         // The map is loaded through the same pool as a material's textures, so
@@ -226,8 +192,9 @@ void HdClaudeLight::Sync(HdSceneDelegate* sceneDelegate,
             }
         }
         param->SceneStore()->PublishLight(id, std::move(entry));
-        HdClaudeTrace("dome light <%s>: environment %.3f %.3f %.3f", id.GetText(),
-                      radiance[0], radiance[1], radiance[2]);
+        HdClaudeTrace("dome light <%s>: environment %.3f %.3f %.3f, %.0f K",
+                      id.GetText(), radiance[0], radiance[1], radiance[2],
+                      colorTemperature);
         *dirtyBits = HdLight::Clean;
         return;
     }

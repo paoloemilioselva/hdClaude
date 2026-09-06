@@ -162,6 +162,8 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
             // reported rather than silently blended.
             if (entry.domeTexture >= 0 && scene.domeTexture < 0) {
                 scene.domeTexture = entry.domeTexture;
+                scene.domeColorTemperature = entry.domeColorTemperature;
+                scene.domeTemperatureScale = entry.domeTemperatureScale;
                 std::copy(std::begin(entry.domeWorldToLight),
                           std::end(entry.domeWorldToLight),
                           std::begin(scene.domeWorldToLight));

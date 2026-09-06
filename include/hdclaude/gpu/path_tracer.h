@@ -167,6 +167,8 @@ class PathTracer {
     VulkanImage _domeTexture;
     float _domeWorldToLight[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     float _domeLightToWorld[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    float _domeColorTemperature = 0.0f;
+    float _domeTemperatureScale = 1.0f;
 
     /// The dome map's sampling distribution, uploaded as one buffer. Always a
     /// real buffer -- a descriptor set cannot point at nothing -- and the

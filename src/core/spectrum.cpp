@@ -6,6 +6,14 @@
 namespace hdclaude {
 namespace {
 
+/// Integration grid for every spectral integral here.
+///
+/// 5 nm across the visible range. The same step the illuminant table is
+/// published at, so the illuminant is sampled at its own knots and contributes
+/// no interpolation error of its own.
+constexpr float kIntegrationStep = 5.0f;
+
+
 /// Piecewise Gaussian with independent widths either side of the peak. The
 /// building block of the Wyman/Sloan/Shirley colour matching fit.
 inline float PiecewiseGaussian(float x, float peak, float widthLow, float widthHigh)
@@ -107,6 +115,54 @@ float NormalizedBlackbody(float lambda, float kelvin)
     return peak > 0.0f ? BlackbodyRadiance(lambda, kelvin) / peak : 0.0f;
 }
 
+namespace {
+
+/// Luminous integral of a spectrum against the illuminant grid.
+template <typename Spectrum>
+double LuminousIntegral(const Spectrum& spectrum)
+{
+    double total = 0.0;
+    for (float lambda = kLambdaMin; lambda <= kLambdaMax;
+         lambda += kIntegrationStep) {
+        total += static_cast<double>(spectrum(lambda)) *
+                 static_cast<double>(CieXyzBar(lambda).y);
+    }
+    return total * static_cast<double>(kIntegrationStep);
+}
+
+}  // namespace
+
+float BlackbodyLuminousScale(float kelvin)
+{
+    if (!(kelvin > 0.0f)) {
+        return 1.0f;
+    }
+    static const double reference =
+        LuminousIntegral([](float lambda) { return IlluminantD65(lambda); });
+    const double blackbody = LuminousIntegral(
+        [kelvin](float lambda) { return NormalizedBlackbody(lambda, kelvin); });
+    return blackbody > 0.0 ? static_cast<float>(reference / blackbody) : 1.0f;
+}
+
+Vec3 XyzToChromaticity(const Vec3& xyz)
+{
+    const float sum = xyz.x + xyz.y + xyz.z;
+    if (!(sum > 0.0f)) {
+        return {0.0f, 0.0f, 0.0f};
+    }
+    return {xyz.x / sum, xyz.y / sum, xyz.z / sum};
+}
+
+Vec3 BlackbodyXyz(float kelvin)
+{
+    Vec3 xyz;
+    for (float lambda = kLambdaMin; lambda <= kLambdaMax;
+         lambda += kIntegrationStep) {
+        xyz += CieXyzBar(lambda) * NormalizedBlackbody(lambda, kelvin);
+    }
+    return xyz.y > 0.0f ? xyz * (1.0f / xyz.y) : Vec3{};
+}
+
 float SampleVisibleWavelength(float u)
 {
     return kWavelengthCenter -
@@ -196,13 +252,6 @@ constexpr float kD65[] = {
     58.8765f,  60.3125f,
 };
 constexpr int kD65Count = static_cast<int>(sizeof(kD65) / sizeof(kD65[0]));
-
-/// Integration grid for every spectral integral here.
-///
-/// 5 nm across the visible range. The same step the illuminant table is
-/// published at, so the illuminant is sampled at its own knots and contributes
-/// no interpolation error of its own.
-constexpr float kIntegrationStep = 5.0f;
 
 }  // namespace
 

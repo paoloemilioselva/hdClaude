@@ -45,6 +45,8 @@ layout(set = 0, binding = 0, scalar) uniform FrameBlock {
     uint  chromaTableOffset;    // where the chromaticity table starts
     uint  chromaTableSize;      // one axis of one face of it
     float spectralNormalisation;  // 1 / integral of D65 * ybar
+    float environmentTemperature;      // dome blackbody in kelvin, or zero
+    float environmentTemperatureScale; // equates its luminance with D65's
     mat4  domeWorldToLight;     // takes a world direction into the dome's frame
     mat4  domeLightToWorld;     // and back, for a direction sampled in the map
 } frame;
@@ -279,7 +281,14 @@ struct Light {
     float coneCosAngle;   // cosine of the shaping cone, -1 when unshaped
     float coneSoftness;   // 0 hard edge, 1 falloff across the whole cone
     float focus;          // focus exponent about the axis, 0 for uniform
+    /// Blackbody temperature in kelvin, or zero. A temperature is a spectrum,
+    /// so it is carried as one rather than resolved to a tint on the host.
+    float colorTemperature;
+    /// Equates the peak-normalised blackbody's luminous power with the default
+    /// illuminant's, so a temperature tints without brightening.
+    float temperatureScale;
     float pad0;
+    float pad1;
 };
 layout(set = 0, binding = 15, scalar) readonly buffer LightTable {
     Light values[];
@@ -473,20 +482,66 @@ vec4 hdclaude_upsample(vec3 rgb, vec4 lambda)
     return scale * hdclaude_reflectance_sigmoid((c.x * t + c.y) * t + c.z);
 }
 
+/// Planck's law, normalised to a peak of one.
+///
+/// Matching `NormalizedBlackbody` on the host, with the peak found by Wien's
+/// displacement law rather than by a search. Written with the constants in
+/// nanometre-kelvin so the exponent stays in a range float handles: at 1667 K
+/// and 360 nm it is about 24, and at 25000 K and 830 nm about 0.7.
+float hdclaude_blackbody(float lambda, float kelvin)
+{
+    const float c2 = 1.4387769e7;   // hc/k, in nm K
+    float peak = 2.8977721e6 / kelvin;
+    float x = c2 / (lambda * kelvin);
+    float xPeak = c2 / (peak * kelvin);
+    float l = peak / lambda;
+    // The ratio of two Planck evaluations, with the fifth power written as a
+    // ratio so neither term overflows on its own.
+    return l * l * l * l * l * (exp(xPeak) - 1.0) / (exp(x) - 1.0);
+}
+
+/// The illuminant an emitter's authored RGB is referred to.
+///
+/// D65 by default, because that is what an RGB colour means in an sRGB
+/// pipeline. A light with a colour temperature is referred to its *blackbody*
+/// instead -- it emits Planck's law, tinted by whatever colour was authored --
+/// and the scale keeps its luminous power the same, so the control tints
+/// without brightening.
+///
+/// Replacing the illuminant rather than multiplying by it is the point. A light
+/// at 2700 K does not emit daylight through an amber filter; it emits a 2700 K
+/// spectrum, and the difference shows on any surface whose reflectance varies
+/// across the spectrum, which is every real one.
+vec4 hdclaude_emitter_illuminant(vec4 lambda, float kelvin, float scale)
+{
+    if (kelvin > 0.0)
+    {
+        return scale * vec4(hdclaude_blackbody(lambda.x, kelvin),
+                            hdclaude_blackbody(lambda.y, kelvin),
+                            hdclaude_blackbody(lambda.z, kelvin),
+                            hdclaude_blackbody(lambda.w, kelvin));
+    }
+    return vec4(hdclaude_spectral_row(lambda.x).w,
+                hdclaude_spectral_row(lambda.y).w,
+                hdclaude_spectral_row(lambda.z).w,
+                hdclaude_spectral_row(lambda.w).w);
+}
+
 /// Upsample an authored *emission* RGB to the four lanes.
 ///
-/// An emitted spectrum is its upsampled reflectance times the illuminant the
-/// colour was authored against. That is what an RGB emitter means in a
-/// D65-referred pipeline -- a white light emits D65 -- and it is what makes a
-/// white surface under a white light come back white, since the film divides
-/// by the same illuminant's luminous integral.
+/// The upsampled chromaticity times the illuminant the colour is referred to.
+/// That is what makes a white surface under a white light come back white,
+/// since the film divides by the default illuminant's luminous integral.
+vec4 hdclaude_upsample_emission(vec3 rgb, vec4 lambda, float kelvin, float scale)
+{
+    return hdclaude_upsample(rgb, lambda) *
+           hdclaude_emitter_illuminant(lambda, kelvin, scale);
+}
+
+/// The same, for an emitter with no colour temperature of its own.
 vec4 hdclaude_upsample_emission(vec3 rgb, vec4 lambda)
 {
-    vec4 illuminant = vec4(hdclaude_spectral_row(lambda.x).w,
-                           hdclaude_spectral_row(lambda.y).w,
-                           hdclaude_spectral_row(lambda.z).w,
-                           hdclaude_spectral_row(lambda.w).w);
-    return hdclaude_upsample(rgb, lambda) * illuminant;
+    return hdclaude_upsample_emission(rgb, lambda, 0.0, 1.0);
 }
 
 /// How many emitters next-event estimation chooses between.
@@ -709,6 +764,11 @@ vec3 hdclaude_offset_ray(vec3 position, vec3 normal)
 
 /// One sample of one light, in world space.
 struct LightSample {
+    /// The emitter's blackbody temperature, or zero for the default
+    /// illuminant. Carried on the sample because the shading point upsamples
+    /// the radiance and has to know which illuminant it is referred to.
+    float colorTemperature;
+    float temperatureScale;
     vec3  direction;    // from the surface toward the light, normalised
     float distance;     // to the sampled point; huge for a distant light
     vec3  radiance;     // emitted radiance arriving along `direction`
@@ -799,6 +859,8 @@ LightSample hdclaude_sample_light(uint index, vec3 position, vec2 u)
     result.radiance = vec3(0.0);
     result.pdf = 0.0;
     result.castsShadows = light.castsShadows != 0u;
+    result.colorTemperature = light.colorTemperature;
+    result.temperatureScale = light.temperatureScale;
 
     if (light.type == HDCLAUDE_LIGHT_DISTANT)
     {

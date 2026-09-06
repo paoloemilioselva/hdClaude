@@ -452,6 +452,70 @@ void TestHeroPacketIntegratesUnbiased()
     CHECK_NEAR(estimated, reference, reference * 2.0e-3);
 }
 
+/// The spectral blackbody has to land on the Planckian locus.
+///
+/// `enableColorTemperature` is the single most visible difference between a
+/// spectral renderer and an RGB one, and it is only a difference if the
+/// spectrum is right. Integrating Planck's law through the colour matching
+/// functions and comparing the chromaticity against the published locus checks
+/// the two together: a wrong constant in Planck and a wrong colour matching
+/// integration would each move the answer, and neither is likely to move it
+/// back onto the locus at five temperatures at once.
+void TestBlackbodyLandsOnThePlanckianLocus()
+{
+    struct Point {
+        float kelvin;
+        float x;
+        float y;
+    };
+    const Point locus[] = {
+        {2000.0f, 0.5267f, 0.4133f},
+        {3000.0f, 0.4369f, 0.4041f},
+        {4000.0f, 0.3805f, 0.3768f},
+        {6500.0f, 0.3135f, 0.3237f},
+        {10000.0f, 0.2807f, 0.2884f},
+    };
+
+    for (const Point& point : locus) {
+        const Vec3 chromaticity = XyzToChromaticity(BlackbodyXyz(point.kelvin));
+        std::printf("  %.0f K -> x %.4f y %.4f (published %.4f %.4f)\n",
+                    point.kelvin, chromaticity.x, chromaticity.y, point.x,
+                    point.y);
+        // Five thousandths, which is a few times the Wyman fit's own error and
+        // a great deal less than the distance between these five points.
+        CHECK_NEAR(chromaticity.x, point.x, 5.0e-3);
+        CHECK_NEAR(chromaticity.y, point.y, 5.0e-3);
+    }
+}
+
+/// A colour temperature tints; it must not brighten.
+///
+/// The scale equates the blackbody's luminous integral with D65's, so enabling
+/// the control changes a light's hue and leaves its luminance where the author
+/// put it. Matching *peaks* instead would make a warm light a dim one, because
+/// a 2700 K blackbody peaks well outside the visible range.
+void TestBlackbodyScaleKeepsLuminanceConstant()
+{
+    const float temperatures[] = {2000.0f, 2700.0f, 4000.0f, 6504.0f, 12000.0f};
+
+    double reference = 0.0;
+    for (float lambda = kLambdaMin; lambda <= kLambdaMax; lambda += 5.0f) {
+        reference += static_cast<double>(IlluminantD65(lambda)) *
+                     static_cast<double>(CieXyzBar(lambda).y);
+    }
+
+    for (const float kelvin : temperatures) {
+        const float scale = BlackbodyLuminousScale(kelvin);
+        double luminous = 0.0;
+        for (float lambda = kLambdaMin; lambda <= kLambdaMax; lambda += 5.0f) {
+            luminous += static_cast<double>(NormalizedBlackbody(lambda, kelvin)) *
+                        static_cast<double>(scale) *
+                        static_cast<double>(CieXyzBar(lambda).y);
+        }
+        CHECK_NEAR(luminous / reference, 1.0, 1.0e-4);
+    }
+}
+
 void TestBlackbodyPeakMatchesWien()
 {
     // Wien's displacement law is an independent check on Planck's law: the
@@ -542,6 +606,8 @@ int main()
     TestEmissionUpsamplingPreservesColourAndMagnitude();
     TestChromaTableMatchesTheFit();
     TestHeroPacketIntegratesUnbiased();
+    TestBlackbodyLandsOnThePlanckianLocus();
+    TestBlackbodyScaleKeepsLuminanceConstant();
     TestDisplayTransformLeavesTheDiffuseRangeAlone();
     TestDisplayTransformCompressesRatherThanClips();
     TestDisplayTransformSanitisesAndExposes();

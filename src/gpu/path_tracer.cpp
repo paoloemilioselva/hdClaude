@@ -110,6 +110,8 @@ struct FrameBlock {
     std::uint32_t chromaTableOffset;
     std::uint32_t chromaTableSize;
     float spectralNormalisation;
+    float environmentTemperature;
+    float environmentTemperatureScale;
     float domeWorldToLight[16];
     float domeLightToWorld[16];
 };
@@ -686,6 +688,8 @@ void PathTracer::SetScene(const Scene& scene,
                 sizeof(_domeWorldToLight));
     std::memcpy(_domeLightToWorld, scene.domeLightToWorld,
                 sizeof(_domeLightToWorld));
+    _domeColorTemperature = scene.domeColorTemperature;
+    _domeTemperatureScale = scene.domeTemperatureScale;
 
     // --- The environment's sampling distribution ----------------------------
     // Built from the dome map, if there is one with any light in it. A constant
@@ -1018,6 +1022,8 @@ std::vector<float> PathTracer::Render(std::uint32_t width, std::uint32_t height,
     block.chromaTableOffset = _chromaTableOffset;
     block.chromaTableSize = _chromaTableSize;
     block.spectralNormalisation = _spectralNormalisation;
+    block.environmentTemperature = _domeColorTemperature;
+    block.environmentTemperatureScale = _domeTemperatureScale;
     std::memcpy(block.domeWorldToLight, _domeWorldToLight,
                 sizeof(block.domeWorldToLight));
     std::memcpy(block.domeLightToWorld, _domeLightToWorld,

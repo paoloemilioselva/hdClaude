@@ -14,6 +14,7 @@
 #include "test_support.h"
 
 #include "hdclaude/gpu/glsl_compiler.h"
+#include "hdclaude/core/spectrum.h"
 #include "hdclaude/gpu/path_tracer.h"
 #include "hdclaude/gpu/scene.h"
 #include "hdclaude/gpu/vulkan_context.h"
@@ -1031,6 +1032,96 @@ int main()
             CHECK_NEAR(centre.r, 0.4, 0.04);
             CHECK_NEAR(centre.g, 0.4, 0.04);
             CHECK_NEAR(centre.b, 0.4, 0.04);
+        }
+
+        // --- A colour temperature tints and does not brighten -----------------
+        //
+        // `enableColorTemperature` is the single input where transporting a
+        // spectrum instead of a colour is most obviously the point: a light at
+        // 2700 K emits Planck's law, and an RGB renderer can only multiply by
+        // the blackbody's *colour*, which is a metamer of it.
+        //
+        // Two claims, and they pull against each other, which is why both are
+        // asserted. The image has to change hue -- warm at 2700 K, cool at
+        // 9000 K, measured as the red-to-blue ratio -- and its luminance has to
+        // stay where the author put it, because UsdLux's control is a colour
+        // control. A blackbody normalised to its *peak* rather than to its
+        // luminous integral would pass the first and fail the second badly: a
+        // 2700 K blackbody peaks well outside the visible range, so peak
+        // normalisation would render this scene dark as well as warm.
+        {
+            Scene scene;
+            scene.prototypes.push_back(MakeQuad());
+            scene.instances.push_back({0, Transform3x4{}, 0, true});
+
+            Light distant;
+            distant.type = static_cast<std::uint32_t>(LightType::Distant);
+            // Emitting along -Z, so it lights the quad's +Z face head on.
+            distant.direction[0] = 0.0f;
+            distant.direction[1] = 0.0f;
+            distant.direction[2] = -1.0f;
+            distant.angularRadius = 0.01f;
+            // A distant light's irradiance is its radiance times the solid
+            // angle of its disk, which at 0.01 rad is 3.1e-4. Unit radiance
+            // would render this quad at a luminance of 1e-4 -- correct, and
+            // far too dark for a ratio between two of them to be worth
+            // reading. The reciprocal of that solid angle puts the neutral
+            // render near the middle of the range instead, so what the
+            // luminance assertion below rules out is a real shift rather than
+            // a rounding one.
+            const float kDistantRadiance = 1.0f / (3.14159265f * 0.01f * 0.01f);
+            distant.radiance[0] = kDistantRadiance;
+            distant.radiance[1] = kDistantRadiance;
+            distant.radiance[2] = kDistantRadiance;
+            distant.castsShadows = 0;
+
+            RenderSettings lit;
+            lit.samplesPerPixel = 256;
+            lit.maxBounces = 2;
+            // Nothing else may light the quad, or it would dilute the shift
+            // being measured.
+            for (int i = 0; i < 3; ++i) {
+                lit.environmentColor[i] = 0.0f;
+                lit.sunRadiance[i] = 0.0f;
+            }
+
+            const auto renderAt = [&](float kelvin) {
+                Light light = distant;
+                light.colorTemperature = kelvin;
+                light.temperatureScale =
+                    kelvin > 0.0f ? BlackbodyLuminousScale(kelvin) : 1.0f;
+                Scene withLight = scene;
+                withLight.lights.push_back(light);
+                tracer.SetScene(withLight, {materials[0]});
+                const std::vector<float> image =
+                    tracer.Render(kWidth, kHeight, LookDownZ(4.0f), lit);
+                return Window(image, 0.5f, 0.5f, 12);
+            };
+
+            const Pixel neutral = renderAt(0.0f);
+            const Pixel warm = renderAt(2700.0f);
+            const Pixel cool = renderAt(9000.0f);
+
+            const auto ratio = [](const Pixel& p) {
+                return p.r / std::max(p.b, 1.0e-6f);
+            };
+            std::printf("  colour temperature r/b: neutral %.3f, 2700 K %.3f, "
+                        "9000 K %.3f\n",
+                        ratio(neutral), ratio(warm), ratio(cool));
+            std::printf("  luminance: neutral %.4f, 2700 K %.4f, 9000 K %.4f\n",
+                        Luminance(neutral), Luminance(warm), Luminance(cool));
+
+            // Lit, and lit well enough that the ratios below mean something.
+            CHECK(Luminance(neutral) > 0.05f);
+            // Warmer means more red than blue, and cooler means less. The
+            // margins are wide because what is being asserted is the direction
+            // of a large shift, not its size.
+            CHECK(ratio(warm) > ratio(neutral) * 1.5f);
+            CHECK(ratio(cool) < ratio(neutral));
+
+            // And the luminance is the author's, whatever the temperature.
+            CHECK_NEAR(Luminance(warm) / Luminance(neutral), 1.0, 0.05);
+            CHECK_NEAR(Luminance(cool) / Luminance(neutral), 1.0, 0.05);
         }
 
         // --- A texture arrives the way round it was decoded -------------------

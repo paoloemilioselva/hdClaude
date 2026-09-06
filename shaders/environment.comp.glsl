@@ -25,8 +25,10 @@ void main()
 
     vec3 direction = pathDirection.values[path];
     vec4 lambda = pathWavelengths.values[path];
-    vec4 radiance = hdclaude_upsample_emission(hdclaude_environment(direction),
-                                               lambda);
+    vec4 radiance =
+        hdclaude_upsample_emission(hdclaude_environment(direction), lambda,
+                                   frame.environmentTemperature,
+                                   frame.environmentTemperatureScale);
 
     // Multiple importance sampling against next-event estimation, which
     // samples this same environment at every shading point. Both strategies
