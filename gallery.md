@@ -78,16 +78,16 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 <!-- gallery-timings:start -->
 | Scene | Measured | Wall time | SHA-256 | Device | Settings |
 |---|---:|---:|---|---|---|
-| Intel Sponza | 2026-09-06 | 36.262 s (0m 36.262s) | `43a58558df03c870f37a51b8b853cc09a358481b331616ceea07a205afcee31f` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| OpenChessSet | 2026-09-06 | 18.696 s (0m 18.696s) | `346c22e8f3360a508bbf7f298af7692c0c2bbeae92c64e70fa9af389ef83dbb1` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall Gold | 2026-09-06 | 25.584 s (0m 25.584s) | `d544ab76c39830cf181a11b5b566ecfacc50ff679e2e81e7b1a1ebc197270c5c` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall Glass | 2026-09-06 | 27.867 s (0m 27.867s) | `7aec4fae31fd0a379b3be3c9f5f3ace613094b89c7eafa1134196b7ca5dc6da0` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall BubbleGum | 2026-09-06 | 27.385 s (0m 27.385s) | `994f05ae0fbd55057542f2a434f75c42e59364d216082572e00ebc41cc5665d2` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Pixar's KitchenSet | 2026-09-06 | 113.285 s (1m 53.285s) | `9b2381ee7811f1319c641845ee51e14ec644bb87c4785b559e76ce0bd45dd8a8` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Collective Project 001 | 2026-09-06 | 15.648 s (0m 15.648s) | `963610e602da0eb5b787d941285b56ff9016ee686a83a6bffdb3bde656d0980a` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| OpenPBR Playground | 2026-09-06 | 50.239 s (0m 50.239s) | `671ee8835443dcb2f6c3a8d2507872f063cf1ddcf20ba38d6718392d4b4285bd` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Subdivision Feature Matrix | 2026-09-06 | 10.002 s (0m 10.002s) | `4315f04b76b6fb8af0818c284f130c78b1967cc1404bdff83a5e08f2463bd015` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| New Zealand Height Map | 2026-09-06 | 8.163 s (0m 8.163s) | `024ad20e49c119c5030ce56f687b14b57048a8020e61790a022256633eb43643` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 6 |
+| Intel Sponza | 2026-09-06 | 50.346 s (0m 50.346s) | `c550555b5fc987b063555e5959c6d7cd74260972c143627db91dcb6ff01075d3` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| OpenChessSet | 2026-09-06 | 25.695 s (0m 25.695s) | `346c22e8f3360a508bbf7f298af7692c0c2bbeae92c64e70fa9af389ef83dbb1` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall Gold | 2026-09-06 | 25.681 s (0m 25.681s) | `34d521c3c0ec76559a21b716160c38b73bb79512e62843882212776845bd25d9` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall Glass | 2026-09-06 | 27.554 s (0m 27.554s) | `be5abeff93faebe9433919fe5de9edd5bc6aab89e918b44c6287c5e24df1811b` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall BubbleGum | 2026-09-06 | 27.146 s (0m 27.146s) | `49be77c86c16dc0383a0ea56280d04e19504115d4be82eb5025298183c2e4d39` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Pixar's KitchenSet | 2026-09-06 | 123.045 s (2m 3.045s) | `9b2381ee7811f1319c641845ee51e14ec644bb87c4785b559e76ce0bd45dd8a8` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Collective Project 001 | 2026-09-06 | 21.707 s (0m 21.707s) | `963610e602da0eb5b787d941285b56ff9016ee686a83a6bffdb3bde656d0980a` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| OpenPBR Playground | 2026-09-06 | 93.244 s (1m 33.244s) | `ce6b3a3f4cf6fc5fe9aa770c622414f5f5bca4e23379e553ba7dea119470c3b5` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Subdivision Feature Matrix | 2026-09-06 | 12.899 s (0m 12.899s) | `4315f04b76b6fb8af0818c284f130c78b1967cc1404bdff83a5e08f2463bd015` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| New Zealand Height Map | 2026-09-06 | 7.904 s (0m 7.904s) | `eb707b7e775734929d9406fa01d506d521c0ec6050d0671733695c49f43204a2` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 6 |
 <!-- gallery-timings:end -->
 
 ## Against hdCodex
@@ -180,9 +180,11 @@ render_claude.bat --imageWidth 1024 --colorCorrectionMode disabled --camera came
 ```
 
 **Current state.** The conductor reads as metal, the inner shell is neutral,
-and the backdrop's printed numbers read the right way round. This is the image
-that found the texture-orientation defect: the numbers were mirrored in every
-render before it.
+and the ground now carries the region of its texture that it should -- the same
+numbers in the same places as hdCodex. This scene found two texture defects:
+every texture was uploaded upside down, and the ground and all five walls
+author their UVs face-varying, which hdClaude used to reject and shade from
+barycentrics instead.
 
 ### StandardShaderBall Glass
 

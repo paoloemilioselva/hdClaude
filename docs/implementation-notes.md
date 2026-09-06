@@ -1471,3 +1471,37 @@ cause, and the extension was the one thing that had nothing to do with it. What
 would have separated them sooner is the error text: "no image plugin opened"
 and "unsupported component type" are different failures, and they were being
 read as one because they arrived in the same list.
+
+---
+
+## 2026-09-06 -- Face-varying UVs, and a "no result" that was the result
+
+The StandardShaderBall's ground was mapped with its own barycentrics: the grid
+ran diagonally, the printed numbers were rotated, and the region of the texture
+on screen was not the one hdCodex shows. So were all five walls of its box.
+
+The cause is one line of the asset:
+
+    texCoord2f[] primvars:st = [(0,0), (1,-1), (1,0), (1,-1), (0,0), (0,-1)]
+        (interpolation = "faceVarying")
+
+Six coordinates on a four-vertex quad. hdClaude accepted `st` only when its
+length equalled the vertex count, which is a test that rejects every
+face-varying primvar there is -- and a UV seam is *authored* face-varying, so
+this is not an edge case. The interpolation is now read from the prim's own
+primvar descriptors rather than inferred from an array's length, and a
+face-varying set is triangulated into one coordinate per triangle corner, which
+the kernel indexes by primitive.
+
+The part worth remembering is the second failure, which cost more than the
+first. `HdMeshUtil::ComputeTriangulatedFaceVaryingPrimvar` returns a
+three-valued result: `Error`, `Success`, and `Unchanged` -- "computation
+succeeded but no result was produced, because it is the same as the input".
+The ground is already two triangles, so triangulating its face-varying array is
+a no-op and the return is `Unchanged` with the output VtValue left empty.
+Testing for `Success` alone reads that as a failure, and an all-triangle mesh
+ends up with no coordinates at all -- which is the exact state the fix was
+meant to cure, arrived at by a different route.
+
+A tri-state result where two of the three states mean success is worth reading
+carefully. The name says so; the shape of the code did not.

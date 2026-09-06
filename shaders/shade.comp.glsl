@@ -114,7 +114,18 @@ SurfacePoint hdclaude_reconstruct(ivec4 record, vec3 rayDirection, vec3 hitPosit
     if (geometry.uvs != 0ul)
     {
         UvBuffer uvs = UvBuffer(geometry.uvs);
-        point.uv = w * uvs.values[i0] + u * uvs.values[i1] + v * uvs.values[i2];
+        if (geometry.uvsPerCorner != 0u)
+        {
+            // Face-varying: three coordinates belong to this triangle alone,
+            // in the order its indices were written.
+            uint corner = uint(record.y) * 3u;
+            point.uv = w * uvs.values[corner + 0u] + u * uvs.values[corner + 1u] +
+                       v * uvs.values[corner + 2u];
+        }
+        else
+        {
+            point.uv = w * uvs.values[i0] + u * uvs.values[i1] + v * uvs.values[i2];
+        }
     }
     else
     {

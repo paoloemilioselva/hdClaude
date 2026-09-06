@@ -125,7 +125,9 @@ struct InstanceGeometry {
     float objectToWorld[12];
     float worldToObject[12];
     std::uint32_t material;
-    std::uint32_t pad[3];
+    /// 1 when `uvs` holds one coordinate per triangle corner.
+    std::uint32_t uvsPerCorner;
+    std::uint32_t pad[2];
 };
 
 VulkanBuffer MakeStorage(VulkanAllocator& allocator, VkDeviceSize size,
@@ -517,6 +519,10 @@ void PathTracer::SetScene(const Scene& scene,
         std::memcpy(entry.objectToWorld, instance.transform.m, sizeof(entry.objectToWorld));
         InvertTransform3x4(instance.transform.m, entry.worldToObject);
         entry.material = instance.material;
+        if (instance.prototype < scene.prototypes.size()) {
+            entry.uvsPerCorner =
+                scene.prototypes[instance.prototype].uvsPerCorner ? 1u : 0u;
+        }
         table.push_back(entry);
     }
     _instanceCount = static_cast<std::uint32_t>(table.size());

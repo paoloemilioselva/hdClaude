@@ -127,6 +127,8 @@ std::uint64_t MeshPrototype::Fingerprint() const
     }
     if (!uvs.empty()) {
         hash = Fnv1a64(uvs.data(), uvs.size() * sizeof(float), hash);
+        const auto perCorner = static_cast<std::uint8_t>(uvsPerCorner);
+        hash = Fnv1a64(&perCorner, sizeof(perCorner), hash);
     }
     if (!triangleMaterials.empty()) {
         hash = Fnv1a64(triangleMaterials.data(),

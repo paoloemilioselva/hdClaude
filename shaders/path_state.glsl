@@ -187,7 +187,11 @@ struct InstanceGeometry {
     mat3x4 objectToWorld;
     mat3x4 worldToObject;
     uint material;
-    uint pad0;
+    /// 1 when `uvs` holds one coordinate per triangle *corner* rather than per
+    /// vertex, which is how a face-varying primvar arrives. A UV seam cannot
+    /// be expressed any other way, and neither can a textured quad whose four
+    /// vertices carry six coordinates.
+    uint uvsPerCorner;
     uint pad1;
     uint pad2;
 };

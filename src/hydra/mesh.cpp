@@ -206,25 +206,53 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     std::vector<std::uint32_t> indices;
     std::vector<int> coarseFaces;
 
-    // The control cage's texture coordinates, read before refinement because
+    // The texture coordinates, and how they are interpolated.
+    //
+    // Asking the prim rather than guessing from the array's length: a quad with
+    // four vertices and six face-varying coordinates is a real and common
+    // shape -- the StandardShaderBall's ground and every wall of its box are
+    // exactly that -- and a length test rejects it, which is how those
+    // surfaces ended up shaded from barycentrics.
+    VtVec2fArray authoredUvs;
+    HdInterpolation uvInterpolation = HdInterpolationVertex;
+    bool haveUvs = false;
+    for (const HdInterpolation interpolation :
+         {HdInterpolationVertex, HdInterpolationVarying,
+          HdInterpolationFaceVarying}) {
+        for (const HdPrimvarDescriptor& descriptor :
+             GetPrimvarDescriptors(sceneDelegate, interpolation)) {
+            if (descriptor.name != TfToken("st") &&
+                descriptor.name != TfToken("uv")) {
+                continue;
+            }
+            const VtValue value = sceneDelegate->Get(id, descriptor.name);
+            if (!value.IsHolding<VtVec2fArray>()) {
+                continue;
+            }
+            authoredUvs = value.UncheckedGet<VtVec2fArray>();
+            uvInterpolation = interpolation;
+            haveUvs = !authoredUvs.empty();
+            break;
+        }
+        if (haveUvs) {
+            break;
+        }
+    }
+
+    // The control cage's coordinates, read before refinement because
     // refinement is what has to carry them: they are authored per control
-    // vertex, and the refined cage has different vertices.
+    // vertex, and the refined cage has different vertices. Only the
+    // vertex-interpolated ones refine; a face-varying set needs an OpenSubdiv
+    // channel of its own, which is recorded as remaining work rather than
+    // approximated by refining it as vertex data across its own seams.
     std::vector<float> coarseUvs;
-    for (const TfToken& name : {TfToken("st"), TfToken("uv")}) {
-        const VtValue uvValue = sceneDelegate->Get(id, name);
-        if (!uvValue.IsHolding<VtVec2fArray>()) {
-            continue;
+    if (haveUvs && uvInterpolation != HdInterpolationFaceVarying &&
+        authoredUvs.size() == points.size() / 3) {
+        coarseUvs.resize(authoredUvs.size() * 2);
+        for (std::size_t i = 0; i < authoredUvs.size(); ++i) {
+            coarseUvs[i * 2 + 0] = authoredUvs[i][0];
+            coarseUvs[i * 2 + 1] = authoredUvs[i][1];
         }
-        const VtVec2fArray& uvs = uvValue.UncheckedGet<VtVec2fArray>();
-        if (uvs.size() != points.size() / 3) {
-            continue;
-        }
-        coarseUvs.resize(uvs.size() * 2);
-        for (std::size_t i = 0; i < uvs.size(); ++i) {
-            coarseUvs[i * 2 + 0] = uvs[i][0];
-            coarseUvs[i * 2 + 1] = uvs[i][1];
-        }
-        break;
     }
 
     const int subdivisionLevel = param->SubdivisionLevel();
@@ -389,9 +417,45 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     // would compare a coarse array against a refined vertex count, fail, and
     // leave the mesh with none -- which is what it used to do.
     if (!subdivided) {
-        entry.prototype.uvs = std::move(coarseUvs);
-        if (entry.prototype.uvs.size() != vertexCount * 2) {
-            entry.prototype.uvs.clear();
+        if (haveUvs && uvInterpolation == HdInterpolationFaceVarying) {
+            // Triangulated into one coordinate per triangle corner, in the
+            // same triangle order HdMeshUtil produced the indices in, so the
+            // kernel can index them by primitive without a second mapping.
+            HdMeshUtil meshUtil(&topology, id);
+            VtValue triangulated;
+            const HdMeshComputationResult computed =
+                meshUtil.ComputeTriangulatedFaceVaryingPrimvar(
+                    authoredUvs.cdata(), static_cast<int>(authoredUvs.size()),
+                    HdTypeFloatVec2, &triangulated);
+
+            // `Unchanged` means the triangulation was a no-op because the mesh
+            // is already triangles, and the *input* is the answer. Reading it
+            // as a failure leaves an all-triangle mesh with no coordinates at
+            // all, which is what the StandardShaderBall's ground and walls are:
+            // two triangles each, authored face-varying, and shaded from
+            // barycentrics until this branch existed.
+            const VtVec2fArray* corners = nullptr;
+            if (computed == HdMeshComputationResult::Success &&
+                triangulated.IsHolding<VtVec2fArray>()) {
+                corners = &triangulated.UncheckedGet<VtVec2fArray>();
+            } else if (computed == HdMeshComputationResult::Unchanged) {
+                corners = &authoredUvs;
+            }
+
+            if (corners != nullptr &&
+                corners->size() == entry.prototype.indices.size()) {
+                entry.prototype.uvs.resize(corners->size() * 2);
+                for (std::size_t i = 0; i < corners->size(); ++i) {
+                    entry.prototype.uvs[i * 2 + 0] = (*corners)[i][0];
+                    entry.prototype.uvs[i * 2 + 1] = (*corners)[i][1];
+                }
+                entry.prototype.uvsPerCorner = true;
+            }
+        } else {
+            entry.prototype.uvs = std::move(coarseUvs);
+            if (entry.prototype.uvs.size() != vertexCount * 2) {
+                entry.prototype.uvs.clear();
+            }
         }
     }
 

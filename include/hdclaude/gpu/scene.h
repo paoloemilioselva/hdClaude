@@ -46,8 +46,17 @@ struct MeshPrototype {
     std::vector<std::uint32_t> indices;
     /// Interleaved xyz shading normals, one per vertex. May be empty.
     std::vector<float> normals;
-    /// Interleaved uv, two per vertex. May be empty.
+    /// Interleaved uv. May be empty.
+    ///
+    /// Two per *vertex* normally, and two per triangle *corner* when
+    /// `uvsPerCorner` is set. Face-varying is not a variant hdClaude can
+    /// ignore: a UV seam is authored that way, and a mesh as small as a
+    /// textured quad -- the StandardShaderBall's ground is one -- carries six
+    /// coordinates on four vertices and cannot be expressed any other way.
     std::vector<float> uvs;
+    /// True when `uvs` holds one coordinate per triangle corner rather than
+    /// per vertex, which is how a face-varying primvar arrives.
+    bool uvsPerCorner = false;
     /// Per-triangle material index, one per triangle. May be empty, in which
     /// case every triangle uses the instance's material.
     std::vector<std::uint32_t> triangleMaterials;
