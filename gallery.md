@@ -4,11 +4,9 @@ These images are versioned visual baselines, not golden-reference renders. They
 exist so that an intentional improvement and an unintentional regression are
 both visible in a diff.
 
-**Status: nine of ten scenes.** The renderer is under construction; see
+**Status: all ten scenes render.** The renderer is under construction; see
 [docs/roadmap.md](docs/roadmap.md). These images are what hdClaude produces
-today, and every scene below says what its baseline still gets wrong. One
-scene does not render at all and is recorded as a failure rather than omitted.
-Parity with the hdCodex baselines is phase 8 and has not been reached.
+today, and every scene below says what its baseline still gets wrong. Parity with the hdCodex baselines is phase 8 and has not been reached.
 
 The first pass through this gallery found seven defects that no test had:
 textures uploaded upside down, texture coordinates dropped by refinement and by
@@ -86,7 +84,7 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 | StandardShaderBall Glass | 2026-09-06 | 26.582 s (0m 26.582s) | `363f2ff6b98dd1855dcf1416f3ad8fdad1226210da013ee04c846f327c25f859` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | StandardShaderBall BubbleGum | 2026-09-06 | 25.437 s (0m 25.437s) | `e6f802d1de6a1bddf3b5b1ee7b4de5b0c19a7763f28a6e747b927abebba274a4` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | Pixar's KitchenSet | 2026-09-06 | 123.157 s (2m 3.157s) | `3b2ef0aa2372fc48394296cead98e296df2245af563b8003c66b39329bb7cc5d` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Collective Project 001 | - | Not measured | `-` | - | - |
+| Collective Project 001 | 2026-09-06 | 14.886 s (0m 14.886s) | `a040781a84cf3c409192ae196237e47af386cbea928fec2597c261ae8c044482` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | OpenPBR Playground | 2026-09-06 | 46.048 s (0m 46.048s) | `b19a2c118221e903e781ce80785b1dcee887f42d6659b9e56ef5d86c24b630fe` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | Subdivision Feature Matrix | 2026-09-06 | 12.838 s (0m 12.838s) | `0090f710d67904acb88db93679fc3dc9d92a61873a538e7358034301a9dec058` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | New Zealand Height Map | 2026-09-06 | 7.858 s (0m 7.858s) | `6b413ce63241260aa2b38f6581a098f8d82f9b20b5fb287720127753a169aa31` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 6 |
@@ -211,13 +209,12 @@ subsets. The scene that exercises in-place BLAS update under deformation.
 render_claude.bat --imageWidth 1024 --colorCorrectionMode disabled --purposes render --camera mono gallery\collectiveproject001.usda build\gallery-linear\collectiveproject001.exr
 ```
 
-**Does not render.** A material fails to generate: `No 'geomprop' parameter
-found on geompropvalue node 'primvar'. Don't know what property to bind`. The
-`geompropvalue` node arrives from `HdMtlxCreateMtlxDocumentFromHdNetwork`
-without the input that says which primvar to read. hdClaude reports a material
-it cannot compile rather than approximating it, and `usdrecord` treats that as
-fatal, so the scene stops. Note that binding it would also need arbitrary
-primvars in the geometry setter, which is phase 7 work.
+**Current state.** Renders: the skinned character deforms through its
+`ExtComputation`, the per-face material subsets read correctly, and the
+electric arc between the antennae is a curve primitive reading a float geomprop
+this renderer does not carry, so it takes that geomprop's zero and shades
+white. It needed `UsdPrimvarReader` rewritten into the `geompropvalue` it
+wraps, which MaterialX cannot read through a nodegraph interface.
 
 ### OpenPBR Playground
 

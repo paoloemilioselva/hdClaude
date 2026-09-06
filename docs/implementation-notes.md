@@ -1322,3 +1322,35 @@ The 21 that remain are TIFFs, which this OpenUSD distribution's Hio has no
 plugin for. That is an environment limitation and the magenta placeholder is
 reporting it correctly -- which is the first time in this gallery that the
 placeholder has meant what it says.
+
+---
+
+## 2026-09-06 -- A primvar reader, and the substring that looked like a match
+
+The last blocked gallery scene needed two things, one expected and one that had
+been quietly wrong since the UV work earlier the same day.
+
+**`UsdPrimvarReader` is a `geompropvalue` behind an interface.** MaterialX
+implements `ND_UsdPrimvarReader_*` as a nodegraph wrapping a `geompropvalue`
+whose `geomprop` input is connected to the graph's `varname` interface. The
+GLSL implementation reads that input's *value* to know which primvar to
+declare, and an interface connection is not a value, so generation stops with
+"No 'geomprop' parameter found on geompropvalue node 'primvar'". The node is
+now rewritten in place -- category, nodedef, `varname` to `geomprop`,
+`fallback` to `default` -- which leaves every connection into and out of it
+untouched. Rewriting beats replacing precisely because of those connections.
+
+**`geomprop_strand_u` contains `geomprop_st`.** The UV mapping added earlier
+matched the variable name by substring, so a curve's float parameter
+`strand_u` was recognised as the texture coordinate and assigned a `vec2`. The
+material stopped compiling, which is the good outcome; the same test would have
+silently assigned a `vec2` geomprop named `stuff` had one existed. The
+comparison is now exact against the name after the `geomprop_` prefix, and it
+requires a two-component port.
+
+Worth keeping: the first defect was found by an asset and the second by the
+first defect's fix. A substring test on a name looks equivalent to an exact one
+right up until a name has a prefix in common with another, and the names here
+come from assets rather than from this codebase.
+
+All ten gallery scenes now render.

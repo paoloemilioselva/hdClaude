@@ -114,6 +114,63 @@ std::string ResolveTexturePath(const mx::DocumentPtr& document,
     return std::string();
 }
 
+/// Turn `UsdPrimvarReader` nodes into the `geompropvalue` nodes they wrap.
+///
+/// MaterialX implements `ND_UsdPrimvarReader_*` as a nodegraph containing a
+/// `geompropvalue` whose `geomprop` input is connected to the graph's
+/// `varname` interface. The GLSL implementation of `geompropvalue` reads that
+/// input's *value* to know which primvar to declare, and an interface
+/// connection is not a value, so generation stops with
+///
+///     No 'geomprop' parameter found on geompropvalue node 'primvar'.
+///     Don't know what property to bind
+///
+/// which is one node costing a whole scene -- Collective Project 001 in this
+/// gallery. The node is rewritten in place rather than replaced, so every
+/// connection into and out of it survives untouched.
+void ResolvePrimvarReaders(const mx::DocumentPtr& document, const std::string& name)
+{
+    std::vector<mx::NodePtr> readers;
+    for (const mx::ElementPtr& element : document->traverseTree()) {
+        mx::NodePtr node = element ? element->asA<mx::Node>() : nullptr;
+        if (node && node->getCategory() == "UsdPrimvarReader") {
+            readers.push_back(node);
+        }
+    }
+
+    for (const mx::NodePtr& node : readers) {
+        const mx::InputPtr varname = node->getInput("varname");
+        const std::string primvar = varname ? varname->getValueString() : "";
+        if (primvar.empty()) {
+            TF_WARN(
+                "hdClaude: material %s: '%s' reads a primvar it does not name; "
+                "it is left alone and will fail to generate",
+                name.c_str(), node->getName().c_str());
+            continue;
+        }
+
+        const std::string type = node->getType();
+        node->setCategory("geompropvalue");
+        node->setNodeDefString("ND_geompropvalue_" + type);
+        node->removeInput("varname");
+
+        if (const mx::InputPtr geomprop = node->addInput("geomprop", "string")) {
+            geomprop->setValueString(primvar);
+        }
+        // `fallback` and `default` are the same input under two names.
+        if (const mx::InputPtr fallback = node->getInput("fallback")) {
+            const std::string value = fallback->getValueString();
+            node->removeInput("fallback");
+            if (!value.empty()) {
+                if (const mx::InputPtr fallbackValue =
+                        node->addInput("default", type)) {
+                    fallbackValue->setValueString(value);
+                }
+            }
+        }
+    }
+}
+
 /// Drop inputs the node's declaration does not have.
 ///
 /// A stage authored against a newer MaterialX than the one hdClaude links
@@ -224,6 +281,18 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
             return result;
         }
 
+        // The document goes out *before* generation, not after it. A material
+        // that fails to generate is exactly the one worth reading, and until
+        // this moved the dump only ever contained documents that had already
+        // succeeded.
+        if (const std::string dumpDir = TfGetenv("HDCLAUDE_DUMP_SHADERS");
+            !dumpDir.empty()) {
+            std::error_code code;
+            std::filesystem::create_directories(dumpDir, code);
+            mx::writeToXmlFile(document, (std::filesystem::path(dumpDir) /
+                                          (name + ".mtlx")).string());
+        }
+
         mx::ShaderPtr shader =
             generator->generate(name, renderable.front(), context);
         if (!shader) {
@@ -245,15 +314,6 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
             std::ofstream out(std::filesystem::path(dumpDir) /
                               (name + ".comp.glsl"));
             out << generated;
-
-            // The document beside the code it produced. A material that
-            // generates but shades wrongly -- a sampler with no file, a node
-            // whose input arrived unconnected -- is a question about the
-            // document, and the document is otherwise built and discarded
-            // without ever being seen.
-            mx::writeToXmlFile(document,
-                               (std::filesystem::path(dumpDir) /
-                                (name + ".mtlx")).string());
         }
 
         // The textures this material samples, in the order the generator
@@ -425,6 +485,7 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::Compile(
             network, terminalNode->second, terminalPath, path, _libraries,
             &mxHdData);
         resolvedTextures = ResolvedTexturePaths(network, mxHdData);
+        ResolvePrimvarReaders(document, name);
         PruneUndeclaredInputs(document, name);
     } catch (const std::exception& error) {
         result.fallbackReason =

@@ -26,6 +26,26 @@ constexpr const char* kBsdfGlobal = "hdclaude_bsdf";
 constexpr const char* kEmissionGlobal = "hdclaude_emission";
 constexpr const char* kOpacityGlobal = "hdclaude_opacity";
 
+/// True when a vertex-data port is a `geompropvalue` node reading the UV set.
+///
+/// The primvar name is compared *exactly*, after the `geomprop_` prefix, and
+/// the port must be a two-component one. A substring test looks equivalent and
+/// is not: `geomprop_strand_u` contains `geomprop_st`, so a curve's float
+/// parameter was assigned a `vec2` and the material stopped compiling.
+bool IsUvGeomProp(const string& loweredVariable, const ShaderPort* port)
+{
+    if (port == nullptr || port->getType() != Type::VECTOR2) {
+        return false;
+    }
+    const string marker = "geomprop_";
+    const std::size_t at = loweredVariable.find(marker);
+    if (at == string::npos) {
+        return false;
+    }
+    const string primvar = loweredVariable.substr(at + marker.size());
+    return primvar == "st" || primvar == "uv";
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -423,8 +443,7 @@ void PathTracerShaderGenerator::emitInputs(GenContext& context,
                     // one is a mesh-adapter change, recorded in
                     // docs/roadmap.md phase 7.
                     emitLine(instance + "." + variable + " = uv", stage);
-                } else if (key.find("geomprop_st") != string::npos ||
-                           key.find("geomprop_uv") != string::npos) {
+                } else if (IsUvGeomProp(key, port)) {
                     // A `geompropvalue` node reading the UV primvar by name.
                     // That is how an asset asks for texture coordinates when it
                     // does not use the `texcoord` node -- MaterialX has both,
