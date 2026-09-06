@@ -1,5 +1,8 @@
 #include "render_delegate.h"
 
+#include "instancer.h"
+#include "trace.h"
+
 #include "camera.h"
 #include "light.h"
 #include "material.h"
@@ -243,9 +246,11 @@ HdRenderPassSharedPtr HdClaudeRenderDelegate::CreateRenderPass(
 HdInstancer* HdClaudeRenderDelegate::CreateInstancer(HdSceneDelegate* delegate,
                                                      const SdfPath& id)
 {
-    // The stock instancer computes the transforms; HdClaudeMesh reads them
-    // back through HdRprim::GetInstancerTransforms, which composes the chain.
-    return new HdInstancer(delegate, id);
+    // hdClaude's own, because the stock HdInstancer computes nothing: it holds
+    // the primvars and the parent chain and leaves the composition to the
+    // renderer. Returning the base class renders every point-instanced
+    // prototype exactly once (src/hydra/instancer.h).
+    return new HdClaudeInstancer(delegate, id);
 }
 
 void HdClaudeRenderDelegate::DestroyInstancer(HdInstancer* instancer)

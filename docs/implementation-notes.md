@@ -1505,3 +1505,34 @@ meant to cure, arrived at by a different route.
 
 A tri-state result where two of the three states mean success is worth reading
 carefully. The name says so; the shape of the code did not.
+
+---
+
+## 2026-09-06 -- An rprim learns its instancer only if it asks
+
+The OpenChessSet rendered sixteen named pieces and a single pawn sitting in the
+middle of the board. The pawns are a `PointInstancer` with eight instances per
+side, and hdClaude was drawing the prototype once, at its own transform.
+
+Two things were wrong, one behind the other.
+
+**`HdRprim::GetInstancerTransforms` is not the per-instance list.** It returns
+one matrix per instancer in the parent chain -- each instancer's *own*
+transform. The mesh adapter read it as the placements and its comment said so,
+confidently. Computing instance transforms is the renderer's job:
+`HdInstancer` holds the primvars and computes nothing, which is why every
+render delegate ships an instancer of its own. hdClaude now has
+`HdClaudeInstancer`, composing instancer transform, translate, rotate, scale
+and per-instance matrix, and multiplying through nested instancers.
+
+**And an rprim's instancer id starts empty.** `GetInstancerId()` is filled in
+only when the rprim calls `_UpdateInstancer` during its own Sync, and the
+instancer is created and synced only when something asks for it through
+`HdInstancer::_SyncInstancerAndParents`. Without those two calls the id stays
+empty, `CreateInstancer` is never called at all -- which is what the trace
+showed, and what sent this investigation looking at plugin metadata and
+supported prim types before looking at the rprim.
+
+hdEmbree renders the same stage with all thirty-two pieces, which is what said
+the pipeline was fine and the delegate was not. Comparing against another
+delegate on the same stage is the cheapest instrument in the box.

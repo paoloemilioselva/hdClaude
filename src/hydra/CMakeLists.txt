@@ -13,6 +13,7 @@
 
 add_library(hdClaude MODULE
     camera.cpp
+    instancer.cpp
     light.cpp
     material.cpp
     material_compiler.cpp

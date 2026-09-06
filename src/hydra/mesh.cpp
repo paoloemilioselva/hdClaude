@@ -1,5 +1,7 @@
 #include "mesh.h"
 
+#include "instancer.h"
+
 #include "material_compiler.h"
 #include "render_param.h"
 #include "scene_store.h"
@@ -138,6 +140,20 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
         return;
     }
     const SdfPath& id = GetId();
+
+    // The instancer this mesh belongs to, and its parents, before anything
+    // reads a transform.
+    //
+    // `HdRprim::GetInstancerId()` is not filled in by Hydra on its own -- an
+    // rprim learns which instancer it belongs to only when it calls
+    // `_UpdateInstancer`, and the instancer is created and synced only when
+    // something asks for it. Skipping this leaves every instancer id empty,
+    // `CreateInstancer` is never called, and a point-instanced prototype is
+    // published once at its own transform: the OpenChessSet rendered one pawn
+    // in the middle of the board instead of sixteen on it.
+    _UpdateInstancer(sceneDelegate, dirtyBits);
+    HdInstancer::_SyncInstancerAndParents(sceneDelegate->GetRenderIndex(),
+                                          GetInstancerId());
 
     // Material binding first: the scene store resolves it to an index, and a
     // mesh published before its material simply uses the fallback until the
@@ -463,14 +479,21 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     // One prototype, many placements: the acceleration structure is built once
     // and instanced, which is the whole reason geometry stays object-space.
     //
-    // HdRprim::GetInstancerTransforms already composes the instancer chain with
-    // this prim's own transform, so a non-instanced mesh and an instanced one
-    // differ only in how many matrices come back -- there is no second path to
-    // keep correct.
+    // The placements come from hdClaude's own instancer, which composes them
+    // from the instancer's primvars. `HdRprim::GetInstancerTransforms` looks
+    // like the call for this and is not: it returns one matrix per instancer in
+    // the parent chain -- the instancer's own transform -- so reading it as the
+    // per-instance list draws a point-instanced prototype exactly once, which
+    // is how the OpenChessSet lost most of its pieces.
     if (GetInstancerId().IsEmpty()) {
         entry.transforms.push_back(ToTransform(sceneDelegate->GetTransform(id)));
     } else {
-        const VtMatrix4dArray transforms = GetInstancerTransforms(sceneDelegate);
+        VtMatrix4dArray transforms;
+        HdInstancer* instancer =
+            sceneDelegate->GetRenderIndex().GetInstancer(GetInstancerId());
+        if (auto* claudeInstancer = dynamic_cast<HdClaudeInstancer*>(instancer)) {
+            transforms = claudeInstancer->ComputeInstanceTransforms(id);
+        }
         entry.transforms.reserve(transforms.size());
         for (const GfMatrix4d& matrix : transforms) {
             entry.transforms.push_back(ToTransform(matrix));
