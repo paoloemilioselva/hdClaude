@@ -6,7 +6,13 @@ both visible in a diff.
 
 **Status: all ten scenes render.** The renderer is under construction; see
 [docs/roadmap.md](docs/roadmap.md). These images are what hdClaude produces
-today, and every scene below says what its baseline still gets wrong. Parity with the hdCodex baselines is phase 8 and has not been reached.
+today, and every scene below says what its baseline still gets wrong. Parity
+with the hdCodex baselines is phase 8 and has not been reached.
+
+Each scene shows its baseline inline. The image is the committed artefact
+itself, not a reduced copy of it: what a reader sees is the same file the
+SHA-256 in the timing table identifies, so a preview cannot drift from the
+baseline it stands for.
 
 The first pass through this gallery found seven defects that no test had:
 textures uploaded upside down, texture coordinates dropped by refinement and by
@@ -127,6 +133,8 @@ relocate an asset.
 
 ### Intel Sponza
 
+![The Sponza arcade, almost entirely black -- a faint suggestion of columns and arches is all that is above the noise floor](gallery/intel_sponza.jpg)
+
 **Source:** [Intel Graphics Research Samples](https://www.intel.com/content/www/us/en/developer/topic-technology/graphics-research/samples.html)
 
 A large textured architectural scene. Its bound materials are USD-native
@@ -159,6 +167,8 @@ sampling spends most of its shadow rays on the ceiling of a covered arcade.
 
 ### OpenChessSet
 
+![A marble chess set on a green stone board, all thirty-two pieces placed, under a studio HDRI](gallery/chess_board.jpg)
+
 **Source:** [usd-wg/assets OpenChessSet](https://github.com/usd-wg/assets/tree/main/full_assets/OpenChessSet)
 
 Instancing, HDR dome lighting, and many distinct materials. This is the scene
@@ -187,6 +197,8 @@ against hdCodex halved, from 0.199 to 0.108.
 
 ### StandardShaderBall Gold
 
+![The StandardShaderBall in polished gold, on a backdrop printed with large numbers that the metal reflects](gallery/shader_ball_gold.jpg)
+
 **Source:** [usd-wg/assets StandardShaderBall](https://github.com/usd-wg/assets/tree/main/full_assets/StandardShaderBall)
 
 Artistic-metalness conductor response.
@@ -204,6 +216,8 @@ barycentrics instead.
 
 ### StandardShaderBall Glass
 
+![The StandardShaderBall in clear glass, with the printed backdrop visible through and reflected in it](gallery/shader_ball_glass.jpg)
+
 **Source:** [usd-wg/assets StandardShaderBall](https://github.com/usd-wg/assets/tree/main/full_assets/StandardShaderBall)
 
 Spectral dielectric transmission, dispersion, and total internal reflection.
@@ -220,6 +234,8 @@ until phase 6 -- so the glass is colourless where it should split.
 
 ### StandardShaderBall BubbleGum
 
+![The StandardShaderBall in pink coated plastic on the same printed backdrop](gallery/shader_ball_bubblegum.jpg)
+
 **Source:** [usd-wg/assets StandardShaderBall](https://github.com/usd-wg/assets/tree/main/full_assets/StandardShaderBall)
 
 Subsurface transport and image textures.
@@ -232,6 +248,8 @@ render_claude.bat --imageWidth 1024 --colorCorrectionMode disabled --camera came
 yet transported, so the material reads as a diffuse surface.
 
 ### Pixar's KitchenSet
+
+![The Kitchen Set: green cabinets, a sink and a counter of props along one wall, lit through a window and an open doorway](gallery/pixar_kitchen.jpg)
 
 **Source:** [OpenUSD Kitchen Set](https://openusd.org/release/dl_kitchen_set.html)
 
@@ -251,6 +269,8 @@ asset intends.
 
 ### Collective Project 001
 
+![An orange robot with two antennae, one hand raised, standing in a spotlight against a dark magenta wall](gallery/collectiveproject001.jpg)
+
 **Source:** [usd-wg/collectiveproject001](https://github.com/usd-wg/collectiveproject001/blob/main/shots/s001_001/index.usda)
 
 UsdSkel deformation through Hydra `extComputation`, and per-face material
@@ -268,6 +288,8 @@ white. It needed `UsdPrimvarReader` rewritten into the `geompropvalue` it
 wraps, which MaterialX cannot read through a nodegraph interface.
 
 ### OpenPBR Playground
+
+![A child's craft table under a desk lamp, crowded with toys, jars and paper, with the scene's remaining sampling noise visible](gallery/openpbr_playground.jpg)
 
 **Source:** [OpenPBRShaderPlayground](https://github.com/DigitalProductionExampleLibrary/OpenPBRShaderPlayground/blob/main/ShdrPlygrnd/ShdrPlygrnd_OpenPBR.usda)
 
@@ -306,6 +328,8 @@ hdClaude renders it in 55 seconds.
 
 ### Subdivision Feature Matrix
 
+![Six subdivision test shapes on a flat blue-grey ground: three rounded forms above -- purple, brown, and a small cyan one -- and three quads below, the middle quad split olive and violet by its two material subsets](gallery/subdivision_features.jpg)
+
 A renderer-owned scene isolating six subdivision paths: an indexed face-varying
 UV seam, a Catmull-Clark cube with edge creases and a sharp corner, a Loop
 tetrahedron, a Catmull-Clark grid with a holed coarse face, two coarse-face
@@ -323,6 +347,8 @@ displacement panel is flat, because displacement is phase 16.
 
 ### New Zealand Height Map
 
+![A dark brown quad seen in perspective, with the two islands of New Zealand picked out in green by the height map, and no relief at all](gallery/newzealand_heightmap.jpg)
+
 One authored bilinear quad displaced by a MaterialX `ND_image_float` height map
 after uniform level-6 refinement. The same map drives surface colour, so texture
 resolution and UV orientation are visible independently of the displaced
@@ -335,8 +361,9 @@ set "HDCLAUDE_ENABLE_DISPLACEMENT=1"
 render_claude.bat --imageWidth 1024 --colorCorrectionMode disabled --camera camera gallery\newzealand_heightmap.usda build\gallery-linear\newzealand_heightmap.exr
 ```
 
-**Current state.** Renders as a flat, uniformly coloured quad. The refinement
-happens -- the quad is subdivided to level 6 -- but the height map drives
-neither the silhouette (no displacement, phase 16) nor the colour, and a colour
-that does not vary means the image node is not delivering the texture. That
-makes this the sharpest test case for the texture path.
+**Current state.** The map reaches the surface: both islands are legible in
+the quad's colour, which is what says the image node, the UV orientation and
+the texture resolution are all right. The quad is refined to level 6 and is
+still perfectly flat, because displacement is phase 16 -- so what this scene
+now isolates is displacement alone, where it used to be failing at the texture
+before it ever got there.
