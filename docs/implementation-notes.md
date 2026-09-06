@@ -2339,3 +2339,59 @@ in it either -- it does not draw a light -- so the closer hdClaude gets to what
 the scene describes, the further it reads from the reference. That is the
 divergence the gallery already says it prefers, and it is now the largest one in
 the table.
+
+
+---
+
+## 2026-09-07 -- How faint a glass highlight is supposed to be
+
+Asked whether the glass ball should show the left-hand area light the way the
+gold ball does, and whether its parameters match the borosilicate glass on
+physicallybased.info. The short answer is that a much fainter reflection is
+correct, and the reason is worth writing down because the eye is a poor judge of
+it.
+
+**Fresnel, at the two ends of the gallery.** Gold is a conductor and reflects
+most of what hits it. A dielectric at normal incidence reflects
+`((n-1)/(n+1))^2` -- at the shader ball's IOR of 1.54107 that is **4.5 per
+cent**, about a twentieth of gold's. So the same light, in the same place,
+leaves a highlight on glass roughly twenty times dimmer than on gold, and only
+climbs toward gold's brightness at grazing angles, which is why the glass ball's
+bright reflections sit on its rim and its silhouette rather than on the face
+pointed at the camera. Nothing in the image contradicts that.
+
+**Which is exactly why it is worth a test.** Four per cent against eight per
+cent is invisible without a number to check against, and glass reflecting a
+light at a twentieth of gold's strength looks, to the eye, much like glass not
+reflecting it at all -- which is how the missing-light bug survived as long as it
+did. A smooth `dielectric_bsdf` under a uniform environment of unit radiance
+renders, at the pixel viewed head on, *precisely* its reflectance, because every
+reflected direction returns the same radiance and no other term contributes. So
+the closed form is directly measurable:
+
+| IOR | rendered | ((n-1)/(n+1))^2 |
+|---|---|---|
+| 1.5 | 0.0402 | 0.0400 |
+| 1.54107 | 0.0455 | 0.0453 |
+| 2.0 | 0.1116 | 0.1111 |
+
+**The parameters, against the reference.** The Standard Shader Ball's
+`glass.mtlx` is an `standard_surface` with `base` 0, `transmission` 1,
+`specular_roughness` 0.01625, `specular_IOR` **1.54107**, and
+`transmission_color` **(0.942, 1.0, 0.9884)**. physicallybased.info gives 1.520
+for both borosilicate and soda-lime glass, with a near-neutral transmission of
+(0.988, 0.992, 0.985).
+
+So they are close but not the same, in two ways worth naming. The IOR is 1.4 per
+cent high, which moves normal-incidence reflectance from 4.26 to 4.53 per cent --
+a difference no one will see. The transmission colour is the larger departure:
+the asset's glass is noticeably green, with red at 0.942 where the reference has
+0.988, and that tint compounds through the thickness of the ball. Neither is
+wrong; the shader ball ships an artistic glass, not a spectrometer reading, and
+its `transmission_dispersion` is 0 where real glass has an Abbe number the
+reference does not publish either.
+
+The asset is not edited over this. It is a third-party reference asset and its
+values are its own; if a borosilicate match is ever wanted, the gallery
+entrypoint sublayers the asset and can override the two inputs there, which is
+where hdClaude puts corrections to assets it does not own.

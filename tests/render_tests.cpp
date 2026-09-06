@@ -165,6 +165,36 @@ CompiledMaterial MakeDiffuseMaterial(mx::DocumentPtr libraries,
     return CompileMaterial(doc, compiler, shadeKernel, name);
 }
 
+/// A smooth dielectric that only reflects, for measuring Fresnel directly.
+///
+/// `dielectric_bsdf` with zero roughness and the default "R" scatter mode: no
+/// diffuse underneath, no transmission, nothing but the Fresnel curve. Under a
+/// uniform environment that makes the rendered value *be* the reflectance at
+/// the viewing angle, which is the one number a glass material is right or
+/// wrong by.
+CompiledMaterial MakeDielectricMaterial(mx::DocumentPtr libraries,
+                                        const GlslCompiler& compiler,
+                                        const std::string& shadeKernel,
+                                        float ior,
+                                        const std::string& name)
+{
+    mx::DocumentPtr doc = mx::createDocument();
+    doc->importLibrary(libraries);
+
+    mx::NodePtr bsdf = AddNode(doc, "dielectric_bsdf", "di", "BSDF");
+    SetValue(bsdf, "weight", 1.0f);
+    SetValue(bsdf, "ior", ior);
+    SetValue(bsdf, "roughness", mx::Vector2(0.0f, 0.0f));
+
+    mx::NodePtr surface = AddNode(doc, "surface", "s", "surfaceshader");
+    Connect(surface, "bsdf", bsdf);
+    SetValue(surface, "opacity", 1.0f);
+    mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+    Connect(material, "surfaceshader", surface);
+
+    return CompileMaterial(doc, compiler, shadeKernel, name);
+}
+
 /// A material whose colour *is* its texture coordinate.
 ///
 /// Every image node reads through `texcoord`, so this asks the one question
@@ -936,6 +966,67 @@ int main()
             CHECK_NEAR(centre.r, 0.8, 0.05);
             CHECK_NEAR(centre.g, 0.8, 0.05);
             CHECK_NEAR(centre.b, 0.8, 0.05);
+        }
+
+        // --- A dielectric reflects exactly its Fresnel share ------------------
+        //
+        // What a glass ball is right or wrong by. A smooth dielectric viewed
+        // head on reflects ((n-1)/(n+1))^2 of what is in front of it -- 4.0 per
+        // cent at n = 1.5 -- and under a uniform environment of unit radiance
+        // the rendered pixel *is* that number, because every reflected
+        // direction returns the same radiance and nothing else contributes.
+        //
+        // It is worth asserting because the answer is small and a plausible
+        // image survives getting it wrong. Glass reflecting a light at a
+        // twentieth of gold's strength looks, to the eye, a great deal like
+        // glass not reflecting it at all, and the difference between 4 per cent
+        // and 8 per cent is invisible without a number to check against.
+        {
+            struct Case { float ior; const char* name; };
+            const Case cases[] = {
+                {1.5f, "n=1.50"},
+                // The IOR the Standard Shader Ball's glass authors.
+                {1.54107f, "n=1.54"},
+                {2.0f, "n=2.00"},
+            };
+
+            for (const Case& probe : cases) {
+                const CompiledMaterial dielectric = MakeDielectricMaterial(
+                    libraries, compiler, tracer.ShadeKernelSource(), probe.ior,
+                    probe.name);
+                CHECK(!dielectric.spirv.empty());
+                if (dielectric.spirv.empty()) {
+                    continue;
+                }
+
+                Scene scene;
+                scene.prototypes.push_back(MakeQuad());
+                scene.instances.push_back({0, Transform3x4{}, 0, true});
+                tracer.SetScene(scene, {dielectric});
+
+                RenderSettings mirror;
+                mirror.samplesPerPixel = 64;
+                mirror.maxBounces = 2;
+                // A uniform white sky and nothing else, so the reflected
+                // radiance is one whichever way the surface sends the ray.
+                for (int i = 0; i < 3; ++i) {
+                    mirror.environmentColor[i] = 1.0f;
+                    mirror.sunRadiance[i] = 0.0f;
+                }
+
+                const std::vector<float> image =
+                    tracer.Render(kWidth, kHeight, LookDownZ(6.0f), mirror);
+                // A small window: only the centre of the quad is viewed at
+                // normal incidence, and Fresnel climbs away from it.
+                const Pixel centre = Window(image, 0.5f, 0.5f, 4);
+
+                const double n = probe.ior;
+                const double expected = ((n - 1.0) / (n + 1.0)) *
+                                        ((n - 1.0) / (n + 1.0));
+                std::printf("  fresnel %s: %.4f (closed form %.4f)\n",
+                            probe.name, centre.g, expected);
+                CHECK_NEAR(centre.g, expected, expected * 0.08);
+            }
         }
 
         // --- A rect light is an emitter a ray can hit, and MIS splits it ------
