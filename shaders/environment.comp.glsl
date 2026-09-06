@@ -26,6 +26,21 @@ void main()
     vec3 direction = pathDirection.values[path];
     vec3 radiance = hdclaude_environment(direction);
 
+    // Multiple importance sampling against next-event estimation, which
+    // samples this same environment at every shading point. Both strategies
+    // reach the environment, so each takes the share the balance heuristic
+    // gives it; without that the sky would be counted twice and an enclosed
+    // set would render at double brightness.
+    //
+    // A scatter density of zero means there was no competing strategy -- a
+    // camera ray, or a delta closure that next-event estimation cannot sample
+    // -- and the environment arrives in full.
+    float scatterPdf = pathScatterPdf.values[path];
+    if (scatterPdf > 0.0)
+    {
+        radiance *= hdclaude_mis_weight(scatterPdf, hdclaude_environment_pdf());
+    }
+
     // The stand-in sun as a disc of finite angular radius, so a mirror can
     // reflect it. Only on the camera ray: for every later bounce the shade
     // kernel has already estimated this sun by next-event estimation, and

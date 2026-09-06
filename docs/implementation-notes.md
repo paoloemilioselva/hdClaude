@@ -1354,3 +1354,84 @@ right up until a name has a prefix in common with another, and the names here
 come from assets rather than from this codebase.
 
 All ten gallery scenes now render.
+
+---
+
+## 2026-09-06 -- Parity, and what closing the gap to hdCodex actually needed
+
+Intel Sponza was the widest gap in the gallery: hdCodex renders a bright,
+legible atrium and hdClaude rendered a near-black rectangle. Three separate
+causes, and only the last is a matter of taste.
+
+**A USD-native material is a MaterialX material.** Sponza's 137 materials are
+`UsdPreviewSurface` networks, and hdClaude refused them -- "not a MaterialX
+surface" -- and shaded `displayColor` instead. That refusal was reasoned from
+the right rule and applied to the wrong case: the rule forbids hdClaude
+*extracting* parameters from a named surface model, and MaterialX itself
+declares `ND_UsdPreviewSurface_surfaceshader` and implements it as a nodegraph
+of ordinary nodes. Refusing it left MaterialX's own translation unused. Sponza
+went from 0 textures to 25 and from grey to shaded.
+
+Two adaptations were needed to hand the network over.
+`HdMtlxCreateMtlxDocumentFromHdNetwork` looks a node's type up as a MaterialX
+nodedef name, which a USD-native network does not carry, so `UsdPreviewSurface`
+and friends are renamed to their `ND_` equivalents first -- a rename, not a
+translation, since MaterialX declares the same inputs under the same names. And
+USD spells a wrap mode `repeat` where MaterialX's enum says `periodic`; a value
+outside the enum stops generation for the whole material, which for a textured
+asset is all of them.
+
+**The environment was not a light.** hdClaude sampled its analytic lights by
+next-event estimation and left the sky to be found by a scattered ray that
+happened to escape. In an enclosed set almost none do, so an interior lit only
+by sky was dark and full of fireflies -- it was gathering the sky through
+chains of bounces instead of one shadow ray. The environment is now one more
+emitter in the same uniform selection, sampled uniformly over the sphere, and
+weighted against BSDF sampling by the balance heuristic. The density is uniform
+rather than cosine-weighted for a specific reason: the environment kernel has
+to recompute it for a scattered ray from a *direction alone*, with no surface
+to hand, and an MIS weight that cannot be computed on both sides is not an MIS
+weight.
+
+The analytic lights are deliberately not MIS-weighted. They are absent from the
+acceleration structure, nothing can hit them, and weighting them against a
+strategy that cannot reach them would discard the half of their contribution
+that has nothing to make it up.
+
+**The stand-in sky was a tenth of what it needed to be.** Its documented
+purpose is that a stage with no `UsdLux` prim renders as a lit room with a
+lighting gap rather than as a silhouette that could equally be a shading bug.
+At 0.05 it failed that on the first real lightless asset. It is now 0.30, which
+lights an interior; a dome light replaces it entirely, so no scene that authors
+its own lighting moves.
+
+Sponza is still darker than hdCodex's baseline, and that is now the honest
+answer rather than a defect: hdCodex shades every one of those materials as
+flat grey `displayColor`, and hdClaude shades the brick, stone and fabric the
+asset actually authored. Parity with a less correct image is not the goal.
+
+---
+
+## 2026-09-06 -- One shadow ray per bounce is an invariant, not a habit
+
+Adding the environment as an emitter, I left the stand-in sun where it was: an
+`if (lightCount == 0)` block that sampled it *in addition*. A lightless stage
+therefore emitted two shadow rays per path per bounce, and both of the
+structures underneath assume exactly one.
+
+The shadow kernel adds an unoccluded contribution with
+`pathRadiance[ray.path] += ray.contribution` and no atomic, which is safe only
+because no two invocations name the same path. The shadow queue is sized at one
+entry per path, and the overflow guard silently drops what does not fit. So the
+second emitter did not brighten the image: it raced the first and threw away
+whatever the queue could not hold.
+
+The sun is now one option in the same uniform selection as the analytic lights
+and the environment -- a delta emitter whose density is one, so the estimator
+divides by the selection probability alone. The invariant is restored by
+construction rather than by remembering it.
+
+Worth keeping: the comment stating the invariant was two files away from the
+code that broke it, and it was accurate the whole time. What would have caught
+this is an assertion that `shadowCount` never exceeds the path count, which the
+GPU can check and the host currently never reads.

@@ -212,15 +212,59 @@ void main()
     // structure, so a scattered ray cannot hit one and there is nothing to
     // double count. Emissive *geometry* is found by the scattered ray and its
     // emission is added on hit, above.
-    if (frame.lightCount > 0u)
     {
-        uint lightIndex = min(uint(hdclaude_random(rng) * float(frame.lightCount)),
-                              frame.lightCount - 1u);
-        float selectionPdf = 1.0 / float(frame.lightCount);
+        // One emitter per bounce, chosen uniformly among the analytic lights
+        // and the environment. The environment is an emitter here rather than
+        // something a scattered ray stumbles into: in an enclosed set almost
+        // no ray reaches it, and a sky that only arrives through a chain of
+        // surviving bounces lights the room dimly and noisily.
+        uint emitters = hdclaude_emitter_count();
+        uint emitter = min(uint(hdclaude_random(rng) * float(emitters)),
+                           emitters - 1u);
+        float selectionPdf = 1.0 / float(emitters);
 
         vec2 lightU = vec2(hdclaude_random(rng), hdclaude_random(rng));
-        LightSample lightSample =
-            hdclaude_sample_light(lightIndex, point.position, lightU);
+
+        LightSample lightSample;
+        bool environmentSample = emitter == frame.lightCount;
+        bool sunSample = emitter > frame.lightCount;
+        if (sunSample)
+        {
+            // The stand-in sun, one option among the emitters rather than an
+            // extra sample of its own. A path emits exactly one shadow ray per
+            // bounce -- the shadow kernel adds contributions without atomics on
+            // that basis, and the shadow queue is sized on it -- so an emitter
+            // that is sampled *in addition* races and overflows rather than
+            // adding light.
+            lightSample.direction = normalize(frame.sunDirection.xyz);
+            lightSample.distance = 1.0e30;
+            lightSample.radiance = frame.sunRadiance.rgb;
+            // A delta emitter: there is no solid angle to divide by, so the
+            // estimator's density is one and the selection probability is the
+            // whole of it.
+            lightSample.pdf = 1.0;
+            lightSample.castsShadows = true;
+        }
+        else if (environmentSample)
+        {
+            // Uniform over the sphere, because the density has to be
+            // recomputable by the environment kernel from a direction alone.
+            // Half the samples land below the horizon and are rejected by the
+            // facing test below, which is variance the MIS weight and the
+            // scattered ray between them make up for.
+            float z = 1.0 - 2.0 * lightU.x;
+            float r = sqrt(max(0.0, 1.0 - z * z));
+            float phi = 6.28318530718 * lightU.y;
+            lightSample.direction = vec3(r * cos(phi), r * sin(phi), z);
+            lightSample.distance = 1.0e30;
+            lightSample.radiance = hdclaude_environment(lightSample.direction);
+            lightSample.pdf = 1.0 / (4.0 * 3.14159265359);
+            lightSample.castsShadows = true;
+        }
+        else
+        {
+            lightSample = hdclaude_sample_light(emitter, point.position, lightU);
+        }
 
         if (lightSample.pdf > 0.0 &&
             dot(lightSample.direction, point.frontGeometricNormal) > 0.0)
@@ -244,8 +288,22 @@ void main()
                 // the density of having chosen this direction, which is the
                 // light's solid-angle density times the chance of having
                 // picked this light.
+                // The environment is the one emitter a scattered ray can
+                // also find, so its estimate takes the balance heuristic's
+                // share against the closure's own density at this direction.
+                // The analytic lights are not in the acceleration structure,
+                // nothing can hit them, and weighing them would throw away
+                // the half of their contribution that has no second strategy
+                // to make it up.
+                float weight = 1.0;
+                if (environmentSample)
+                {
+                    weight = hdclaude_mis_weight(lightSample.pdf * selectionPdf,
+                                                 hdclaude_bsdf.pdf);
+                }
+
                 vec3 contribution = throughput * hdclaude_bsdf.response *
-                                    lightSample.radiance /
+                                    lightSample.radiance * weight /
                                     (lightSample.pdf * selectionPdf);
 
                 if (dot(contribution, contribution) > 0.0)
@@ -279,48 +337,6 @@ void main()
             }
         }
     }
-    else
-    {
-        // No lights in the scene: the stand-in sun.
-        //
-        // Kept as a fallback rather than deleted, because a stage with no
-        // UsdLux prim at all -- a bare mesh dropped into usdview, or a unit
-        // test -- would otherwise render as a silhouette against the sky with
-        // no way to tell a lighting gap from a shading bug.
-        vec3 sunDirection = normalize(frame.sunDirection.xyz);
-        if (dot(sunDirection, point.frontGeometricNormal) > 0.0)
-        {
-            hdclaude_sample_u = vec3(hdclaude_random(rng), hdclaude_random(rng),
-                                     hdclaude_random(rng));
-            ClosureData lightData = ClosureData(CLOSURE_TYPE_REFLECTION, sunDirection,
-                                                V, point.shadingNormal,
-                                                point.position, 1.0);
-            hdclaude_material_shade(lightData);
-
-            if (hdclaude_bsdf.isDelta < 0.5)
-            {
-                vec3 contribution = throughput * hdclaude_bsdf.response *
-                                    frame.sunRadiance.rgb;
-                if (dot(contribution, contribution) > 0.0)
-                {
-                    uint index = atomicAdd(counters.shadowCount, 1u);
-                    if (index < frame.pathCount)
-                    {
-                        ShadowRay ray;
-                        ray.origin = hdclaude_offset_ray(
-                            point.position, point.frontGeometricNormal);
-                        ray.direction = sunDirection;
-                        ray.contribution = contribution;
-                        ray.maxDistance = 1.0e30;
-                        ray.path = path;
-                        ray.pad0 = 0u; ray.pad1 = 0u; ray.pad2 = 0u;
-                        shadowRays.values[index] = ray;
-                    }
-                }
-            }
-        }
-    }
-
     // --- Scatter -------------------------------------------------------------
     if (frame.bounce + 1u >= frame.maxBounces)
     {
@@ -373,6 +389,12 @@ void main()
     }
 
     throughput *= hdclaude_bsdf.response / pdf;
+
+    // What the environment kernel weighs against, if this ray misses. A delta
+    // closure reports no finite density and next-event estimation skipped it,
+    // so it stores zero and takes the environment in full.
+    pathScatterPdf.values[path] =
+        hdclaude_bsdf.isDelta < 0.5 ? pdf : 0.0;
 
     // Russian roulette after a few bounces, so a long dim path is terminated
     // with a compensating weight rather than traced to the depth limit.

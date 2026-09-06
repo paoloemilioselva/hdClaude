@@ -55,7 +55,7 @@ struct RenderSettings {
     /// unchanged since the previous call.
     bool resetAccumulation = true;
 
-    float environmentColor[3] = {0.05f, 0.07f, 0.10f};
+    float environmentColor[3] = {0.30f, 0.38f, 0.52f};
     float sunDirection[3] = {0.4f, 0.7f, 0.5f};
     float sunAngularRadius = 0.02f;
     float sunRadiance[3] = {3.0f, 2.9f, 2.7f};
@@ -179,6 +179,7 @@ class PathTracer {
     std::uint32_t _height = 0;
     VulkanBuffer _frameUniforms;
     VulkanBuffer _origin, _direction, _throughput, _radiance, _pixel, _rng;
+    VulkanBuffer _scatterPdf;
     VulkanBuffer _hits, _counters, _activeQueue, _nextActiveQueue, _shadowRays;
     VulkanBuffer _accumulation;
     VulkanBuffer _readback;

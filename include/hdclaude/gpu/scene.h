@@ -196,7 +196,15 @@ struct Scene {
 
     /// Radiance returned by a ray that leaves the scene. A dome light sets
     /// this; without one it is the stand-in sky.
-    float environmentColor[3] = {0.05f, 0.07f, 0.10f};
+    ///
+    /// Bright enough to light an interior, because that is the stand-in's whole
+    /// purpose: a stage with no `UsdLux` prim should render as a lit room with
+    /// a lighting gap, not as a silhouette that could equally be a shading bug.
+    /// At the earlier tenth of this it failed that test on the first real
+    /// lightless asset -- Intel Sponza rendered as a black rectangle with a few
+    /// fireflies in it. A dome light replaces it entirely, so raising it moves
+    /// no scene that authors its own lighting.
+    float environmentColor[3] = {0.30f, 0.38f, 0.52f};
     /// True once a dome light has supplied the environment, so the render pass
     /// knows not to apply its stand-in on top.
     bool hasDomeLight = false;

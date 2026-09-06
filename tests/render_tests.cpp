@@ -745,7 +745,16 @@ int main()
                         byHost.g, byHost.b);
 
             CHECK(Luminance(byHost) > 0.0f);
-            CHECK_NEAR(Luminance(byTransform), Luminance(byHost), 0.02);
+            // Compared in proportion, not in absolute radiance: the two renders
+            // agree analytically but are separate Monte Carlo estimates, and a
+            // fixed tolerance silently becomes a tighter one every time the
+            // scene gets brighter. What this has to separate is a few per cent
+            // of sampling noise from the defect it was written for, which put
+            // these two at 0.20 against 0.55.
+            const float tiltedLuminance = Luminance(byTransform);
+            const float bakedLuminance = Luminance(byHost);
+            CHECK(std::abs(tiltedLuminance - bakedLuminance) <=
+                  0.04f * std::max(tiltedLuminance, bakedLuminance));
         }
 
         // --- A cast shadow ---------------------------------------------------

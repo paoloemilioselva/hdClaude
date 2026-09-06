@@ -32,6 +32,15 @@ namespace {
 ///
 /// A terminal outside this set is not a MaterialX surface and is reported
 /// rather than translated.
+///
+/// `UsdPreviewSurface` belongs here, which is not the exception it looks like.
+/// MaterialX declares `ND_UsdPreviewSurface_surfaceshader` and implements it as
+/// a *nodegraph* of ordinary MaterialX nodes, so a USD-native material is
+/// generated and executed by the same path as every other one -- no extractor,
+/// no surface-model special case, no third approximated state
+/// (docs/architecture.md 1.1). Refusing it and shading `displayColor` instead
+/// was not fidelity; it was leaving MaterialX's own translation unused, and it
+/// cost every material in a USD-authored asset. Intel Sponza has 137 of them.
 bool IsMaterialXSurface(const TfToken& nodeType)
 {
     static const TfToken kNdPrefix("ND_");
@@ -39,6 +48,7 @@ bool IsMaterialXSurface(const TfToken& nodeType)
     return name.rfind(kNdPrefix.GetString(), 0) == 0 ||
            name == "standard_surface" || name == "open_pbr_surface" ||
            name == "surface" || name == "gltf_pbr" ||
+           name == "UsdPreviewSurface" ||
            name == "UsdPreviewSurface_to_MaterialX";
 }
 
@@ -112,6 +122,85 @@ std::string ResolveTexturePath(const mx::DocumentPtr& document,
         }
     }
     return std::string();
+}
+
+/// The MaterialX nodedef behind a USD-native shader node type.
+///
+/// `HdMtlxCreateMtlxDocumentFromHdNetwork` looks a node's type up as a
+/// MaterialX nodedef name, which is what a MaterialX-authored network already
+/// carries. A USD-native one carries USD's own names -- `UsdPreviewSurface`,
+/// `UsdUVTexture` -- and hdMtlx cannot map them, so it emits nodes with no
+/// category and no definition and generation fails on the first of them.
+///
+/// MaterialX declares every one of these itself, with the same input names, so
+/// this is a rename and nothing more: the shading is still MaterialX's, built
+/// from its own `IMP_UsdPreviewSurface_surfaceshader` nodegraph. Anything not
+/// in this table keeps its type and is reported if it cannot be generated.
+const std::map<TfToken, TfToken>& UsdNodeTypeTranslations()
+{
+    static const std::map<TfToken, TfToken> kTranslations = {
+        {TfToken("UsdPreviewSurface"), TfToken("ND_UsdPreviewSurface_surfaceshader")},
+        {TfToken("UsdUVTexture"), TfToken("ND_UsdUVTexture")},
+        {TfToken("UsdTransform2d"), TfToken("ND_UsdTransform2d")},
+        {TfToken("UsdPrimvarReader_float"), TfToken("ND_UsdPrimvarReader_float")},
+        {TfToken("UsdPrimvarReader_float2"), TfToken("ND_UsdPrimvarReader_vector2")},
+        {TfToken("UsdPrimvarReader_float3"), TfToken("ND_UsdPrimvarReader_vector3")},
+        {TfToken("UsdPrimvarReader_float4"), TfToken("ND_UsdPrimvarReader_vector4")},
+        {TfToken("UsdPrimvarReader_normal"), TfToken("ND_UsdPrimvarReader_vector3")},
+        {TfToken("UsdPrimvarReader_point"), TfToken("ND_UsdPrimvarReader_vector3")},
+        {TfToken("UsdPrimvarReader_vector"), TfToken("ND_UsdPrimvarReader_vector3")},
+        {TfToken("UsdPrimvarReader_int"), TfToken("ND_UsdPrimvarReader_integer")},
+        {TfToken("UsdPrimvarReader_string"), TfToken("ND_UsdPrimvarReader_string")},
+        {TfToken("UsdPrimvarReader_matrix"), TfToken("ND_UsdPrimvarReader_matrix44")},
+    };
+    return kTranslations;
+}
+
+/// Rewrite a network's USD-native node types into their MaterialX nodedefs.
+///
+/// The network is copied rather than edited: it belongs to the caller, and a
+/// material that cannot be translated must be reported against what the stage
+/// actually authored.
+HdMaterialNetwork2 TranslateUsdNodeTypes(const HdMaterialNetwork2& network)
+{
+    HdMaterialNetwork2 translated = network;
+    for (auto& [path, node] : translated.nodes) {
+        const auto found = UsdNodeTypeTranslations().find(node.nodeTypeId);
+        if (found == UsdNodeTypeTranslations().end()) {
+            continue;
+        }
+        node.nodeTypeId = found->second;
+
+        // The wrap modes are spelled differently on the two sides. USD says
+        // `repeat` and MaterialX's enum says `periodic`, and a value outside
+        // the enum stops generation for the whole material -- which for a
+        // textured asset is every material in it. `useMetadata` asks the image
+        // file what to do, which hdClaude cannot answer, so it takes the
+        // MaterialX default rather than refusing the material over it.
+        if (node.nodeTypeId != TfToken("ND_UsdUVTexture")) {
+            continue;
+        }
+        for (const TfToken& wrap : {TfToken("wrapS"), TfToken("wrapT")}) {
+            const auto parameter = node.parameters.find(wrap);
+            if (parameter == node.parameters.end()) {
+                continue;
+            }
+            std::string value;
+            if (parameter->second.IsHolding<TfToken>()) {
+                value = parameter->second.UncheckedGet<TfToken>().GetString();
+            } else if (parameter->second.IsHolding<std::string>()) {
+                value = parameter->second.UncheckedGet<std::string>();
+            } else {
+                continue;
+            }
+            if (value == "repeat" || value == "useMetadata") {
+                parameter->second = VtValue(std::string("periodic"));
+            } else {
+                parameter->second = VtValue(value);
+            }
+        }
+    }
+    return translated;
 }
 
 /// Turn `UsdPrimvarReader` nodes into the `geompropvalue` nodes they wrap.
@@ -481,10 +570,12 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::Compile(
     std::map<std::string, std::string> resolvedTextures;
     try {
         HdMtlxTexturePrimvarData mxHdData;
+        const HdMaterialNetwork2 translated = TranslateUsdNodeTypes(network);
+        const auto translatedTerminal = translated.nodes.find(terminalPath);
         document = HdMtlxCreateMtlxDocumentFromHdNetwork(
-            network, terminalNode->second, terminalPath, path, _libraries,
-            &mxHdData);
-        resolvedTextures = ResolvedTexturePaths(network, mxHdData);
+            translated, translatedTerminal->second, terminalPath, path,
+            _libraries, &mxHdData);
+        resolvedTextures = ResolvedTexturePaths(translated, mxHdData);
         ResolvePrimvarReaders(document, name);
         PruneUndeclaredInputs(document, name);
     } catch (const std::exception& error) {

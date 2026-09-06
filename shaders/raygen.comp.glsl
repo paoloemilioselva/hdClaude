@@ -45,6 +45,9 @@ void main()
     pathRadiance.values[index] = vec3(0.0);
     pathPixel.values[index] = index;
     pathRng.values[index] = rng;
+    // No scattering produced this ray, so a miss takes the environment in
+    // full rather than a weighted share of it.
+    pathScatterPdf.values[index] = 0.0;
     activeQueue.values[index] = index;
 
     if (index == 0u)

@@ -74,6 +74,7 @@ std::vector<BindingDescription> KernelBindings()
     bindings.push_back(storage(18, "materialQueue"));
     bindings.push_back(storage(19, "materialTable"));
     bindings.push_back(storage(20, "dispatchArgs"));
+    bindings.push_back(storage(21, "pathScatterPdf"));
 
     return bindings;
 }
@@ -648,6 +649,9 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
     VulkanBuffer radiance = MakeStorage(_allocator, paths * 12, "path.radiance");
     VulkanBuffer pixel = MakeStorage(_allocator, paths * 4, "path.pixel");
     VulkanBuffer rng = MakeStorage(_allocator, paths * 4, "path.rng");
+    // The density of the scattering behind each path's current ray, for the
+    // MIS weight the environment kernel applies.
+    VulkanBuffer scatterPdf = MakeStorage(_allocator, paths * 4, "path.scatterPdf");
     VulkanBuffer hits = MakeStorage(_allocator, paths * 16, "path.hits");
     VulkanBuffer counters = MakeStorage(_allocator, 16, "counters");
     VulkanBuffer activeQueue = MakeStorage(_allocator, paths * 4, "queue.active");
@@ -678,6 +682,7 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
     _radiance = std::move(radiance);
     _pixel = std::move(pixel);
     _rng = std::move(rng);
+    _scatterPdf = std::move(scatterPdf);
     _hits = std::move(hits);
     _counters = std::move(counters);
     _activeQueue = std::move(activeQueue);
@@ -736,6 +741,7 @@ void PathTracer::WriteDescriptors(VkDescriptorSet set,
     pipeline.WriteBuffer(set, 18, _materialQueue);
     pipeline.WriteBuffer(set, 19, _materialTable);
     pipeline.WriteBuffer(set, 20, _dispatchArgs);
+    pipeline.WriteBuffer(set, 21, _scatterPdf);
 }
 
 std::vector<std::uint32_t> PathTracer::MaterialCounts() const

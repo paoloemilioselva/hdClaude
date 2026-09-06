@@ -47,6 +47,17 @@ layout(set = 0, binding = 4, scalar) buffer PathRadiance { vec3  values[]; } pat
 layout(set = 0, binding = 5, scalar) buffer PathPixel    { uint  values[]; } pathPixel;
 layout(set = 0, binding = 6, scalar) buffer PathRng      { uint  values[]; } pathRng;
 
+// The solid-angle density of the scattering that produced this path's current
+// ray, or zero when there was none to speak of -- a camera ray, or a delta
+// closure, both of which take the environment in full.
+//
+// It exists for multiple importance sampling against the environment, which is
+// the one emitter a scattered ray can actually hit: the analytic lights are
+// absent from the acceleration structure, so nothing can hit them and there is
+// nothing to weigh (docs/spectral-rendering.md, and the note on the light table
+// below).
+layout(set = 0, binding = 21, scalar) buffer PathScatterPdf { float values[]; } pathScatterPdf;
+
 // Hit record written by `extend` and read by `shade`.
 //
 //   x  instance custom index, or -1 for a miss
@@ -283,6 +294,32 @@ layout(set = 0, binding = 15, scalar) readonly buffer LightTable {
 // and frame.hasDomeTexture says whether to look.
 layout(set = 0, binding = 17) uniform sampler2D hdclaude_dome;
 
+/// How many emitters next-event estimation chooses between.
+///
+/// The analytic lights plus the environment, which is sampled as one more
+/// emitter rather than left to be found by a scattered ray. A path in an
+/// enclosed set -- which is what every studio-lit interior is -- otherwise sees
+/// the sky only through a chain of bounces that survives to a miss, and the
+/// image is dark and noisy for want of a shadow ray it never cast.
+uint hdclaude_emitter_count()
+{
+    // The analytic lights, the environment, and -- only when the stage has no
+    // lights at all -- the stand-in sun.
+    return frame.lightCount + (frame.lightCount == 0u ? 2u : 1u);
+}
+
+/// Solid-angle density of choosing `direction` by environment sampling.
+///
+/// Uniform over the sphere. Deliberately independent of the surface: the
+/// kernel that needs this density for a *scattered* ray has no surface to hand
+/// -- it has a direction and a miss -- so a cosine-weighted density about some
+/// normal could not be recomputed there, and an MIS weight that cannot be
+/// computed on both sides is not an MIS weight.
+float hdclaude_environment_pdf()
+{
+    return (1.0 / (4.0 * 3.14159265359)) / float(hdclaude_emitter_count());
+}
+
 /// Radiance leaving the scene along `direction`.
 vec3 hdclaude_environment(vec3 direction)
 {
@@ -349,6 +386,16 @@ struct LightSample {
     float pdf;          // solid-angle density, zero if the sample is unusable
     bool  castsShadows;
 };
+
+/// The balance heuristic for two strategies.
+///
+/// Power-one rather than power-two: the extra sharpening buys little here and
+/// the balance heuristic is the one whose optimality is proven.
+float hdclaude_mis_weight(float thisPdf, float otherPdf)
+{
+    const float total = thisPdf + otherPdf;
+    return total > 0.0 ? thisPdf / total : 0.0;
+}
 
 /// An orthonormal basis around `n`.
 void hdclaude_light_basis(vec3 n, out vec3 t, out vec3 b)
