@@ -114,6 +114,72 @@ std::string ResolveTexturePath(const mx::DocumentPtr& document,
     return std::string();
 }
 
+/// Drop inputs the node's declaration does not have.
+///
+/// A stage authored against a newer MaterialX than the one hdClaude links
+/// carries inputs that do not exist here -- the OpenPBR playground authors
+/// `geometry_opacity` on `open_pbr_surface`, which 1.39.3 does not declare.
+/// MaterialX then cannot resolve the node's definition at all, and a single
+/// unknown input costs the whole material and, because a material that fails
+/// to compile is reported rather than approximated, the whole scene.
+///
+/// Removing the input renders the material as the rest of its authored values
+/// say, which is what every other renderer does with an input it does not
+/// recognise. Each one is named in a warning: this is a version mismatch worth
+/// knowing about, not something to swallow.
+void PruneUndeclaredInputs(const mx::DocumentPtr& document, const std::string& name)
+{
+    for (const mx::ElementPtr& element : document->traverseTree()) {
+        mx::NodePtr node = element ? element->asA<mx::Node>() : nullptr;
+        if (!node) {
+            continue;
+        }
+        mx::NodeDefPtr definition = node->getNodeDef();
+        if (!definition) {
+            // The usual lookup fails *because* of the bad input, so the
+            // declaration is found by category and output type instead.
+            for (const mx::NodeDefPtr& candidate :
+                 document->getMatchingNodeDefs(node->getCategory())) {
+                if (candidate->getType() == node->getType()) {
+                    definition = candidate;
+                    break;
+                }
+            }
+        }
+        if (!definition) {
+            continue;
+        }
+
+        std::vector<std::pair<std::string, std::string>> mismatched;
+        for (const mx::InputPtr& input : node->getInputs()) {
+            const mx::InputPtr declared =
+                definition->getActiveInput(input->getName());
+            if (!declared) {
+                mismatched.emplace_back(input->getName(), "no such input");
+            } else if (declared->getType() != input->getType()) {
+                // A renamed *type* is the other half of the same problem: the
+                // playground authors `geometry_opacity` as a colour where
+                // 1.39.3 declares a float, and a type that disagrees stops the
+                // node from resolving just as surely as a name that does not
+                // exist.
+                mismatched.emplace_back(
+                    input->getName(),
+                    "declared " + declared->getType() + ", authored " +
+                        input->getType());
+            }
+        }
+        for (const auto& [input, reason] : mismatched) {
+            TF_WARN(
+                "hdClaude: material %s: node '%s' input '%s' does not match "
+                "MaterialX %s (%s); it is dropped and the rest of the node is "
+                "shaded as authored",
+                name.c_str(), node->getName().c_str(), input.c_str(),
+                mx::getVersionString().c_str(), reason.c_str());
+            node->removeInput(input);
+        }
+    }
+}
+
 }  // namespace
 
 HdClaudeMaterialCompiler::HdClaudeMaterialCompiler(std::string shadeKernel)
@@ -359,6 +425,7 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::Compile(
             network, terminalNode->second, terminalPath, path, _libraries,
             &mxHdData);
         resolvedTextures = ResolvedTexturePaths(network, mxHdData);
+        PruneUndeclaredInputs(document, name);
     } catch (const std::exception& error) {
         result.fallbackReason =
             std::string("could not build a MaterialX document: ") + error.what();

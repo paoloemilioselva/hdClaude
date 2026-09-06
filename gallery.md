@@ -4,10 +4,10 @@ These images are versioned visual baselines, not golden-reference renders. They
 exist so that an intentional improvement and an unintentional regression are
 both visible in a diff.
 
-**Status: eight of ten scenes.** The renderer is under construction; see
+**Status: nine of ten scenes.** The renderer is under construction; see
 [docs/roadmap.md](docs/roadmap.md). These images are what hdClaude produces
-today, and every scene below says what its baseline still gets wrong. Two
-scenes do not render at all and are recorded as failures rather than omitted.
+today, and every scene below says what its baseline still gets wrong. One
+scene does not render at all and is recorded as a failure rather than omitted.
 Parity with the hdCodex baselines is phase 8 and has not been reached.
 
 The first pass through this gallery found seven defects that no test had:
@@ -87,7 +87,7 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 | StandardShaderBall BubbleGum | 2026-09-06 | 25.437 s (0m 25.437s) | `e6f802d1de6a1bddf3b5b1ee7b4de5b0c19a7763f28a6e747b927abebba274a4` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | Pixar's KitchenSet | 2026-09-06 | 123.157 s (2m 3.157s) | `3b2ef0aa2372fc48394296cead98e296df2245af563b8003c66b39329bb7cc5d` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | Collective Project 001 | - | Not measured | `-` | - | - |
-| OpenPBR Playground | - | Not measured | `-` | - | - |
+| OpenPBR Playground | 2026-09-06 | 46.048 s (0m 46.048s) | `b19a2c118221e903e781ce80785b1dcee887f42d6659b9e56ef5d86c24b630fe` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | Subdivision Feature Matrix | 2026-09-06 | 12.838 s (0m 12.838s) | `0090f710d67904acb88db93679fc3dc9d92a61873a538e7358034301a9dec058` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | New Zealand Height Map | 2026-09-06 | 7.858 s (0m 7.858s) | `6b413ce63241260aa2b38f6581a098f8d82f9b20b5fb287720127753a169aa31` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 6 |
 <!-- gallery-timings:end -->
@@ -235,17 +235,17 @@ Recorded here so the first hdClaude run of it is treated as evidence.
 render_claude.bat --imageWidth 1024 --colorCorrectionMode disabled --purposes render --camera renderCam_mainCU gallery\openpbr_playground.usda build\gallery-linear\openpbr_playground.exr
 ```
 
-**Does not render.** Two independent failures. `iceCube` reaches
-`mx_aastep`, which calls `dFdx` -- the same class of finding as the `fwidth` one
-already recorded in [implementation-notes.md](docs/implementation-notes.md):
-a fragment-shader assumption inherited from `genglsl`, meaningless in a compute
-stage where neighbouring lanes are unrelated paths. `OJfoam` fails earlier, in
-generation. The stage also warns that `geometry_opacity` does not match the
-`open_pbr_surface` declaration, which is a MaterialX version difference worth
-separating from the other two.
+**Current state.** Renders, after three unrelated refusals were resolved:
+`mx_aastep`'s `dFdx`, an `open_pbr_surface` input this MaterialX does not
+declare, and eighty-five UDIM textures whose `<UDIM>` token opened nothing. The
+remaining magenta -- the lamp shade, the pencils, the scissors -- is the
+placeholder meaning exactly what it says: those materials are TIFFs, and this
+OpenUSD distribution's Hio has no plugin for them. The image is also the
+noisiest in the gallery, which is what an interior lit through small emitters
+looks like without MIS.
 
 It is also the scene on which hdCodex reproducibly lost the Vulkan device.
-hdClaude has not reached that point on it.
+hdClaude renders it in 46 seconds.
 
 ### Subdivision Feature Matrix
 

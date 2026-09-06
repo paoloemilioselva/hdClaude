@@ -498,6 +498,29 @@ void PathTracerShaderGenerator::emitPixelStage(const ShaderGraph& graph,
     emitLine("#define DIRECTIONAL_ALBEDO_METHOD 0", stage, false);
     emitLineBreak(stage);
 
+    // Screen-space derivatives, defined as zero.
+    //
+    // `genglsl` is a rasteriser target and several of its nodes ask for a
+    // filter width -- `mx_aastep` is the common one, reached by any node with
+    // a hard edge to antialias. On a compute stage those builtins do not exist
+    // without an extension, and enabling the extension would be worse than the
+    // compile error it removes: neighbouring lanes in a `shade` dispatch are
+    // unrelated paths, possibly on opposite sides of the scene, so a derivative
+    // between them measures nothing at all.
+    //
+    // Zero is the right answer rather than a stand-in. A path tracer
+    // antialiases by sampling the pixel, so the filter width at a shading point
+    // is zero and `mx_aastep` degrades to the hard step it is approximating.
+    // A real footprint, when hdClaude has one, comes from ray differentials --
+    // that is the standing rule (docs/implementation-notes.md), and this is
+    // what makes the inherited library obey it instead of failing to compile.
+    emitComment("Screen-space derivatives do not exist here; see "
+                "docs/implementation-notes.md", stage);
+    emitLine("#define dFdx(x) ((x) * 0.0)", stage, false);
+    emitLine("#define dFdy(x) ((x) * 0.0)", stage, false);
+    emitLine("#define fwidth(x) ((x) * 0.0)", stage, false);
+    emitLineBreak(stage);
+
     // --- The hdClaude material ABI ------------------------------------------
     emitComment("hdClaude material ABI, revision " +
                     std::to_string(kMaterialAbiVersion),

@@ -1281,3 +1281,44 @@ of their materials transmits -- a gap between two green suites is where this
 lived. And the first gallery pass is what found it: the glass ball is in the
 gallery precisely because transmission is hard, and a scene whose whole purpose
 is one feature is worth more than the assertion it replaces.
+
+---
+
+## 2026-09-06 -- The playground: three refusals, three different answers
+
+The OpenPBR playground failed on three unrelated things, and what is worth
+recording is that each wanted a different kind of answer rather than the same
+kind of leniency.
+
+**A derivative that measures nothing is zero, not an error.** `mx_aastep`
+computes its filter width with `dFdx`, and a compute stage rejects the builtin.
+The standing rule -- screen-space derivatives are meaningless here, because
+neighbouring lanes are unrelated paths -- was previously enforced by letting the
+compile fail. That is right for `mx_subsurface_scattering_approx`, whose whole
+body is a screen-space approximation of transport hdClaude intends to do
+properly, and wrong for `mx_aastep`, whose answer in a path tracer is simply
+zero: it antialiases by sampling the pixel. The generator now defines `dFdx`,
+`dFdy` and `fwidth` as zero in the material preamble, and the subsurface
+function stays *deleted*, so that one still fails loudly by name.
+
+**An input the linked MaterialX does not have is dropped, not fatal.** The
+playground authors `geometry_opacity` on `open_pbr_surface` as a colour, where
+1.39.3 declares a float. MaterialX then cannot resolve the node at all, and one
+input cost the whole material -- and, since hdClaude reports a material it
+cannot compile rather than approximating it, the whole scene. Inputs whose name
+or type the declaration does not have are now removed, with a warning naming
+each. The policy of refusing to approximate a material is about *shading*, not
+about tolerating a version difference in an asset.
+
+**A `<UDIM>` token expands to tile 1001, and says so.** Eighty-five textures in
+this scene are UDIM sets, and an unexpanded token opens nothing, so the first
+render of the playground was magenta from edge to edge. Real tile selection --
+one texture per tile, chosen by which unit square of UV space a sample lands in
+-- is phase 7 work. Loading tile 1001 and shading every tile with it is wrong
+for a multi-tile asset and right for the many that ship one tile, and the
+comment says which it is. Failures fell from 85 to 21.
+
+The 21 that remain are TIFFs, which this OpenUSD distribution's Hio has no
+plugin for. That is an environment limitation and the magenta placeholder is
+reporting it correctly -- which is the first time in this gallery that the
+placeholder has meant what it says.

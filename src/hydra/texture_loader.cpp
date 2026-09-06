@@ -135,11 +135,27 @@ bool HdClaudeLoadTexture(const std::string& assetPath,
         return false;
     }
 
+    // A UDIM set, reduced to its first tile.
+    //
+    // `<UDIM>` is a token USD leaves in the path for the renderer to expand
+    // into one texture per tile, selected by which unit square of UV space a
+    // sample lands in. hdClaude has no tile selection yet, so it loads tile
+    // 1001 and shades every tile with it. That is wrong for a multi-tile
+    // asset and right for the many that ship one tile, and both are better
+    // than the alternative: an unexpanded token opens nothing, and the OpenPBR
+    // playground rendered as 85 magenta placeholders because of it.
+    std::string path = assetPath;
+    const std::string udim = "<UDIM>";
+    const std::size_t token = path.find(udim);
+    if (token != std::string::npos) {
+        path.replace(token, udim.size(), "1001");
+    }
+
     // Resolve through Ar so a path relative to a layer, or inside a package,
     // is found the same way every other USD consumer finds it.
-    std::string resolved = assetPath;
-    if (ArResolvedPath path = ArGetResolver().Resolve(assetPath)) {
-        resolved = path.GetPathString();
+    std::string resolved = path;
+    if (ArResolvedPath resolvedPath = ArGetResolver().Resolve(path)) {
+        resolved = resolvedPath.GetPathString();
     }
 
     HioImageSharedPtr image = HioImage::OpenForReading(resolved);

@@ -385,10 +385,21 @@ void TestNamedSurfaceGeneratesAndCompiles(const GlslCompiler& compiler,
     CHECK(generated.source.find("mx_environment_irradiance") == std::string::npos);
     CHECK(generated.source.find("ClosureData closureData = ClosureData(") ==
           std::string::npos);
-    // The screen-space curvature helper must never reach a compute stage.
-    // Checked against code only: hdClaude's own override carries an
-    // explanatory comment that quotes the offending line.
-    CHECK(StripComments(generated.source).find("fwidth") == std::string::npos);
+    // Screen-space derivatives are defined as zero rather than forbidden.
+    //
+    // The rule has not changed -- a derivative between two lanes of a `shade`
+    // dispatch measures nothing, because the lanes are unrelated paths -- but
+    // the way it is enforced has. Inherited `genglsl` nodes ask for a filter
+    // width (`mx_aastep` is the common one), and a path tracer's filter width
+    // at a shading point really is zero: it antialiases by sampling the pixel.
+    // Defining the builtins that way lets those nodes generate and evaluate
+    // correctly instead of failing to compile. What must never appear is a
+    // *use* that the definitions do not cover, and the compile below is what
+    // proves there is none.
+    const std::string code = StripComments(generated.source);
+    CHECK(code.find("#define fwidth") != std::string::npos);
+    CHECK(code.find("#define dFdx") != std::string::npos);
+    CHECK(code.find("#define dFdy") != std::string::npos);
 
     const std::string kernel = generated.source + kTestKernelHarness;
 
