@@ -262,8 +262,14 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     // channel of its own, which is recorded as remaining work rather than
     // approximated by refining it as vertex data across its own seams.
     std::vector<float> coarseUvs;
-    if (haveUvs && uvInterpolation != HdInterpolationFaceVarying &&
-        authoredUvs.size() == points.size() / 3) {
+    std::vector<float> coarseFaceVaryingUvs;
+    if (haveUvs && uvInterpolation == HdInterpolationFaceVarying) {
+        coarseFaceVaryingUvs.resize(authoredUvs.size() * 2);
+        for (std::size_t i = 0; i < authoredUvs.size(); ++i) {
+            coarseFaceVaryingUvs[i * 2 + 0] = authoredUvs[i][0];
+            coarseFaceVaryingUvs[i * 2 + 1] = authoredUvs[i][1];
+        }
+    } else if (haveUvs && authoredUvs.size() == points.size() / 3) {
         coarseUvs.resize(authoredUvs.size() * 2);
         for (std::size_t i = 0; i < authoredUvs.size(); ++i) {
             coarseUvs[i * 2 + 0] = authoredUvs[i][0];
@@ -274,13 +280,14 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     const int subdivisionLevel = param->SubdivisionLevel();
     bool subdivided = false;
     if (subdivisionLevel > 0 && HdClaudeWantsSubdivision(topology)) {
-        const HdClaudeRefinedMesh refined =
-            HdClaudeSubdivide(topology, points, subdivisionLevel, coarseUvs);
+        const HdClaudeRefinedMesh refined = HdClaudeSubdivide(
+            topology, points, subdivisionLevel, coarseUvs, coarseFaceVaryingUvs);
         if (refined.Valid()) {
             points = refined.positions;
             indices = refined.indices;
             coarseFaces = refined.coarseFaces;
             entry.prototype.uvs = refined.uvs;
+            entry.prototype.uvsPerCorner = refined.uvsPerCorner;
             subdivided = true;
         }
         // An invalid result means "render the control cage": a mesh that
@@ -539,7 +546,12 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
                   entry.prototype.VertexCount(),
                   entry.prototype.TriangleCount(), entry.transforms.size(),
                   entry.prototype.normals.empty() ? "no" : "yes",
-                  entry.prototype.uvs.empty() ? "no" : "yes",
+                  entry.prototype.uvs.empty()
+                      ? (haveUvs ? (uvInterpolation == HdInterpolationFaceVarying
+                                        ? "no (face-varying, dropped)"
+                                        : "no (size mismatch)")
+                                 : "no (none authored)")
+                      : (entry.prototype.uvsPerCorner ? "yes (per corner)" : "yes"),
                   entry.subsetMaterials.size());
     param->SceneStore()->PublishMesh(id, std::move(entry));
     *dirtyBits = HdChangeTracker::Clean;

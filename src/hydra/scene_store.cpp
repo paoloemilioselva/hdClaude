@@ -171,6 +171,21 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
         }
     }
 
+    // The stand-in sky is a *fallback*, and a stage that lights itself must not
+    // get it.
+    //
+    // It only tinted escaping rays until the environment became an emitter
+    // sampled by next-event estimation; from then on it was a fill light on
+    // every scene, including the ones that author five lights of their own.
+    // A stage with lights and no dome has no environment, and a ray that
+    // leaves it sees nothing -- which is what every other renderer shows and
+    // what the gallery's enclosed sets expect.
+    if (!scene.hasDomeLight && !scene.lights.empty()) {
+        scene.environmentColor[0] = 0.0f;
+        scene.environmentColor[1] = 0.0f;
+        scene.environmentColor[2] = 0.0f;
+    }
+
     scene.revision = _revision;
     return scene;
 }

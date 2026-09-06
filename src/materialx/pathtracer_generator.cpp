@@ -424,19 +424,24 @@ void PathTracerShaderGenerator::emitInputs(GenContext& context,
                 } else if (variable == HW::T_NORMAL_WORLD ||
                            key.find("normalworld") != string::npos) {
                     emitLine(instance + "." + variable + " = N", stage);
+                } else if (key.find("bitangentworld") != string::npos) {
+                    // Before the tangent test, not after it: "bitangentworld"
+                    // *contains* "tangentworld", so the looser match wins if it
+                    // is asked first and the bitangent silently becomes the
+                    // tangent. Every anisotropic closure and every normal map
+                    // then works from a degenerate frame.
+                    emitLine(instance + "." + variable + " = cross(N, T)", stage);
                 } else if (key.find("tangentworld") != string::npos) {
                     emitLine(instance + "." + variable + " = T", stage);
-                } else if (key.find("bitangentworld") != string::npos) {
-                    emitLine(instance + "." + variable + " = cross(N, T)", stage);
                 } else if (key.find("positionobject") != string::npos) {
                     emitLine(instance + "." + variable + " = Pobj", stage);
                 } else if (key.find("normalobject") != string::npos) {
                     emitLine(instance + "." + variable + " = Nobj", stage);
-                } else if (key.find("tangentobject") != string::npos) {
-                    emitLine(instance + "." + variable + " = Tobj", stage);
                 } else if (key.find("bitangentobject") != string::npos) {
                     emitLine(instance + "." + variable + " = cross(Nobj, Tobj)",
                              stage);
+                } else if (key.find("tangentobject") != string::npos) {
+                    emitLine(instance + "." + variable + " = Tobj", stage);
                 } else if (key.find("texcoord") != string::npos) {
                     // One UV set. A material that reads a second one gets the
                     // first rather than an undefined value; carrying more than

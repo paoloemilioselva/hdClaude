@@ -1565,3 +1565,42 @@ Worth stating for the next convention like this: the right way to settle one is
 to read the sampling code of the renderer that defines it. USD's dome light
 orientation is not written down anywhere as prose; it is written down in the
 shader that hdStorm uses.
+
+---
+
+## 2026-09-06 -- A fallback that stopped being one, and a seam that never survived
+
+Two observations from looking at the images, both correct, both mine.
+
+**The stand-in sky was lighting scenes that light themselves.** It only tinted
+rays that escaped until the environment became an emitter sampled by next-event
+estimation. From that commit onwards it was a fill light on every stage,
+including the StandardShaderBall's five lights and Collective Project's three
+-- a "default light" nobody authored. A stand-in is for a stage that supplies
+no lighting; one that authors lights and no dome has no environment, and a ray
+that leaves it sees nothing. The scene store now clears it in that case.
+
+Worth naming the shape of this: making something an emitter changed what
+"a default value" meant, and the default had been chosen when it could only
+tint a background. A fallback's value is only safe while the thing it falls
+back to cannot light anything.
+
+**Face-varying UVs did not survive refinement.** Collective Project's character
+looked untextured -- flat orange where hdCodex renders orange with yellow-green
+limbs -- because its body is subdivided and authors `st` face-varying, and the
+refinement carried only vertex-interpolated coordinates. Dropping them left the
+mesh with none, so its colour map sampled one texel.
+
+They are now refined through an OpenSubdiv face-varying *channel*, which is the
+only way a seam survives: interpolating those coordinates as vertex data welds
+the seam shut and smears the texture across it. The refined face's corners
+index the channel rather than the vertices, and the triangle fan reads them the
+same way it reads the vertex indices.
+
+**And a third, found while reading the generated setter for the second:**
+`bitangentWorld` was assigned `T`. The vertex-data mapping tested
+`find("tangentworld")` before `find("bitangentworld")`, and the first is a
+substring of the second, so the looser match won. Every anisotropic closure and
+every normal map was working from a degenerate frame. This is the third
+substring bug in a day -- `geomprop_strand_u` matched `geomprop_st`, and now
+this -- which is enough to call it a pattern rather than an accident.

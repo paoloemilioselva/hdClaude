@@ -59,7 +59,8 @@ bool HdClaudeWantsSubdivision(const HdMeshTopology& topology)
 HdClaudeRefinedMesh HdClaudeSubdivide(const HdMeshTopology& topology,
                                       const std::vector<float>& points,
                                       int level,
-                                      const std::vector<float>& uvs)
+                                      const std::vector<float>& uvs,
+                                      const std::vector<float>& faceVaryingUvs)
 {
     HdClaudeRefinedMesh result;
 
@@ -68,9 +69,27 @@ HdClaudeRefinedMesh HdClaudeSubdivide(const HdMeshTopology& topology,
         return result;
     }
 
+    // A face-varying channel is declared to the refiner or it does not exist:
+    // OpenSubdiv refines face-varying data against its *own* topology, which is
+    // what preserves a seam. Hydra hands over the coordinates already
+    // flattened -- one per face vertex, indices resolved -- so the channel's
+    // topology is the identity.
+    const std::size_t faceVaryingCount = faceVaryingUvs.size() / 2;
+    std::vector<VtIntArray> faceVaryingTopologies;
+    if (faceVaryingCount > 0) {
+        VtIntArray identity(faceVaryingCount);
+        for (std::size_t i = 0; i < faceVaryingCount; ++i) {
+            identity[i] = static_cast<int>(i);
+        }
+        faceVaryingTopologies.push_back(std::move(identity));
+    }
+
     PxOsdTopologyRefinerSharedPtr refiner;
     try {
-        refiner = PxOsdRefinerFactory::Create(topology.GetPxOsdMeshTopology());
+        refiner = faceVaryingTopologies.empty()
+                      ? PxOsdRefinerFactory::Create(topology.GetPxOsdMeshTopology())
+                      : PxOsdRefinerFactory::Create(topology.GetPxOsdMeshTopology(),
+                                                    faceVaryingTopologies);
     } catch (const std::exception& error) {
         HdClaudeTrace("subdivision: refiner construction failed (%s)",
                       error.what());
@@ -142,6 +161,28 @@ HdClaudeRefinedMesh HdClaudeSubdivide(const HdMeshTopology& topology,
         }
     }
 
+    // --- Face-varying texture coordinates ------------------------------------
+    std::vector<RefinableUv> refinedFaceVarying;
+    RefinableUv* faceVaryingSource = nullptr;
+    if (faceVaryingCount > 0 && refiner->GetNumFVarChannels() > 0 &&
+        static_cast<std::size_t>(refiner->GetLevel(0).GetNumFVarValues(0)) ==
+            faceVaryingCount) {
+        refinedFaceVarying.resize(
+            static_cast<std::size_t>(refiner->GetNumFVarValuesTotal(0)));
+        for (std::size_t i = 0; i < faceVaryingCount; ++i) {
+            refinedFaceVarying[i].u = faceVaryingUvs[i * 2 + 0];
+            refinedFaceVarying[i].v = faceVaryingUvs[i * 2 + 1];
+        }
+        faceVaryingSource = refinedFaceVarying.data();
+        for (int current = 1; current <= level; ++current) {
+            RefinableUv* destination =
+                faceVaryingSource + refiner->GetLevel(current - 1).GetNumFVarValues(0);
+            primvarRefiner.InterpolateFaceVarying(current, faceVaryingSource,
+                                                  destination, 0);
+            faceVaryingSource = destination;
+        }
+    }
+
     const OpenSubdiv::Far::TopologyLevel& refined = refiner->GetLevel(level);
     const int refinedVertexCount = refined.GetNumVertices();
 
@@ -152,7 +193,11 @@ HdClaudeRefinedMesh HdClaudeSubdivide(const HdMeshTopology& topology,
         result.positions[i * 3 + 2] = source[i].z;
     }
 
-    if (uvSource != nullptr) {
+    if (faceVaryingSource != nullptr) {
+        // Filled per corner in the fan below, alongside the indices.
+        result.uvsPerCorner = true;
+        result.uvs.reserve(static_cast<std::size_t>(refined.GetNumFaces()) * 8);
+    } else if (uvSource != nullptr) {
         result.uvs.resize(static_cast<std::size_t>(refinedVertexCount) * 2);
         for (int i = 0; i < refinedVertexCount; ++i) {
             result.uvs[i * 2 + 0] = uvSource[i].u;
@@ -185,12 +230,31 @@ HdClaudeRefinedMesh HdClaudeSubdivide(const HdMeshTopology& topology,
             }
         }
 
+        OpenSubdiv::Far::ConstIndexArray faceVaryingCorners;
+        if (faceVaryingSource != nullptr) {
+            faceVaryingCorners = refined.GetFaceFVarValues(face, 0);
+        }
+
         for (int corner = 1; corner + 1 < corners.size(); ++corner) {
             result.indices.push_back(static_cast<std::uint32_t>(corners[0]));
             result.indices.push_back(static_cast<std::uint32_t>(corners[corner]));
             result.indices.push_back(
                 static_cast<std::uint32_t>(corners[corner + 1]));
             result.coarseFaces.push_back(coarse);
+
+            // The same fan, in face-varying values: a refined face's corners
+            // index the channel, not the vertices, which is exactly the
+            // distinction that keeps a seam a seam.
+            if (faceVaryingSource != nullptr &&
+                faceVaryingCorners.size() == corners.size()) {
+                const int fan[3] = {faceVaryingCorners[0],
+                                    faceVaryingCorners[corner],
+                                    faceVaryingCorners[corner + 1]};
+                for (const int value : fan) {
+                    result.uvs.push_back(faceVaryingSource[value].u);
+                    result.uvs.push_back(faceVaryingSource[value].v);
+                }
+            }
         }
     }
 

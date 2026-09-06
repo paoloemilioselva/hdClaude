@@ -22,9 +22,13 @@ PXR_NAMESPACE_OPEN_SCOPE
 struct HdClaudeRefinedMesh {
     /// Interleaved xyz, three floats per refined vertex.
     std::vector<float> positions;
-    /// Interleaved uv, two floats per refined vertex; empty when the control
-    /// cage had none.
+    /// Interleaved uv; empty when the control cage had none.
+    ///
+    /// Two floats per refined vertex, or -- when the control cage's
+    /// coordinates were face-varying -- two per refined triangle *corner*,
+    /// which `uvsPerCorner` says.
     std::vector<float> uvs;
+    bool uvsPerCorner = false;
     /// Triangle indices into `positions`.
     std::vector<std::uint32_t> indices;
     /// The *coarse* face each triangle descends from, so a GeomSubset authored
@@ -52,9 +56,15 @@ bool HdClaudeWantsSubdivision(const HdMeshTopology& topology);
 /// Returns an invalid result if the topology cannot be refined, which the
 /// caller should treat as "render the control cage" rather than as an error: a
 /// mesh that fails to subdivide should still appear.
+/// `faceVaryingUvs`, when not empty, is one coordinate per *face vertex* of the
+/// control cage, refined through an OpenSubdiv face-varying channel. That is
+/// the only way a UV seam survives refinement: interpolating those coordinates
+/// as vertex data would weld the seam shut and smear the texture across it.
+/// A mesh may supply one or the other, not both.
 HdClaudeRefinedMesh HdClaudeSubdivide(const HdMeshTopology& topology,
                                       const std::vector<float>& points,
                                       int level,
-                                      const std::vector<float>& uvs = {});
+                                      const std::vector<float>& uvs = {},
+                                      const std::vector<float>& faceVaryingUvs = {});
 
 PXR_NAMESPACE_CLOSE_SCOPE
