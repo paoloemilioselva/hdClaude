@@ -1536,3 +1536,32 @@ supported prim types before looking at the rprim.
 hdEmbree renders the same stage with all thirty-two pieces, which is what said
 the pipeline was fine and the delegate was not. Comparing against another
 delegate on the same stage is the cheapest instrument in the box.
+
+---
+
+## 2026-09-06 -- The dome was half a turn out
+
+With the chess set's pieces finally all present, its background was still the
+wrong part of the room: hdCodex shows a window and flowers, hdClaude showed
+plaster medallions and a curtain. Same stage, same HDRI, same camera.
+
+hdClaude wrapped the latitude-longitude lookup about -Z:
+
+    u = atan(d.x, -d.z) / 2pi + 0.5
+
+USD wraps it about +X, which is what `hdSt/shaders/domeLight.glslfx` samples
+with and therefore the orientation an authored HDRI is framed against:
+
+    u = (atan(d.z, d.x) + pi/2) / 2pi
+
+The two differ by exactly half a turn, so every dome-lit scene was lit and
+backed by the half of the environment behind the camera. It is a difference no
+furnace test can see -- a constant environment is rotationally symmetric, and
+hdClaude's own tests use one -- and it takes a *recognisable* environment to
+notice. That is an argument for the gallery having a scene with a real HDRI in
+it, which the chess set is.
+
+Worth stating for the next convention like this: the right way to settle one is
+to read the sampling code of the renderer that defines it. USD's dome light
+orientation is not written down anywhere as prose; it is written down in the
+shader that hdStorm uses.

@@ -332,11 +332,16 @@ vec3 hdclaude_environment(vec3 direction)
         return frame.environmentColor.rgb;
     }
 
-    // Latitude-longitude, in the dome's own frame. USD's dome has +Y up and
-    // wraps u about -Z, and the decoded image rows run bottom-up, so v = 1 is
-    // straight up.
+    // Latitude-longitude, in the dome's own frame, in the orientation USD
+    // defines -- `u = (atan2(z, x) + pi/2) / 2pi`, which is what
+    // hdSt/shaders/domeLight.glslfx samples with and therefore what an authored
+    // HDRI is framed against. hdClaude wrapped u about -Z instead, which is the
+    // same map rotated by half a turn: every dome-lit scene showed the wall
+    // behind the camera instead of the one in front of it.
+    //
+    // The decoded image rows run bottom-up, so v = 1 is straight up.
     vec3 d = normalize((frame.domeWorldToLight * vec4(direction, 0.0)).xyz);
-    float u = atan(d.x, -d.z) * (1.0 / 6.28318530718) + 0.5;
+    float u = (atan(d.z, d.x) + 1.57079632679) * (1.0 / 6.28318530718);
     float v = 1.0 - acos(clamp(d.y, -1.0, 1.0)) * (1.0 / 3.14159265359);
     return texture(hdclaude_dome, vec2(u, v)).rgb * frame.environmentColor.rgb;
 }
