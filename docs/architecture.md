@@ -43,6 +43,25 @@ is the mechanism the MaterialX documentation prescribes for a new render target
 Consequence: a material either compiles and is rendered with full fidelity, or
 it fails to compile and is reported. There is no third "approximated" state.
 
+**`UsdPreviewSurface` is not an exception to this, and hdClaude renders it.**
+MaterialX declares `ND_UsdPreviewSurface_surfaceshader` and implements it as
+`IMP_UsdPreviewSurface_surfaceshader`, a nodegraph of ordinary MaterialX nodes;
+generating it yields calls to `mx_generalized_schlick_bsdf`,
+`mx_oren_nayar_diffuse_bsdf` and `mx_dielectric_bsdf`, which are hdClaude's own
+`genglsl_pt` overrides. Nothing in hdClaude knows what `diffuseColor` or
+`roughness` mean. What the Hydra layer adds is a **rename**:
+`HdMtlxCreateMtlxDocumentFromHdNetwork` looks a node's type up as a MaterialX
+nodedef name, and a USD-authored network carries USD's own names
+(`UsdPreviewSurface`, `UsdUVTexture`, `UsdPrimvarReader_float2`), so those are
+mapped to the `ND_` names MaterialX declares for them -- same inputs, same
+names, same values -- plus one enum whose spelling differs (`repeat` against
+`periodic`). Refusing that translation was not fidelity; it left MaterialX's
+own translation unused and cost every material in a USD-authored asset.
+
+A terminal MaterialX does *not* declare is still reported and shaded with
+`displayColor`, which remains the only non-MaterialX path and is a fallback
+rather than a shading model.
+
 ### 1.2 Spectral is the transport representation
 
 Path throughput is carried on **four correlated hero wavelengths** in a `vec4`.
