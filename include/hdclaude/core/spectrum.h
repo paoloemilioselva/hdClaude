@@ -94,9 +94,96 @@ float BlackbodyRadiance(float lambda, float kelvin);
 /// authored intensity supplies the magnitude.
 float NormalizedBlackbody(float lambda, float kelvin);
 
-/// CIE illuminant E (equal energy). The reference illuminant under which
-/// reflectance upsampling is defined; see docs/spectral-rendering.md 2.
+/// CIE illuminant E (equal energy).
 inline float IlluminantE(float /*lambda*/) { return 1.0f; }
+
+/// CIE standard illuminant D65, relative spectral power, normalised to 100 at
+/// 560 nm.
+///
+/// The illuminant reflectance upsampling is defined against, because sRGB's
+/// white point is D65: a reflectance fitted under one illuminant and integrated
+/// under another does not return the colour it was fitted to, and the phase 1
+/// exit gate is a round trip. Linearly interpolated from the CIE table at 5 nm,
+/// clamped to its ends.
+float IlluminantD65(float lambda);
+
+/// The XYZ of a perfect white reflector under D65, normalised so Y = 1.
+///
+/// The white point every Lab conversion here is relative to, and the
+/// normalisation that makes an upsampled reflectance of 1 integrate to white
+/// rather than to whatever the illuminant's absolute power happens to be.
+Vec3 D65WhitePoint();
+
+// ---------------------------------------------------------------------------
+// RGB to spectrum
+// ---------------------------------------------------------------------------
+
+/// Jakob-Hanika sigmoid coefficients for one reflectance spectrum.
+///
+/// `S(lambda) = sigmoid(c0 * t^2 + c1 * t + c2)` with `t` the wavelength
+/// normalised to [0, 1] over the visible range. The sigmoid's range is (0, 1)
+/// for any coefficients at all, so an upsampled reflectance cannot exceed unity
+/// at any wavelength and no upsampled albedo can create energy -- which is the
+/// property that makes this model, rather than a basis expansion, the right one
+/// for reflectance (docs/spectral-rendering.md 2).
+struct SigmoidCoefficients {
+    float c0 = 0.0f;
+    float c1 = 0.0f;
+    float c2 = 0.0f;
+};
+
+/// The smooth, bounded sigmoid the model is built on.
+float ReflectanceSigmoid(float x);
+
+/// Evaluate an upsampled reflectance at one wavelength. Always in (0, 1).
+float EvaluateReflectance(const SigmoidCoefficients& coefficients, float lambda);
+
+/// Integrate an upsampled reflectance under D65 back to linear sRGB.
+///
+/// The inverse of `FitReflectance`, and the half of the round trip that says
+/// whether the fit converged.
+Vec3 IntegrateReflectance(const SigmoidCoefficients& coefficients);
+
+/// Fit a reflectance spectrum whose D65 integral is `linearSrgb`.
+///
+/// Levenberg-Marquardt on the three coefficients, with the residual measured in
+/// CIELab rather than in XYZ: the acceptance criterion is a colour difference,
+/// and a least-squares fit in XYZ spends its accuracy where the eye does not
+/// look. Colours outside [0, 1] are clamped -- a reflectance above one is not a
+/// reflectance -- and the caller is expected to have divided out any magnitude
+/// first (see `FitEmission`).
+SigmoidCoefficients FitReflectance(const Vec3& linearSrgb);
+
+/// An emission spectrum for an authored light colour.
+///
+/// Emission cannot use a bounded model directly: a light of RGB (5, 5, 5) must
+/// integrate to five times white, which nothing in [0, 1] expresses. So the
+/// chromaticity is upsampled as a reflectance and the magnitude is carried
+/// alongside, which preserves the authored chromaticity exactly and integrates
+/// to the authored luminance while staying non-negative everywhere.
+struct EmissionSpectrum {
+    SigmoidCoefficients chromaticity;
+    /// Multiplies the bounded spectrum. One for a colour already in [0, 1].
+    float scale = 1.0f;
+};
+
+EmissionSpectrum FitEmission(const Vec3& linearSrgb);
+
+/// Evaluate an emission spectrum at one wavelength. Non-negative, unbounded.
+float EvaluateEmission(const EmissionSpectrum& emission, float lambda);
+
+// ---------------------------------------------------------------------------
+// Colour difference
+// ---------------------------------------------------------------------------
+
+/// CIE L*a*b* of an XYZ colour, relative to the D65 white point.
+Vec3 XyzToLab(const Vec3& xyz);
+
+/// CIEDE2000 colour difference between two Lab colours.
+///
+/// The metric the upsampling round trip is judged by, because "within 1e-3" is
+/// only meaningful in a space where a unit means something perceptual.
+float DeltaE2000(const Vec3& lab1, const Vec3& lab2);
 
 // ---------------------------------------------------------------------------
 // Hero wavelength sampling

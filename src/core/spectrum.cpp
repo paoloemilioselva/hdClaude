@@ -148,4 +148,484 @@ WavelengthSample SampleHeroWavelengths(float u)
     return sample;
 }
 
+
+// ---------------------------------------------------------------------------
+// Illuminant D65
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// CIE standard illuminant D65, relative spectral power at 5 nm from 300 nm.
+///
+/// The published table rather than a fit: D65 has structure -- the Fraunhofer
+/// absorption lines it inherits from daylight -- that no smooth approximation
+/// reproduces, and the round-trip gate is tight enough to see the difference.
+constexpr float kD65Start = 300.0f;
+constexpr float kD65Step = 5.0f;
+constexpr float kD65[] = {
+    0.0341f,   1.6643f,   3.2945f,   11.7652f,  20.2360f,  28.6447f,  37.0535f,
+    38.5011f,  39.9488f,  42.4302f,  44.9117f,  45.7750f,  46.6383f,  49.3637f,
+    52.0891f,  51.0323f,  49.9755f,  52.3118f,  54.6482f,  68.7015f,  82.7549f,
+    87.1204f,  91.4860f,  92.4589f,  93.4318f,  90.0570f,  86.6823f,  95.7736f,
+    104.8650f, 110.9360f, 117.0080f, 117.4100f, 117.8120f, 116.3360f, 114.8610f,
+    115.3920f, 115.9230f, 112.3670f, 108.8110f, 109.0820f, 109.3540f, 108.5780f,
+    107.8020f, 106.2960f, 104.7900f, 106.2390f, 107.6890f, 106.0470f, 104.4050f,
+    104.2250f, 104.0460f, 102.0230f, 100.0000f, 98.1671f,  96.3342f,  96.0611f,
+    95.7880f,  92.2368f,  88.6856f,  89.3459f,  90.0062f,  89.8026f,  89.5991f,
+    88.6489f,  87.6987f,  85.4936f,  83.2886f,  83.4939f,  83.6992f,  81.8630f,
+    80.0268f,  80.1207f,  80.2146f,  81.2462f,  82.2778f,  80.2810f,  78.2842f,
+    74.0027f,  69.7213f,  70.6652f,  71.6091f,  72.9790f,  74.3490f,  67.9765f,
+    61.6040f,  65.7448f,  69.8856f,  72.4863f,  75.0870f,  69.3398f,  63.5927f,
+    55.0054f,  46.4182f,  56.6118f,  66.8054f,  65.0941f,  63.3828f,  63.8434f,
+    64.3040f,  61.8779f,  59.4519f,  55.7054f,  51.9590f,  54.6998f,  57.4406f,
+    58.8765f,  60.3125f,
+};
+constexpr int kD65Count = static_cast<int>(sizeof(kD65) / sizeof(kD65[0]));
+
+/// Integration grid for every spectral integral here.
+///
+/// 5 nm across the visible range. The same step the illuminant table is
+/// published at, so the illuminant is sampled at its own knots and contributes
+/// no interpolation error of its own.
+constexpr float kIntegrationStep = 5.0f;
+
+}  // namespace
+
+float IlluminantD65(float lambda)
+{
+    const float position = (lambda - kD65Start) / kD65Step;
+    if (position <= 0.0f) {
+        return kD65[0];
+    }
+    if (position >= static_cast<float>(kD65Count - 1)) {
+        return kD65[kD65Count - 1];
+    }
+    const int index = static_cast<int>(position);
+    const float t = position - static_cast<float>(index);
+    return kD65[index] * (1.0f - t) + kD65[index + 1] * t;
+}
+
+namespace {
+
+/// The wavelength coordinate the polynomial is written in.
+///
+/// Normalised to [0, 1] rather than nanometres so the three coefficients are of
+/// comparable magnitude, which is what keeps the fit's normal equations well
+/// conditioned.
+inline float PolynomialArgument(float lambda)
+{
+    return (lambda - kLambdaMin) / (kLambdaMax - kLambdaMin);
+}
+
+/// Everything spectral here runs in double, and that is not an optimisation.
+///
+/// Near white the sigmoid is saturating: the difference between a reflectance
+/// of 1 and one of 1 - 1e-8 is what separates a converged fit from one that is
+/// visibly off, and in float that difference is below the noise floor of the
+/// integral itself.
+struct Vec3d {
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+};
+
+/// XYZ of a sigmoid reflectance under D65, before white adaptation.
+///
+/// Normalised by the illuminant's own luminous integral, so a reflectance of
+/// one gives Y = 1 -- but not, in general, X and Z that agree with the colour
+/// space's white point. See `WhiteAdaptation`.
+Vec3d IntegrateSigmoidRaw(double c0, double c1, double c2)
+{
+    static const double normalisation = [] {
+        double total = 0.0;
+        for (float lambda = kLambdaMin; lambda <= kLambdaMax;
+             lambda += kIntegrationStep) {
+            total += static_cast<double>(IlluminantD65(lambda)) *
+                     static_cast<double>(CieXyzBar(lambda).y);
+        }
+        return total * static_cast<double>(kIntegrationStep);
+    }();
+
+    Vec3d xyz;
+    for (float lambda = kLambdaMin; lambda <= kLambdaMax;
+         lambda += kIntegrationStep) {
+        const double t = static_cast<double>(PolynomialArgument(lambda));
+        const double p = (c0 * t + c1) * t + c2;
+        const double reflectance = 0.5 * (1.0 + p / std::sqrt(1.0 + p * p));
+        const double weight =
+            reflectance * static_cast<double>(IlluminantD65(lambda));
+        const Vec3 bar = CieXyzBar(lambda);
+        xyz.x += static_cast<double>(bar.x) * weight;
+        xyz.y += static_cast<double>(bar.y) * weight;
+        xyz.z += static_cast<double>(bar.z) * weight;
+    }
+    const double scale = static_cast<double>(kIntegrationStep) / normalisation;
+    return {xyz.x * scale, xyz.y * scale, xyz.z * scale};
+}
+
+/// The diagonal correction that pins a perfect reflector to the colour space's
+/// white.
+///
+/// Both halves of this integral are approximations: the colour matching
+/// functions are Wyman's multi-lobe fit, good to about a per cent of peak, and
+/// the illuminant is a published table sampled at 5 nm. Their product's white
+/// point therefore lands a fraction of a per cent away from the D65 the sRGB
+/// matrix was derived against -- (0.9994, 1.0002, 0.99995) rather than
+/// (1, 1, 1).
+///
+/// Left alone, that is not a rounding detail: it means a perfect white diffuse
+/// surface under the scene's own illuminant does not render white, and no
+/// amount of fitting can hide it, because a reflectance of one is the sigmoid's
+/// boundary and there is nothing left to trade. Every other colour absorbs the
+/// error into its fit and looks fine, which is exactly what makes it worth
+/// pinning rather than tolerating.
+///
+/// So the integral is adapted to the white a perfect reflector must produce.
+/// This is a von Kries adaptation done in XYZ, which for a correction this
+/// small is indistinguishable from doing it in a cone space.
+Vec3d WhiteAdaptation()
+{
+    static const Vec3d scale = [] {
+        const Vec3d raw = IntegrateSigmoidRaw(0.0, 0.0, 1.0e12);
+        const Vec3 reference = LinearSrgbToXyz(Vec3{1.0f, 1.0f, 1.0f});
+        return Vec3d{static_cast<double>(reference.x) / raw.x,
+                     static_cast<double>(reference.y) / raw.y,
+                     static_cast<double>(reference.z) / raw.z};
+    }();
+    return scale;
+}
+
+/// XYZ of a sigmoid reflectance under D65, adapted. A reflectance of one gives
+/// exactly the colour space's white.
+Vec3d IntegrateSigmoidXyz(double c0, double c1, double c2)
+{
+    const Vec3d raw = IntegrateSigmoidRaw(c0, c1, c2);
+    const Vec3d scale = WhiteAdaptation();
+    return {raw.x * scale.x, raw.y * scale.y, raw.z * scale.z};
+}
+
+Vec3d LabDouble(const Vec3d& xyz)
+{
+    const Vec3 whiteF = LinearSrgbToXyz(Vec3{1.0f, 1.0f, 1.0f});
+    const Vec3d white{static_cast<double>(whiteF.x),
+                      static_cast<double>(whiteF.y),
+                      static_cast<double>(whiteF.z)};
+    const auto f = [](double ratio) {
+        constexpr double delta = 6.0 / 29.0;
+        return ratio > delta * delta * delta
+                   ? std::cbrt(ratio)
+                   : ratio / (3.0 * delta * delta) + 4.0 / 29.0;
+    };
+    const double fx = f(xyz.x / white.x);
+    const double fy = f(xyz.y / white.y);
+    const double fz = f(xyz.z / white.z);
+    return {116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)};
+}
+
+}  // namespace
+
+Vec3 D65WhitePoint()
+{
+    // The white a perfect reflector produces, which the integral is adapted to
+    // and which therefore is the colour space's own white by construction.
+    return LinearSrgbToXyz(Vec3{1.0f, 1.0f, 1.0f});
+}
+
+// ---------------------------------------------------------------------------
+// RGB to spectrum
+// ---------------------------------------------------------------------------
+
+float ReflectanceSigmoid(float x)
+{
+    // 0.5 * (1 + x / sqrt(1 + x^2)): smooth, strictly inside (0, 1), and
+    // saturating slowly enough that a fit can reach a near-zero or near-one
+    // reflectance without its coefficients running away.
+    return 0.5f * (1.0f + x / std::sqrt(1.0f + x * x));
+}
+
+float EvaluateReflectance(const SigmoidCoefficients& coefficients, float lambda)
+{
+    const float t = PolynomialArgument(lambda);
+    return ReflectanceSigmoid((coefficients.c0 * t + coefficients.c1) * t +
+                              coefficients.c2);
+}
+
+Vec3 IntegrateReflectance(const SigmoidCoefficients& coefficients)
+{
+    const Vec3d xyz = IntegrateSigmoidXyz(static_cast<double>(coefficients.c0),
+                                          static_cast<double>(coefficients.c1),
+                                          static_cast<double>(coefficients.c2));
+    return XyzToLinearSrgb(Vec3{static_cast<float>(xyz.x),
+                                static_cast<float>(xyz.y),
+                                static_cast<float>(xyz.z)});
+}
+
+Vec3 XyzToLab(const Vec3& xyz)
+{
+    const Vec3 white = D65WhitePoint();
+
+    const auto f = [](float ratio) {
+        constexpr float delta = 6.0f / 29.0f;
+        return ratio > delta * delta * delta
+                   ? std::cbrt(ratio)
+                   : ratio / (3.0f * delta * delta) + 4.0f / 29.0f;
+    };
+    const float fx = f(xyz.x / white.x);
+    const float fy = f(xyz.y / white.y);
+    const float fz = f(xyz.z / white.z);
+    return {116.0f * fy - 16.0f, 500.0f * (fx - fy), 200.0f * (fy - fz)};
+}
+
+SigmoidCoefficients FitReflectance(const Vec3& linearSrgb)
+{
+    // A reflectance above one is not a reflectance, and one below zero is not
+    // either. Clamping here rather than refusing keeps an out-of-range asset
+    // rendering, which is the same choice every other input path makes.
+    const Vec3 clamped{std::clamp(linearSrgb.x, 0.0f, 1.0f),
+                       std::clamp(linearSrgb.y, 0.0f, 1.0f),
+                       std::clamp(linearSrgb.z, 0.0f, 1.0f)};
+    const Vec3 targetXyz = LinearSrgbToXyz(clamped);
+    const Vec3d targetLab = LabDouble({static_cast<double>(targetXyz.x),
+                                       static_cast<double>(targetXyz.y),
+                                       static_cast<double>(targetXyz.z)});
+
+    // Seed with the flat spectrum whose luminance is already the target's,
+    // found by bisection on the constant term.
+    //
+    // This is not a nicety. White is the sigmoid's own boundary -- a
+    // reflectance of exactly one needs an infinite coefficient -- and
+    // Levenberg-Marquardt cannot climb an asymptote: every step it tries there
+    // improves the residual by less than the last, its damping escalates, and
+    // it gives up around a reflectance of 0.9998, which is 6e-3 dE2000 away
+    // from white. Bisection has no such trouble, because it never needs a
+    // gradient. Starting from a spectrum that already has the right luminance
+    // also leaves Levenberg-Marquardt only the hue to solve, which is the part
+    // it is good at.
+    double coefficients[3] = {0.0, 0.0, 0.0};
+    {
+        const double targetY = static_cast<double>(targetXyz.y);
+        double low = -2.0e4;
+        double high = 2.0e4;
+        for (int step = 0; step < 200; ++step) {
+            const double middle = 0.5 * (low + high);
+            if (IntegrateSigmoidXyz(0.0, 0.0, middle).y < targetY) {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        coefficients[2] = 0.5 * (low + high);
+    }
+
+    const auto residual = [&](const double c[3], double out[3]) {
+        const Vec3d lab = LabDouble(IntegrateSigmoidXyz(c[0], c[1], c[2]));
+        out[0] = lab.x - targetLab.x;
+        out[1] = lab.y - targetLab.y;
+        out[2] = lab.z - targetLab.z;
+    };
+    const auto squaredNorm = [](const double v[3]) {
+        return v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+    };
+
+    double error[3];
+    residual(coefficients, error);
+    double damping = 1.0e-3;
+
+    // Levenberg-Marquardt, not plain Gauss-Newton: the residual is very flat
+    // near a saturated colour, where the sigmoid has to be nearly a step, and
+    // an undamped step there overshoots into coefficients whose spectrum is
+    // numerically indistinguishable from a constant.
+    for (int iteration = 0; iteration < 600; ++iteration) {
+        if (squaredNorm(error) < 1.0e-18) {
+            break;
+        }
+
+        // Numerical Jacobian, with the step scaled to the coefficient it
+        // perturbs: a saturated colour's fit runs to coefficients in the
+        // hundreds, where a fixed absolute step measures nothing.
+        double jacobian[3][3];
+        for (int k = 0; k < 3; ++k) {
+            const double step =
+                1.0e-3 * std::max(1.0, std::fabs(coefficients[k]));
+            double perturbed[3] = {coefficients[0], coefficients[1],
+                                   coefficients[2]};
+            perturbed[k] += step;
+            double shifted[3];
+            residual(perturbed, shifted);
+            for (int row = 0; row < 3; ++row) {
+                jacobian[row][k] = (shifted[row] - error[row]) / step;
+            }
+        }
+
+        // Normal equations, damped: (J^T J + lambda diag) delta = -J^T r.
+        double ata[3][3] = {};
+        double atr[3] = {};
+        for (int row = 0; row < 3; ++row) {
+            for (int column = 0; column < 3; ++column) {
+                for (int k = 0; k < 3; ++k) {
+                    ata[row][column] += jacobian[k][row] * jacobian[k][column];
+                }
+            }
+            for (int k = 0; k < 3; ++k) {
+                atr[row] += jacobian[k][row] * error[k];
+            }
+        }
+        for (int k = 0; k < 3; ++k) {
+            ata[k][k] *= (1.0 + damping);
+        }
+
+        double matrix[3][4] = {{ata[0][0], ata[0][1], ata[0][2], -atr[0]},
+                               {ata[1][0], ata[1][1], ata[1][2], -atr[1]},
+                               {ata[2][0], ata[2][1], ata[2][2], -atr[2]}};
+        bool singular = false;
+        for (int column = 0; column < 3 && !singular; ++column) {
+            int pivot = column;
+            for (int row = column + 1; row < 3; ++row) {
+                if (std::fabs(matrix[row][column]) >
+                    std::fabs(matrix[pivot][column])) {
+                    pivot = row;
+                }
+            }
+            if (std::fabs(matrix[pivot][column]) < 1.0e-300) {
+                singular = true;
+                break;
+            }
+            for (int k = 0; k < 4; ++k) {
+                std::swap(matrix[column][k], matrix[pivot][k]);
+            }
+            for (int row = 0; row < 3; ++row) {
+                if (row == column) continue;
+                const double factor =
+                    matrix[row][column] / matrix[column][column];
+                for (int k = column; k < 4; ++k) {
+                    matrix[row][k] -= factor * matrix[column][k];
+                }
+            }
+        }
+        if (singular) {
+            break;
+        }
+
+        double candidate[3];
+        for (int k = 0; k < 3; ++k) {
+            candidate[k] = coefficients[k] + matrix[k][3] / matrix[k][k];
+        }
+
+        double candidateError[3];
+        residual(candidate, candidateError);
+        if (squaredNorm(candidateError) < squaredNorm(error)) {
+            for (int k = 0; k < 3; ++k) {
+                coefficients[k] = candidate[k];
+                error[k] = candidateError[k];
+            }
+            damping = std::max(damping * 0.3, 1.0e-9);
+        } else {
+            damping *= 8.0;
+            if (damping > 1.0e12) {
+                break;
+            }
+        }
+    }
+
+    return {static_cast<float>(coefficients[0]),
+            static_cast<float>(coefficients[1]),
+            static_cast<float>(coefficients[2])};
+}
+
+EmissionSpectrum FitEmission(const Vec3& linearSrgb)
+{
+    EmissionSpectrum emission;
+    const float peak = std::max({linearSrgb.x, linearSrgb.y, linearSrgb.z});
+    if (!(peak > 0.0f)) {
+        // Black emits nothing. A fit would be meaningless and its coefficients
+        // would be whatever the optimiser wandered into.
+        emission.scale = 0.0f;
+        emission.chromaticity = FitReflectance(Vec3{0.0f, 0.0f, 0.0f});
+        return emission;
+    }
+    emission.scale = peak;
+    emission.chromaticity = FitReflectance(Vec3{linearSrgb.x / peak,
+                                                linearSrgb.y / peak,
+                                                linearSrgb.z / peak});
+    return emission;
+}
+
+float EvaluateEmission(const EmissionSpectrum& emission, float lambda)
+{
+    return emission.scale * EvaluateReflectance(emission.chromaticity, lambda);
+}
+
+// ---------------------------------------------------------------------------
+// Colour difference
+// ---------------------------------------------------------------------------
+
+float DeltaE2000(const Vec3& lab1, const Vec3& lab2)
+{
+    constexpr float kPi = 3.14159265358979323846f;
+    const auto radians = [](float degrees) { return degrees * kPi / 180.0f; };
+    const auto degrees = [](float r) { return r * 180.0f / kPi; };
+
+    const float c1 = std::sqrt(lab1.y * lab1.y + lab1.z * lab1.z);
+    const float c2 = std::sqrt(lab2.y * lab2.y + lab2.z * lab2.z);
+    const float meanC = 0.5f * (c1 + c2);
+    const float meanC7 = std::pow(meanC, 7.0f);
+    const float g = 0.5f * (1.0f - std::sqrt(meanC7 / (meanC7 + std::pow(25.0f, 7.0f))));
+
+    const float a1 = (1.0f + g) * lab1.y;
+    const float a2 = (1.0f + g) * lab2.y;
+    const float cp1 = std::sqrt(a1 * a1 + lab1.z * lab1.z);
+    const float cp2 = std::sqrt(a2 * a2 + lab2.z * lab2.z);
+
+    const auto hue = [&](float a, float b) {
+        if (a == 0.0f && b == 0.0f) return 0.0f;
+        float h = degrees(std::atan2(b, a));
+        return h < 0.0f ? h + 360.0f : h;
+    };
+    const float h1 = hue(a1, lab1.z);
+    const float h2 = hue(a2, lab2.z);
+
+    const float deltaL = lab2.x - lab1.x;
+    const float deltaC = cp2 - cp1;
+
+    float deltah = 0.0f;
+    if (cp1 * cp2 != 0.0f) {
+        deltah = h2 - h1;
+        if (deltah > 180.0f) deltah -= 360.0f;
+        else if (deltah < -180.0f) deltah += 360.0f;
+    }
+    const float deltaH = 2.0f * std::sqrt(cp1 * cp2) * std::sin(radians(deltah * 0.5f));
+
+    const float meanL = 0.5f * (lab1.x + lab2.x);
+    const float meanCp = 0.5f * (cp1 + cp2);
+
+    float meanH = h1 + h2;
+    if (cp1 * cp2 != 0.0f) {
+        if (std::fabs(h1 - h2) > 180.0f) {
+            meanH += (h1 + h2 < 360.0f) ? 360.0f : -360.0f;
+        }
+        meanH *= 0.5f;
+    }
+
+    const float t = 1.0f - 0.17f * std::cos(radians(meanH - 30.0f)) +
+                    0.24f * std::cos(radians(2.0f * meanH)) +
+                    0.32f * std::cos(radians(3.0f * meanH + 6.0f)) -
+                    0.20f * std::cos(radians(4.0f * meanH - 63.0f));
+
+    const float deltaTheta =
+        30.0f * std::exp(-((meanH - 275.0f) / 25.0f) * ((meanH - 275.0f) / 25.0f));
+    const float meanCp7 = std::pow(meanCp, 7.0f);
+    const float rc = 2.0f * std::sqrt(meanCp7 / (meanCp7 + std::pow(25.0f, 7.0f)));
+    const float sl = 1.0f + (0.015f * (meanL - 50.0f) * (meanL - 50.0f)) /
+                                std::sqrt(20.0f + (meanL - 50.0f) * (meanL - 50.0f));
+    const float sc = 1.0f + 0.045f * meanCp;
+    const float sh = 1.0f + 0.015f * meanCp * t;
+    const float rt = -std::sin(radians(2.0f * deltaTheta)) * rc;
+
+    const float termL = deltaL / sl;
+    const float termC = deltaC / sc;
+    const float termH = deltaH / sh;
+    return std::sqrt(termL * termL + termC * termC + termH * termH +
+                     rt * termC * termH);
+}
+
 }  // namespace hdclaude

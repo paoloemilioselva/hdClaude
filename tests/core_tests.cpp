@@ -240,6 +240,137 @@ void TestWhiteSpectrumIsNeutral()
     CHECK_NEAR(xyz.z, 1.0, 0.02);
 }
 
+/// The phase 1 exit gate: upsampling followed by CIE integration returns the
+/// colour it started from.
+///
+/// This is the claim the whole spectral pipeline rests on. Every RGB an asset
+/// authors becomes a spectrum, is transported as one, and is integrated back
+/// through the colour matching functions; if that round trip does not return
+/// the original, then a renderer that transports spectrally renders every
+/// material a slightly different colour than an RGB renderer would, for no
+/// reason a user could act on.
+///
+/// Measured in CIEDE2000 because "within a thousandth" only means something in
+/// a space where a unit is perceptual. The set spans the primaries and
+/// secondaries -- which sit on the gamut boundary and are where a bounded
+/// model has the least freedom -- a grey ramp, and a spread of muted
+/// reflectances of the kind a real asset is painted in.
+void TestReflectanceUpsamplingRoundTrips()
+{
+    struct Sample {
+        const char* name;
+        Vec3 rgb;
+    };
+    const Sample samples[] = {
+        {"red", {1.0f, 0.0f, 0.0f}},
+        {"green", {0.0f, 1.0f, 0.0f}},
+        {"blue", {0.0f, 0.0f, 1.0f}},
+        {"cyan", {0.0f, 1.0f, 1.0f}},
+        {"magenta", {1.0f, 0.0f, 1.0f}},
+        {"yellow", {1.0f, 1.0f, 0.0f}},
+        {"white", {1.0f, 1.0f, 1.0f}},
+        {"grey 0.5", {0.5f, 0.5f, 0.5f}},
+        {"grey 0.18", {0.18f, 0.18f, 0.18f}},
+        {"skin", {0.55f, 0.38f, 0.31f}},
+        {"foliage", {0.16f, 0.29f, 0.12f}},
+        {"sky", {0.22f, 0.35f, 0.62f}},
+        {"clay", {0.48f, 0.24f, 0.14f}},
+        {"olive", {0.34f, 0.32f, 0.10f}},
+        {"plum", {0.29f, 0.14f, 0.30f}},
+        {"teal", {0.10f, 0.36f, 0.34f}},
+    };
+
+    double worst = 0.0;
+    const char* worstName = "";
+    for (const Sample& sample : samples) {
+        const SigmoidCoefficients fit = FitReflectance(sample.rgb);
+        const Vec3 back = IntegrateReflectance(fit);
+
+        const Vec3 before = XyzToLab(LinearSrgbToXyz(sample.rgb));
+        const Vec3 after = XyzToLab(LinearSrgbToXyz(back));
+        const double difference = DeltaE2000(before, after);
+        if (difference > worst) {
+            worst = difference;
+            worstName = sample.name;
+        }
+
+        // A reflectance model that can create energy is not one: whatever the
+        // fit converged to, the spectrum it describes must stay inside [0, 1]
+        // at every wavelength, which the sigmoid guarantees structurally and
+        // this checks has not been undone.
+        for (float lambda = kLambdaMin; lambda <= kLambdaMax; lambda += 5.0f) {
+            const float value = EvaluateReflectance(fit, lambda);
+            CHECK(value >= 0.0f && value <= 1.0f);
+        }
+    }
+
+    std::printf("  reflectance round trip: worst dE2000 %.2e (%s)\n", worst,
+                worstName);
+    CHECK(worst < 1.0e-3);
+}
+
+/// Emission is unbounded and must stay exact in both chromaticity and
+/// magnitude.
+///
+/// A light of RGB (5, 5, 5) integrates to five times white; nothing in [0, 1]
+/// says that, which is why emission carries its magnitude beside a bounded
+/// spectrum rather than being fitted as one.
+void TestEmissionUpsamplingPreservesColourAndMagnitude()
+{
+    const Vec3 colours[] = {{5.0f, 5.0f, 5.0f},
+                            {1.0f, 0.6f, 0.2f},
+                            {12.0f, 3.0f, 0.5f},
+                            {0.0f, 0.0f, 0.0f}};
+
+    for (const Vec3& colour : colours) {
+        const EmissionSpectrum emission = FitEmission(colour);
+
+        for (float lambda = kLambdaMin; lambda <= kLambdaMax; lambda += 5.0f) {
+            CHECK(EvaluateEmission(emission, lambda) >= 0.0f);
+        }
+
+        // Integrating the emission spectrum back is the reflectance round trip
+        // scaled, so it returns the authored colour including its magnitude.
+        const Vec3 bounded = IntegrateReflectance(emission.chromaticity);
+        const Vec3 back{bounded.x * emission.scale, bounded.y * emission.scale,
+                        bounded.z * emission.scale};
+        CHECK_NEAR(back.x, colour.x, 1.0e-3 + 1.0e-3 * colour.x);
+        CHECK_NEAR(back.y, colour.y, 1.0e-3 + 1.0e-3 * colour.y);
+        CHECK_NEAR(back.z, colour.z, 1.0e-3 + 1.0e-3 * colour.z);
+    }
+}
+
+/// The metric itself, against the published CIEDE2000 test data.
+///
+/// A round trip judged by a wrong difference formula is a round trip that
+/// passes for the wrong reason, so the formula is checked against Sharma,
+/// Wu and Dalal's worked pairs -- including the ones chosen to exercise the
+/// hue-rotation term that a naive implementation drops.
+void TestDeltaE2000MatchesPublishedPairs()
+{
+    struct Pair {
+        Vec3 a;
+        Vec3 b;
+        double expected;
+    };
+    const Pair pairs[] = {
+        {{50.0000f, 2.6772f, -79.7751f}, {50.0000f, 0.0000f, -82.7485f}, 2.0425},
+        {{50.0000f, 3.1571f, -77.2803f}, {50.0000f, 0.0000f, -82.7485f}, 2.8615},
+        {{50.0000f, 2.8361f, -74.0200f}, {50.0000f, 0.0000f, -82.7485f}, 3.4412},
+        {{50.0000f, -1.3802f, -84.2814f}, {50.0000f, 0.0000f, -82.7485f}, 1.0000},
+        {{50.0000f, 0.0000f, 0.0000f}, {50.0000f, -1.0000f, 2.0000f}, 2.3669},
+        {{50.0000f, -1.0000f, 2.0000f}, {50.0000f, 0.0000f, 0.0000f}, 2.3669},
+        {{50.0000f, 2.5000f, 0.0000f}, {50.0000f, 0.0000f, -2.5000f}, 4.3065},
+        {{60.2574f, -34.0099f, 36.2677f}, {60.4626f, -34.1751f, 39.4387f}, 1.2644},
+        {{22.7233f, 20.0904f, -46.6940f}, {23.0331f, 14.9730f, -42.5619f}, 2.0373},
+        {{2.0776f, 0.0795f, -1.1350f}, {0.9033f, -0.0636f, -0.5514f}, 0.9082},
+    };
+
+    for (const Pair& pair : pairs) {
+        CHECK_NEAR(DeltaE2000(pair.a, pair.b), pair.expected, 1.0e-3);
+    }
+}
+
 void TestBlackbodyPeakMatchesWien()
 {
     // Wien's displacement law is an independent check on Planck's law: the
@@ -325,6 +456,9 @@ int main()
     TestSrgbTransferRoundTrip();
     TestWhiteSpectrumIsNeutral();
     TestBlackbodyPeakMatchesWien();
+    TestDeltaE2000MatchesPublishedPairs();
+    TestReflectanceUpsamplingRoundTrips();
+    TestEmissionUpsamplingPreservesColourAndMagnitude();
     TestDisplayTransformLeavesTheDiffuseRangeAlone();
     TestDisplayTransformCompressesRatherThanClips();
     TestDisplayTransformSanitisesAndExposes();

@@ -1809,3 +1809,74 @@ estimate is ever added, and each contribution keeps just its MIS weight. Both
 halves of an MIS estimate have to actually run. A bounce limit that stops one of
 them does not make the image noisier -- it makes it *dark*, by a factor that
 looks exactly like a missing light.
+
+---
+
+## 2026-09-07 -- RGB to spectrum, and the white that would not come back
+
+The first piece of hero-wavelength transport, and the one everything else waits
+on: an asset authors RGB, the integrator has to carry a spectrum, and the
+conversion between them has to be exact enough that a spectral renderer does not
+render every material a slightly different colour than an RGB one for no reason
+a user could act on. That is the phase 1 exit gate -- upsample, integrate back,
+and land within 1e-3 dE2000 -- and it is now met at 4.7e-5, worst case.
+
+**Reflectance** uses the Jakob-Hanika model the design called for:
+`S(lambda) = sigmoid(c0 t^2 + c1 t + c2)`. The reason it is a sigmoid of a
+polynomial rather than a basis expansion is the one property that matters for a
+reflectance: the sigmoid's range is (0, 1) for *any* coefficients at all, so no
+fit, however badly conditioned, can produce a spectrum that reflects more light
+than arrives. An upsampled albedo cannot create energy by construction rather
+than by validation.
+
+**Emission** cannot use it directly -- a light of RGB (5, 5, 5) integrates to
+five times white, which nothing bounded expresses -- so the chromaticity is
+fitted as a reflectance and the magnitude carried beside it. Chromaticity exact,
+magnitude exact, non-negative everywhere, unbounded.
+
+**The fit runs in double, and that is not an optimisation.** Levenberg-Marquardt
+on three coefficients with a numerical Jacobian, with the residual measured in
+CIELab because the acceptance criterion is a colour difference and a
+least-squares fit in XYZ spends its accuracy where the eye does not look. In
+float it stalled at 5e-2 dE on white: reaching a reflectance of 1 - 3e-6 needs a
+coefficient around 300, where the derivative of the spectrum with respect to a
+coefficient is about 1e-8, which is below the noise floor of the spectral
+integral itself. The Jacobian was rounding error and the optimiser had no
+gradient to follow. The routine runs once per colour and is cached, so precision
+is free here in a way it never is in a kernel.
+
+**And it is seeded by bisection**, because even in double, Levenberg-Marquardt
+cannot climb an asymptote: a reflectance of exactly one needs an infinite
+coefficient, every step improves by less than the last, the damping escalates
+and it gives up. Bisection on the constant term against the target's luminance
+has no such trouble -- it never needs a gradient -- and it leaves the optimiser
+only the hue to solve, which is the part it is good at.
+
+**The last five hundredths of a dE were not the fit at all.** With the seed in
+place the fit returned `S = 1` exactly for white, and the round trip still came
+back (0.9994, 1.0002, 0.99995). Both halves of the integral are approximations:
+the colour matching functions are Wyman's multi-lobe fit, good to about a per
+cent of peak, and the illuminant is a published table sampled at 5 nm. Their
+product's white point lands a fraction of a per cent from the D65 the sRGB
+matrix was derived against.
+
+That is not a rounding detail to tolerate. It means **a perfect white diffuse
+surface under the scene's own illuminant does not render white** -- and nothing
+can hide it, because a reflectance of one is the model's boundary and there is
+nothing left to trade. Every other colour absorbs the same error into its fit
+and looks fine, which is precisely what makes it worth pinning: the one colour
+that cannot compensate is the one a viewer would notice. The integral is now
+adapted so a perfect reflector produces the colour space's white by
+construction.
+
+The general lesson is the same one the tangent frame taught, in a different
+key: an error that every degree of freedom can absorb is invisible until you
+reach a case with no degrees of freedom left. White was that case here. It is
+worth keeping a boundary value in every test set for exactly this reason.
+
+**What is not done.** This is the conversion, not the transport. Path throughput
+and radiance are still `vec3`, `hdclaude_wavelengths` is still a constant the
+kernels assign and nothing reads, the film still accumulates RGB, and colour
+temperature is still applied as an RGB tint. Those are the next steps, and the
+documents that describe hdClaude as transporting spectrally today still overstate
+what it does.
