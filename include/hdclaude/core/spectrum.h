@@ -40,9 +40,15 @@ struct Vec3 {
     Vec3& operator+=(const Vec3& b) { x += b.x; y += b.y; z += b.z; return *this; }
 };
 
-/// A hero-wavelength packet: the wavelengths and the density each was drawn
-/// with. The densities are kept because they differ between lanes and are
-/// needed for both the estimator and wavelength MIS.
+/// A hero-wavelength packet: the wavelengths, and the density to divide each
+/// lane's contribution by.
+///
+/// The densities are equal, and that is the point rather than an oversight. A
+/// rotated lane is `lambda_0` shifted and wrapped -- a bijection of the visible
+/// range onto itself with unit Jacobian -- so the density of that variable at
+/// the value it took is p(lambda_0), whatever the value is. The array is kept
+/// per lane because wavelength MIS, when dispersion lands, will need them to
+/// differ.
 struct WavelengthSample {
     std::array<float, kSpectralLanes> lambda{};
     std::array<float, kSpectralLanes> pdf{};

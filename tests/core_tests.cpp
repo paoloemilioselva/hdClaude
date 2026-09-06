@@ -413,6 +413,45 @@ void TestChromaTableMatchesTheFit()
     CHECK(worst < 0.1);
 }
 
+/// The packet must estimate a spectral integral without bias.
+///
+/// This is the estimator the film runs, written out: draw a packet, divide each
+/// lane by its density, average. Integrating the CIE ybar this way has to
+/// return its own integral, which is the normalisation constant the sensor is
+/// built on.
+///
+/// It exists because the alternative -- dividing each lane by the base
+/// density evaluated at that lane's own wavelength -- is wrong and produces an
+/// image that converges perfectly well to the wrong spectrum. A rotated lane is
+/// not an independent draw, and no amount of rendering would show which of the
+/// two divisors was used.
+void TestHeroPacketIntegratesUnbiased()
+{
+    constexpr int kSamples = 20000;
+    double total = 0.0;
+    for (int i = 0; i < kSamples; ++i) {
+        // Stratified over the unit interval, offset off the ends where the
+        // inverse CDF is at its steepest.
+        const float u = (static_cast<float>(i) + 0.5f) /
+                        static_cast<float>(kSamples);
+        const WavelengthSample packet = SampleHeroWavelengths(u);
+
+        double estimate = 0.0;
+        for (int lane = 0; lane < kSpectralLanes; ++lane) {
+            const auto index = static_cast<std::size_t>(lane);
+            estimate += static_cast<double>(CieXyzBar(packet.lambda[index]).y) /
+                        static_cast<double>(packet.pdf[index]);
+        }
+        total += estimate / static_cast<double>(kSpectralLanes);
+    }
+    const double estimated = total / static_cast<double>(kSamples);
+    const double reference = static_cast<double>(CieYIntegral());
+
+    std::printf("  hero packet integrates ybar to %.5f (reference %.5f)\n",
+                estimated, reference);
+    CHECK_NEAR(estimated, reference, reference * 2.0e-3);
+}
+
 void TestBlackbodyPeakMatchesWien()
 {
     // Wien's displacement law is an independent check on Planck's law: the
@@ -502,6 +541,7 @@ int main()
     TestReflectanceUpsamplingRoundTrips();
     TestEmissionUpsamplingPreservesColourAndMagnitude();
     TestChromaTableMatchesTheFit();
+    TestHeroPacketIntegratesUnbiased();
     TestDisplayTransformLeavesTheDiffuseRangeAlone();
     TestDisplayTransformCompressesRatherThanClips();
     TestDisplayTransformSanitisesAndExposes();

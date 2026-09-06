@@ -132,10 +132,25 @@ WavelengthSample SampleHeroWavelengths(float u)
 {
     WavelengthSample sample;
     sample.lambda[0] = SampleVisibleWavelength(std::clamp(u, 0.0f, 1.0f));
-    sample.pdf[0] = VisibleWavelengthPdf(sample.lambda[0]);
 
     constexpr float kRange = kLambdaMax - kLambdaMin;
     constexpr float kStride = kRange / static_cast<float>(kSpectralLanes);
+
+    // Every lane carries the *hero's* density, not its own.
+    //
+    // A rotated lane is not an independent draw: it is `lambda_0` shifted by a
+    // fixed amount and wrapped, which is a bijection of the visible range onto
+    // itself with unit Jacobian. The density of that random variable at the
+    // value it took is therefore the density of the variable it was derived
+    // from -- p(lambda_0) -- and not p(lambda_i), which is the density of a
+    // different random variable that happens to share the value.
+    //
+    // Dividing by p(lambda_i) instead is biased, and biased in a way no image
+    // would reveal: the estimator still converges, smoothly, to the wrong
+    // spectrum. `TestHeroPacketIntegratesUnbiased` is what says which of the
+    // two this is.
+    const float density = VisibleWavelengthPdf(sample.lambda[0]);
+    sample.pdf[0] = density;
 
     for (int i = 1; i < kSpectralLanes; ++i) {
         float lambda = sample.lambda[0] + static_cast<float>(i) * kStride;
@@ -143,7 +158,7 @@ WavelengthSample SampleHeroWavelengths(float u)
             lambda -= kRange;
         }
         sample.lambda[static_cast<std::size_t>(i)] = lambda;
-        sample.pdf[static_cast<std::size_t>(i)] = VisibleWavelengthPdf(lambda);
+        sample.pdf[static_cast<std::size_t>(i)] = density;
     }
     return sample;
 }
