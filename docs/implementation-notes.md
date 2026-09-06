@@ -2257,3 +2257,85 @@ hdCodex renders those legs identically, from the same stage, so they are the
 asset's own geometry and not a defect in either renderer. Worth recording
 because the legs look exactly like the boundary-shrinkage artefact this entry is
 about, and are not it.
+
+
+---
+
+## 2026-09-07 -- A light nothing can hit is not a light
+
+Reported as a glass ball whose area lights do not fully reflect, with the right
+question attached: is it that the lights are not rendered as geometry, or that
+they are not sampled enough? It was the first, and no sample count would ever
+have fixed it.
+
+**Why sampling could not help.** Two decisions composed into a hole. The
+analytic lights were absent from the acceleration structure -- deliberately, and
+documented as what let the first implementation skip MIS. And next-event
+estimation is skipped on a delta closure, which is correct: smooth glass has no
+finite response at any single direction, so there is nothing to evaluate toward
+a sampled point on a light. Each is defensible alone. Together they leave a
+smooth dielectric with no way at all to see a light: not by sampling it, because
+the closure is delta, and not by hitting it, because there is nothing to hit.
+The ball was lit -- its rough parts take light through NEE perfectly well -- but
+no light's *image* could appear in any reflection or refraction.
+
+**Closed form, not triangles.** A rect light is a bounded plane and a sphere
+light is a sphere. Tessellating them into a BLAS would add a discretisation of a
+shape already known exactly, a build, and a question about how finely to divide
+a light nobody is looking at. So `extend` intersects the lights analytically and
+takes the nearest hit against the geometry distance, which is also what makes a
+light *opaque*: it hides what is behind it, and does not shine through a wall.
+
+The cost is a loop over the lights per ray. That is right for the handful a
+scene authors and wrong for a thousand. When a thousand arrives they belong in
+the structure, and the density and emission below do not change when that
+happens -- only where the intersection comes from.
+
+**The MIS is the part that can go wrong quietly.** The moment a ray can hit a
+light, every non-delta surface reaches the same light twice: once by NEE, once by
+scattering into it. Both estimates now take the balance heuristic's share. The
+weights are written twice -- `hdclaude_sample_light` returns the density for a
+sampled point, `hdclaude_light_hit_pdf` computes it for a point a ray reached --
+and they have to agree exactly, including which faces emit: a rect emits from one
+side, and a ray arriving at its back is not a hit, which is the same test the
+sampler applies when it rejects a point facing away.
+
+**So the test is a closed form, not a previous render.** Every baseline in this
+project that has been wrong was wrong because it compared the renderer against
+itself. A Lambertian surface of albedo `a` under a rectangular emitter of
+radiance `L` directly above it leaves `a * L * F`, where `F` is the
+point-to-rectangle configuration factor -- the standard corner formula, four
+times over for a centred rectangle. At albedo 0.8, radiance 3, unit half-extents
+and height 2 the closed form is 0.5747 and the render is 0.5716. It is the right
+shape of assertion for an MIS weight because it is a *total*: counting a light
+twice overshoots it, and weighting a strategy whose partner does not exist
+undershoots it. Only a partition summing to one lands on it. A second test points
+the camera at a light and reads back the radiance it was given, 0.4967 against
+0.50.
+
+**Distant lights had to come too, and that is not obvious.** A distant light is
+at infinity, so no ray reaches it at a finite distance and it cannot be
+intersected with the others. But once NEE weighs the analytic lights, a light
+that is weighted down and has no second strategy to make up the difference simply
+loses that energy. So a distant light's disc is added by the kernel that owns
+rays which hit nothing, against the same cone density its sampler uses. Adding
+hittability to some lights and not others is not a smaller change than doing all
+of them; it is a wrong one.
+
+**A scene of lights and no geometry is now a scene.** The test that reads a
+light directly has no geometry in it at all, which built no top-level structure
+and wrote `VK_NULL_HANDLE` into a descriptor -- illegal without the
+`nullDescriptor` feature, and 18 validation errors. Vulkan permits a top-level
+build of zero instances, so the instance buffer carries one zeroed entry to have
+an address and the build is told there are none. The validation gate caught this
+the first time the test ran, which is what it is for.
+
+**Where this leaves parity.** Five gallery scenes changed, all of them scenes
+with analytic lights, and three moved *away* from hdCodex: the gold ball from
+0.048 to 0.061, the glass ball from 0.089 to 0.145, and Collective Project
+unchanged at 0.118, against the playground improving from 0.257 to 0.246 and
+bubblegum from 0.081 to 0.077. hdCodex's own image of the glass ball has no light
+in it either -- it does not draw a light -- so the closer hdClaude gets to what
+the scene describes, the further it reads from the reference. That is the
+divergence the gallery already says it prefers, and it is now the largest one in
+the table.

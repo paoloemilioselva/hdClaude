@@ -18,13 +18,59 @@ void main()
         return;
     }
     uint path = activeQueue.values[slot];
-    if (hits.values[path].x >= 0)
+    int record = hits.values[path].x;
+    if (record >= 0)
     {
         return;   // hit geometry; the shade kernel owns this path
     }
 
     vec3 direction = pathDirection.values[path];
     vec4 lambda = pathWavelengths.values[path];
+
+    // --- A ray that struck an analytic light ---------------------------------
+    //
+    // The other half of next-event estimation. A light is now an opaque emitter
+    // a scattered ray can reach, so the same light arrives by two strategies and
+    // the balance heuristic decides the share of each. Without a weight here a
+    // rough surface would count every light twice.
+    //
+    // A camera ray, and a ray leaving a delta closure, carry a scatter density
+    // of zero: next-event estimation could not have produced them -- it is
+    // skipped entirely on a delta -- so there is no second strategy and the
+    // light arrives in full. That is what puts a light's reflection in a mirror
+    // and its image in a glass ball, which is the whole point of making it
+    // hittable.
+    if (record <= -2)
+    {
+        uint index = uint(-2 - record);
+        Light light = lights.values[index];
+
+        vec3 normal;
+        float distance = hdclaude_intersect_light(
+            light, pathOrigin.values[path], direction, normal);
+        if (distance > 0.0)
+        {
+            vec4 emission = pathThroughput.values[path] *
+                            hdclaude_upsample_emission(
+                                light.radiance *
+                                    hdclaude_light_shaping(light, -direction),
+                                lambda, light.colorTemperature,
+                                light.temperatureScale);
+
+            float scatterPdf = pathScatterPdf.values[path];
+            if (scatterPdf > 0.0)
+            {
+                float lightPdf =
+                    hdclaude_light_hit_pdf(light, distance, normal, direction) /
+                    float(hdclaude_emitter_count());
+                emission *= hdclaude_mis_weight(scatterPdf, lightPdf);
+            }
+            pathRadiance.values[path] += emission;
+        }
+        pathThroughput.values[path] = vec4(0.0);
+        return;
+    }
+
     vec4 radiance =
         hdclaude_upsample_emission(hdclaude_environment(direction), lambda,
                                    frame.environmentTemperature,
@@ -44,6 +90,43 @@ void main()
     {
         radiance *= hdclaude_mis_weight(scatterPdf,
                                        hdclaude_environment_pdf(direction));
+    }
+
+    // A distant light's disc. It sits at infinity, so the only ray that reaches
+    // one is a ray that reached nothing else, which is why it is added here
+    // rather than alongside the area lights above.
+    //
+    // It has to be added *somewhere*, now that next-event estimation weighs the
+    // analytic lights: a strategy that is weighted down and never made up by a
+    // second one loses that energy outright. So a distant light is hittable for
+    // the same reason a rect light is, and by the same cone its sampler uses.
+    for (uint i = 0u; i < frame.lightCount; ++i)
+    {
+        Light distant = lights.values[i];
+        if (distant.type != HDCLAUDE_LIGHT_DISTANT)
+        {
+            continue;
+        }
+        vec3 axis = normalize(-distant.direction);
+        float cosMax = cos(max(distant.angularRadius, 1.0e-4));
+        if (dot(direction, axis) <= cosMax)
+        {
+            continue;
+        }
+
+        vec4 emission = hdclaude_upsample_emission(
+            distant.radiance, lambda, distant.colorTemperature,
+            distant.temperatureScale);
+        if (scatterPdf > 0.0)
+        {
+            // The cone density its sampler returns, times the chance of having
+            // chosen this emitter.
+            float lightPdf =
+                (1.0 / (6.28318530718 * max(1.0e-6, 1.0 - cosMax))) /
+                float(hdclaude_emitter_count());
+            emission *= hdclaude_mis_weight(scatterPdf, lightPdf);
+        }
+        radiance += emission;
     }
 
     // The stand-in sun as a disc of finite angular radius, so a mirror can

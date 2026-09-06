@@ -300,10 +300,11 @@ void main()
     // heuristic needs a distribution rebuilt whenever a light changes, and
     // getting that stale is a much subtler bug than the extra variance.
     //
-    // No MIS. hdClaude's lights are analytic and absent from the acceleration
-    // structure, so a scattered ray cannot hit one and there is nothing to
-    // double count. Emissive *geometry* is found by the scattered ray and its
-    // emission is added on hit, above.
+    // The analytic lights are hittable, so this estimate is weighed against
+    // the scattered ray that may reach the same light. The stand-in sun is the
+    // exception: it is a delta emitter with no solid angle to hit, added as a
+    // disc on the camera ray alone, and weighing it would discard the half of
+    // its contribution that has no second strategy to recover it.
     {
         // One emitter per bounce, chosen uniformly among the analytic lights
         // and the environment. The environment is an emitter here rather than
@@ -385,15 +386,13 @@ void main()
                 // the density of having chosen this direction, which is the
                 // light's solid-angle density times the chance of having
                 // picked this light.
-                // The environment is the one emitter a scattered ray can
-                // also find, so its estimate takes the balance heuristic's
-                // share against the closure's own density at this direction.
-                // The analytic lights are not in the acceleration structure,
-                // nothing can hit them, and weighing them would throw away
-                // the half of their contribution that has no second strategy
-                // to make it up.
+                // Every emitter a scattered ray can also find takes the
+                // balance heuristic's share against the closure's own density
+                // at this direction. That is the environment and, since the
+                // lights became opaque emitters intersected in closed form,
+                // the analytic lights as well.
                 float weight = 1.0;
-                if (environmentSample)
+                if (!sunSample)
                 {
                     weight = hdclaude_mis_weight(lightSample.pdf * selectionPdf,
                                                  hdclaude_bsdf.pdf);

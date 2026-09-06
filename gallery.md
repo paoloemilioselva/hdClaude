@@ -93,16 +93,16 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 <!-- gallery-timings:start -->
 | Scene | Measured | Wall time | SHA-256 | Device | Settings |
 |---|---:|---:|---|---|---|
-| Intel Sponza | 2026-09-07 | 47.809 s (0m 47.809s) | `530bd391259a69b278a186a47b1994224210d8792ea8a6c90b2a934000e0133d` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| OpenChessSet | 2026-09-07 | 22.350 s (0m 22.350s) | `56287a440d42b8d52b381a1de764efeb4919ceb383bf9a96957349f38a61876e` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall Gold | 2026-09-07 | 26.848 s (0m 26.848s) | `0be10c5a0f3e613bda802e38ba97bc6cbfcfbb77df364b3292d8bbdaa7fc0238` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall Glass | 2026-09-07 | 28.738 s (0m 28.738s) | `01a4439d0ad6538ce0971aabe627c0924f0425db0188d52c090964591b903994` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall BubbleGum | 2026-09-07 | 28.743 s (0m 28.743s) | `ee10141eac077fe1c8475821f82849124bb250767c2edf46ef8a569a00225f86` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Pixar's KitchenSet | 2026-09-07 | 148.486 s (2m 28.486s) | `2b642d33adcdd7879b9ed96269ee896b686a9ecaff5237e7f5635b5dffebda5b` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Collective Project 001 | 2026-09-07 | 16.531 s (0m 16.531s) | `1f296099cc45839ce18dddd9cc1b0fac9efea06a0e5d1d98d3f4b2db4a65c9f2` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| OpenPBR Playground | 2026-09-07 | 61.732 s (1m 1.732s) | `8ba122e2c8d67cef69106405fb8418f996aac6b91a49280fb9897f12dad3ff36` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Subdivision Feature Matrix | 2026-09-07 | 10.526 s (0m 10.526s) | `ee6c5e9d42bccc5e8bbc45a4c77334501af137c3de3a0d33c16a10a620916f0c` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| New Zealand Height Map | 2026-09-07 | 8.483 s (0m 8.483s) | `c7ba8dbd3256ce0d210ab6c4099bf5c394d6a1afb584ecce1d750269f42a7c81` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 6 |
+| Intel Sponza | 2026-09-07 | 65.787 s (1m 5.787s) | `530bd391259a69b278a186a47b1994224210d8792ea8a6c90b2a934000e0133d` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| OpenChessSet | 2026-09-07 | 29.689 s (0m 29.689s) | `56287a440d42b8d52b381a1de764efeb4919ceb383bf9a96957349f38a61876e` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall Gold | 2026-09-07 | 37.900 s (0m 37.900s) | `069baab07baf5d8516a40706068aa8cd0cdf16846956da90b145f260e931e7bb` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall Glass | 2026-09-07 | 28.183 s (0m 28.183s) | `73f8ccbdd24592703420d93feb276ed6e06e3ea056d1d0c64df6dddf49061555` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall BubbleGum | 2026-09-07 | 27.591 s (0m 27.591s) | `87cd0c58fdb597549e3eee7661956e23380f03ff2d6231d3c6449f13ed2b153e` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Pixar's KitchenSet | 2026-09-07 | 164.516 s (2m 44.516s) | `2b642d33adcdd7879b9ed96269ee896b686a9ecaff5237e7f5635b5dffebda5b` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Collective Project 001 | 2026-09-07 | 23.147 s (0m 23.147s) | `1a6128b0b7a4ab514bdc99f1c0577a28db93f18a7d499b67ba195cb24b4868af` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| OpenPBR Playground | 2026-09-07 | 108.193 s (1m 48.193s) | `0cd27030fcf45153c4c362691c91bdd015b1e6a711f32de74636183aacbb812f` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Subdivision Feature Matrix | 2026-09-07 | 13.977 s (0m 13.977s) | `15df6e80394edca5ea1cd83fc250201bcd57f995e826b6474236cf46eb4e29ec` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| New Zealand Height Map | 2026-09-07 | 8.751 s (0m 8.751s) | `d7cb527a55ddd06bd0009fe587db9fee91d2170b3bb6b2f200983a854f484d44` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 6 |
 <!-- gallery-timings:end -->
 
 ## Against hdCodex
@@ -114,14 +114,20 @@ is the crudest possible comparison and the one that separates "different" from
 
 | Scene | RMS vs hdCodex | mean | reading |
 |---|---:|---:|---|
-| StandardShaderBall Gold | 0.048 | 0.702 | closest in the gallery |
-| StandardShaderBall BubbleGum | 0.081 | 0.746 | |
-| StandardShaderBall Glass | 0.089 | 0.677 | dispersion still absent; transport is RGB |
+| StandardShaderBall Gold | 0.061 | 0.706 | its mirror now reflects the lights, which hdCodex does not draw at all |
+| StandardShaderBall BubbleGum | 0.077 | 0.734 | |
+| StandardShaderBall Glass | 0.145 | 0.713 | the largest deliberate divergence in the gallery: the glass holds the highlights of the five rect lights, and hdCodex's image of the same stage has none, because neither renderer used to draw a light. Dispersion still absent |
 | Subdivision Feature Matrix | 0.134 | 0.310 | the creased cube is a cube again, now that subdivision tags reach the refiner |
 | Pixar's KitchenSet | 0.056 | 0.226 | RMS fell by more than half once instanced meshes stopped losing their transform inside the prototype, and again when the stand-in sun learned which way is up: the stage is Z-up, and the sun's hardcoded Y-up direction had been running horizontally through the room |
 | OpenChessSet | 0.048 | 0.546 | 0.199 four changes ago: a normal-map frame, then its dome kept its range and started being sampled where the light is, and now it is lit by that dome alone -- a dome is not in the light table, so the stand-in sun had been adding a second key light to a scene that lights itself |
-| OpenPBR Playground | 0.257 | 0.416 | brighter than hdCodex now rather than darker; its float textures no longer clamp |
+| OpenPBR Playground | 0.246 | 0.402 | brighter than hdCodex now rather than darker; its float textures no longer clamp |
 | Intel Sponza | 0.368 | 0.018 | hdCodex shades 137 `UsdPreviewSurface` materials as flat grey; hdClaude shades the brick and stone the asset authors, in an arcade lit by a stand-in sky and a stand-in sun, which now stands 70 degrees above the horizon and so reaches the floor and the far columns rather than raking the near wall. Roughness and metalness now reach those materials: the asset connects its scalar inputs to a nodegraph's three-component `outputs:rgb`, which `gallery/intel_sponza.usda` overrides to the single channel the maps carry |
+
+Three of these moved *away* from hdCodex on 2026-09-07, when the analytic
+lights became emitters a ray can hit. hdCodex does not draw a light either, so
+its images have no light in any reflection, and the closer hdClaude gets to what
+the scene actually describes the further it reads from that. The glass ball is
+the clearest case and the largest divergence in the table.
 
 Parity is not the goal where the two disagree about how much of the asset to
 shade. What the comparison is for is finding the places where hdClaude is

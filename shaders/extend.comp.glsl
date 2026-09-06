@@ -28,8 +28,33 @@ void main()
     while (rayQueryProceedEXT(query)) { }
 
     ivec4 record = ivec4(-1, -1, 0, 0);
-    if (rayQueryGetIntersectionTypeEXT(query, true) ==
-        gl_RayQueryCommittedIntersectionTriangleEXT)
+    float tGeometry = 1.0e30;
+    bool hitGeometry = rayQueryGetIntersectionTypeEXT(query, true) ==
+                       gl_RayQueryCommittedIntersectionTriangleEXT;
+    if (hitGeometry)
+    {
+        tGeometry = rayQueryGetIntersectionTEXT(query, true);
+    }
+
+    // An analytic light is intersected in closed form and competes with the
+    // geometry hit on distance, which is what makes it an opaque emitter: a
+    // light in front of a wall hides the wall, and a light behind it does not
+    // shine through.
+    float tLight;
+    vec3 lightNormal;
+    int light = hdclaude_nearest_light(origin, direction, tGeometry, tLight,
+                                       lightNormal);
+
+    if (light >= 0)
+    {
+        // Encoded below -1 so the sort skips it exactly as it skips a miss,
+        // and the kernel that retires missed paths adds the emission. The
+        // origin is deliberately *not* advanced: that kernel re-intersects the
+        // light to recover the distance and normal the density needs, which
+        // costs one intersection and no extra path state.
+        record.x = -2 - light;
+    }
+    else if (hitGeometry)
     {
         vec2 bary = rayQueryGetIntersectionBarycentricsEXT(query, true);
         record.x = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
@@ -39,8 +64,7 @@ void main()
 
         // The hit position replaces the origin, so shading needs no ray
         // parameter and no second evaluation of origin + t * direction.
-        pathOrigin.values[path] =
-            origin + direction * rayQueryGetIntersectionTEXT(query, true);
+        pathOrigin.values[path] = origin + direction * tGeometry;
     }
     hits.values[path] = record;
 }

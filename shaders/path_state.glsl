@@ -68,11 +68,11 @@ layout(set = 0, binding = 6, scalar) buffer PathRng      { uint  values[]; } pat
 // ray, or zero when there was none to speak of -- a camera ray, or a delta
 // closure, both of which take the environment in full.
 //
-// It exists for multiple importance sampling against the environment, which is
-// the one emitter a scattered ray can actually hit: the analytic lights are
-// absent from the acceleration structure, so nothing can hit them and there is
-// nothing to weigh (docs/spectral-rendering.md, and the note on the light table
-// below).
+// It exists for multiple importance sampling against every emitter a scattered
+// ray can reach, which is the environment and -- since they became opaque
+// emitters intersected in closed form -- the analytic lights as well. Zero means
+// no competing strategy: a camera ray, or a delta closure, which next-event
+// estimation skips entirely and which therefore takes the emitter in full.
 layout(set = 0, binding = 21, scalar) buffer PathScatterPdf { float values[]; } pathScatterPdf;
 
 // Hit record written by `extend` and read by `shade`.
@@ -971,4 +971,189 @@ LightSample hdclaude_sample_light(uint index, vec3 position, vec2 u)
     // Uniform area density 1/A converted to solid angle: d^2 / (cos * A).
     result.pdf = distanceSquared / (cosLight * light.area);
     return result;
+}
+
+// --- Lights a scattered ray can hit -----------------------------------------
+//
+// The analytic lights are intersected in closed form rather than built into the
+// acceleration structure. They *are* closed forms -- a rect is a bounded plane,
+// a sphere is a sphere -- so tessellating them into triangles would only add a
+// discretisation of a shape already known exactly, plus a build, plus the
+// question of how finely to tessellate a light nobody is looking at.
+//
+// The cost is a loop over the lights per ray, which is right for the handful a
+// scene authors and wrong for a thousand. When a scene arrives with a thousand
+// they belong in the structure; the density and emission below do not change
+// when that happens, only where the intersection comes from.
+
+/// Distance along `direction` at which the ray meets `light`, or -1.
+///
+/// `normal` is the light's outward normal at the hit. A rect and a disk emit
+/// from one face, and a ray arriving at the back of one is not a hit at all --
+/// which is the same test `hdclaude_sample_light` applies when it rejects a
+/// sampled point facing away from the receiver. The two agree by construction,
+/// and they have to: a direction one strategy can produce and the other cannot
+/// account for is exactly the asymmetry that makes an MIS weight wrong.
+float hdclaude_intersect_light(Light light, vec3 origin, vec3 direction,
+                               out vec3 normal)
+{
+    normal = vec3(0.0, 1.0, 0.0);
+    const float kEpsilon = 1.0e-4;
+
+    if (light.type == HDCLAUDE_LIGHT_RECT ||
+        light.type == HDCLAUDE_LIGHT_DISK)
+    {
+        vec3 planeNormal = normalize(light.direction);
+        float denominator = dot(direction, planeNormal);
+        if (abs(denominator) < 1.0e-9)
+        {
+            return -1.0;
+        }
+        float t = dot(light.position - origin, planeNormal) / denominator;
+        if (t <= kEpsilon)
+        {
+            return -1.0;
+        }
+        vec3 offset = origin + direction * t - light.position;
+
+        if (light.type == HDCLAUDE_LIGHT_RECT)
+        {
+            // `uAxis` and `vAxis` are half-extent vectors, which is what
+            // `hdclaude_sample_light` assumes when it offsets by [-1, 1].
+            float uu = dot(light.uAxis, light.uAxis);
+            float vv = dot(light.vAxis, light.vAxis);
+            if (uu <= 1.0e-12 || vv <= 1.0e-12)
+            {
+                return -1.0;
+            }
+            if (abs(dot(offset, light.uAxis) / uu) > 1.0 ||
+                abs(dot(offset, light.vAxis) / vv) > 1.0)
+            {
+                return -1.0;
+            }
+        }
+        else if (dot(offset, offset) > light.radius * light.radius)
+        {
+            return -1.0;
+        }
+
+        normal = planeNormal;
+        return dot(normal, -direction) > 1.0e-6 ? t : -1.0;
+    }
+
+    if (light.type == HDCLAUDE_LIGHT_SPHERE)
+    {
+        vec3 toCentre = origin - light.position;
+        float half_b = dot(toCentre, direction);
+        float c = dot(toCentre, toCentre) - light.radius * light.radius;
+        float discriminant = half_b * half_b - c;
+        if (discriminant < 0.0)
+        {
+            return -1.0;
+        }
+        float root = sqrt(discriminant);
+        float t = -half_b - root;
+        if (t <= kEpsilon)
+        {
+            t = -half_b + root;
+        }
+        if (t <= kEpsilon)
+        {
+            return -1.0;
+        }
+        normal = normalize(origin + direction * t - light.position);
+        return t;
+    }
+
+    if (light.type == HDCLAUDE_LIGHT_CYLINDER)
+    {
+        // The curved surface only; USD's cylinder light has no end caps, and
+        // `hdclaude_sample_light` samples none either.
+        vec3 axis = light.uAxis;
+        float halfLength = length(axis);
+        if (halfLength <= 1.0e-6)
+        {
+            return -1.0;
+        }
+        axis /= halfLength;
+
+        vec3 toAxis = origin - light.position;
+        vec3 dPerp = direction - axis * dot(direction, axis);
+        vec3 oPerp = toAxis - axis * dot(toAxis, axis);
+        float a = dot(dPerp, dPerp);
+        if (a <= 1.0e-12)
+        {
+            return -1.0;
+        }
+        float half_b = dot(dPerp, oPerp);
+        float c = dot(oPerp, oPerp) - light.radius * light.radius;
+        float discriminant = half_b * half_b - a * c;
+        if (discriminant < 0.0)
+        {
+            return -1.0;
+        }
+        float root = sqrt(discriminant);
+        for (int which = 0; which < 2; ++which)
+        {
+            float t = (which == 0) ? (-half_b - root) / a
+                                   : (-half_b + root) / a;
+            if (t <= kEpsilon)
+            {
+                continue;
+            }
+            vec3 local = origin + direction * t - light.position;
+            if (abs(dot(local, axis)) > halfLength)
+            {
+                continue;
+            }
+            normal = normalize(local - axis * dot(local, axis));
+            return t;
+        }
+        return -1.0;
+    }
+
+    // A distant light is at infinity: no ray reaches it at a finite distance,
+    // so it is added by the kernel that owns a ray which hit nothing.
+    return -1.0;
+}
+
+/// The nearest light along a ray closer than `tMax`, or -1.
+int hdclaude_nearest_light(vec3 origin, vec3 direction, float tMax,
+                           out float tHit, out vec3 normalHit)
+{
+    int nearest = -1;
+    tHit = tMax;
+    normalHit = vec3(0.0, 1.0, 0.0);
+
+    for (uint i = 0u; i < frame.lightCount; ++i)
+    {
+        vec3 normal;
+        float t = hdclaude_intersect_light(lights.values[i], origin, direction,
+                                           normal);
+        if (t > 0.0 && t < tHit)
+        {
+            tHit = t;
+            normalHit = normal;
+            nearest = int(i);
+        }
+    }
+    return nearest;
+}
+
+/// The solid-angle density with which next-event estimation would have chosen
+/// `direction` toward this light, for the MIS weight on a ray that hit it.
+///
+/// The same expression `hdclaude_sample_light` returns -- uniform over the
+/// light's area, converted by d^2 / (cos * A) -- evaluated at the point the ray
+/// actually reached rather than at a sampled one. Writing it twice is the risk
+/// here; the furnace test exists because the two must agree exactly.
+float hdclaude_light_hit_pdf(Light light, float distance, vec3 normal,
+                             vec3 direction)
+{
+    float cosLight = dot(normal, -direction);
+    if (cosLight <= 1.0e-6 || light.area <= 0.0)
+    {
+        return 0.0;
+    }
+    return (distance * distance) / (cosLight * light.area);
 }

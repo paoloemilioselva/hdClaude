@@ -938,6 +938,137 @@ int main()
             CHECK_NEAR(centre.b, 0.8, 0.05);
         }
 
+        // --- A rect light is an emitter a ray can hit, and MIS splits it ------
+        //
+        // The analytic lights used to be absent from traversal entirely: they
+        // were sampled by next-event estimation and nothing else, so a mirror
+        // reflected no light and a glass ball held no highlight, however many
+        // samples were thrown at it. They are intersected in closed form now,
+        // which means the same light arrives by two strategies and each has to
+        // take the share the balance heuristic gives it.
+        //
+        // The closed form is what makes that checkable. A Lambertian surface of
+        // albedo `a` under a rectangular emitter of radiance L, directly above
+        // it, leaves `a * L * F`, where F is the configuration factor from the
+        // point to the rectangle -- the standard corner formula, four times over
+        // for a rectangle centred on the point. It is the right test for an MIS
+        // weight because it is a *total*: counting the light twice overshoots
+        // it, weighting a strategy that has no partner undershoots it, and only
+        // a partition that sums to one lands on it.
+        {
+            Scene scene;
+            scene.prototypes.push_back(MakeQuad());
+            scene.instances.push_back({0, Transform3x4{}, 0, true});
+
+            const float halfU = 1.0f;
+            const float halfV = 1.0f;
+            const float height = 2.0f;
+            const float emitted = 3.0f;
+
+            Light rect;
+            rect.type = static_cast<std::uint32_t>(LightType::Rect);
+            rect.position[0] = 0.0f;
+            rect.position[1] = 0.0f;
+            rect.position[2] = height;
+            // Emitting along -Z, down onto the quad.
+            rect.direction[0] = 0.0f;
+            rect.direction[1] = 0.0f;
+            rect.direction[2] = -1.0f;
+            rect.uAxis[0] = halfU; rect.uAxis[1] = 0.0f; rect.uAxis[2] = 0.0f;
+            rect.vAxis[0] = 0.0f; rect.vAxis[1] = halfV; rect.vAxis[2] = 0.0f;
+            rect.area = (2.0f * halfU) * (2.0f * halfV);
+            rect.radiance[0] = emitted;
+            rect.radiance[1] = emitted;
+            rect.radiance[2] = emitted;
+            rect.castsShadows = 1;
+            scene.lights.push_back(rect);
+
+            tracer.SetScene(scene, {materials[0]});   // albedo 0.8, grey
+
+            RenderSettings lit;
+            lit.samplesPerPixel = 512;
+            lit.maxBounces = 2;
+            for (int i = 0; i < 3; ++i) {
+                lit.environmentColor[i] = 0.0f;
+                lit.sunRadiance[i] = 0.0f;
+            }
+
+            // The camera is below the light and looks at the quad; the light
+            // itself is behind the camera, so what is measured is the surface.
+            const std::vector<float> image =
+                tracer.Render(kWidth, kHeight, LookDownZ(1.2f), lit);
+            const Pixel centre = Window(image, 0.5f, 0.5f, 12);
+
+            // Configuration factor from a point to one corner rectangle of
+            // sides A and B at distance h, in the normalised form.
+            const auto corner = [](double A, double B, double h) {
+                const double x = A / h;
+                const double y = B / h;
+                const double rx = std::sqrt(1.0 + x * x);
+                const double ry = std::sqrt(1.0 + y * y);
+                return (x / rx * std::atan(y / rx) + y / ry * std::atan(x / ry)) /
+                       (2.0 * 3.14159265358979);
+            };
+            const double factor = 4.0 * corner(halfU, halfV, height);
+            const double expected = 0.8 * emitted * factor;
+            std::printf("  rect light: %.4f %.4f %.4f (closed form %.4f)\n",
+                        centre.r, centre.g, centre.b, expected);
+
+            CHECK_NEAR(centre.r, expected, expected * 0.05);
+            CHECK_NEAR(centre.g, expected, expected * 0.05);
+            CHECK_NEAR(centre.b, expected, expected * 0.05);
+        }
+
+        // --- And the light itself is visible ----------------------------------
+        //
+        // The other half of the same change, and the one the reflection depends
+        // on: a ray that reaches a light returns its radiance. A camera ray
+        // carries no scatter density -- next-event estimation could not have
+        // produced it -- so the light arrives unweighted and the pixel reads the
+        // radiance the light was given. Before the lights were hittable this
+        // pixel was the empty environment.
+        {
+            Scene scene;   // no geometry at all; only the light is in view
+
+            const float emitted = 0.5f;
+            Light rect;
+            rect.type = static_cast<std::uint32_t>(LightType::Rect);
+            rect.position[0] = 0.0f;
+            rect.position[1] = 0.0f;
+            rect.position[2] = 0.0f;
+            // Facing the camera, which looks down -Z from +Z.
+            rect.direction[0] = 0.0f;
+            rect.direction[1] = 0.0f;
+            rect.direction[2] = 1.0f;
+            rect.uAxis[0] = 1.0f; rect.uAxis[1] = 0.0f; rect.uAxis[2] = 0.0f;
+            rect.vAxis[0] = 0.0f; rect.vAxis[1] = 1.0f; rect.vAxis[2] = 0.0f;
+            rect.area = 4.0f;
+            rect.radiance[0] = emitted;
+            rect.radiance[1] = emitted;
+            rect.radiance[2] = emitted;
+            scene.lights.push_back(rect);
+
+            tracer.SetScene(scene, {materials[0]});
+
+            RenderSettings lit;
+            lit.samplesPerPixel = 64;
+            lit.maxBounces = 2;
+            for (int i = 0; i < 3; ++i) {
+                lit.environmentColor[i] = 0.0f;
+                lit.sunRadiance[i] = 0.0f;
+            }
+
+            const std::vector<float> image =
+                tracer.Render(kWidth, kHeight, LookDownZ(4.0f), lit);
+            const Pixel centre = Window(image, 0.5f, 0.5f, 8);
+            std::printf("  light seen directly: %.4f %.4f %.4f (emitted %.2f)\n",
+                        centre.r, centre.g, centre.b, emitted);
+
+            CHECK_NEAR(centre.r, emitted, 0.02);
+            CHECK_NEAR(centre.g, emitted, 0.02);
+            CHECK_NEAR(centre.b, emitted, 0.02);
+        }
+
         // --- A furnace under a *textured* dome --------------------------------
         //
         // The same closed form, with the environment sampled from a map's

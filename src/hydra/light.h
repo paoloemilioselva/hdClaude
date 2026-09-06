@@ -6,10 +6,13 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 /// Publishes a UsdLux light as an analytic emitter.
 ///
-/// hdClaude's lights are not geometry: they are sampled directly by next-event
-/// estimation and are absent from the acceleration structure. That is what lets
-/// the first implementation skip MIS entirely -- a scattered ray cannot hit a
-/// light, so there is nothing to double count (docs/architecture.md 2).
+/// hdClaude's lights are not geometry, but they are hittable: they stay out of
+/// the acceleration structure and are intersected in closed form instead, which
+/// is what a rect or a sphere already is. A scattered ray can therefore reach
+/// one, so the same light arrives by next-event estimation and by BSDF sampling
+/// and the two are weighed by the balance heuristic (docs/architecture.md 2).
+/// That is what puts a light in a mirror and a highlight in a glass ball, which
+/// no amount of sampling could do while nothing could hit them.
 ///
 /// A dome light is not an emitter here at all. It sets the scene's environment
 /// radiance, which is what a ray that leaves the scene already returns, so

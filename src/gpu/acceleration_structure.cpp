@@ -328,10 +328,17 @@ void TopLevelStructure::Build(
 {
     context.RequireLive("TopLevelStructure::Build");
 
-    if (instances.empty()) {
-        Reset();
-        return;
-    }
+    // A scene with no geometry is still a scene, and is built rather than
+    // skipped. Since the analytic lights became emitters a ray can hit, a stage
+    // that authors only lights has something to render; and either way the
+    // descriptor set needs a real handle, because a null acceleration structure
+    // is not a legal descriptor unless `nullDescriptor` is enabled, which it is
+    // not. Vulkan permits a top-level build of zero instances, so the buffer
+    // carries one zeroed entry purely to have an address and the build is told
+    // there are none.
+    const std::vector<VkAccelerationStructureInstanceKHR> uploaded =
+        instances.empty() ? std::vector<VkAccelerationStructureInstanceKHR>(1)
+                          : instances;
 
     // Built into locals; the existing structure stays traversable until the
     // replacement is complete.
@@ -339,7 +346,7 @@ void TopLevelStructure::Build(
     VulkanBuffer storage;
     VulkanBuffer instanceBuffer;
 
-    instanceBuffer = UploadDeviceLocal(context, allocator, instances,
+    instanceBuffer = UploadDeviceLocal(context, allocator, uploaded,
                                        kBuildInputUsage, "tlas.instances");
 
     VkAccelerationStructureGeometryKHR geometry{
