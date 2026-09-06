@@ -70,6 +70,11 @@ std::vector<BindingDescription> KernelBindings()
     dome.debugName = "hdclaude_dome";
     bindings.push_back(dome);
 
+    // The material sort and the indirect commands it sizes.
+    bindings.push_back(storage(18, "materialQueue"));
+    bindings.push_back(storage(19, "materialTable"));
+    bindings.push_back(storage(20, "dispatchArgs"));
+
     return bindings;
 }
 
@@ -88,8 +93,26 @@ struct FrameBlock {
     std::uint32_t bounce;
     std::uint32_t lightCount;
     std::uint32_t hasDomeTexture;
+    std::uint32_t materialCount;
     float domeWorldToLight[16];
 };
+
+/// Mirrors the indirect command slots in path_state.glsl. Each slot is a
+/// VkDispatchIndirectCommand followed by a word of padding, so a slot's byte
+/// offset is its index times this stride.
+constexpr VkDeviceSize kDispatchArgStride = 16;
+constexpr std::uint32_t kDispatchSlotActive = 0;
+constexpr std::uint32_t kDispatchSlotShadow = 1;
+constexpr std::uint32_t kDispatchSlotFirstMaterial = 2;
+
+/// Stages of the prepare_dispatch kernel, matching its push constant.
+constexpr std::uint32_t kPrepareActive = 0;
+constexpr std::uint32_t kPrepareMaterials = 1;
+constexpr std::uint32_t kPrepareShadow = 2;
+
+/// Passes of the material sort, matching its push constant.
+constexpr std::uint32_t kSortCount = 0;
+constexpr std::uint32_t kSortScatter = 1;
 
 /// Mirrors InstanceGeometry in path_state.glsl.
 struct InstanceGeometry {
@@ -154,11 +177,35 @@ void Barrier(VkCommandBuffer command)
     // strictly sequential -- each reads what the previous wrote -- so there is
     // nothing to overlap within a bounce, and a finer barrier would buy nothing
     // while adding a way to be wrong.
+    //
+    // It covers three stages rather than compute alone, because the frame uses
+    // all three on the same buffers:
+    //
+    //   transfer  the queue promotion and the counter resets between bounces
+    //             are `vkCmdCopyBuffer` and `vkCmdFillBuffer`. A barrier that
+    //             named only compute did not order the fill against the copy
+    //             that read the same counters, which synchronisation validation
+    //             reports as a write-after-read hazard.
+    //   indirect  dispatch sizes are read by the command processor at
+    //             VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT, not by a shader, so a
+    //             compute-only destination scope does not make a freshly
+    //             written indirect command visible to the dispatch that reads
+    //             it.
     VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
-    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT;
-    barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    barrier.dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT;
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                           VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT |
+                            VK_ACCESS_2_SHADER_READ_BIT |
+                            VK_ACCESS_2_TRANSFER_WRITE_BIT |
+                            VK_ACCESS_2_TRANSFER_READ_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                           VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT |
+                           VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT |
+                            VK_ACCESS_2_SHADER_READ_BIT |
+                            VK_ACCESS_2_TRANSFER_WRITE_BIT |
+                            VK_ACCESS_2_TRANSFER_READ_BIT |
+                            VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
 
     VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     dependency.memoryBarrierCount = 1;
@@ -246,6 +293,8 @@ PathTracer::PathTracer(const VulkanContext& context, VulkanAllocator& allocator,
 
     _raygen = build("raygen.comp.glsl", 0);
     _extend = build("extend.comp.glsl", 0);
+    _prepareDispatch = build("prepare_dispatch.comp.glsl", sizeof(std::uint32_t));
+    _materialSort = build("material_sort.comp.glsl", sizeof(std::uint32_t));
     _environment = build("environment.comp.glsl", 0);
     _shadow = build("shadow.comp.glsl", 0);
     _film = build("film.comp.glsl", 0);
@@ -506,9 +555,9 @@ void PathTracer::SetScene(const Scene& scene,
         staging.debugName = "lightTable.staging";
         VulkanBuffer upload(_allocator, staging);
 
-        std::vector<Light> table = scene.lights;
-        table.resize(count);
-        upload.Write(table.data(), size);
+        std::vector<Light> lightTable = scene.lights;
+        lightTable.resize(count);
+        upload.Write(lightTable.data(), size);
 
         _lightTable = MakeStorage(_allocator, size, "lightTable");
         _context.SubmitImmediate([&](VkCommandBuffer command) {
@@ -550,6 +599,36 @@ void PathTracer::SetScene(const Scene& scene,
                                          "shade." + material.debugName));
         _materialTextureSlots.push_back(material.textureSlots);
     }
+
+    // --- The sort's tables ---------------------------------------------------
+    // Sized here rather than with the path state, because their stride is the
+    // number of materials rather than the number of pixels. Both are allocated
+    // even when the scene has no material at all: a descriptor set must name a
+    // real buffer, and the kernels read frame.materialCount rather than a
+    // buffer's size.
+    const auto materialCount = static_cast<std::uint32_t>(_shade.size());
+    const std::uint32_t tableEntries = std::max<std::uint32_t>(1, materialCount);
+    _materialTable = MakeStorage(_allocator, VkDeviceSize(tableEntries) * 3 * 4,
+                                 "sort.materialTable");
+
+    BufferDescription argsDescription;
+    argsDescription.size =
+        (VkDeviceSize(kDispatchSlotFirstMaterial) + tableEntries) * kDispatchArgStride;
+    argsDescription.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                            VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    argsDescription.domain = BufferDomain::DeviceLocal;
+    argsDescription.debugName = "sort.dispatchArgs";
+    _dispatchArgs = VulkanBuffer(_allocator, argsDescription);
+
+    // The command processor reads every slot of an indirect buffer it is
+    // pointed at, including one this frame's kernels never wrote. Zeroing
+    // means an unwritten slot dispatches nothing rather than whatever the
+    // allocation happened to contain.
+    _context.SubmitImmediate([&](VkCommandBuffer command) {
+        vkCmdFillBuffer(command, _dispatchArgs.Handle(), 0, VK_WHOLE_SIZE, 0);
+        vkCmdFillBuffer(command, _materialTable.Handle(), 0, VK_WHOLE_SIZE, 0);
+    });
 }
 
 void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
@@ -574,6 +653,9 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
     VulkanBuffer activeQueue = MakeStorage(_allocator, paths * 4, "queue.active");
     VulkanBuffer nextQueue = MakeStorage(_allocator, paths * 4, "queue.nextActive");
     VulkanBuffer shadowRays = MakeStorage(_allocator, paths * 64, "queue.shadow");
+    // The sorted queue holds the active paths that hit geometry, which is at
+    // most every path.
+    VulkanBuffer materialQueue = MakeStorage(_allocator, paths * 4, "queue.material");
     VulkanBuffer accumulation = MakeStorage(_allocator, paths * 16, "film");
 
     BufferDescription uniformDescription;
@@ -601,6 +683,7 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
     _activeQueue = std::move(activeQueue);
     _nextActiveQueue = std::move(nextQueue);
     _shadowRays = std::move(shadowRays);
+    _materialQueue = std::move(materialQueue);
     _accumulation = std::move(accumulation);
     _frameUniforms = std::move(frameUniforms);
     _readback = std::move(readback);
@@ -649,6 +732,36 @@ void PathTracer::WriteDescriptors(VkDescriptorSet set,
                                           : _placeholderTexture.View();
     dome.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     pipeline.WriteSampledImageArray(set, 17, {dome});
+
+    pipeline.WriteBuffer(set, 18, _materialQueue);
+    pipeline.WriteBuffer(set, 19, _materialTable);
+    pipeline.WriteBuffer(set, 20, _dispatchArgs);
+}
+
+std::vector<std::uint32_t> PathTracer::MaterialCounts() const
+{
+    if (_shade.empty() || !_materialTable.Valid()) {
+        return {};
+    }
+    const VkDeviceSize size = VkDeviceSize(_shade.size()) * 4;
+
+    BufferDescription description;
+    description.size = size;
+    description.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    description.domain = BufferDomain::HostReadback;
+    description.debugName = "sort.materialTable.readback";
+    VulkanBuffer readback(_allocator, description);
+
+    _context.SubmitImmediate([&](VkCommandBuffer command) {
+        VkBufferCopy region{};
+        region.size = size;
+        vkCmdCopyBuffer(command, _materialTable.Handle(), readback.Handle(), 1,
+                        &region);
+    });
+
+    std::vector<std::uint32_t> counts(_shade.size());
+    std::memcpy(counts.data(), readback.MappedData(), size);
+    return counts;
 }
 
 std::vector<float> PathTracer::Render(std::uint32_t width, std::uint32_t height,
@@ -673,6 +786,8 @@ std::vector<float> PathTracer::Render(std::uint32_t width, std::uint32_t height,
     // because it needs the descriptor-generation tracking to be authoritative.
     _raygen.ResetSets();
     _extend.ResetSets();
+    _prepareDispatch.ResetSets();
+    _materialSort.ResetSets();
     _environment.ResetSets();
     _shadow.ResetSets();
     _film.ResetSets();
@@ -684,6 +799,8 @@ std::vector<float> PathTracer::Render(std::uint32_t width, std::uint32_t height,
     // binding table is shared, so every kernel sees the same state.
     VkDescriptorSet raygenSet = _raygen.AllocateSet();
     VkDescriptorSet extendSet = _extend.AllocateSet();
+    VkDescriptorSet prepareSet = _prepareDispatch.AllocateSet();
+    VkDescriptorSet sortSet = _materialSort.AllocateSet();
     VkDescriptorSet environmentSet = _environment.AllocateSet();
     VkDescriptorSet shadowSet = _shadow.AllocateSet();
     VkDescriptorSet filmSet = _film.AllocateSet();
@@ -695,6 +812,8 @@ std::vector<float> PathTracer::Render(std::uint32_t width, std::uint32_t height,
 
     WriteDescriptors(raygenSet, _raygen);
     WriteDescriptors(extendSet, _extend);
+    WriteDescriptors(prepareSet, _prepareDispatch);
+    WriteDescriptors(sortSet, _materialSort);
     WriteDescriptors(environmentSet, _environment);
     WriteDescriptors(shadowSet, _shadow);
     WriteDescriptors(filmSet, _film);
@@ -729,6 +848,7 @@ std::vector<float> PathTracer::Render(std::uint32_t width, std::uint32_t height,
     block.aspect = camera.aspect;
     block.pathCount = paths;
     block.lightCount = _lightCount;
+    block.materialCount = static_cast<std::uint32_t>(_shade.size());
     block.hasDomeTexture = _domeTexture.Valid() ? 1u : 0u;
     std::memcpy(block.domeWorldToLight, _domeWorldToLight,
                 sizeof(block.domeWorldToLight));
@@ -778,20 +898,60 @@ std::vector<float> PathTracer::Render(std::uint32_t width, std::uint32_t height,
                     Barrier(command);
                 }
 
-                _extend.Dispatch(command, extendSet, pathGroups);
+                // Every dispatch from here is sized by the GPU. The counters
+                // that size them -- how many paths are still active, how many
+                // each material claims, how many shadow rays shading produced
+                // -- are written on the device, and reading one back to size
+                // the next dispatch would stall the middle of every bounce
+                // (docs/wavefront-integrator.md 2).
+                _prepareDispatch.Dispatch(command, prepareSet, 1, 1, 1,
+                                          &kPrepareActive, sizeof(kPrepareActive));
                 Barrier(command);
 
-                _environment.Dispatch(command, environmentSet, pathGroups);
+                _extend.DispatchIndirect(command, extendSet, _dispatchArgs,
+                                         kDispatchSlotActive * kDispatchArgStride);
+                Barrier(command);
+
+                // Group the hits by material: count, prefix-sum, scatter.
+                _materialSort.DispatchIndirect(
+                    command, sortSet, _dispatchArgs,
+                    kDispatchSlotActive * kDispatchArgStride, &kSortCount,
+                    sizeof(kSortCount));
+                Barrier(command);
+
+                _prepareDispatch.Dispatch(command, prepareSet, 1, 1, 1,
+                                          &kPrepareMaterials,
+                                          sizeof(kPrepareMaterials));
+                Barrier(command);
+
+                _materialSort.DispatchIndirect(
+                    command, sortSet, _dispatchArgs,
+                    kDispatchSlotActive * kDispatchArgStride, &kSortScatter,
+                    sizeof(kSortScatter));
+                Barrier(command);
+
+                // The misses are still on the active queue; the sort left them
+                // there rather than giving them a group.
+                _environment.DispatchIndirect(
+                    command, environmentSet, _dispatchArgs,
+                    kDispatchSlotActive * kDispatchArgStride);
                 Barrier(command);
 
                 for (std::size_t i = 0; i < _shade.size(); ++i) {
                     const auto materialId = static_cast<std::uint32_t>(i);
-                    _shade[i].Dispatch(command, shadeSets[i], pathGroups, 1, 1,
-                                       &materialId, sizeof(materialId));
+                    _shade[i].DispatchIndirect(
+                        command, shadeSets[i], _dispatchArgs,
+                        (kDispatchSlotFirstMaterial + materialId) * kDispatchArgStride,
+                        &materialId, sizeof(materialId));
                     Barrier(command);
                 }
 
-                _shadow.Dispatch(command, shadowSet, pathGroups);
+                _prepareDispatch.Dispatch(command, prepareSet, 1, 1, 1,
+                                          &kPrepareShadow, sizeof(kPrepareShadow));
+                Barrier(command);
+
+                _shadow.DispatchIndirect(command, shadowSet, _dispatchArgs,
+                                         kDispatchSlotShadow * kDispatchArgStride);
                 Barrier(command);
             });
         }

@@ -16,13 +16,10 @@ layout(local_size_x = 64) in;
 
 layout(push_constant) uniform ShadeParams {
     /// Which material this pipeline was compiled for. One pipeline exists per
-    /// distinct material, and each skips the paths that did not hit its own.
-    ///
-    /// Until the sort lands, every pipeline is dispatched over the whole active
-    /// queue and most invocations exit here. That is already correct and
-    /// already gives the register-footprint benefit the design is for -- the
-    /// sort removes the wasted lanes, which is a throughput win rather than a
-    /// correctness one (docs/wavefront-integrator.md 3).
+    /// distinct material, and each is dispatched over its own group of the
+    /// sorted queue -- so an invocation here always has a path to shade, and
+    /// the dispatch is sized to that group rather than to the frame
+    /// (docs/wavefront-integrator.md 3).
     uint materialId;
 } shadeParams;
 
@@ -46,6 +43,18 @@ struct SurfacePoint {
     vec3 frontGeometricNormal;
     vec3 tangent;
     vec2 uv;
+
+    /// The same point in the instance's object space.
+    ///
+    /// Carried rather than derived at use: a 3D procedural pattern is authored
+    /// against object space so that it stays put when the object moves, and a
+    /// material that reads it must get a real value. Before these existed the
+    /// generated setter left the object-space members of its geometry struct
+    /// unassigned, and every material with a `fractal3d`, `noise3d` or
+    /// `worleynoise3d` node shaded from undefined memory.
+    vec3 objectPosition;
+    vec3 objectNormal;
+    vec3 objectTangent;
 };
 
 /// Reconstruct the hit from the record and the instance's geometry buffers.
@@ -80,9 +89,7 @@ SurfacePoint hdclaude_reconstruct(ivec4 record, vec3 rayDirection, vec3 hitPosit
     // transpose. Using the transform directly would be wrong under non-uniform
     // scale, which is common once instancing is involved.
     vec3 objectGeometric = normalize(cross(p1 - p0, p2 - p0));
-    mat3 normalMatrix = transpose(mat3(geometry.worldToObject[0].xyz,
-                                       geometry.worldToObject[1].xyz,
-                                       geometry.worldToObject[2].xyz));
+    mat3 normalMatrix = transpose(hdclaude_linear(geometry.worldToObject));
     point.geometricNormal = normalize(normalMatrix * objectGeometric);
 
     if (geometry.normals != 0ul)
@@ -118,9 +125,7 @@ SurfacePoint hdclaude_reconstruct(ivec4 record, vec3 rayDirection, vec3 hitPosit
     // edge rather than an arbitrary axis, so anisotropic closures rotate with
     // the surface instead of with the world.
     vec3 edge = p1 - p0;
-    vec3 worldEdge = mat3(geometry.objectToWorld[0].xyz,
-                          geometry.objectToWorld[1].xyz,
-                          geometry.objectToWorld[2].xyz) * edge;
+    vec3 worldEdge = hdclaude_linear(geometry.objectToWorld) * edge;
     point.tangent = normalize(worldEdge - point.shadingNormal *
                                               dot(point.shadingNormal, worldEdge));
     if (!(dot(point.tangent, point.tangent) > 0.5))
@@ -131,28 +136,40 @@ SurfacePoint hdclaude_reconstruct(ivec4 record, vec3 rayDirection, vec3 hitPosit
         point.tangent = normalize(cross(fallback, point.shadingNormal));
     }
 
+    // The object-space frame. The position is interpolated from the vertices
+    // rather than taken back through the inverse transform, so it is exact at
+    // the scales where a world position has already lost precision; the
+    // directions come back through the transform because that is all there is.
+    point.objectPosition = w * p0 + u * p1 + v * p2;
+    point.objectNormal = normalize(objectGeometric);
+    if (geometry.normals != 0ul)
+    {
+        NormalBuffer normals = NormalBuffer(geometry.normals);
+        point.objectNormal = normalize(w * normals.values[i0] +
+                                       u * normals.values[i1] +
+                                       v * normals.values[i2]);
+    }
+    point.objectTangent =
+        normalize(hdclaude_linear(geometry.worldToObject) * point.tangent);
+
     return point;
 }
 
 void main()
 {
+    // This material's group of the sorted queue. The sort has already
+    // established that every path in it hit geometry and that this material
+    // shades it, so neither test is repeated here. The bound is still needed:
+    // a group is a whole number of workgroups, so the last one runs wide.
     uint slot = gl_GlobalInvocationID.x;
-    if (slot >= counters.activeCount)
+    if (slot >= hdclaude_material_count(shadeParams.materialId))
     {
         return;
     }
-    uint path = activeQueue.values[slot];
+    uint path = materialQueue.values[
+        hdclaude_material_offset(shadeParams.materialId) + slot];
 
     ivec4 record = hits.values[path];
-    if (record.x < 0)
-    {
-        return;   // missed; the environment kernel owns this path
-    }
-    if (hdclaude_material_of(instances.values[record.x], record.y) !=
-        shadeParams.materialId)
-    {
-        return;   // a different material's dispatch owns this path
-    }
 
     vec3 throughput = pathThroughput.values[path];
     if (dot(throughput, throughput) <= 0.0)
@@ -169,7 +186,9 @@ void main()
 
     // Hand the geometry to the generated material. The setter assigns only the
     // members this material actually reads.
-    hdclaude_set_surface_hit(point.position, point.shadingNormal, point.tangent);
+    hdclaude_set_surface_hit(point.position, point.shadingNormal, point.tangent,
+                             point.objectPosition, point.objectNormal,
+                             point.objectTangent, point.uv);
     hdclaude_wavelengths = vec4(450.0, 550.0, 600.0, 650.0);
 
     // --- Emission -----------------------------------------------------------
@@ -327,7 +346,18 @@ void main()
     }
     L = normalize(L);
 
-    ClosureData evalData = ClosureData(CLOSURE_TYPE_REFLECTION, L, V,
+    // Which side the sampled direction left on decides which closure evaluates
+    // it. A refraction crosses the surface, and asking the reflection branch
+    // for a direction below its horizon gets zero response and zero density --
+    // the path is then terminated as impossible, and a transmissive material
+    // renders black no matter how many bounces it is given. That is what the
+    // glass shader ball did.
+    int scatterClosure =
+        dot(L, point.shadingNormal) * dot(V, point.shadingNormal) > 0.0
+            ? CLOSURE_TYPE_REFLECTION
+            : CLOSURE_TYPE_TRANSMISSION;
+
+    ClosureData evalData = ClosureData(scatterClosure, L, V,
                                        point.shadingNormal, point.position, 1.0);
     hdclaude_material_shade(evalData);
 

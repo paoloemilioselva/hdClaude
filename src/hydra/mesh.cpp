@@ -206,15 +206,37 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     std::vector<std::uint32_t> indices;
     std::vector<int> coarseFaces;
 
+    // The control cage's texture coordinates, read before refinement because
+    // refinement is what has to carry them: they are authored per control
+    // vertex, and the refined cage has different vertices.
+    std::vector<float> coarseUvs;
+    for (const TfToken& name : {TfToken("st"), TfToken("uv")}) {
+        const VtValue uvValue = sceneDelegate->Get(id, name);
+        if (!uvValue.IsHolding<VtVec2fArray>()) {
+            continue;
+        }
+        const VtVec2fArray& uvs = uvValue.UncheckedGet<VtVec2fArray>();
+        if (uvs.size() != points.size() / 3) {
+            continue;
+        }
+        coarseUvs.resize(uvs.size() * 2);
+        for (std::size_t i = 0; i < uvs.size(); ++i) {
+            coarseUvs[i * 2 + 0] = uvs[i][0];
+            coarseUvs[i * 2 + 1] = uvs[i][1];
+        }
+        break;
+    }
+
     const int subdivisionLevel = param->SubdivisionLevel();
     bool subdivided = false;
     if (subdivisionLevel > 0 && HdClaudeWantsSubdivision(topology)) {
         const HdClaudeRefinedMesh refined =
-            HdClaudeSubdivide(topology, points, subdivisionLevel);
+            HdClaudeSubdivide(topology, points, subdivisionLevel, coarseUvs);
         if (refined.Valid()) {
             points = refined.positions;
             indices = refined.indices;
             coarseFaces = refined.coarseFaces;
+            entry.prototype.uvs = refined.uvs;
             subdivided = true;
         }
         // An invalid result means "render the control cage": a mesh that
@@ -361,21 +383,15 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     // Vertex-interpolated `st` only for now. Face-varying UVs need
     // ComputeTriangulatedFaceVaryingPrimvar and a vertex split, which is
     // recorded as remaining work rather than approximated here.
-    const std::vector<TfToken> uvNames =
-        subdivided ? std::vector<TfToken>{}
-                   : std::vector<TfToken>{TfToken("st"), TfToken("uv")};
-    for (const TfToken& name : uvNames) {
-        const VtValue uvValue = sceneDelegate->Get(id, name);
-        if (uvValue.IsHolding<VtVec2fArray>()) {
-            const VtVec2fArray& uvs = uvValue.UncheckedGet<VtVec2fArray>();
-            if (uvs.size() == vertexCount) {
-                entry.prototype.uvs.resize(vertexCount * 2);
-                for (std::size_t i = 0; i < uvs.size(); ++i) {
-                    entry.prototype.uvs[i * 2 + 0] = uvs[i][0];
-                    entry.prototype.uvs[i * 2 + 1] = uvs[i][1];
-                }
-                break;
-            }
+    //
+    // A refined mesh already has its coordinates: they were read from the
+    // control cage above and refined with the positions. Re-reading them here
+    // would compare a coarse array against a refined vertex count, fail, and
+    // leave the mesh with none -- which is what it used to do.
+    if (!subdivided) {
+        entry.prototype.uvs = std::move(coarseUvs);
+        if (entry.prototype.uvs.size() != vertexCount * 2) {
+            entry.prototype.uvs.clear();
         }
     }
 

@@ -238,9 +238,59 @@ VulkanContext::VulkanContext(const VulkanContextOptions& options)
 
     std::vector<const char*> instanceLayers;
     std::vector<const char*> instanceExtensions;
+
+    // Synchronisation validation, asked for through the layer's own settings
+    // extension. Kept alive until vkCreateInstance because the chain points at
+    // it.
+    //
+    // Core validation checks that each command is legal in isolation; it says
+    // nothing about whether a buffer one kernel writes is visible to the next.
+    // A wavefront integrator is almost entirely that question, so the gate
+    // rule (docs/lessons-from-hdcodex.md R8) is only worth what this setting
+    // adds -- it is what caught the counter reset that raced its own promotion
+    // copy. The settings extension is used rather than the deprecated
+    // VkValidationFeaturesEXT, which the layer now reports as a warning.
+    const VkBool32 enableSyncValidation = VK_TRUE;
+    VkLayerSettingEXT syncSetting{};
+    syncSetting.pLayerName = "VK_LAYER_KHRONOS_validation";
+    syncSetting.pSettingName = "validate_sync";
+    syncSetting.type = VK_LAYER_SETTING_TYPE_BOOL32_EXT;
+    syncSetting.valueCount = 1;
+    syncSetting.pValues = &enableSyncValidation;
+
+    VkLayerSettingsCreateInfoEXT layerSettings{
+        VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT};
+    layerSettings.settingCount = 1;
+    layerSettings.pSettings = &syncSetting;
+    bool layerSettingsAvailable = false;
+
     if (_validationEnabled) {
         instanceLayers.push_back("VK_LAYER_KHRONOS_validation");
         instanceExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+
+        // The settings extension is exposed by the validation layer itself, so
+        // it has to be enumerated against that layer rather than against the
+        // driver's list.
+        std::uint32_t layerExtensionCount = 0;
+        vkEnumerateInstanceExtensionProperties("VK_LAYER_KHRONOS_validation",
+                                               &layerExtensionCount, nullptr);
+        std::vector<VkExtensionProperties> layerExtensions(layerExtensionCount);
+        if (layerExtensionCount > 0) {
+            vkEnumerateInstanceExtensionProperties("VK_LAYER_KHRONOS_validation",
+                                                   &layerExtensionCount,
+                                                   layerExtensions.data());
+        }
+        layerSettingsAvailable =
+            HasExtension(layerExtensions, VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
+        if (layerSettingsAvailable) {
+            instanceExtensions.push_back(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
+        } else {
+            std::fprintf(stderr,
+                         "[hdClaude] The validation layer does not support "
+                         "VK_EXT_layer_settings, so synchronisation validation "
+                         "is off; hazards between kernels will not be "
+                         "reported.\n");
+        }
     }
 
     // Backend requirements are gathered before the instance exists, which is
@@ -275,6 +325,9 @@ VulkanContext::VulkanContext(const VulkanContextOptions& options)
 
     VkInstanceCreateInfo instanceInfo{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     instanceInfo.pApplicationInfo = &application;
+    if (layerSettingsAvailable) {
+        instanceInfo.pNext = &layerSettings;
+    }
     instanceInfo.enabledLayerCount = static_cast<std::uint32_t>(instanceLayers.size());
     instanceInfo.ppEnabledLayerNames = instanceLayers.data();
     instanceInfo.enabledExtensionCount =
@@ -387,13 +440,20 @@ void VulkanContext::SelectPhysicalDevice(const VulkanContextOptions& options)
         }
         capabilities.deviceLocalMemory = deviceLocal;
 
+        VkPhysicalDeviceAccelerationStructurePropertiesKHR accelerationProperties{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
         VkPhysicalDeviceSubgroupProperties subgroup{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
+        subgroup.pNext = &accelerationProperties;
         VkPhysicalDeviceProperties2 properties2{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
         properties2.pNext = &subgroup;
         vkGetPhysicalDeviceProperties2(candidate, &properties2);
         capabilities.subgroupSize = subgroup.subgroupSize;
+        if (accelerationProperties.minAccelerationStructureScratchOffsetAlignment > 0) {
+            capabilities.scratchAlignment =
+                accelerationProperties.minAccelerationStructureScratchOffsetAlignment;
+        }
 
         // Discrete first, then device-local memory. An explicit name preference
         // dominates both, so a workstation with an integrated GPU alongside the

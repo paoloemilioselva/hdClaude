@@ -29,6 +29,23 @@ struct RefinableVertex {
     }
 };
 
+/// The same interface for a texture coordinate.
+///
+/// Refined as *vertex* data because that is how the control cage carries it:
+/// hdClaude reads only vertex-interpolated `st`, so there is no seam here that
+/// face-varying refinement would preserve and this cannot introduce one.
+struct RefinableUv {
+    float u = 0.0f, v = 0.0f;
+
+    void Clear() { u = v = 0.0f; }
+
+    void AddWithWeight(const RefinableUv& source, float weight)
+    {
+        u += weight * source.u;
+        v += weight * source.v;
+    }
+};
+
 }  // namespace
 
 bool HdClaudeWantsSubdivision(const HdMeshTopology& topology)
@@ -41,7 +58,8 @@ bool HdClaudeWantsSubdivision(const HdMeshTopology& topology)
 
 HdClaudeRefinedMesh HdClaudeSubdivide(const HdMeshTopology& topology,
                                       const std::vector<float>& points,
-                                      int level)
+                                      int level,
+                                      const std::vector<float>& uvs)
 {
     HdClaudeRefinedMesh result;
 
@@ -102,6 +120,28 @@ HdClaudeRefinedMesh HdClaudeSubdivide(const HdMeshTopology& topology,
         source = destination;
     }
 
+    // --- Texture coordinates --------------------------------------------------
+    // Refined through the same weights as the positions, so the refined cage
+    // carries the coordinates the control cage was authored with. Skipped when
+    // the array does not describe this cage, which is the same guard the
+    // positions get above.
+    std::vector<RefinableUv> refinedUvs;
+    RefinableUv* uvSource = nullptr;
+    if (uvs.size() == coarseVertexCount * 2) {
+        refinedUvs.resize(static_cast<std::size_t>(refiner->GetNumVerticesTotal()));
+        for (std::size_t i = 0; i < coarseVertexCount; ++i) {
+            refinedUvs[i].u = uvs[i * 2 + 0];
+            refinedUvs[i].v = uvs[i * 2 + 1];
+        }
+        uvSource = refinedUvs.data();
+        for (int current = 1; current <= level; ++current) {
+            RefinableUv* destination =
+                uvSource + refiner->GetLevel(current - 1).GetNumVertices();
+            primvarRefiner.Interpolate(current, uvSource, destination);
+            uvSource = destination;
+        }
+    }
+
     const OpenSubdiv::Far::TopologyLevel& refined = refiner->GetLevel(level);
     const int refinedVertexCount = refined.GetNumVertices();
 
@@ -110,6 +150,14 @@ HdClaudeRefinedMesh HdClaudeSubdivide(const HdMeshTopology& topology,
         result.positions[i * 3 + 0] = source[i].x;
         result.positions[i * 3 + 1] = source[i].y;
         result.positions[i * 3 + 2] = source[i].z;
+    }
+
+    if (uvSource != nullptr) {
+        result.uvs.resize(static_cast<std::size_t>(refinedVertexCount) * 2);
+        for (int i = 0; i < refinedVertexCount; ++i) {
+            result.uvs[i * 2 + 0] = uvSource[i].u;
+            result.uvs[i * 2 + 1] = uvSource[i].v;
+        }
     }
 
     // --- Faces ----------------------------------------------------------------

@@ -165,7 +165,9 @@ inline constexpr std::uint32_t kTextureCapacity = 128;
 struct TextureImage {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
-    /// Tightly packed RGBA8, `width * height * 4` bytes, top row first.
+    /// Tightly packed RGBA8, `width * height * 4` bytes, **bottom row
+    /// first**: row 0 is v = 0, which is where USD and MaterialX put the
+    /// origin of a texture and what the sampler reads as v = 0.
     std::vector<std::uint8_t> rgba;
     /// True if the bytes are sRGB-encoded and want hardware decode.
     bool srgb = false;

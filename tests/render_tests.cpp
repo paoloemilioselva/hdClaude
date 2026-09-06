@@ -25,6 +25,8 @@
 #include <MaterialXGenShader/Shader.h>
 #include <MaterialXGenShader/Util.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -38,6 +40,16 @@ namespace {
 
 constexpr std::uint32_t kWidth = 128;
 constexpr std::uint32_t kHeight = 128;
+
+/// Octaves of fractal noise in the deliberately expensive material used to
+/// measure per-material dispatch. Large enough to dominate a shading dispatch,
+/// small enough that generating and compiling it stays quick.
+constexpr int kHeavyOctaves = 32;
+
+/// Resolution of the timed scene. Larger than the assertion scenes because a
+/// measurement of shading has to be big enough that shading is what it
+/// measures.
+constexpr std::uint32_t kTimingSize = 512;
 
 mx::NodePtr AddNode(mx::DocumentPtr doc, const std::string& category,
                     const std::string& name, const std::string& type)
@@ -65,28 +77,11 @@ void Connect(mx::NodePtr node, const std::string& input, mx::NodePtr source)
     }
 }
 
-/// Generate a diffuse material of the given colour and compile it with the
-/// shade kernel into a shading pipeline.
-CompiledMaterial MakeDiffuseMaterial(mx::DocumentPtr libraries,
-                                     const GlslCompiler& compiler,
-                                     const std::string& shadeKernel,
-                                     const mx::Color3& colour,
-                                     const std::string& name)
+/// Generate and compile the one renderable element of `doc`.
+CompiledMaterial CompileMaterial(mx::DocumentPtr doc, const GlslCompiler& compiler,
+                                 const std::string& shadeKernel,
+                                 const std::string& name)
 {
-    mx::DocumentPtr doc = mx::createDocument();
-    doc->importLibrary(libraries);
-
-    mx::NodePtr bsdf = AddNode(doc, "oren_nayar_diffuse_bsdf", "d", "BSDF");
-    SetValue(bsdf, "weight", 1.0f);
-    SetValue(bsdf, "color", colour);
-    SetValue(bsdf, "roughness", 0.0f);
-
-    mx::NodePtr surface = AddNode(doc, "surface", "s", "surfaceshader");
-    Connect(surface, "bsdf", bsdf);
-    SetValue(surface, "opacity", 1.0f);
-    mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
-    Connect(material, "surfaceshader", surface);
-
     mx::ShaderGeneratorPtr generator = PathTracerShaderGenerator::create();
     mx::GenContext genContext(generator);
     genContext.registerSourceCodeSearchPath(DefaultMaterialXSourceSearchPath());
@@ -110,6 +105,175 @@ CompiledMaterial MakeDiffuseMaterial(mx::DocumentPtr libraries,
                      compiled.log.c_str());
     }
     return CompiledMaterial{compiled.spirv, name};
+}
+
+/// Generate a diffuse material of the given colour and compile it with the
+/// shade kernel into a shading pipeline.
+///
+/// `noiseOctaves` inflates the pattern graph in front of the colour without
+/// changing what the material looks like from a distance: each octave is a
+/// 3D fractal noise mixed towards the base colour by a vanishing weight. It is
+/// how the scaling claim behind the per-material dispatch is measured -- a big
+/// graph on one object must cost that object and not the frame.
+CompiledMaterial MakeDiffuseMaterial(mx::DocumentPtr libraries,
+                                     const GlslCompiler& compiler,
+                                     const std::string& shadeKernel,
+                                     const mx::Color3& colour,
+                                     const std::string& name,
+                                     int noiseOctaves = 0)
+{
+    mx::DocumentPtr doc = mx::createDocument();
+    doc->importLibrary(libraries);
+
+    mx::NodePtr tint;
+    for (int octave = 0; octave < noiseOctaves; ++octave) {
+        const std::string suffix = std::to_string(octave);
+        mx::NodePtr noise = AddNode(doc, "fractal3d", "n" + suffix, "color3");
+        SetValue(noise, "amplitude", mx::Vector3(1.0f, 1.0f, 1.0f));
+        SetValue(noise, "octaves", 4);
+        SetValue(noise, "lacunarity", 2.0f + 0.01f * float(octave));
+
+        mx::NodePtr mixer = AddNode(doc, "mix", "x" + suffix, "color3");
+        Connect(mixer, "fg", noise);
+        if (tint) {
+            Connect(mixer, "bg", tint);
+        } else {
+            SetValue(mixer, "bg", colour);
+        }
+        // Small enough that the graph cannot change the image, large enough
+        // that no generator is entitled to fold it away.
+        SetValue(mixer, "mix", 1.0e-6f);
+        tint = mixer;
+    }
+
+    mx::NodePtr bsdf = AddNode(doc, "oren_nayar_diffuse_bsdf", "d", "BSDF");
+    SetValue(bsdf, "weight", 1.0f);
+    SetValue(bsdf, "color", colour);
+    SetValue(bsdf, "roughness", 0.0f);
+    if (tint) {
+        Connect(bsdf, "color", tint);
+    }
+
+    mx::NodePtr surface = AddNode(doc, "surface", "s", "surfaceshader");
+    Connect(surface, "bsdf", bsdf);
+    SetValue(surface, "opacity", 1.0f);
+    mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+    Connect(material, "surfaceshader", surface);
+
+    return CompileMaterial(doc, compiler, shadeKernel, name);
+}
+
+/// A material whose colour *is* its texture coordinate.
+///
+/// Every image node reads through `texcoord`, so this asks the one question
+/// that matters about UVs without needing an image on disk: does the value the
+/// kernel interpolated reach the material at all, and the right way round.
+CompiledMaterial MakeTexcoordMaterial(mx::DocumentPtr libraries,
+                                      const GlslCompiler& compiler,
+                                      const std::string& shadeKernel,
+                                      const std::string& name)
+{
+    mx::DocumentPtr doc = mx::createDocument();
+    doc->importLibrary(libraries);
+
+    mx::NodePtr uv = AddNode(doc, "texcoord", "uv", "vector2");
+
+    // The nodedef is named rather than inferred: `convert` is overloaded on its
+    // input type, and a node created before its input is connected resolves to
+    // the float overload and then fails to generate.
+    mx::NodePtr colour = doc->addNode("convert", "c", "color3");
+    colour->setNodeDefString("ND_convert_vector2_color3");
+    if (mx::InputPtr in = colour->addInput("in", "vector2")) {
+        in->setConnectedNode(uv);
+    }
+
+    mx::NodePtr bsdf = AddNode(doc, "oren_nayar_diffuse_bsdf", "d", "BSDF");
+    SetValue(bsdf, "weight", 1.0f);
+    SetValue(bsdf, "roughness", 0.0f);
+    Connect(bsdf, "color", colour);
+
+    mx::NodePtr surface = AddNode(doc, "surface", "s", "surfaceshader");
+    Connect(surface, "bsdf", bsdf);
+    SetValue(surface, "opacity", 1.0f);
+    mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+    Connect(material, "surfaceshader", surface);
+
+    return CompileMaterial(doc, compiler, shadeKernel, name);
+}
+
+/// A material whose albedo is a sampled image.
+///
+/// The file name is never opened: the test publishes the decoded image straight
+/// into the scene's texture pool and points the material's one slot at it, so
+/// this asks about the renderer's sampling convention without involving an
+/// image decoder or a file on disk.
+CompiledMaterial MakeImageMaterial(mx::DocumentPtr libraries,
+                                   const GlslCompiler& compiler,
+                                   const std::string& shadeKernel,
+                                   const std::string& name)
+{
+    mx::DocumentPtr doc = mx::createDocument();
+    doc->importLibrary(libraries);
+
+    mx::NodePtr uv = AddNode(doc, "texcoord", "uv", "vector2");
+
+    mx::NodePtr image = doc->addNode("image", "orientation", "color3");
+    image->setNodeDefString("ND_image_color3");
+    if (mx::InputPtr file = image->addInput("file", "filename")) {
+        file->setValueString("orientation.png");
+    }
+    if (mx::InputPtr texcoord = image->addInput("texcoord", "vector2")) {
+        texcoord->setConnectedNode(uv);
+    }
+
+    mx::NodePtr bsdf = AddNode(doc, "oren_nayar_diffuse_bsdf", "d", "BSDF");
+    SetValue(bsdf, "weight", 1.0f);
+    SetValue(bsdf, "roughness", 0.0f);
+    Connect(bsdf, "color", image);
+
+    mx::NodePtr surface = AddNode(doc, "surface", "s", "surfaceshader");
+    Connect(surface, "bsdf", bsdf);
+    SetValue(surface, "opacity", 1.0f);
+    mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+    Connect(material, "surfaceshader", surface);
+
+    CompiledMaterial compiled = CompileMaterial(doc, compiler, shadeKernel, name);
+    // One image, at pool slot 0.
+    compiled.textureSlots = {0};
+    return compiled;
+}
+
+/// An image in four solid quadrants, in the renderer's own row order: row 0 is
+/// v = 0.
+///
+///     v = 1   blue    white
+///     v = 0   red     green
+///             u = 0   u = 1
+///
+/// Sized well above 2x2 on purpose. Four texels would be filtered into one
+/// smooth gradient by the linear sampler and no point on the surface would
+/// carry a single quadrant's colour; solid blocks make the middle of each
+/// quadrant exact.
+TextureImage MakeOrientationTexture()
+{
+    constexpr std::uint32_t kSize = 64;
+    TextureImage image;
+    image.width = kSize;
+    image.height = kSize;
+    image.debugName = "orientation";
+    image.rgba.resize(static_cast<std::size_t>(kSize) * kSize * 4);
+    for (std::uint32_t y = 0; y < kSize; ++y) {
+        for (std::uint32_t x = 0; x < kSize; ++x) {
+            const bool right = x >= kSize / 2;
+            const bool top = y >= kSize / 2;
+            const std::size_t i = (static_cast<std::size_t>(y) * kSize + x) * 4;
+            image.rgba[i + 0] = (!top && !right) || (top && right) ? 255 : 0;
+            image.rgba[i + 1] = (!top && right) || (top && right) ? 255 : 0;
+            image.rgba[i + 2] = (top && !right) || (top && right) ? 255 : 0;
+            image.rgba[i + 3] = 255;
+        }
+    }
+    return image;
 }
 
 MeshPrototype MakeQuad()
@@ -294,6 +458,294 @@ int main()
             // red and the white one is not.
             CHECK(right.r > right.g * 2.0f);
             CHECK_NEAR(left.r / left.g, 1.0, 0.25);
+        }
+
+        // --- The material sort covers each material's paths and no others ----
+        //
+        // The claim the per-material dispatch rests on: a shading pipeline is
+        // dispatched over the paths that hit *its* material, not over the
+        // frame. That is invisible in an image -- dispatching every pipeline
+        // over every path and discarding the misfits produces the same picture
+        // at several times the cost -- so it is asserted against the counts the
+        // sort wrote, which is also the only place those GPU-written counters
+        // are ever read.
+        //
+        // One sample and one bounce, so the counts left on the device describe
+        // the camera rays and nothing else.
+        {
+            Scene scene;
+            scene.prototypes.push_back(MakeQuad());
+            scene.instances.push_back(
+                {0, Transform(0.8f, 0.8f, 1.0f, -1.0f, 0.0f, 0.0f), 0, true});
+            scene.instances.push_back(
+                {0, Transform(0.8f, 0.8f, 1.0f, 1.0f, 0.0f, 0.0f), 1, true});
+            tracer.SetScene(scene, materials);
+
+            RenderSettings single;
+            single.samplesPerPixel = 1;
+            single.maxBounces = 1;
+            const std::vector<float> image =
+                tracer.Render(kWidth, kHeight, LookDownZ(6.0f), single);
+
+            const std::vector<std::uint32_t> counts = tracer.MaterialCounts();
+            CHECK_EQ(counts.size(), std::size_t(2));
+            if (counts.size() == 2) {
+                // Every pixel that is not the untouched background hit one of
+                // the two quads, so the groups must account for exactly those
+                // and no more. A background pixel carries the environment
+                // constant unchanged, which no lit surface in this scene
+                // produces.
+                std::size_t hits = 0;
+                for (std::size_t i = 0; i < kWidth * kHeight; ++i) {
+                    const Pixel pixel{image[i * 4], image[i * 4 + 1],
+                                      image[i * 4 + 2]};
+                    if (std::abs(pixel.r - single.environmentColor[0]) > 1e-5f ||
+                        std::abs(pixel.g - single.environmentColor[1]) > 1e-5f ||
+                        std::abs(pixel.b - single.environmentColor[2]) > 1e-5f) {
+                        ++hits;
+                    }
+                }
+                std::printf("  sorted %u + %u paths, %zu shaded pixels\n",
+                            counts[0], counts[1], hits);
+
+                CHECK_EQ(std::size_t(counts[0]) + counts[1], hits);
+                CHECK(counts[0] > 0);
+                CHECK(counts[1] > 0);
+                // Two congruent quads placed symmetrically, so neither group
+                // may have swallowed the other's paths.
+                CHECK_NEAR(double(counts[0]) / double(counts[1]), 1.0, 0.05);
+            }
+        }
+
+        // --- Per-material dispatch scales with the object, not the frame -----
+        //
+        // The phase 5 gate. A large pattern graph on one object must change
+        // that object's shading cost and not the frame's, which is the whole
+        // reason the integrator is wavefront. The same two-quad scene is timed
+        // three ways: neither quad heavy, one heavy, both heavy. If shading is
+        // per material, the one-heavy frame costs about half of what the
+        // both-heavy frame adds; if every pipeline ran over every path it would
+        // cost nearly all of it.
+        {
+            const CompiledMaterial heavyWhite = MakeDiffuseMaterial(
+                libraries, compiler, tracer.ShadeKernelSource(),
+                mx::Color3(0.8f, 0.8f, 0.8f), "white_heavy", kHeavyOctaves);
+            const CompiledMaterial heavyRed = MakeDiffuseMaterial(
+                libraries, compiler, tracer.ShadeKernelSource(),
+                mx::Color3(0.8f, 0.1f, 0.1f), "red_heavy", kHeavyOctaves);
+            CHECK(!heavyWhite.spirv.empty());
+            CHECK(!heavyRed.spirv.empty());
+
+            // Two quads filling the frame between them, at a resolution and a
+            // sample count chosen so that shading dominates. At the 128-pixel
+            // size the other assertions use, a frame is almost entirely queue
+            // submission and the shading difference disappears into it -- which
+            // is a statement about how small those scenes are, not about the
+            // dispatch.
+            Scene scene;
+            scene.prototypes.push_back(MakeQuad());
+            scene.instances.push_back(
+                {0, Transform(1.0f, 2.0f, 1.0f, -1.0f, 0.0f, 0.0f), 0, true});
+            scene.instances.push_back(
+                {0, Transform(1.0f, 2.0f, 1.0f, 1.0f, 0.0f, 0.0f), 1, true});
+
+            RenderSettings timed;
+            timed.samplesPerPixel = 8;
+            timed.maxBounces = 1;
+
+            // The fastest of a few runs, after a warm-up frame: a slow one
+            // measures the machine, a fast one measures the renderer. The
+            // warm-up matters more than it looks -- the driver finishes
+            // compiling a pipeline the first time it is dispatched, and a
+            // 32-octave program takes tens of milliseconds to do that, which
+            // is enough to swamp the shading this is measuring.
+            auto timeScene = [&](const std::vector<CompiledMaterial>& set) {
+                tracer.SetScene(scene, set);
+                tracer.Render(kTimingSize, kTimingSize, LookDownZ(2.2f), timed);
+
+                double best = 1.0e30;
+                for (int run = 0; run < 3; ++run) {
+                    const auto start = std::chrono::steady_clock::now();
+                    tracer.Render(kTimingSize, kTimingSize, LookDownZ(2.2f), timed);
+                    const std::chrono::duration<double, std::milli> elapsed =
+                        std::chrono::steady_clock::now() - start;
+                    best = std::min(best, elapsed.count());
+                }
+                return best;
+            };
+
+            const double neither = timeScene({materials[0], materials[1]});
+            const double one = timeScene({materials[0], heavyRed});
+            const double both = timeScene({heavyWhite, heavyRed});
+
+            std::printf("  shading %d-octave graph: none %.1f ms, one %.1f ms, "
+                        "both %.1f ms\n",
+                        kHeavyOctaves, neither, one, both);
+
+            // Both quads carry the same number of paths, so one heavy material
+            // should account for about half the added cost. The bound is loose
+            // because this is a wall clock on a boosting GPU; what it has to
+            // separate is half from all, and the pre-sort renderer sat at all.
+            const double added = both - neither;
+            CHECK(added > 0.0);
+            if (added > 0.0) {
+                const double share = (one - neither) / added;
+                std::printf("  one heavy material costs %.2f of both\n", share);
+                CHECK(share < 0.75);
+            }
+        }
+
+        // --- Texture coordinates reach the material --------------------------
+        //
+        // A material whose albedo is its own UV, on a quad with authored UVs.
+        // The image must brighten in red from left to right and in green from
+        // bottom to top, which is what says the kernel's interpolated
+        // coordinate arrived, in the right channel and the right orientation.
+        //
+        // Every image node in MaterialX reads through `texcoord`, so this is
+        // the assertion standing behind every textured material.
+        {
+            const CompiledMaterial uvMaterial = MakeTexcoordMaterial(
+                libraries, compiler, tracer.ShadeKernelSource(), "texcoord");
+            CHECK(!uvMaterial.spirv.empty());
+
+            MeshPrototype quad = MakeQuad();
+            quad.uvs = {0, 0, 1, 0, 1, 1, 0, 1};
+
+            Scene scene;
+            scene.prototypes.push_back(quad);
+            scene.instances.push_back({0, Transform3x4{}, 0, true});
+            tracer.SetScene(scene, {uvMaterial});
+
+            const std::vector<float> image =
+                tracer.Render(kWidth, kHeight, LookDownZ(4.0f), settings);
+            SavePpm(image, "texcoord");
+
+            const Pixel left = At(image, 0.3f, 0.5f);
+            const Pixel right = At(image, 0.7f, 0.5f);
+            const Pixel bottom = At(image, 0.5f, 0.3f);
+            const Pixel top = At(image, 0.5f, 0.7f);
+            std::printf("  uv left %.4f right %.4f, bottom %.4f top %.4f\n",
+                        left.r, right.r, bottom.g, top.g);
+
+            CHECK(right.r > left.r * 1.5f);
+            CHECK(top.g > bottom.g * 1.5f);
+        }
+
+        // --- A texture arrives the way round it was decoded -------------------
+        //
+        // The quad's UVs put v = 0 at the bottom, and the texture's first row
+        // is v = 0, so each texel must land in the corner that names it. This
+        // is the assertion that was missing while every texture in the gallery
+        // was uploaded upside down: a noise or a gradient map looks equally
+        // plausible flipped, and it took a backdrop with printed numbers on it
+        // for anyone to notice.
+        {
+            const CompiledMaterial imageMaterial = MakeImageMaterial(
+                libraries, compiler, tracer.ShadeKernelSource(), "orientation");
+            CHECK(!imageMaterial.spirv.empty());
+
+            MeshPrototype quad = MakeQuad();
+            quad.uvs = {0, 0, 1, 0, 1, 1, 0, 1};
+
+            Scene scene;
+            scene.prototypes.push_back(quad);
+            scene.instances.push_back({0, Transform3x4{}, 0, true});
+            scene.textures.push_back(MakeOrientationTexture());
+            tracer.SetScene(scene, {imageMaterial});
+
+            const std::vector<float> image =
+                tracer.Render(kWidth, kHeight, LookDownZ(4.0f), settings);
+            SavePpm(image, "texture-orientation");
+
+            // At the texel centres, where bilinear filtering returns one texel
+            // exactly. The quad covers the middle half of the frame, so the
+            // texel centres at uv 0.25 and 0.75 are at 0.375 and 0.625 of the
+            // image; sampling further out blends across the wrap seam and the
+            // corners stop being one colour each.
+            const Pixel bottomLeft = At(image, 0.375f, 0.375f);
+            const Pixel bottomRight = At(image, 0.625f, 0.375f);
+            const Pixel topLeft = At(image, 0.375f, 0.625f);
+            const Pixel topRight = At(image, 0.625f, 0.625f);
+            std::printf("  texture corners: bl %.2f %.2f %.2f, br %.2f %.2f %.2f, "
+                        "tl %.2f %.2f %.2f\n",
+                        bottomLeft.r, bottomLeft.g, bottomLeft.b, bottomRight.r,
+                        bottomRight.g, bottomRight.b, topLeft.r, topLeft.g,
+                        topLeft.b, topRight.r, topRight.g, topRight.b);
+
+            // Each corner is dominated by its own channel. Absolute values
+            // depend on the lighting; which channel wins does not.
+            CHECK(bottomLeft.r > bottomLeft.g && bottomLeft.r > bottomLeft.b);
+            CHECK(bottomRight.g > bottomRight.r && bottomRight.g > bottomRight.b);
+            CHECK(topLeft.b > topLeft.r && topLeft.b > topLeft.g);
+            // White at the fourth corner: no channel dominates.
+            CHECK_NEAR(topRight.r / std::max(topRight.g, 1.0e-6f), 1.0, 0.2);
+        }
+
+        // --- An instance transform is the same as baking it ------------------
+        //
+        // The same surface in the same place in the world, expressed two ways:
+        // a tilted quad reached through an instance transform, and a quad whose
+        // vertices and normals were tilted on the host and instanced with the
+        // identity. Both describe identical world geometry, so they must shade
+        // identically.
+        //
+        // This is what catches a transform used where its transpose belongs.
+        // A wrong basis still produces a picture -- the surface is in the right
+        // place, because positions come from the acceleration structure -- and
+        // only the shading is off, by an amount that looks like a lighting
+        // choice until it is compared against the same surface built the other
+        // way.
+        {
+            const float angle = 0.6f;   // radians about Y
+            const float c = std::cos(angle);
+            const float s = std::sin(angle);
+
+            Transform3x4 rotation;
+            rotation.m[0] = c;  rotation.m[2] = s;
+            rotation.m[8] = -s; rotation.m[10] = c;
+
+            MeshPrototype baked = MakeQuad();
+            for (std::size_t i = 0; i < baked.positions.size(); i += 3) {
+                const float x = baked.positions[i];
+                const float z = baked.positions[i + 2];
+                baked.positions[i] = c * x + s * z;
+                baked.positions[i + 2] = -s * x + c * z;
+
+                const float nx = baked.normals[i];
+                const float nz = baked.normals[i + 2];
+                baked.normals[i] = c * nx + s * nz;
+                baked.normals[i + 2] = -s * nx + c * nz;
+            }
+
+            Scene scene;
+            scene.prototypes.push_back(MakeQuad());
+            scene.prototypes.push_back(baked);
+            scene.instances.push_back({0, rotation, 0, true});
+            tracer.SetScene(scene, materials);
+            const std::vector<float> transformed =
+                tracer.Render(kWidth, kHeight, LookDownZ(4.0f), settings);
+
+            Scene bakedScene;
+            bakedScene.prototypes.push_back(MakeQuad());
+            bakedScene.prototypes.push_back(baked);
+            bakedScene.instances.push_back({1, Transform3x4{}, 0, true});
+            tracer.SetScene(bakedScene, materials);
+            const std::vector<float> onHost =
+                tracer.Render(kWidth, kHeight, LookDownZ(4.0f), settings);
+
+            SavePpm(transformed, "tilted-by-transform");
+            SavePpm(onHost, "tilted-on-host");
+
+            const Pixel byTransform = At(transformed, 0.5f, 0.5f);
+            const Pixel byHost = At(onHost, 0.5f, 0.5f);
+            std::printf("  tilted by transform %.4f %.4f %.4f, on host "
+                        "%.4f %.4f %.4f\n",
+                        byTransform.r, byTransform.g, byTransform.b, byHost.r,
+                        byHost.g, byHost.b);
+
+            CHECK(Luminance(byHost) > 0.0f);
+            CHECK_NEAR(Luminance(byTransform), Luminance(byHost), 0.02);
         }
 
         // --- A cast shadow ---------------------------------------------------

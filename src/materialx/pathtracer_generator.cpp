@@ -5,6 +5,9 @@
 #include <MaterialXGenShader/ShaderGraph.h>
 #include <MaterialXGenShader/ShaderStage.h>
 
+#include <algorithm>
+#include <cctype>
+
 namespace hdclaude {
 namespace {
 
@@ -372,27 +375,77 @@ void PathTracerShaderGenerator::emitInputs(GenContext& context,
             // knowledge to the only place that has it.
             emitComment("Filled by the shade kernel; members vary by material", stage);
             emitLine("void " + string(kSurfaceHitSetter) +
-                         "(vec3 P, vec3 N, vec3 T)",
+                         "(vec3 P, vec3 N, vec3 T, vec3 Pobj, vec3 Nobj, "
+                         "vec3 Tobj, vec2 uv)",
                      stage, false);
             emitScopeBegin(stage);
+            // Names are matched case-insensitively. A vertex-data variable can
+            // reach here either substituted (`i_geomprop_st`) or as the token
+            // MaterialX stores it under (`$inGeomprop_st`), and the two differ
+            // in case as well as in prefix; matching one spelling silently
+            // dropped the other, which is how a `geompropvalue` node reading
+            // `st` ended up with a zero coordinate.
+            auto lowered = [](const string& text) {
+                string result = text;
+                std::transform(result.begin(), result.end(), result.begin(),
+                               [](unsigned char c) {
+                                   return static_cast<char>(std::tolower(c));
+                               });
+                return result;
+            };
+
             for (std::size_t i = 0; i < vertexData.size(); ++i) {
                 const ShaderPort* port = vertexData[i];
                 const string& variable = port->getVariable();
+                const string key = lowered(variable);
                 if (variable == HW::T_POSITION_WORLD ||
-                    variable.find("positionWorld") != string::npos) {
+                    key.find("positionworld") != string::npos) {
                     emitLine(instance + "." + variable + " = P", stage);
                 } else if (variable == HW::T_NORMAL_WORLD ||
-                           variable.find("normalWorld") != string::npos) {
+                           key.find("normalworld") != string::npos) {
                     emitLine(instance + "." + variable + " = N", stage);
-                } else if (variable.find("tangentWorld") != string::npos) {
+                } else if (key.find("tangentworld") != string::npos) {
                     emitLine(instance + "." + variable + " = T", stage);
-                } else if (variable.find("bitangentWorld") != string::npos) {
+                } else if (key.find("bitangentworld") != string::npos) {
                     emitLine(instance + "." + variable + " = cross(N, T)", stage);
+                } else if (key.find("positionobject") != string::npos) {
+                    emitLine(instance + "." + variable + " = Pobj", stage);
+                } else if (key.find("normalobject") != string::npos) {
+                    emitLine(instance + "." + variable + " = Nobj", stage);
+                } else if (key.find("tangentobject") != string::npos) {
+                    emitLine(instance + "." + variable + " = Tobj", stage);
+                } else if (key.find("bitangentobject") != string::npos) {
+                    emitLine(instance + "." + variable + " = cross(Nobj, Tobj)",
+                             stage);
+                } else if (key.find("texcoord") != string::npos) {
+                    // One UV set. A material that reads a second one gets the
+                    // first rather than an undefined value; carrying more than
+                    // one is a mesh-adapter change, recorded in
+                    // docs/roadmap.md phase 7.
+                    emitLine(instance + "." + variable + " = uv", stage);
+                } else if (key.find("geomprop_st") != string::npos ||
+                           key.find("geomprop_uv") != string::npos) {
+                    // A `geompropvalue` node reading the UV primvar by name.
+                    // That is how an asset asks for texture coordinates when it
+                    // does not use the `texcoord` node -- MaterialX has both,
+                    // they mean the same thing here, and a generator that
+                    // recognised only the first left the coordinate at zero.
+                    // Every pixel then sampled the same texel, which reads as a
+                    // material with no texture at all rather than as a bug.
+                    emitLine(instance + "." + variable + " = uv", stage);
                 } else {
-                    // Anything else -- texture coordinates, geomprops -- is the
-                    // kernel's to fill directly, because only it knows the value.
+                    // A geomprop the kernel has no value for: a primvar the
+                    // mesh adapter does not carry yet, or a colour set.
+                    //
+                    // It is assigned a defined zero rather than left alone. The
+                    // struct is a global, so leaving a member unassigned is not
+                    // "the kernel fills it later" -- nothing does, and the
+                    // material then reads an undefined value. That produced a
+                    // black surface for every material with a 3D procedural
+                    // node, because the undefined object position made the
+                    // pattern -- and everything downstream of it -- undefined.
                     emitLine(instance + "." + variable + " = " +
-                                 instance + "." + variable,
+                                 _syntax->getDefaultValue(port->getType()),
                              stage);
                 }
             }

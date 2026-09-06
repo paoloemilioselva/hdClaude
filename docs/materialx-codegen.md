@@ -310,6 +310,22 @@ void hdclaude_material_shade(inout ClosureData cd, in SurfaceHit hit, inout BSDF
 void hdclaude_material_displace(in SurfaceHit hit, out vec3 offset);
 ```
 
+The struct's members are whatever geometry the material reads, so the generator
+also emits the function that fills it:
+
+```glsl
+void hdclaude_set_surface_hit(vec3 P, vec3 N, vec3 T,
+                              vec3 Pobj, vec3 Nobj, vec3 Tobj, vec2 uv);
+```
+
+**Every member is assigned.** The struct is a global, so a member the setter
+skips is not "left for the kernel to fill" — nothing else fills it, and the
+material reads an undefined value. A member with no argument to take, such as a
+primvar the mesh adapter does not carry, is assigned its type's zero. This was
+found the hard way: the object-space position was skipped, so every material
+with a 3D procedural node — `fractal3d`, `noise3d`, `worleynoise3d`, anything
+authored in object space — shaded from undefined memory and rendered black.
+
 - Uniform/sampler binding follows `VkResourceBindingContext` with hdClaude's
   fixed descriptor-set assignment: set 0 renderer-global, set 1 scene,
   **set 2 material** (the generated block), set 3 textures (partially bound

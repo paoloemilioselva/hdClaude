@@ -65,6 +65,42 @@ VkDeviceAddress StructureAddress(const VulkanContext& context,
 // MeshPrototype / Scene
 // ---------------------------------------------------------------------------
 
+/// A scratch buffer whose device address meets the build's alignment.
+///
+/// `minAccelerationStructureScratchOffsetAlignment` is a build requirement, not
+/// a buffer requirement, so an allocator satisfying the buffer's own alignment
+/// can still hand back an address the build rejects. Over-allocating by one
+/// alignment and rounding the address up is what makes the requirement hold for
+/// any allocator.
+///
+/// Getting this wrong is not a wrong picture. The driver reads and writes
+/// scratch memory through the misaligned address and the device is lost, which
+/// is how it presented: an intermittent VK_ERROR_DEVICE_LOST on whichever scene
+/// happened to be allocated badly, with nothing in the scene to blame.
+struct AlignedScratch {
+    VulkanBuffer buffer;
+    VkDeviceAddress address = 0;
+};
+
+AlignedScratch MakeScratch(const VulkanContext& context, VulkanAllocator& allocator,
+                           VkDeviceSize size, const std::string& name)
+{
+    const VkDeviceSize alignment =
+        std::max<VkDeviceSize>(1, context.Capabilities().scratchAlignment);
+
+    BufferDescription description;
+    description.size = size + alignment;
+    description.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    description.debugName = name;
+
+    AlignedScratch scratch;
+    scratch.buffer = VulkanBuffer(allocator, description);
+    scratch.address =
+        (scratch.buffer.DeviceAddress() + alignment - 1) & ~(alignment - 1);
+    return scratch;
+}
+
 std::uint64_t MeshPrototype::Fingerprint() const
 {
     // Hashed over the actual bytes rather than over counts or a name: two
@@ -76,6 +112,25 @@ std::uint64_t MeshPrototype::Fingerprint() const
     }
     if (!indices.empty()) {
         hash = Fnv1a64(indices.data(), indices.size() * sizeof(std::uint32_t), hash);
+    }
+    // Normals, texture coordinates and per-triangle materials are part of the
+    // identity too, even though the acceleration structure is built from the
+    // positions alone. The structure *owns* those buffers and hands their
+    // addresses to the shading kernel, so a prototype that reused one built
+    // from different shading data would be shaded with that data: two quads
+    // with the same corners and different UVs would share one set of texture
+    // coordinates, and a mesh whose UVs were added would keep having none.
+    // That is not a subtle difference in the image and it took a texture with
+    // four distinguishable quadrants to see it.
+    if (!normals.empty()) {
+        hash = Fnv1a64(normals.data(), normals.size() * sizeof(float), hash);
+    }
+    if (!uvs.empty()) {
+        hash = Fnv1a64(uvs.data(), uvs.size() * sizeof(float), hash);
+    }
+    if (!triangleMaterials.empty()) {
+        hash = Fnv1a64(triangleMaterials.data(),
+                       triangleMaterials.size() * sizeof(std::uint32_t), hash);
     }
     // The opacity class changes the build flags, so a structure built for an
     // opaque mesh cannot be reused for a cut-out one.
@@ -190,15 +245,11 @@ BottomLevelStructure::BottomLevelStructure(const VulkanContext& context,
                                                    nullptr, &_structure),
                   "vkCreateAccelerationStructureKHR(" + name + ")");
 
-    BufferDescription scratchDescription;
-    scratchDescription.size = sizes.buildScratchSize;
-    scratchDescription.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                               VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    scratchDescription.debugName = name + ".scratch";
-    VulkanBuffer scratch(allocator, scratchDescription);
+    const AlignedScratch scratch =
+        MakeScratch(context, allocator, sizes.buildScratchSize, name + ".scratch");
 
     buildInfo.dstAccelerationStructure = _structure;
-    buildInfo.scratchData.deviceAddress = scratch.DeviceAddress();
+    buildInfo.scratchData.deviceAddress = scratch.address;
 
     VkAccelerationStructureBuildRangeInfoKHR range{};
     range.primitiveCount = _triangleCount;
@@ -328,15 +379,11 @@ void TopLevelStructure::Build(
                                                    nullptr, &structure),
                   "vkCreateAccelerationStructureKHR(tlas)");
 
-    BufferDescription scratchDescription;
-    scratchDescription.size = sizes.buildScratchSize;
-    scratchDescription.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                               VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    scratchDescription.debugName = "tlas.scratch";
-    VulkanBuffer scratch(allocator, scratchDescription);
+    const AlignedScratch scratch =
+        MakeScratch(context, allocator, sizes.buildScratchSize, "tlas.scratch");
 
     buildInfo.dstAccelerationStructure = structure;
-    buildInfo.scratchData.deviceAddress = scratch.DeviceAddress();
+    buildInfo.scratchData.deviceAddress = scratch.address;
 
     VkAccelerationStructureBuildRangeInfoKHR range{};
     range.primitiveCount = instanceCount;

@@ -300,4 +300,21 @@ void ComputePipeline::Dispatch(VkCommandBuffer command, VkDescriptorSet set,
     vkCmdDispatch(command, groupsX, groupsY, groupsZ);
 }
 
+void ComputePipeline::DispatchIndirect(VkCommandBuffer command,
+                                       VkDescriptorSet set,
+                                       const VulkanBuffer& args,
+                                       VkDeviceSize offset,
+                                       const void* pushConstants,
+                                       std::uint32_t pushConstantBytes) const
+{
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, _pipeline);
+    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, _layout, 0, 1,
+                            &set, 0, nullptr);
+    if (pushConstants != nullptr && pushConstantBytes > 0) {
+        vkCmdPushConstants(command, _layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           pushConstantBytes, pushConstants);
+    }
+    vkCmdDispatchIndirect(command, args.Handle(), offset);
+}
+
 }  // namespace hdclaude

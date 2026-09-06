@@ -1,6 +1,6 @@
 # hdClaude roadmap and phase tracker
 
-Status: live. Last revised 2026-09-05.
+Status: live. Last revised 2026-09-06.
 
 This is the durable progress record. Update the tracker, the evidence column,
 and the decision log **in the same commit** as the work they describe. A phase
@@ -12,8 +12,8 @@ and the evidence is recorded here.
 1. Read the decision log and the phase tracker below.
 2. Inspect the worktree and recent commits. **Never assume this document is
    newer than the code.**
-3. Run `compile.bat`, the full test suite, and `validate_usd.bat` before
-   changing renderer behaviour.
+3. Run `compile.bat` and the full test suite before changing renderer
+   behaviour, and `render_gallery.bat` after.
 4. Work one reviewable phase boundary at a time.
 5. Re-render and commit the full gallery after every render-affecting change.
 6. Record timing, image, validation, and hardware evidence in the phase entry.
@@ -27,13 +27,13 @@ A blocked phase must name what blocks it.
 | --- | --- | --- | --- |
 | 0 | Repository, build system, environment, documentation | Complete | core-only preset builds and tests from clean; env script verified; 10 gallery stages open |
 | 1 | Core library: hashing, shader cache, spectral tables, display transform | In progress | hashing, shader cache, spectral sampling and sensor; 1222 checks pass |
-| 2 | Vulkan context, memory, resource rules, validation gate | In progress | context, allocator, buffers, images, generations, device-lost latch, compute pipelines and dispatch; validation clean on RTX 5060 Ti |
-| 3 | Geometry pipeline: meshes, BLAS/TLAS, instancing, subdivision | In progress | prototypes, fingerprinted BLAS reuse, TLAS instancing, ray-query traversal verified by hit pattern on GPU. per-triangle materials from GeomSubsets; deformation through ExtComputation; uniform OpenSubdiv refinement carrying subsets through the parent-face chain. Remaining: adaptive refinement, limit-surface normals |
-| 4 | `genglsl_pt` MaterialX target: eval, sample, pdf, combinators | In progress | all 22 overrides; `standard_surface` and `open_pbr_surface` compile; energy and probability-mass validated on GPU for 10 closures and combinators. Remaining: chi-squared agreement |
-| 5 | Wavefront integrator: queues, sort, per-material dispatch | In progress | raygen, extend, environment, per-material shade, shadow, film; compaction between bounces; images verified for direct lighting, per-material dispatch and cast shadows. Remaining: the material sort, indirect dispatch |
+| 2 | Vulkan context, memory, resource rules, validation gate | In progress | context, allocator, buffers, images, generations, device-lost latch, compute pipelines and direct and indirect dispatch; core *and* synchronisation validation clean on RTX 5060 Ti. Acceleration-structure scratch addresses are aligned to `minAccelerationStructureScratchOffsetAlignment`, which is a build requirement no allocator enforces and whose violation is a lost device |
+| 3 | Geometry pipeline: meshes, BLAS/TLAS, instancing, subdivision | In progress | prototypes, fingerprinted BLAS reuse, TLAS instancing, ray-query traversal verified by hit pattern on GPU. per-triangle materials from GeomSubsets; deformation through ExtComputation; uniform OpenSubdiv refinement carrying subsets through the parent-face chain; an instance transform shades identically to the same tilt baked into the prototype, which is what catches a basis used where its transpose belongs; refinement carries texture coordinates through the same weights as the positions, and structure reuse is keyed on the normals, UVs and per-triangle materials the structure owns as well as on the geometry it is built from. Remaining: adaptive refinement, limit-surface normals |
+| 4 | `genglsl_pt` MaterialX target: eval, sample, pdf, combinators | In progress | all 22 overrides; `standard_surface` and `open_pbr_surface` compile; energy and probability-mass validated on GPU for 10 closures and combinators; the generated geometry setter assigns every member it declares, so object-space patterns and texture coordinates reach a material instead of reading undefined memory. Remaining: chi-squared agreement |
+| 5 | Wavefront integrator: queues, sort, per-material dispatch | In progress | raygen, extend, environment, per-material shade, shadow, film; compaction between bounces; the counting sort by material and indirect dispatch throughout, asserted against the GPU-written counts (2336 camera hits split 1169/1167 across two materials, matching the shaded pixels exactly); the gate's scaling measurement, at 512x512 with a 32-node fractal graph -- 8.7 ms with neither quad heavy, 18.6 ms with one, 29.1 ms with both, so one heavy material costs 0.45 of what two cost rather than nearly all of it; images verified for direct lighting, per-material dispatch and cast shadows; a sampled direction is evaluated by the closure whose side it left on, so a refraction reaches the transmission branch instead of being terminated as impossible. Remaining: sort granularity, once there is a scene that makes the choice matter |
 | 6 | Spectral transport, lights, MIS, film | In progress | the analytic UsdLux set -- rect, disk, sphere, cylinder, distant -- sampled by NEE, with cone and focus shaping and colour temperature; a dome light supplies a constant or textured environment; exposure control; film accumulates progressively. Remaining: hero-wavelength transport, MIS, light-power selection, dome importance sampling, IES profiles, light filters, geometry lights |
-| 7 | Hydra delegate: adapters, render pass, AOVs, settings | In progress | plugin discovered as "Claude GPU Path Tracer"; mesh, material, light, camera and render-buffer adapters; progressive render pass; all three `gallery/shader_ball_*.usda` scenes render lit and materially distinct; textures load through Hio and bind bindlessly. Remaining: face-varying UVs, per-texture wrap and filter modes, depth and id AOVs |
-| 8 | Gallery parity with hdCodex baselines | Not started | - |
+| 7 | Hydra delegate: adapters, render pass, AOVs, settings | In progress | plugin discovered as "Claude GPU Path Tracer"; mesh, material, light, camera and render-buffer adapters; progressive render pass; all three `gallery/shader_ball_*.usda` scenes render lit and materially distinct; textures load through Hio and bind bindlessly, and the interpolated texture coordinate reaches the material -- asserted by a material whose albedo is its own UV. textures arrive the way round they were decoded, asserted by a four-quadrant image whose corners must land where they are named; an image node with no file reads its declared default rather than the failure placeholder; and a material reading UVs through `geompropvalue` gets them. Remaining: a second UV set, face-varying UVs, primvar geomprops beyond position, normal, tangent and UV, per-texture wrap and filter modes, depth and id AOVs |
+| 8 | Gallery parity with hdCodex baselines | In progress | `render_gallery.bat` renders, times, display-transforms and gates every scene, and rewrites the timing table; `hdClaudeDisplayTransform` and `hdClaudeImageDiff` are the two tools behind it, and the gate fails on RMS, worst pixel, failed-pixel count, a black image, or a non-finite sample. Seven of ten scenes have first baselines with timings and the machine record ([gallery.md](../gallery.md)); each names what its image gets wrong. Three do not render: KitchenSet loses the device during scene publication, Collective Project 001 has a `geompropvalue` node with no `geomprop`, OpenPBR Playground reaches `mx_aastep`'s `dFdx` and a second generation failure. Parity itself is untouched -- no scene matches hdCodex yet |
 | 9 | Interactive contract: frame identity, per-slot resources, real overlap | Not started | - |
 | 10 | Temporal foundation: jitter, motion vectors, guides, history reset | Not started | - |
 | 11 | Renderer-native reconstruction fallback (any Vulkan device) | Not started | - |
@@ -64,7 +64,11 @@ to within 1e-3 dE2000. The shader cache is proven to miss on every component of
 its key.
 
 **Phase 2.** A validation-enabled run of the full suite reports zero validation
-errors **and the test fails if the count is nonzero** (rule R8). Device-loss
+errors **and the test fails if the count is nonzero** (rule R8). Validation here
+means core *and* synchronisation validation: core validation checks that each
+command is legal on its own and says nothing about whether what one kernel wrote
+is visible to the next, which in a wavefront integrator is most of what can be
+wrong. Device-loss
 simulation leaves the latch set, every subsequent entry point refuses, and the
 destructor completes without issuing a wait.
 
@@ -155,6 +159,13 @@ reversed.
 | 2026-09-05 | The `surface` node gets its own genglsl_pt implementation | `HwSurfaceNode` constructs `ClosureData` inside a rasteriser light loop and an environment lookup. A path tracer supplies its own direction and light sample, so the calling convention has to be replaced alongside the closures ([implementation-notes.md](implementation-notes.md)) |
 | 2026-09-05 | SER is not used | Its builtins exist only on ray-tracing-pipeline stages, not compute, and the per-material sort already delivers the coherence SER recovers ([implementation-notes.md](implementation-notes.md)) |
 | 2026-09-05 | On device loss, skip the wait but still destroy objects | `vkDestroyDevice` requires its children to be destroyed first, and destruction stays valid after loss; skipping it faults. Only the unchecked wait contaminates diagnostics |
+| 2026-09-06 | The closure type follows the sampled direction's side | The integrator, not the closure, knows whether a sampled direction crossed the surface. Evaluating a refraction with the reflection closure asks about a direction below its horizon, and the zero density that comes back is indistinguishable from an impossible sample ([implementation-notes.md](implementation-notes.md)) |
+| 2026-09-06 | A structure's identity is what it owns, not what the build reads | `BottomLevelStructure` serves the normal and UV buffers to the shading kernel, so two prototypes with identical geometry and different shading data are not interchangeable however identical their builds would be ([implementation-notes.md](implementation-notes.md)) |
+| 2026-09-06 | An image node with no file reads its default, not the placeholder | The magenta placeholder means "this asset names a file that cannot be read". A node with no file is an ordinary authoring choice with a defined MaterialX answer, and rendering it as a glaring failure colour misreports the asset |
+| 2026-09-06 | The generated geometry setter assigns every member, never itself | A member left unassigned is undefined, not "filled later by the kernel": the struct is a global and nothing else writes it. The self-assignment that stood for "the kernel knows this one" made every object-space pattern and every texture coordinate read undefined memory ([implementation-notes.md](implementation-notes.md)) |
+| 2026-09-06 | Instance transforms are read through one helper, not inline | They are stored row-major 3x4 for Vulkan's instance structure, and GLSL indexes a `mat3x4` by column, so the obvious construction yields the transpose. One `hdclaude_linear` keeps that reasoning in a single place instead of at each use, where it was wrong twice |
+| 2026-09-06 | Synchronisation validation is part of the validation gate | Core validation passed a whole frame whose counter reset raced the copy that read those counters. The class of defect the gate exists to catch is exactly this one, so the layer setting is enabled in the context rather than left to whoever remembers an environment variable ([implementation-notes.md](implementation-notes.md)) |
+| 2026-09-06 | The prefix sum runs in one invocation, not a parallel scan | The key range is the scene's distinct compiled materials -- tens -- and a serial scan of tens of integers costs less than the workgroup barriers a parallel scan needs to be correct. It shares a kernel with the indirect-argument writes, which read the same counts |
 | 2026-09-05 | The pbrlib override set is all-or-nothing | MaterialX resolves `#include` relative to the including file, so mixing one upstream closure with one hdClaude closure emits `struct ClosureData` twice. The set is exactly the 22 pbrlib files that include `mx_closure_type.glsl`; no stdlib file does |
 
 ## Open questions

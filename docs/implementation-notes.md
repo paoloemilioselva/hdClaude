@@ -3,7 +3,7 @@
 A running log of things discovered while building, as distinct from the design
 documents, which state what the system *is*. Entries here are findings: an
 assumption that turned out to be false, a constraint the API imposes, a bug
-whose cause is worth remembering. Newest first.
+whose cause is worth remembering. Oldest first, so a later entry can correct an earlier one and the correction reads in order.
 
 Each entry says what was expected, what is actually true, and what changed as a
 result. An entry is added whenever a design document has to be corrected.
@@ -1018,3 +1018,266 @@ written once.
 The refinement level is read once, at delegate construction, because it changes
 the geometry every mesh publishes rather than anything the render pass can vary
 per frame.
+
+---
+
+## 2026-09-06 — The sort, and the barrier that was never checked
+
+The per-material dispatch was correct before this change and wasteful: every
+shading pipeline was dispatched over every active path and each invocation
+discarded the paths that were not its own, so shading cost the number of
+materials times the number of paths. The counting sort removes the discards,
+and with it the last CPU-sized dispatch in the frame.
+
+**Every dispatch after `raygen` is now indirect.** That was always the design
+(§2 of [wavefront-integrator.md](wavefront-integrator.md)) and it is what the
+sort forces: a material's group size exists only on the device, so either the
+CPU reads it back -- a stall in the middle of every bounce, and the readback the
+design forbids -- or a kernel writes the dispatch command. A kernel writes it.
+
+**The misses keep their place on the active queue.** Grouping them would mean
+a group the environment kernel would then have to find, and the environment
+kernel already walks the active queue. So the groups partition the hits, not
+the queue, and the two kernels read different things without either filtering
+the other's paths.
+
+**The sort is invisible in an image**, which is the difficulty in testing it:
+dispatching every pipeline over every path produces exactly the same picture. It
+is asserted instead against the counts the sort itself wrote -- two quads, one
+sample, one bounce, and the two groups must sum to the number of shaded pixels
+in the image. They do, 1169 + 1167 = 2336, and that is also the only time those
+GPU-written counters are ever read by the host.
+
+**Core validation had never checked the barriers.** Adding synchronisation
+validation to the context reported, on the first run, a write-after-read hazard
+that had been in every frame since compaction landed: the counter reset between
+bounces is a `vkCmdFillBuffer`, the queue promotion before it a
+`vkCmdCopyBuffer`, and the barrier between them named only the compute stage.
+Transfer work was ordered against nothing. It happened to work -- the driver
+serialises those two commands anyway -- which is exactly why a gate is worth more
+than an inspection. The barrier now covers transfer and indirect reads as well
+as compute, and the setting is enabled in `VulkanContext` rather than left to an
+environment variable, because a check nobody remembers to turn on is not a gate.
+
+---
+
+## 2026-09-06 -- Two ways to hand a material geometry, both wrong
+
+Measuring the sort found two defects that had nothing to do with the sort. Both
+are the same shape: a value the shading code reads was never the value the
+renderer meant to give it, and neither produced an error, a validation message,
+or an obviously broken picture.
+
+**A skipped assignment is undefined, not deferred.** The generated
+`hdclaude_set_surface_hit` assigned world position, normal and tangent from its
+arguments and emitted `vd.x = vd.x` for everything else, with a comment saying
+the kernel would fill those directly. Nothing did. `vd` is a global, so a
+material reading the object-space position -- which is every 3D procedural
+pattern node, since that is the space they are authored in -- read uninitialised
+memory, and so did every material reading a texture coordinate, which is every
+image node. The setter now takes the object-space frame and the UV, and every
+remaining member is assigned its type's zero rather than itself.
+
+The symptom is worth recording because it is so unhelpful: a `fractal3d`-tinted
+diffuse material rendered *black*. Undefined input made the pattern undefined,
+the closure's response undefined, and the shadow-ray contribution failed
+`dot(c, c) > 0` -- which is how a NaN is rejected. It also cost nothing to
+evaluate, since a compiler may do as it likes with an undefined value, so the
+first attempt at measuring per-material dispatch measured a shading graph the
+GPU was entitled to skip entirely.
+
+**A row-major transform read as columns is its own transpose.** An instance
+transform is stored row-major 3x4 -- the layout Vulkan's acceleration-structure
+instance wants, so the host writes it once for both purposes. GLSL indexes a
+`mat3x4` by column, so `transform[0]` in the shader is the *first row* of what
+the host wrote, and `mat3(transform[0].xyz, ...)` is therefore the transpose of
+the intended matrix. The kernel built its normal matrix by transposing that --
+arriving back at the inverse instead of the inverse transpose -- and transformed
+tangents by the transpose as well.
+
+Under translation and uniform scale the two agree, which is why every test
+scene had passed. Under rotation they do not: a quad tilted by an instance
+transform shaded differently from the same quad tilted on the host and
+instanced with the identity. That is now a test, because it is the comparison
+that makes the defect visible -- the surface is in the right *place* either way,
+since positions come from the acceleration structure, and only the shading
+differs.
+
+
+---
+
+## 2026-09-06 -- The first gallery pass, and what ten scenes said
+
+The gallery script existed only as a reference in `render_gallery.bat`; the
+PowerShell file it called had never been written, so nothing had ever rendered
+the ten scenes in one pass. Writing it -- plus the display transform and the
+image gate it drives -- turned the gallery from a contract into a measurement,
+and the measurement is worth more than the images.
+
+Seven scenes render, in 7.6 to 35.4 seconds each at 1024x1024 and 1024 samples.
+Three do not, and each fails differently:
+
+**KitchenSet loses the device.** `VK_ERROR_DEVICE_LOST` from
+`vkWaitForFences(immediate)` inside `PathTracer::SetScene`, before a single ray
+is traced. Nothing downstream of publication is implicated. What the failure
+did *not* do is as interesting: the latch held, every later entry point
+refused, the render pass gave up after three attempts instead of spinning, and
+`usdrecord` exited non-zero rather than writing a black image and calling it
+success -- the hdCodex failure this repository was started to avoid
+([lessons](lessons-from-hdcodex.md) R9). It is the largest scene in the gallery
+by prototype count, which is the first thing to look at.
+
+**Collective Project 001 asks for a primvar nobody bound.**
+`HdMtlxCreateMtlxDocumentFromHdNetwork` produces a `geompropvalue` node with no
+`geomprop` input, and generation refuses it. hdClaude reports a material it
+cannot compile rather than approximating one, and `usdrecord` treats that
+report as fatal, so one material stops the scene. That policy is right and its
+consequence is worth stating plainly: a single unsupported node costs the whole
+image, so the set of nodes that generate has to be widened, not the policy
+loosened.
+
+**OpenPBR Playground finds the derivative problem again.** `mx_aastep` computes
+its filter width with `dFdx`, which a compute stage rejects -- the same finding
+as the `fwidth` one recorded above, in a different file, exactly as that note
+predicted ("expect more, and expect them to be *stage* assumptions"). The right
+answer is the same in shape and different in substance: a path tracer's
+antialiasing comes from sampling the pixel, so the filter width there is zero,
+not an error. That is a change to make deliberately rather than by enabling
+`GL_KHR_compute_shader_derivatives`, which would compile and quietly measure
+nothing.
+
+The seven that render disagree with hdCodex in ways the images make obvious and
+no test would have: Sponza is far too dark, both shader balls show the
+renderer's magenta placeholder on an inner shell, their backdrop's printed
+numbers are mirrored, the glass ball is opaque, and the height map's texture
+does not vary the colour it is supposed to drive. Each of those is recorded
+against its scene in [gallery.md](../gallery.md) rather than summarised into a
+single "parity gap", because they are four different defects and will be fixed
+by four different changes.
+
+---
+
+## 2026-09-06 -- Five defects behind one flat brown quad
+
+The gallery's texture failures looked like one problem and were five, each
+hiding the next. They are recorded together because the order they came out in
+is the useful part: every fix made the following defect visible, and none of
+them was findable from the code alone.
+
+**1. A placeholder where a default belonged.** An image node with no `file` was
+treated as a texture that failed to load and bound the magenta placeholder. But
+an image node with no file is legal and common -- the StandardShaderBall
+authors one and expects a stronger opinion to fill it in, which for the base
+material never arrives -- and MaterialX defines such a node as returning its
+`default`, which is zero for every `ND_image_*`. The pool now binds a
+one-pixel black texture for an empty path and keeps the magenta for a file that
+is named and cannot be read. The shader ball's inner shell stopped being
+magenta and started being what the asset asks for.
+
+**2. Refinement dropped the texture coordinates.** The subdivision work
+correctly stopped consulting authored UVs on a refined mesh -- they describe
+the control cage -- but nothing refined them, so a subdivided mesh reached the
+GPU with none at all. The shading kernel then fell back to barycentrics, which
+vary per triangle: across thousands of tiny triangles a texture is sampled at
+effectively random coordinates and averages to a flat colour. That is exactly
+what the height-map scene rendered. UVs are now refined through the same
+`PrimvarRefiner` weights as the positions.
+
+**3. `geompropvalue` is the other way to ask for UVs.** The generated setter
+recognised `texcoord` and assigned everything else its type's zero. A material
+reading `st` through a `geompropvalue` node -- which is what the height-map
+material does, and what plenty of assets do -- got a zero coordinate and sampled
+one texel for the whole surface.
+
+**4. The names it matched were the wrong spelling.** Vertex-data variables reach
+the setter either substituted (`i_geomprop_st`) or as the token MaterialX stores
+them under (`$inGeomprop_st`), and those differ in case. Matching one spelling
+silently dropped the other; the comparison is now case-insensitive, which is
+what made the fix above actually take effect.
+
+**5. Every texture was upside down.** `HioImage::Read` was asked for the file's
+own row order, and the file's order is top row first, while the renderer's
+sampler reads row 0 as v = 0 -- the bottom, which is where USD and MaterialX put
+it. Nobody had noticed because a noise map, a roughness map, or a height map
+looks equally plausible flipped. It took a backdrop with printed numbers on it
+to see, and the numbers had been mirrored in every gallery render.
+
+`TextureImage` now documents the convention it always needed, and a render test
+samples a four-quadrant image and asserts which corner each colour lands in. It
+is the assertion whose absence let this survive.
+
+---
+
+## 2026-09-06 -- The device loss was one misaligned address
+
+Writing that four-quadrant test found something much larger. With the corners
+finally correct, the test binary lost the Vulkan device -- and with
+synchronisation validation on, the layer named the cause outright:
+
+    vkCmdBuildAccelerationStructuresKHR(): pInfos[0].scratchData.deviceAddress
+    must be aligned to minAccelerationStructureScratchOffsetAlignment (128)
+
+`minAccelerationStructureScratchOffsetAlignment` is a requirement on the build,
+not on the buffer. An allocator that satisfies the scratch buffer's own
+alignment -- which is far weaker -- still hands back addresses that fail it, so
+whether a build was legal came down to where the allocator happened to put the
+buffer. The driver's response to a misaligned scratch address is to lose the
+device.
+
+That is the KitchenSet failure from the first gallery pass, and it explains its
+shape: a scene that lost the device inside `SetScene`, before a ray was traced,
+with nothing about the scene to blame. The alignment is now queried into
+`VulkanCapabilities`, and every scratch allocation over-allocates by one
+alignment and rounds its address up. **Pixar's KitchenSet renders**, in 124
+seconds.
+
+Two things made this findable. The test that changed the acceleration-structure
+reuse pattern, and validation being on by default in the test binaries -- the
+message that named the VUID took a minute to act on, and the same defect had
+been an unexplained device loss for a whole gallery pass before that.
+
+---
+
+## 2026-09-06 -- Reuse is keyed on what the structure owns
+
+The four-quadrant texture also came out wrong in a way the geometry explains: a
+prototype's acceleration structure was being reused for a prototype with
+different texture coordinates.
+
+`MeshPrototype::Fingerprint` hashed positions, indices, and the opacity class --
+everything the *build* depends on. But `BottomLevelStructure` owns the normal
+and UV buffers too, and hands their addresses to the shading kernel through the
+instance table. Two prototypes with the same corners and different UVs therefore
+shared one set of coordinates, and a mesh that gained UVs kept having none.
+
+The fingerprint now covers normals, texture coordinates, and per-triangle
+materials as well. The rule it should have followed from the start: a
+structure's identity is everything the structure *owns*, not everything the
+build reads.
+
+---
+
+## 2026-09-06 -- Black glass was the reflection closure answering a refraction
+
+The glass shader ball rendered opaque black. Raising the path length to 32
+bounces changed nothing, which ruled out the obvious explanation and pointed at
+the estimator rather than at depth.
+
+The scatter step samples a direction and then evaluates the closure at it to get
+the response and the density. It evaluated with `CLOSURE_TYPE_REFLECTION`
+always. A refraction crosses the surface, so the reflection branch was being
+asked about a direction below its own horizon: zero response, zero density, and
+the path terminated as impossible. Every transmissive material was therefore
+black, and the closure implementations -- which have a working transmission
+branch, validated on the GPU -- were never reached from the integrator.
+
+The kernel now picks the closure from which side the sampled direction left on:
+
+    dot(L, N) * dot(V, N) > 0  ->  reflection, otherwise transmission
+
+Two things this says beyond the fix. The closure validation tests pass because
+they exercise the closures directly, and the render tests passed because none
+of their materials transmits -- a gap between two green suites is where this
+lived. And the first gallery pass is what found it: the glass ball is in the
+gallery precisely because transmission is hard, and a scene whose whole purpose
+is one feature is worth more than the assertion it replaces.

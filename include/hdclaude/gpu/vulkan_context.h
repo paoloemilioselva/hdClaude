@@ -104,6 +104,13 @@ struct VulkanCapabilities {
     bool externalMemory = false;
 
     std::uint32_t subgroupSize = 0;
+    /// Alignment an acceleration-structure build's scratch address must meet.
+    ///
+    /// Recorded because nothing else enforces it: a scratch buffer's own
+    /// alignment requirement is far weaker, so an address that violates this
+    /// one is what an allocator hands back most of the time and a device loss
+    /// is what the driver does about it.
+    std::uint32_t scratchAlignment = 128;
     std::uint64_t deviceLocalMemory = 0;
     std::string deviceName;
     std::string driverVersion;

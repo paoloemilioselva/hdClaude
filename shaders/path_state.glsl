@@ -34,6 +34,7 @@ layout(set = 0, binding = 0, scalar) uniform FrameBlock {
     uint  bounce;               // current bounce, 0 for camera rays
     uint  lightCount;           // entries in the light table
     uint  hasDomeTexture;       // 1 when hdclaude_dome holds an environment map
+    uint  materialCount;        // compiled shading pipelines; the sort's key range
     mat4  domeWorldToLight;     // takes a world direction into the dome's frame
 } frame;
 
@@ -68,6 +69,55 @@ layout(set = 0, binding = 8, scalar) buffer Counters {
 
 layout(set = 0, binding = 9,  scalar) buffer ActiveQueue     { uint values[]; } activeQueue;
 layout(set = 0, binding = 10, scalar) buffer NextActiveQueue { uint values[]; } nextActiveQueue;
+
+// The sorted queue: the active paths that hit geometry, grouped by the material
+// that shades them. One backing buffer partitioned by a prefix sum over the
+// per-material counts, so a scene with more materials costs no more allocations
+// (docs/wavefront-integrator.md 2). A path that missed is absent -- the
+// environment kernel owns it -- so the groups do not cover the whole queue.
+layout(set = 0, binding = 18, scalar) buffer MaterialQueue { uint values[]; } materialQueue;
+
+// Counts, offsets and scatter cursors for the sort, `frame.materialCount`
+// entries each, in that order in one buffer.
+//
+// Three arrays rather than three buffers because the stride is not known until
+// a scene is published, and a descriptor set layout is fixed before that. The
+// accessors below are the only places that know the packing.
+layout(set = 0, binding = 19, scalar) buffer MaterialTable { uint values[]; } materialTable;
+
+uint hdclaude_material_count(uint material)
+{
+    return materialTable.values[material];
+}
+
+uint hdclaude_material_offset(uint material)
+{
+    return materialTable.values[frame.materialCount + material];
+}
+
+// Indirect dispatch commands, GPU-written by prepare_dispatch and read by the
+// command processor. The CPU never reads a counter during a frame
+// (docs/wavefront-integrator.md 2), so every dispatch whose size depends on one
+// takes its workgroup count from here.
+//
+//   0        the active queue: extend, the sort passes, environment
+//   1        the shadow queue
+//   2 + m    material m's group of the sorted queue
+//
+// `w` is padding: VkDispatchIndirectCommand is three uints, and the fourth
+// keeps each command 16-byte aligned so a slot's byte offset is slot * 16.
+layout(set = 0, binding = 20, scalar) buffer DispatchArgs { uvec4 values[]; } dispatchArgs;
+
+#define HDCLAUDE_DISPATCH_ACTIVE 0u
+#define HDCLAUDE_DISPATCH_SHADOW 1u
+#define HDCLAUDE_DISPATCH_MATERIAL 2u
+
+/// Workgroups needed to cover `items` at the 64-wide layout every queue kernel
+/// declares.
+uvec4 hdclaude_dispatch_groups(uint items)
+{
+    return uvec4((items + 63u) / 64u, 1u, 1u, 0u);
+}
 
 // A shadow ray and the radiance it delivers if unoccluded. The contribution is
 // computed at shading time and carried here, so the shadow kernel does no
@@ -130,6 +180,23 @@ struct InstanceGeometry {
     uint pad1;
     uint pad2;
 };
+
+/// The 3x3 linear part of an instance transform.
+///
+/// An instance transform is stored row-major 3x4, which is the layout Vulkan's
+/// acceleration-structure instance expects, so the host writes it once and uses
+/// it for both. GLSL indexes a `mat3x4` by *column*, so `transform[i]` here is
+/// the i-th row of what the host wrote, and a matrix built from those as
+/// columns is the transpose of the one intended. Transposing gives back a
+/// matrix that multiplies a column vector.
+///
+/// Getting this wrong is invisible in the geometry -- positions come from the
+/// acceleration structure, which the driver transforms itself -- and shows only
+/// in shading, as normals and tangents that are wrong by a rotation.
+mat3 hdclaude_linear(mat3x4 transform)
+{
+    return transpose(mat3(transform[0].xyz, transform[1].xyz, transform[2].xyz));
+}
 
 /// The material shading triangle `primitive` of `geometry`.
 uint hdclaude_material_of(InstanceGeometry geometry, int primitive)

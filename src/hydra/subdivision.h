@@ -22,6 +22,9 @@ PXR_NAMESPACE_OPEN_SCOPE
 struct HdClaudeRefinedMesh {
     /// Interleaved xyz, three floats per refined vertex.
     std::vector<float> positions;
+    /// Interleaved uv, two floats per refined vertex; empty when the control
+    /// cage had none.
+    std::vector<float> uvs;
     /// Triangle indices into `positions`.
     std::vector<std::uint32_t> indices;
     /// The *coarse* face each triangle descends from, so a GeomSubset authored
@@ -39,12 +42,19 @@ bool HdClaudeWantsSubdivision(const HdMeshTopology& topology);
 
 /// Refine `topology` uniformly to `level` and triangulate the result.
 ///
-/// `points` is the control cage, interleaved xyz. Returns an invalid result if
-/// the topology cannot be refined, which the caller should treat as "render the
-/// control cage" rather than as an error: a mesh that fails to subdivide should
-/// still appear.
+/// `points` is the control cage, interleaved xyz. `uvs`, when not empty, is one
+/// vertex-interpolated texture coordinate per control vertex and is refined
+/// alongside the positions -- a refined mesh that dropped them would have no
+/// texture coordinates at all, and the shading kernel would fall back to
+/// barycentrics, which samples a texture at random across every tiny triangle
+/// and averages to a flat colour.
+///
+/// Returns an invalid result if the topology cannot be refined, which the
+/// caller should treat as "render the control cage" rather than as an error: a
+/// mesh that fails to subdivide should still appear.
 HdClaudeRefinedMesh HdClaudeSubdivide(const HdMeshTopology& topology,
                                       const std::vector<float>& points,
-                                      int level);
+                                      int level,
+                                      const std::vector<float>& uvs = {});
 
 PXR_NAMESPACE_CLOSE_SCOPE

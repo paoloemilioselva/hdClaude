@@ -57,11 +57,17 @@ bool Widen(const HioImageSharedPtr& image, hdclaude::TextureImage* out,
     storage.height = height;
     storage.depth = 1;
     storage.format = format;
-    // Hio's own convention is bottom-up; MaterialX and USD texture coordinates
-    // put v = 0 at the bottom too, so no flip is wanted here. Getting this
-    // backwards shows up as textures that are upside down only on some assets,
-    // which is a miserable thing to chase.
-    storage.flipped = false;
+    // Read bottom-up. `flipped` asks Hio to reverse the file's row order, and
+    // the file's order is top row first; the renderer's convention -- stated on
+    // TextureImage and matched by the sampler, whose v = 0 is the first row of
+    // the uploaded image -- is that row 0 is v = 0, the *bottom* of the image,
+    // because that is where USD and MaterialX put it.
+    //
+    // Passing false here uploaded every texture upside down. It is not a
+    // striking failure: a noise or a gradient map looks equally plausible
+    // either way, and it took a backdrop with printed numbers on it to make the
+    // flip visible at all.
+    storage.flipped = true;
     storage.data = raw.data();
 
     if (!image->Read(storage)) {
@@ -162,6 +168,30 @@ std::uint32_t HdClaudeTexturePool::Acquire(const std::string& assetPath)
 
     hdclaude::TextureImage image;
     std::string error;
+    if (assetPath.empty()) {
+        // An image node with no file. MaterialX defines such a node as
+        // returning its `default` input, whose declared value for every
+        // `ND_image_*` is zero, so a one-pixel black texture is what the
+        // generated code has to sample to produce it -- the stock
+        // implementation samples unconditionally and has no other way to say
+        // "no image".
+        //
+        // This is deliberately *not* the failure placeholder. A node with no
+        // file is an authoring choice that assets make routinely; a file that
+        // is named and cannot be read is a broken asset. Rendering the first
+        // as magenta puts a glaring wrong colour on a surface that should be
+        // unaffected, which is exactly what the StandardShaderBall's inner
+        // shell did.
+        image.width = 1;
+        image.height = 1;
+        image.rgba = {0, 0, 0, 255};
+        image.srgb = false;
+        image.debugName = "image node with no file";
+        HdClaudeTrace("texture %u: unbound image node; reads its default", slot);
+        _images.push_back(std::move(image));
+        return slot;
+    }
+
     if (HdClaudeLoadTexture(assetPath, &image, &error)) {
         HdClaudeTrace("texture %u: %s (%ux%u, %s)", slot, assetPath.c_str(),
                       image.width, image.height, image.srgb ? "sRGB" : "linear");

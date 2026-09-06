@@ -2,9 +2,11 @@
 
 #include "hdclaude/core/hash.h"
 #include "hdclaude/core/shader_cache.h"
+#include "hdclaude/core/display.h"
 #include "hdclaude/core/spectrum.h"
 
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -259,6 +261,54 @@ void TestBlackbodyPeakMatchesWien()
     }
 }
 
+void TestDisplayTransformLeavesTheDiffuseRangeAlone()
+{
+    // The gallery is a comparison instrument, so the transform must not be a
+    // look: below the compression threshold it is the sRGB transfer function
+    // of the published offset and nothing else. A curve that quietly shaped
+    // the diffuse range would make every baseline comparison a comparison of
+    // curves.
+    for (float linear = 0.1f; linear < 0.7f; linear += 0.05f) {
+        const Vec3 display = SceneLinearToDisplaySrgb({linear, linear, linear});
+        CHECK_NEAR(display.x, LinearToSrgb(linear - 0.04f), 1.0e-5);
+        CHECK_NEAR(display.y, display.x, 1.0e-6);
+        CHECK_NEAR(display.z, display.x, 1.0e-6);
+    }
+}
+
+void TestDisplayTransformCompressesRatherThanClips()
+{
+    // Over-range values must stay ordered and stay inside the display range.
+    // Clipping would collapse them to one value, which is what makes a blown
+    // highlight unreadable in a baseline: two very different radiances would
+    // encode identically and the diff would report no change.
+    float previous = -1.0f;
+    for (float linear = 1.0f; linear < 200.0f; linear *= 1.5f) {
+        const Vec3 display = SceneLinearToDisplaySrgb({linear, linear, linear});
+        CHECK(display.x > previous);
+        CHECK(display.x <= 1.0f);
+        previous = display.x;
+    }
+    CHECK(previous > 0.9f);
+}
+
+void TestDisplayTransformSanitisesAndExposes()
+{
+    // A NaN encodes as black rather than as a random byte, and exposure is a
+    // scene-referred control: +1 stop is the same image at twice the radiance,
+    // not a shifted curve.
+    const Vec3 nan = SceneLinearToDisplaySrgb(
+        {std::numeric_limits<float>::quiet_NaN(), -1.0f,
+         std::numeric_limits<float>::infinity()});
+    CHECK_EQ(nan.x, 0.0f);
+    CHECK_EQ(nan.y, 0.0f);
+    CHECK_EQ(nan.z, 0.0f);
+
+    const Vec3 exposed = SceneLinearToDisplaySrgb({0.1f, 0.1f, 0.1f}, 1.0f);
+    const Vec3 doubled = SceneLinearToDisplaySrgb({0.2f, 0.2f, 0.2f}, 0.0f);
+    CHECK_NEAR(exposed.x, doubled.x, 1.0e-6);
+}
+
 }  // namespace
 
 int main()
@@ -275,5 +325,8 @@ int main()
     TestSrgbTransferRoundTrip();
     TestWhiteSpectrumIsNeutral();
     TestBlackbodyPeakMatchesWien();
+    TestDisplayTransformLeavesTheDiffuseRangeAlone();
+    TestDisplayTransformCompressesRatherThanClips();
+    TestDisplayTransformSanitisesAndExposes();
     return hdclaude_test::Summarize("hdClaudeCoreTests");
 }

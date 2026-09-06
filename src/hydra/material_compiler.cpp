@@ -1,5 +1,7 @@
 #include "material_compiler.h"
 
+#include "trace.h"
+
 #include "hdclaude/materialx/pathtracer_generator.h"
 
 #include <MaterialXGenShader/GenContext.h>
@@ -7,6 +9,7 @@
 #include <MaterialXGenShader/GenOptions.h>
 #include <MaterialXGenShader/Shader.h>
 #include <MaterialXGenShader/Util.h>
+#include <MaterialXFormat/XmlIo.h>
 
 #include "pxr/base/gf/vec3f.h"
 #include "pxr/base/tf/diagnostic.h"
@@ -176,6 +179,15 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
             std::ofstream out(std::filesystem::path(dumpDir) /
                               (name + ".comp.glsl"));
             out << generated;
+
+            // The document beside the code it produced. A material that
+            // generates but shades wrongly -- a sampler with no file, a node
+            // whose input arrived unconnected -- is a question about the
+            // document, and the document is otherwise built and discarded
+            // without ever being seen.
+            mx::writeToXmlFile(document,
+                               (std::filesystem::path(dumpDir) /
+                                (name + ".mtlx")).string());
         }
 
         // The textures this material samples, in the order the generator
@@ -199,6 +211,20 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
                     }
                     if (path.empty()) {
                         path = ResolveTexturePath(document, uniform);
+                    }
+                    if (path.empty()) {
+                        // An image node with no file at all. That is legal and
+                        // common -- an asset authors the node and leaves the
+                        // file to a stronger opinion that never arrives -- and
+                        // MaterialX says such a node returns its `default`.
+                        // The pool turns the empty path into that value, so
+                        // this is worth tracing and not worth warning about;
+                        // a file that is authored and cannot be read is the
+                        // case that deserves to be loud.
+                        HdClaudeTrace(
+                            "material %s samples '%s', which no asset path "
+                            "backs; it reads the image node's default",
+                            name.c_str(), uniform.c_str());
                     }
                     texturePaths->push_back(path);
                 }

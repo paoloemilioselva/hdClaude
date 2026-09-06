@@ -143,9 +143,22 @@ trees on `PXR_PLUGINPATH_NAME`.
 
 ```bat
 compile.bat core-only
-build\core-only\tests\hdClaudeCoreTests.exe
-validate_usd.bat
+ctest --test-dir build\core-only --output-on-failure
+compile.bat
+ctest --test-dir build\dev --output-on-failure
+render_gallery.bat -Scene subdivision_features
 ```
+
+The core-only preset needs neither a GPU nor OpenUSD, so it is what to run
+first when something is wrong: if it fails, the problem is not the environment.
+The full suite adds the GPU and MaterialX tests, which fail on any Vulkan
+validation error — core or synchronisation — rather than printing one. The
+gallery scene at the end is an end-to-end check through `usdrecord`, the
+installed plugin, and the image gate.
+
+There is no separate installation-validation script; the tests above are the
+check. A plugin that builds and installs but is not discovered is a
+`PXR_PLUGINPATH_NAME` problem — see Troubleshooting.
 
 ## Troubleshooting
 

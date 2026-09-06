@@ -8,6 +8,7 @@
 # ---------------------------------------------------------------------------
 
 add_library(hdClaudeCore STATIC
+    display.cpp
     hash.cpp
     shader_cache.cpp
     spectrum.cpp

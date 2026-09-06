@@ -106,6 +106,19 @@ class ComputePipeline {
                   std::uint32_t groupsZ = 1, const void* pushConstants = nullptr,
                   std::uint32_t pushConstantBytes = 0) const;
 
+    /// Bind and dispatch with the workgroup count read from `args` at
+    /// `offset`, where a kernel earlier in the frame wrote it.
+    ///
+    /// This is how every queue-sized dispatch in the integrator is issued: the
+    /// count depends on what the GPU found, and reading it back to size the
+    /// dispatch would stall the frame (docs/wavefront-integrator.md 2). The
+    /// buffer must carry VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT and the offset
+    /// must be a multiple of four.
+    void DispatchIndirect(VkCommandBuffer command, VkDescriptorSet set,
+                          const VulkanBuffer& args, VkDeviceSize offset = 0,
+                          const void* pushConstants = nullptr,
+                          std::uint32_t pushConstantBytes = 0) const;
+
     void Reset();
 
   private:

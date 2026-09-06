@@ -102,13 +102,22 @@ camera lighting, so authored or fallback lighting is what gets tested. For tools
 that do not expose Hydra settings, set them in the environment:
 
 ```bat
-set HDCLAUDE_SAMPLES_PER_PIXEL=1024
-set HDCLAUDE_SAMPLES_PER_UPDATE=32
-set HDCLAUDE_MAX_BOUNCES=8
-set HDCLAUDE_ENABLE_SUBDIVISION=1
-set HDCLAUDE_SUBDIVISION_LEVEL=2
-set HDCLAUDE_ENABLE_DISPLACEMENT=1
+set HDCLAUDE_SAMPLES_PER_PIXEL=1024   :: samples in the image
+set HDCLAUDE_SAMPLES_PER_FRAME=32     :: samples per progressive update
+set HDCLAUDE_MAX_BOUNCES=8            :: path length
+set HDCLAUDE_SUBDIVISION_LEVEL=2      :: 0 to 6; 0 traces the control cage
+set HDCLAUDE_EXPOSURE=0               :: stops, applied after the film resolves
+set HDCLAUDE_DEVICE=5060              :: substring of the GPU to select
 ```
+
+`render_claude.bat` with no arguments prints the same list. Every name there is
+one the delegate reads; there is no setting documented that it ignores.
+
+`render_gallery.bat` renders the versioned gallery at the settings
+[gallery.md](gallery.md) fixes, compares each image against its committed
+baseline before replacing it, and records the wall time and machine in that
+file. `-Scene <keys>` renders a subset, `-Accept` adopts a deliberate change,
+and `-UpdateOnly` rewrites the table from the recorded timings.
 
 ## Licence
 

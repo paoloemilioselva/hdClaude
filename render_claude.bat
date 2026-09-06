@@ -11,13 +11,16 @@ IF ERRORLEVEL 1 EXIT /B %ERRORLEVEL%
 IF "%~1"=="" (
   ECHO Usage: render_claude.bat [usdrecord options] ^<scene.usd^> ^<output.exr^>
   ECHO.
-  ECHO Settings are taken from the environment:
-  ECHO   HDCLAUDE_SAMPLES_PER_PIXEL   1-4096   default 128
-  ECHO   HDCLAUDE_SAMPLES_PER_UPDATE  1-64     default 8
-  ECHO   HDCLAUDE_MAX_BOUNCES         1-16     default 8
-  ECHO   HDCLAUDE_ENABLE_SUBDIVISION  0 or 1   default 1
-  ECHO   HDCLAUDE_SUBDIVISION_LEVEL   0-8      default 2
-  ECHO   HDCLAUDE_ENABLE_DISPLACEMENT 0 or 1   default 1
+  ECHO Settings are taken from the environment. These are the names the
+  ECHO delegate reads; see src/hydra/render_delegate.cpp.
+  ECHO   HDCLAUDE_SAMPLES_PER_PIXEL     default 64    samples in the image
+  ECHO   HDCLAUDE_SAMPLES_PER_FRAME     default 4     samples per progressive update
+  ECHO   HDCLAUDE_MAX_BOUNCES           default 8     path length
+  ECHO   HDCLAUDE_SUBDIVISION_LEVEL     0-6, default 2, 0 disables refinement
+  ECHO   HDCLAUDE_EXPOSURE              default 0     stops, applied after resolve
+  ECHO   HDCLAUDE_ENVIRONMENT_INTENSITY default 1     stand-in sky, unlit stages
+  ECHO   HDCLAUDE_SUN_INTENSITY         default 1     stand-in sun, unlit stages
+  ECHO   HDCLAUDE_DEVICE                substring of the GPU to select
   EXIT /B 2
 )
 

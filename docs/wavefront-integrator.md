@@ -53,19 +53,24 @@ allocations.
 All compute. One frame is:
 
 ```text
-raygen
+raygen                               # bounce 0 only; one thread per pixel
 repeat maxBounces times:
-    prepare_dispatch                 # counters -> indirect args
+    prepare_dispatch  (active)       # activeCount -> indirect args; clear counts
     extend                           # closest hit for `active`
-    sort                             # count, prefix-sum, scatter into hit[m]
-    environment                      # consume `escaped`
-    prepare_dispatch
-    for each material m present:
+    sort  (count)                    # how many paths each material claims
+    prepare_dispatch  (materials)    # prefix sum -> offsets and per-material args
+    sort  (scatter)                  # path indices into hit[m]
+    environment                      # the misses, still on `active`
+    for each material m:
         shade_m                      # MaterialX program; emits shadow + next active
-    prepare_dispatch
+    prepare_dispatch  (shadow)       # shadowCount -> indirect args
     shadow                           # any-hit; unoccluded contributions to radiance
 film
 ```
+
+Every dispatch after `raygen` is `vkCmdDispatchIndirect`. The counters that size
+them are written by the GPU, and reading one back to size the next dispatch
+would put a stall in the middle of every bounce.
 
 ### `raygen`
 Generates camera rays with subpixel jitter (Halton, or the DLSS-required
@@ -84,7 +89,13 @@ see [architecture.md](architecture.md) §2.1.
 A three-pass counting sort keyed on material id: count into per-material
 counters, exclusive prefix sum over the material table, scatter path indices
 into `hit[m]`. Material count is bounded by the scene's distinct compiled
-programs, typically tens, so the prefix sum is a single workgroup.
+programs, typically tens, so the prefix sum is a single workgroup — in fact a
+single invocation inside `prepare_dispatch`, which is already there to turn the
+same counts into dispatch arguments.
+
+Paths that missed geometry are given no group. They stay on `active`, where the
+environment kernel consumes them, so the groups partition the hits rather than
+the queue.
 
 ### `shade_m`
 The heart of the design. One dispatch per material present in this bounce, each

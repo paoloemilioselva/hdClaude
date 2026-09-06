@@ -120,6 +120,16 @@ class PathTracer {
     /// without duplicating knowledge of the ABI.
     const std::string& ShadeKernelSource() const { return _shadeKernelSource; }
 
+    /// How many paths each material's dispatch covered in the last bounce of
+    /// the last completed `Render`, read back from the device.
+    ///
+    /// This is the only way to observe the sort: the counts are written by the
+    /// GPU and consumed by an indirect dispatch without ever crossing to the
+    /// host during a frame, so a test that wants to assert the split has to ask
+    /// afterwards. It is a diagnostic, not part of rendering -- calling it
+    /// during a frame would be exactly the readback the design forbids.
+    std::vector<std::uint32_t> MaterialCounts() const;
+
   private:
     void EnsureResolution(std::uint32_t width, std::uint32_t height);
     void UploadTextures(const std::vector<TextureImage>& textures);
@@ -157,6 +167,8 @@ class PathTracer {
 
     ComputePipeline _raygen;
     ComputePipeline _extend;
+    ComputePipeline _prepareDispatch;
+    ComputePipeline _materialSort;
     ComputePipeline _environment;
     ComputePipeline _shadow;
     ComputePipeline _film;
@@ -170,6 +182,13 @@ class PathTracer {
     VulkanBuffer _hits, _counters, _activeQueue, _nextActiveQueue, _shadowRays;
     VulkanBuffer _accumulation;
     VulkanBuffer _readback;
+
+    // The material sort. The queue is sized by the resolution; the table and
+    // the indirect commands are sized by the number of materials, so they are
+    // built when a scene is published rather than when the resolution changes.
+    VulkanBuffer _materialQueue;
+    VulkanBuffer _materialTable;
+    VulkanBuffer _dispatchArgs;
 };
 
 }  // namespace hdclaude

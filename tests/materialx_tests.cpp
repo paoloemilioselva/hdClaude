@@ -144,7 +144,9 @@ void main()
     // Geometry the kernel would interpolate from the hit record. Assigned
     // through the generated setter, because the SurfaceHit struct holds only
     // the members this particular material reads.
-    hdclaude_set_surface_hit(vec3(0.0), vec3(0.0, 0.0, 1.0), vec3(1.0, 0.0, 0.0));
+    hdclaude_set_surface_hit(vec3(0.0), vec3(0.0, 0.0, 1.0), vec3(1.0, 0.0, 0.0),
+                             vec3(0.0), vec3(0.0, 0.0, 1.0), vec3(1.0, 0.0, 0.0),
+                             vec2(0.5));
 
     // Per-invocation path state the closures read.
     hdclaude_wavelengths = vec4(450.0, 550.0, 600.0, 650.0);
