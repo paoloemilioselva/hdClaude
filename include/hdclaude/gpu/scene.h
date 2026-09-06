@@ -176,6 +176,29 @@ struct Light {
 /// MaterialX generator reads this constant so only those two can disagree.
 inline constexpr std::uint32_t kTextureCapacity = 128;
 
+/// How a decoded texture's texels are laid out.
+///
+/// Quantising a wider *integer* source to eight bits loses precision, which is
+/// a fair trade for a mask or a roughness map. Quantising a *float* source
+/// clamps it, which is not a trade at all: an HDRI's windows and lamps are the
+/// only part of it that lights anything, and they live entirely above 1.0. A
+/// dome light whose map has been clamped is a dome light with no highlights,
+/// no sun, and a flat grey sky.
+enum class TexelFormat : std::uint8_t {
+    /// Eight bits a channel, linear.
+    Rgba8Unorm,
+    /// Eight bits a channel, sRGB-encoded; the sampler decodes.
+    Rgba8Srgb,
+    /// Half a channel. What a float or half source is kept in.
+    Rgba16Sfloat,
+};
+
+/// Bytes one texel of `format` occupies.
+inline constexpr std::uint32_t TexelSize(TexelFormat format)
+{
+    return format == TexelFormat::Rgba16Sfloat ? 8u : 4u;
+}
+
 /// One decoded texture, ready to upload.
 ///
 /// Plain bytes with no image library in the interface: decoding belongs to the
@@ -184,24 +207,28 @@ inline constexpr std::uint32_t kTextureCapacity = 128;
 struct TextureImage {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
-    /// Tightly packed RGBA8, `width * height * 4` bytes, **bottom row
-    /// first**: row 0 is v = 0, which is where USD and MaterialX put the
-    /// origin of a texture and what the sampler reads as v = 0.
-    std::vector<std::uint8_t> rgba;
-    /// True if the bytes are sRGB-encoded colour and want hardware decode.
+    /// Tightly packed RGBA in `format`, `width * height * TexelSize(format)`
+    /// bytes, **bottom row first**: row 0 is v = 0, which is where USD and
+    /// MaterialX put the origin of a texture and what the sampler reads as
+    /// v = 0.
+    std::vector<std::uint8_t> texels;
+    /// How to read `texels`, and -- for the two eight-bit forms -- whether the
+    /// sampler decodes sRGB.
     ///
-    /// A property of what the image *means*, not of how it is stored: a normal,
-    /// roughness or metalness map is data, and is routinely shipped in the same
-    /// 8-bit JPEG a colour map would be. Decoding one of those as sRGB bends
-    /// every value it holds -- a flat normal map stops being flat, so the whole
-    /// surface tilts and its detail is exaggerated.
-    bool srgb = false;
+    /// The sRGB choice is a property of what the image *means*, not of how it
+    /// is stored: a normal, roughness or metalness map is data, and is
+    /// routinely shipped in the same 8-bit JPEG a colour map would be. Decoding
+    /// one of those as sRGB bends every value it holds -- a flat normal map
+    /// stops being flat, so the whole surface tilts and its detail is
+    /// exaggerated.
+    TexelFormat format = TexelFormat::Rgba8Unorm;
     std::string debugName;
 
     bool Valid() const
     {
         return width > 0 && height > 0 &&
-               rgba.size() == static_cast<std::size_t>(width) * height * 4;
+               texels.size() == static_cast<std::size_t>(width) * height *
+                                    TexelSize(format);
     }
 };
 
@@ -240,6 +267,11 @@ struct Scene {
     /// World-to-light rotation for the dome, column-major, so a direction can
     /// be taken into the map's own frame. Identity when the light is unrotated.
     float domeWorldToLight[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    /// And back, for a direction the environment sampler chose *in* the map.
+    /// Carried rather than transposed on the GPU: a dome's transform is a
+    /// rotation in every scene that means anything, but "in every scene that
+    /// means anything" is not a thing to build a shader on.
+    float domeLightToWorld[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
 
     std::uint64_t revision = 0;
 

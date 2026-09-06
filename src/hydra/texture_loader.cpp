@@ -2,6 +2,7 @@
 
 #include "trace.h"
 
+#include "pxr/base/gf/half.h"
 #include "pxr/imaging/hio/image.h"
 #include "pxr/imaging/hio/types.h"
 #include "pxr/usd/ar/resolver.h"
@@ -74,6 +75,41 @@ std::uint8_t Quantise(const char* source, HioType type)
         default:
             return 0;
     }
+}
+
+/// One decoded component, unclamped.
+///
+/// Only the float and half sources need this: an integer source has a defined
+/// maximum and quantising it costs precision, while a float source has no
+/// maximum and quantising it costs everything above 1.0.
+float FloatComponent(const char* source, HioType type)
+{
+    switch (type) {
+        case HioTypeHalfFloat: {
+            GfHalf value;
+            std::memcpy(&value, source, sizeof(value));
+            return static_cast<float>(value);
+        }
+        case HioTypeFloat: {
+            float value = 0.0f;
+            std::memcpy(&value, source, sizeof(value));
+            return value;
+        }
+        default:
+            return 0.0f;
+    }
+}
+
+/// True when a decoded component carries values the eight-bit path would clamp.
+bool IsFloatType(HioType type)
+{
+    return type == HioTypeHalfFloat || type == HioTypeFloat;
+}
+
+void WriteHalf(std::uint8_t* destination, float value)
+{
+    const GfHalf half(value);
+    std::memcpy(destination, &half, sizeof(half));
 }
 
 bool Widen(const HioImageSharedPtr& image, hdclaude::TextureImage* out,
@@ -151,28 +187,56 @@ bool Widen(const HioImageSharedPtr& image, hdclaude::TextureImage* out,
     // and metalness maps are all 8-bit JPEGs whose MaterialX nodes are
     // `vector3` and `float` with no colorspace: reading them as sRGB tilted
     // every surface and exaggerated every bump.
-    switch (colorSpace) {
-        case HdClaudeTextureColorSpace::Srgb: out->srgb = true; break;
-        case HdClaudeTextureColorSpace::Raw:  out->srgb = false; break;
-        case HdClaudeTextureColorSpace::Auto:
-            out->srgb = image->IsColorSpaceSRGB();
-            break;
+    // A float source keeps its range. An HDRI's whole contribution as a light
+    // is the part of it above 1.0 -- the window, the lamp, the sun -- and the
+    // eight-bit path clamps exactly that away, leaving a dome light that lights
+    // nothing brightly and casts no shadow worth the name. Colour space does
+    // not enter into it: a float image is linear by definition, so the sRGB
+    // request only ever chooses between the two eight-bit forms.
+    const bool keepFloat = IsFloatType(type);
+    if (keepFloat) {
+        out->format = hdclaude::TexelFormat::Rgba16Sfloat;
+    } else {
+        switch (colorSpace) {
+            case HdClaudeTextureColorSpace::Srgb:
+                out->format = hdclaude::TexelFormat::Rgba8Srgb;
+                break;
+            case HdClaudeTextureColorSpace::Raw:
+                out->format = hdclaude::TexelFormat::Rgba8Unorm;
+                break;
+            case HdClaudeTextureColorSpace::Auto:
+                out->format = image->IsColorSpaceSRGB()
+                                  ? hdclaude::TexelFormat::Rgba8Srgb
+                                  : hdclaude::TexelFormat::Rgba8Unorm;
+                break;
+        }
     }
-    out->rgba.assign(static_cast<size_t>(width) * height * 4, 0);
+
+    const size_t texel = hdclaude::TexelSize(out->format);
+    out->texels.assign(static_cast<size_t>(width) * height * texel, 0);
 
     const size_t pixels = static_cast<size_t>(width) * height;
     for (size_t i = 0; i < pixels; ++i) {
         for (size_t c = 0; c < 4; ++c) {
-            std::uint8_t value = (c == 3) ? 255 : 0;
+            // The component this channel reads, or none: alpha defaults to
+            // opaque, and a single-channel image reads as grey rather than as
+            // red, which is what a greyscale roughness or mask map means.
+            const char* source = nullptr;
             if (c < channels) {
-                value = Quantise(raw.data() + (i * channels + c) * bytesPerComponent,
-                                 type);
+                source = raw.data() + (i * channels + c) * bytesPerComponent;
             } else if (c < 3 && channels == 1) {
-                // A single-channel image reads as grey rather than as red,
-                // which is what a greyscale roughness or mask map means.
-                value = Quantise(raw.data() + i * bytesPerComponent, type);
+                source = raw.data() + i * bytesPerComponent;
             }
-            out->rgba[i * 4 + c] = value;
+
+            if (keepFloat) {
+                WriteHalf(out->texels.data() + (i * 4 + c) * 2,
+                          source ? FloatComponent(source, type)
+                                 : (c == 3 ? 1.0f : 0.0f));
+            } else {
+                out->texels[i * 4 + c] =
+                    source ? Quantise(source, type)
+                           : static_cast<std::uint8_t>(c == 3 ? 255 : 0);
+            }
         }
     }
     return true;
@@ -275,8 +339,8 @@ std::uint32_t HdClaudeTexturePool::Acquire(const std::string& assetPath,
         // shell did.
         image.width = 1;
         image.height = 1;
-        image.rgba = {0, 0, 0, 255};
-        image.srgb = false;
+        image.texels = {0, 0, 0, 255};
+        image.format = hdclaude::TexelFormat::Rgba8Unorm;
         image.debugName = "image node with no file";
         HdClaudeTrace("texture %u: unbound image node; reads its default", slot);
         _images.push_back(std::move(image));
@@ -284,8 +348,14 @@ std::uint32_t HdClaudeTexturePool::Acquire(const std::string& assetPath,
     }
 
     if (HdClaudeLoadTexture(assetPath, &image, &error, colorSpace)) {
+        const char* encoding = "linear";
+        if (image.format == hdclaude::TexelFormat::Rgba8Srgb) {
+            encoding = "sRGB";
+        } else if (image.format == hdclaude::TexelFormat::Rgba16Sfloat) {
+            encoding = "linear half";
+        }
         HdClaudeTrace("texture %u: %s (%ux%u, %s)", slot, assetPath.c_str(),
-                      image.width, image.height, image.srgb ? "sRGB" : "linear");
+                      image.width, image.height, encoding);
     } else {
         // The slot still exists and still holds an invalid image, so the
         // renderer binds its placeholder and the material's other indices are

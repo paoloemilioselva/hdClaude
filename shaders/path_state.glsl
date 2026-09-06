@@ -35,7 +35,13 @@ layout(set = 0, binding = 0, scalar) uniform FrameBlock {
     uint  lightCount;           // entries in the light table
     uint  hasDomeTexture;       // 1 when hdclaude_dome holds an environment map
     uint  materialCount;        // compiled shading pipelines; the sort's key range
+    uint  hasEnvironmentDistribution;   // 1 when the dome map has a CDF built
+    uint  environmentWidth;
+    uint  environmentHeight;
+    uint  environmentConditional;       // index of the conditional CDF block
+    uint  environmentDensity;           // index of the density block
     mat4  domeWorldToLight;     // takes a world direction into the dome's frame
+    mat4  domeLightToWorld;     // and back, for a direction sampled in the map
 } frame;
 
 // --- Path state -------------------------------------------------------------
@@ -302,6 +308,13 @@ layout(set = 0, binding = 15, scalar) readonly buffer LightTable {
 // and frame.hasDomeTexture says whether to look.
 layout(set = 0, binding = 17) uniform sampler2D hdclaude_dome;
 
+/// The dome map's sampling distribution: a marginal CDF over rows, a
+/// conditional CDF per row, and the density those two sample from, all in one
+/// buffer (`hdclaude/gpu/environment_distribution.h`).
+layout(set = 0, binding = 22, scalar) readonly buffer EnvironmentDistribution {
+    float values[];
+} environmentDistribution;
+
 /// How many emitters next-event estimation chooses between.
 ///
 /// The analytic lights plus the environment, which is sampled as one more
@@ -316,16 +329,145 @@ uint hdclaude_emitter_count()
     return frame.lightCount + (frame.lightCount == 0u ? 2u : 1u);
 }
 
-/// Solid-angle density of choosing `direction` by environment sampling.
+/// Where `direction` lands in the dome map's parameterisation.
 ///
-/// Uniform over the sphere. Deliberately independent of the surface: the
-/// kernel that needs this density for a *scattered* ray has no surface to hand
-/// -- it has a direction and a miss -- so a cosine-weighted density about some
-/// normal could not be recomputed there, and an MIS weight that cannot be
-/// computed on both sides is not an MIS weight.
-float hdclaude_environment_pdf()
+/// The inverse of the lookup in `hdclaude_environment` below, and the two are
+/// only ever right together: a sampler that walks the map in one
+/// parameterisation and a density evaluated in another agree nowhere.
+vec2 hdclaude_dome_uv(vec3 direction, out float sinTheta)
 {
-    return (1.0 / (4.0 * 3.14159265359)) / float(hdclaude_emitter_count());
+    vec3 d = normalize((frame.domeWorldToLight * vec4(direction, 0.0)).xyz);
+    float theta = acos(clamp(d.y, -1.0, 1.0));
+    sinTheta = sin(theta);
+    float u = fract((atan(d.z, d.x) + 1.57079632679) * (1.0 / 6.28318530718));
+    float v = 1.0 - theta * (1.0 / 3.14159265359);
+    return vec2(u, v);
+}
+
+/// The first bin whose CDF interval contains `u`.
+///
+/// `base` is the index of the CDF's leading zero and there are `count + 1`
+/// entries, so the answer is in [0, count).
+uint hdclaude_cdf_search(uint base, uint count, float u)
+{
+    uint low = 0u;
+    uint high = count;
+    while (low < high)
+    {
+        uint mid = (low + high) >> 1u;
+        if (environmentDistribution.values[base + mid + 1u] <= u)
+        {
+            low = mid + 1u;
+        }
+        else
+        {
+            high = mid;
+        }
+    }
+    return min(low, count - 1u);
+}
+
+/// Density in (u, v) measure of the bin containing `uv`.
+float hdclaude_environment_density(vec2 uv)
+{
+    uint x = min(uint(uv.x * float(frame.environmentWidth)),
+                 frame.environmentWidth - 1u);
+    uint y = min(uint(uv.y * float(frame.environmentHeight)),
+                 frame.environmentHeight - 1u);
+    return environmentDistribution.values[frame.environmentDensity +
+                                          y * frame.environmentWidth + x];
+}
+
+/// Density of choosing `direction` by environment sampling, in solid angle,
+/// including the chance of having chosen the environment among the emitters.
+///
+/// Deliberately a function of the direction alone: the kernel that needs this
+/// for a *scattered* ray has a direction and a miss and no surface, so a
+/// density it could not recompute there would not be usable as an MIS weight
+/// at all. A textured dome is sampled by luminance, an untextured one -- which
+/// is uniform, and for which no distribution exists -- over the sphere.
+///
+/// The change of measure is the map's own Jacobian: solid angle is
+/// `sin(theta) dtheta dphi`, and (u, v) spans `dtheta = pi dv`,
+/// `dphi = 2 pi du`, so `domega = 2 pi^2 sin(theta) du dv`.
+float hdclaude_environment_pdf(vec3 direction)
+{
+    float selection = 1.0 / float(hdclaude_emitter_count());
+    if (frame.hasEnvironmentDistribution == 0u)
+    {
+        return (1.0 / (4.0 * 3.14159265359)) * selection;
+    }
+
+    float sinTheta;
+    vec2 uv = hdclaude_dome_uv(direction, sinTheta);
+    if (sinTheta <= 1.0e-6)
+    {
+        // Straight up or straight down: the parameterisation is singular there
+        // and no finite density describes it. Reporting zero costs the MIS
+        // weight nothing -- it becomes one for the strategy that can reach it.
+        return 0.0;
+    }
+    return hdclaude_environment_density(uv) /
+           (2.0 * 3.14159265359 * 3.14159265359 * sinTheta) * selection;
+}
+
+/// A direction sampled from the dome map's luminance, with its density.
+///
+/// `pdf` is the solid-angle density *without* the emitter-selection factor,
+/// matching what `hdclaude_sample_light` reports, so the shade kernel applies
+/// the selection probability once for every emitter alike.
+struct EnvironmentSample {
+    vec3  direction;
+    float pdf;
+};
+
+EnvironmentSample hdclaude_sample_environment(vec2 xi)
+{
+    EnvironmentSample result;
+
+    if (frame.hasEnvironmentDistribution == 0u)
+    {
+        // No map, or a map with no light in it: uniform over the sphere, which
+        // is exactly right for a constant environment.
+        float z = 1.0 - 2.0 * xi.x;
+        float r = sqrt(max(0.0, 1.0 - z * z));
+        float phi = 6.28318530718 * xi.y;
+        result.direction = vec3(r * cos(phi), r * sin(phi), z);
+        result.pdf = 1.0 / (4.0 * 3.14159265359);
+        return result;
+    }
+
+    // The row, then the column within it. The leftover of each search is
+    // reused as the position *inside* the bin, so a bin is sampled uniformly
+    // rather than at its edge and no second random number is needed.
+    uint y = hdclaude_cdf_search(0u, frame.environmentHeight, xi.x);
+    float yLow = environmentDistribution.values[y];
+    float yHigh = environmentDistribution.values[y + 1u];
+    float dy = yHigh > yLow ? (xi.x - yLow) / (yHigh - yLow) : 0.5;
+
+    uint conditional =
+        frame.environmentConditional + y * (frame.environmentWidth + 1u);
+    uint x = hdclaude_cdf_search(conditional, frame.environmentWidth, xi.y);
+    float xLow = environmentDistribution.values[conditional + x];
+    float xHigh = environmentDistribution.values[conditional + x + 1u];
+    float dx = xHigh > xLow ? (xi.y - xLow) / (xHigh - xLow) : 0.5;
+
+    vec2 uv = vec2((float(x) + dx) / float(frame.environmentWidth),
+                   (float(y) + dy) / float(frame.environmentHeight));
+
+    // The inverse of hdclaude_dome_uv, in the dome's frame, then back to world.
+    float theta = (1.0 - uv.y) * 3.14159265359;
+    float sinTheta = sin(theta);
+    float phi = 6.28318530718 * uv.x - 1.57079632679;
+    vec3 inLight = vec3(sinTheta * cos(phi), cos(theta), sinTheta * sin(phi));
+    result.direction =
+        normalize((frame.domeLightToWorld * vec4(inLight, 0.0)).xyz);
+
+    result.pdf = sinTheta > 1.0e-6
+                     ? hdclaude_environment_density(uv) /
+                           (2.0 * 3.14159265359 * 3.14159265359 * sinTheta)
+                     : 0.0;
+    return result;
 }
 
 /// Radiance leaving the scene along `direction`.

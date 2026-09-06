@@ -161,6 +161,16 @@ class PathTracer {
     VulkanImage _placeholderTexture;
     VulkanImage _domeTexture;
     float _domeWorldToLight[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    float _domeLightToWorld[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+
+    /// The dome map's sampling distribution, uploaded as one buffer. Always a
+    /// real buffer -- a descriptor set cannot point at nothing -- and the
+    /// kernels read `hasEnvironmentDistribution` rather than its size.
+    VulkanBuffer _environmentDistribution;
+    std::uint32_t _environmentWidth = 0;
+    std::uint32_t _environmentHeight = 0;
+    std::uint32_t _environmentConditional = 0;
+    std::uint32_t _environmentDensity = 0;
     VkSampler _sampler = VK_NULL_HANDLE;
     /// Per-material texture slots, parallel to _shade.
     std::vector<std::vector<std::uint32_t>> _materialTextureSlots;

@@ -337,18 +337,19 @@ void main()
         }
         else if (environmentSample)
         {
-            // Uniform over the sphere, because the density has to be
-            // recomputable by the environment kernel from a direction alone.
-            // Half the samples land below the horizon and are rejected by the
-            // facing test below, which is variance the MIS weight and the
-            // scattered ray between them make up for.
-            float z = 1.0 - 2.0 * lightU.x;
-            float r = sqrt(max(0.0, 1.0 - z * z));
-            float phi = 6.28318530718 * lightU.y;
-            lightSample.direction = vec3(r * cos(phi), r * sin(phi), z);
+            // Sampled from the map's own luminance, so the shadow rays go
+            // where the light is. A dome's radiance is concentrated almost
+            // entirely in a window or a sun covering a fraction of a percent
+            // of the sphere; found uniformly, that arrives as fireflies rather
+            // than as light. The density stays a function of direction alone,
+            // which is what lets the environment kernel weigh a scattered ray
+            // against this same strategy.
+            EnvironmentSample environmentDirection =
+                hdclaude_sample_environment(lightU);
+            lightSample.direction = environmentDirection.direction;
             lightSample.distance = 1.0e30;
             lightSample.radiance = hdclaude_environment(lightSample.direction);
-            lightSample.pdf = 1.0 / (4.0 * 3.14159265359);
+            lightSample.pdf = environmentDirection.pdf;
             lightSample.castsShadows = true;
         }
         else

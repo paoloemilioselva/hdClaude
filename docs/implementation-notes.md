@@ -1739,3 +1739,73 @@ a renderer-owned scene whose correct appearance is checkable by construction --
 a prototype whose meshes are deliberately offset from its root, instanced
 several times, so that dropping either transform is unmistakable. Recorded in
 docs/roadmap.md rather than built here.
+
+---
+
+## 2026-09-06 -- An HDRI is only a light above 1.0, and only if you can find it
+
+Two changes that make no sense apart, and one measurement that only exists
+because they landed together.
+
+**Every texture was quantised to eight bits.** `TextureImage` held RGBA8 and the
+loader clamped whatever it decoded into it. For an integer source that is a
+precision loss and a fair trade -- the comment in the loader said as much. For a
+*float* source it is not a trade at all. An HDRI's contribution as a light is
+almost entirely the part of it above 1.0: the window, the lamp, the sun. Clamp
+that and a dome light becomes a flat grey sky that casts no shadow worth the
+name. The chess set has been lit by a clamped 4k HDRI since it was adopted.
+
+Float and half sources are now kept in `R16G16B16A16_SFLOAT`, which is a
+mandatory sampled format with linear filtering, so this needs no capability
+query. Integer sources are unchanged: quantising them is still the trade it
+always was, and the line between the two cases is the one that matters --
+quantisation loses precision, clamping loses data.
+
+**Which immediately made the image worse.** Uniform sphere sampling of a real
+HDRI is a firefly generator by construction: the light is concentrated in a
+fraction of a percent of the sphere and is hundreds of times brighter than
+everything around it, so one shadow ray in a thousand finds it and carries a
+thousand times the radiance it should. The first render with range restored was
+brighter, correct in the mean, and covered in white specks.
+
+So the environment now has a piecewise-constant distribution over its own
+latitude-longitude parameterisation -- a marginal CDF over rows, a conditional
+CDF per row, and the density those sample from. Each texel is weighted by
+luminance times sin(theta), because a row near a pole covers far less solid
+angle than one at the equator and luminance alone would spend most of the
+samples on the two points where the map is most oversampled.
+
+**The constraint that shaped it.** The density has to be evaluable *from a
+direction alone*. The kernel that weighs a scattered ray against this strategy
+has a miss and a direction and no surface in hand, so a density it cannot
+recompute there is not a density multiple importance sampling can use. That is
+why the density is stored rather than reconstructed from the CDFs, and why the
+sampler's (u, v) -> direction map is written as the explicit inverse of the
+lookup: the two are only ever right together, and a sampler that walks the map
+in one parameterisation with a density evaluated in another agrees nowhere.
+
+The distribution is built at most 1024x512, box-averaged down from whatever the
+map is. Averaging rather than point-sampling is load-bearing: it keeps the
+density nonzero wherever the map is, which is the property MIS needs from it. A
+4k map's own resolution would cost 67 MB of CDF and density to resolve an edge
+that sampling does not care about.
+
+**What the tests had to be.** A furnace under a *uniform* dome is not the
+trivial case it looks: a distribution over (u, v) describing a uniform sky is
+proportional to sin(theta), so a missing Jacobian shows up there and not only in
+a peaky map. It renders 0.818 against a closed form of 0.800.
+
+But a uniform sky integrates to the same number under any rotation, so a second
+test lights only `u < 0.5` -- the half-space x > 0 in the dome's frame -- and
+asks a quad facing +Z what it receives. The answer is exactly half the furnace,
+because the cosine weight is symmetric in x; a reconstruction rotated a quarter
+turn would answer 0.8 or 0.0 instead. It renders 0.402 against 0.400.
+
+**And a real lesson from getting that test wrong first.** It was written with a
+bounce limit of one and rendered 0.11 instead of 0.40. Nothing was wrong with
+the estimator: at one bounce the scattered ray is retired before it reaches the
+environment kernel, so only the next-event half of the multiple-importance
+estimate is ever added, and each contribution keeps just its MIS weight. Both
+halves of an MIS estimate have to actually run. A bounce limit that stops one of
+them does not make the image noisier -- it makes it *dark*, by a factor that
+looks exactly like a missing light.

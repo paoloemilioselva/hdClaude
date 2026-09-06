@@ -29,6 +29,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <vector>
@@ -337,19 +338,56 @@ TextureImage MakeOrientationTexture()
     image.width = kSize;
     image.height = kSize;
     image.debugName = "orientation";
-    image.rgba.resize(static_cast<std::size_t>(kSize) * kSize * 4);
+    image.texels.resize(static_cast<std::size_t>(kSize) * kSize * 4);
     for (std::uint32_t y = 0; y < kSize; ++y) {
         for (std::uint32_t x = 0; x < kSize; ++x) {
             const bool right = x >= kSize / 2;
             const bool top = y >= kSize / 2;
             const std::size_t i = (static_cast<std::size_t>(y) * kSize + x) * 4;
-            image.rgba[i + 0] = (!top && !right) || (top && right) ? 255 : 0;
-            image.rgba[i + 1] = (!top && right) || (top && right) ? 255 : 0;
-            image.rgba[i + 2] = (top && !right) || (top && right) ? 255 : 0;
-            image.rgba[i + 3] = 255;
+            image.texels[i + 0] = (!top && !right) || (top && right) ? 255 : 0;
+            image.texels[i + 1] = (!top && right) || (top && right) ? 255 : 0;
+            image.texels[i + 2] = (top && !right) || (top && right) ? 255 : 0;
+            image.texels[i + 3] = 255;
         }
     }
     return image;
+}
+
+/// A half-float latitude-longitude dome, `lit(u, v)` deciding each texel.
+///
+/// Half-float on purpose: it is the format an HDRI arrives in, and the only one
+/// that can carry a dome's real range. The two values used here -- 1.0 and 0.0
+/// -- are exactly representable, so the test needs no float-to-half conversion
+/// of its own and cannot be wrong about one.
+template <typename Lit>
+TextureImage MakeDome(std::uint32_t width, std::uint32_t height, Lit lit)
+{
+    constexpr std::uint16_t kOne = 0x3c00;   // 1.0h
+    constexpr std::uint16_t kZero = 0x0000;
+
+    TextureImage dome;
+    dome.width = width;
+    dome.height = height;
+    dome.format = TexelFormat::Rgba16Sfloat;
+    dome.debugName = "dome";
+    dome.texels.assign(static_cast<std::size_t>(width) * height * 8, 0);
+
+    for (std::uint32_t y = 0; y < height; ++y) {
+        for (std::uint32_t x = 0; x < width; ++x) {
+            const float u = (static_cast<float>(x) + 0.5f) / float(width);
+            const float v = (static_cast<float>(y) + 0.5f) / float(height);
+            const std::uint16_t value = lit(u, v) ? kOne : kZero;
+            const std::size_t texel =
+                (static_cast<std::size_t>(y) * width + x) * 4;
+            for (int c = 0; c < 3; ++c) {
+                std::memcpy(dome.texels.data() + (texel + c) * 2, &value,
+                            sizeof(value));
+            }
+            std::memcpy(dome.texels.data() + (texel + 3) * 2, &kOne,
+                        sizeof(kOne));
+        }
+    }
+    return dome;
 }
 
 MeshPrototype MakeQuad()
@@ -842,6 +880,102 @@ int main()
             CHECK_NEAR(centre.r, 0.8, 0.05);
             CHECK_NEAR(centre.g, 0.8, 0.05);
             CHECK_NEAR(centre.b, 0.8, 0.05);
+        }
+
+        // --- A furnace under a *textured* dome --------------------------------
+        //
+        // The same closed form, with the environment sampled from a map's
+        // luminance rather than uniformly over the sphere. That is a different
+        // estimator reaching the same number, and it is the only way to catch
+        // the two errors importance sampling can make without looking wrong:
+        // a change of measure that is off by the map's Jacobian, and a
+        // direction reconstruction that does not invert the lookup.
+        //
+        // Note the density here is *not* uniform even though the map is: rows
+        // near a pole cover little solid angle, so a distribution built over
+        // (u, v) has to carry sin(theta) to describe a uniform sky. A missing
+        // Jacobian therefore shows up in this test, not only in a peaky map.
+        {
+            Scene scene;
+            scene.prototypes.push_back(MakeQuad());
+            scene.instances.push_back({0, Transform3x4{}, 0, true});
+            scene.textures.push_back(
+                MakeDome(64, 32, [](float, float) { return true; }));
+            scene.domeTexture = 0;
+            scene.hasDomeLight = true;
+            tracer.SetScene(scene, {materials[0]});   // albedo 0.8, grey
+
+            RenderSettings furnace;
+            furnace.samplesPerPixel = 256;
+            furnace.maxBounces = 2;
+            furnace.environmentColor[0] = 1.0f;
+            furnace.environmentColor[1] = 1.0f;
+            furnace.environmentColor[2] = 1.0f;
+            furnace.sunRadiance[0] = 0.0f;
+            furnace.sunRadiance[1] = 0.0f;
+            furnace.sunRadiance[2] = 0.0f;
+
+            const std::vector<float> image =
+                tracer.Render(kWidth, kHeight, LookDownZ(4.0f), furnace);
+            const Pixel centre = At(image, 0.5f, 0.5f);
+            std::printf("  textured furnace: %.4f %.4f %.4f (expected 0.80)\n",
+                        centre.r, centre.g, centre.b);
+
+            CHECK_NEAR(centre.r, 0.8, 0.05);
+            CHECK_NEAR(centre.g, 0.8, 0.05);
+            CHECK_NEAR(centre.b, 0.8, 0.05);
+        }
+
+        // --- Half a sky, and which half -----------------------------------
+        //
+        // The furnace above pins the measure but not the *orientation*: a
+        // reconstruction rotated by a quarter turn integrates a uniform sky to
+        // the same number. So this one lights only u < 0.5, which the dome's
+        // parameterisation places at x > 0, and asks a quad facing +Z what it
+        // receives.
+        //
+        // The answer is exactly half the furnace. The lit set is the half-space
+        // x > 0; the quad integrates over the hemisphere z > 0; and the cosine
+        // weight is symmetric in x, so the lit part is exactly half of it. A
+        // reconstruction rotated a quarter turn would light z > 0 or z < 0
+        // instead, and answer 0.8 or 0.0.
+        {
+            Scene scene;
+            scene.prototypes.push_back(MakeQuad());
+            scene.instances.push_back({0, Transform3x4{}, 0, true});
+            scene.textures.push_back(
+                MakeDome(64, 32, [](float u, float) { return u < 0.5f; }));
+            scene.domeTexture = 0;
+            scene.hasDomeLight = true;
+            tracer.SetScene(scene, {materials[0]});
+
+            RenderSettings half;
+            half.samplesPerPixel = 512;
+            // Two, not one. Both halves of a multiple-importance estimate
+            // have to actually run: at one bounce the scattered ray is
+            // retired before it reaches the environment kernel, so only the
+            // next-event half is ever added and each contribution keeps just
+            // its MIS weight. That is not a small bias -- it renders this
+            // scene at 0.11 instead of 0.40 -- and it is a property of the
+            // estimator rather than a fault, which is exactly why it is worth
+            // stating here.
+            half.maxBounces = 2;
+            half.environmentColor[0] = 1.0f;
+            half.environmentColor[1] = 1.0f;
+            half.environmentColor[2] = 1.0f;
+            half.sunRadiance[0] = 0.0f;
+            half.sunRadiance[1] = 0.0f;
+            half.sunRadiance[2] = 0.0f;
+
+            const std::vector<float> image =
+                tracer.Render(kWidth, kHeight, LookDownZ(4.0f), half);
+            const Pixel centre = At(image, 0.5f, 0.5f);
+            std::printf("  half sky: %.4f %.4f %.4f (expected 0.40)\n",
+                        centre.r, centre.g, centre.b);
+
+            CHECK_NEAR(centre.r, 0.4, 0.04);
+            CHECK_NEAR(centre.g, 0.4, 0.04);
+            CHECK_NEAR(centre.b, 0.4, 0.04);
         }
 
         // --- A texture arrives the way round it was decoded -------------------

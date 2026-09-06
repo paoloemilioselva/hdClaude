@@ -165,6 +165,9 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
                 std::copy(std::begin(entry.domeWorldToLight),
                           std::end(entry.domeWorldToLight),
                           std::begin(scene.domeWorldToLight));
+                std::copy(std::begin(entry.domeLightToWorld),
+                          std::end(entry.domeLightToWorld),
+                          std::begin(scene.domeLightToWorld));
             }
         } else {
             scene.lights.push_back(entry.light);

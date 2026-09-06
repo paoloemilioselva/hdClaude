@@ -11,6 +11,7 @@
 add_library(hdClaudeGpu STATIC
     acceleration_structure.cpp
     compute_pipeline.cpp
+    environment_distribution.cpp
     glsl_compiler.cpp
     path_tracer.cpp
     vulkan_context.cpp

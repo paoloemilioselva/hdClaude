@@ -1,5 +1,7 @@
 #include "hdclaude/gpu/path_tracer.h"
 
+#include "hdclaude/gpu/environment_distribution.h"
+
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -75,6 +77,7 @@ std::vector<BindingDescription> KernelBindings()
     bindings.push_back(storage(19, "materialTable"));
     bindings.push_back(storage(20, "dispatchArgs"));
     bindings.push_back(storage(21, "pathScatterPdf"));
+    bindings.push_back(storage(22, "environmentDistribution"));
 
     return bindings;
 }
@@ -95,7 +98,13 @@ struct FrameBlock {
     std::uint32_t lightCount;
     std::uint32_t hasDomeTexture;
     std::uint32_t materialCount;
+    std::uint32_t hasEnvironmentDistribution;
+    std::uint32_t environmentWidth;
+    std::uint32_t environmentHeight;
+    std::uint32_t environmentConditional;
+    std::uint32_t environmentDensity;
     float domeWorldToLight[16];
+    float domeLightToWorld[16];
 };
 
 /// Mirrors the indirect command slots in path_state.glsl. Each slot is a
@@ -330,7 +339,7 @@ PathTracer::PathTracer(const VulkanContext& context, VulkanAllocator& allocator,
     TextureImage placeholder;
     placeholder.width = 1;
     placeholder.height = 1;
-    placeholder.rgba = {255, 0, 255, 255};
+    placeholder.texels = {255, 0, 255, 255};
     placeholder.debugName = "texture.placeholder";
     _placeholderTexture = UploadTexture(placeholder);
 
@@ -356,8 +365,20 @@ VulkanImage PathTracer::UploadTexture(const TextureImage& texture)
     // sRGB decode in hardware rather than in the shader. MaterialX generates
     // no linearisation of its own -- it assumes the sampler returns linear --
     // so doing it here is what makes an authored colour map mean what it says.
-    description.format = texture.srgb ? VK_FORMAT_R8G8B8A8_SRGB
-                                      : VK_FORMAT_R8G8B8A8_UNORM;
+    //
+    // R16G16B16A16_SFLOAT is a mandatory sampled format with linear filtering,
+    // so an HDR source needs no capability query to keep its range.
+    switch (texture.format) {
+        case TexelFormat::Rgba8Srgb:
+            description.format = VK_FORMAT_R8G8B8A8_SRGB;
+            break;
+        case TexelFormat::Rgba16Sfloat:
+            description.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+            break;
+        case TexelFormat::Rgba8Unorm:
+            description.format = VK_FORMAT_R8G8B8A8_UNORM;
+            break;
+    }
     description.usage =
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     description.debugName = texture.debugName;
@@ -365,14 +386,14 @@ VulkanImage PathTracer::UploadTexture(const TextureImage& texture)
     VulkanImage image(_allocator, description);
 
     const VkDeviceSize size =
-        static_cast<VkDeviceSize>(texture.rgba.size());
+        static_cast<VkDeviceSize>(texture.texels.size());
     BufferDescription staging;
     staging.size = size;
     staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     staging.domain = BufferDomain::HostUpload;
     staging.debugName = texture.debugName + ".staging";
     VulkanBuffer upload(_allocator, staging);
-    upload.Write(texture.rgba.data(), size);
+    upload.Write(texture.texels.data(), size);
 
     _context.SubmitImmediate([&](VkCommandBuffer command) {
         image.RecordBarrier(command, VK_IMAGE_LAYOUT_UNDEFINED,
@@ -595,6 +616,53 @@ void PathTracer::SetScene(const Scene& scene,
     }
     std::memcpy(_domeWorldToLight, scene.domeWorldToLight,
                 sizeof(_domeWorldToLight));
+    std::memcpy(_domeLightToWorld, scene.domeLightToWorld,
+                sizeof(_domeLightToWorld));
+
+    // --- The environment's sampling distribution ----------------------------
+    // Built from the dome map, if there is one with any light in it. A constant
+    // environment needs none: uniform sphere sampling is already its exact
+    // density, and building a distribution over one texel would say nothing.
+    {
+        EnvironmentDistribution distribution;
+        if (_domeTexture.Valid()) {
+            distribution = BuildEnvironmentDistribution(
+                scene.textures[static_cast<std::size_t>(scene.domeTexture)]);
+        }
+
+        const std::vector<float> fallback{0.0f};
+        const std::vector<float>& values =
+            distribution.Valid() ? distribution.data : fallback;
+        const VkDeviceSize size = values.size() * sizeof(float);
+
+        BufferDescription staging;
+        staging.size = size;
+        staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        staging.domain = BufferDomain::HostUpload;
+        staging.debugName = "environmentDistribution.staging";
+        VulkanBuffer upload(_allocator, staging);
+        upload.Write(values.data(), size);
+
+        _environmentDistribution =
+            MakeStorage(_allocator, size, "environmentDistribution");
+        _context.SubmitImmediate([&](VkCommandBuffer command) {
+            VkBufferCopy region{};
+            region.size = size;
+            vkCmdCopyBuffer(command, upload.Handle(),
+                            _environmentDistribution.Handle(), 1, &region);
+        });
+
+        _environmentWidth = distribution.Valid() ? distribution.width : 0;
+        _environmentHeight = distribution.Valid() ? distribution.height : 0;
+        _environmentConditional =
+            distribution.Valid()
+                ? static_cast<std::uint32_t>(distribution.ConditionalOffset())
+                : 0;
+        _environmentDensity =
+            distribution.Valid()
+                ? static_cast<std::uint32_t>(distribution.DensityOffset())
+                : 0;
+    }
 
     // --- Shading pipelines --------------------------------------------------
     // One per material. Each is that material's generated program joined to the
@@ -752,6 +820,7 @@ void PathTracer::WriteDescriptors(VkDescriptorSet set,
     pipeline.WriteBuffer(set, 19, _materialTable);
     pipeline.WriteBuffer(set, 20, _dispatchArgs);
     pipeline.WriteBuffer(set, 21, _scatterPdf);
+    pipeline.WriteBuffer(set, 22, _environmentDistribution);
 }
 
 std::vector<std::uint32_t> PathTracer::MaterialCounts() const
@@ -866,8 +935,15 @@ std::vector<float> PathTracer::Render(std::uint32_t width, std::uint32_t height,
     block.lightCount = _lightCount;
     block.materialCount = static_cast<std::uint32_t>(_shade.size());
     block.hasDomeTexture = _domeTexture.Valid() ? 1u : 0u;
+    block.hasEnvironmentDistribution = _environmentWidth > 0 ? 1u : 0u;
+    block.environmentWidth = _environmentWidth;
+    block.environmentHeight = _environmentHeight;
+    block.environmentConditional = _environmentConditional;
+    block.environmentDensity = _environmentDensity;
     std::memcpy(block.domeWorldToLight, _domeWorldToLight,
                 sizeof(block.domeWorldToLight));
+    std::memcpy(block.domeLightToWorld, _domeLightToWorld,
+                sizeof(block.domeLightToWorld));
 
     const std::uint32_t pathGroups = (paths + 63) / 64;
     const std::uint32_t pixelGroupsX = (width + 7) / 8;

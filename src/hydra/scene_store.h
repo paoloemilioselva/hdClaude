@@ -66,6 +66,7 @@ struct HdClaudeLightEntry {
     int domeTexture = -1;
     /// World-to-light for the dome, column-major.
     float domeWorldToLight[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    float domeLightToWorld[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     /// What about this light is not honoured as authored, if anything.
     std::string report;
 };

@@ -38,7 +38,8 @@ void main()
     float scatterPdf = pathScatterPdf.values[path];
     if (scatterPdf > 0.0)
     {
-        radiance *= hdclaude_mis_weight(scatterPdf, hdclaude_environment_pdf());
+        radiance *= hdclaude_mis_weight(scatterPdf,
+                                       hdclaude_environment_pdf(direction));
     }
 
     // The stand-in sun as a disc of finite angular radius, so a mirror can

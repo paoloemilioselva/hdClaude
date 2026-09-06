@@ -221,6 +221,8 @@ void HdClaudeLight::Sync(HdSceneDelegate* sceneDelegate,
             for (int row = 0; row < 4; ++row) {
                 entry.domeWorldToLight[column * 4 + row] =
                     static_cast<float>(worldToLight[column][row]);
+                entry.domeLightToWorld[column * 4 + row] =
+                    static_cast<float>(transform[column][row]);
             }
         }
         param->SceneStore()->PublishLight(id, std::move(entry));
