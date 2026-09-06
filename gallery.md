@@ -93,16 +93,16 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 <!-- gallery-timings:start -->
 | Scene | Measured | Wall time | SHA-256 | Device | Settings |
 |---|---:|---:|---|---|---|
-| Intel Sponza | 2026-09-07 | 64.873 s (1m 4.873s) | `530bd391259a69b278a186a47b1994224210d8792ea8a6c90b2a934000e0133d` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| OpenChessSet | 2026-09-07 | 29.624 s (0m 29.624s) | `caa67de7ae84220dff554b538a87149bd27b518ba722e31f2f52e38937f3a6e1` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall Gold | 2026-09-07 | 38.708 s (0m 38.708s) | `4360aad2450774f2af17437e8f9555b9bff40ed13fa79a6b738b2253646765b7` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall Glass | 2026-09-07 | 28.983 s (0m 28.983s) | `c86ba0c3d48ba1d699f5bf684ac6d75b9eba92703d858af850babcc9c8d6fc0d` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall BubbleGum | 2026-09-07 | 28.749 s (0m 28.749s) | `683448e9627f2a2040cf41935e62b5775a99fdc682e94cb91356fc84b561418d` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Pixar's KitchenSet | 2026-09-07 | 162.910 s (2m 42.910s) | `47c5f0db5f22710b7c55a0d64cd380a4762f75ab1693abc52f754dbfb17c91d0` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Collective Project 001 | 2026-09-07 | 23.002 s (0m 23.002s) | `b325a183441183a330d2a1b84ac039adee43d7330845a2f21a1534c558775934` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| OpenPBR Playground | 2026-09-07 | 106.214 s (1m 46.214s) | `b06cdc376b81cf089720fc8599f304ae37e9b7b4b358796bd6b43b1e12e10e82` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Subdivision Feature Matrix | 2026-09-07 | 13.905 s (0m 13.905s) | `f6c3f091dc523b8001a99560b7a6fd26b0dc764cf50b0d875727e2ff384670e0` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| New Zealand Height Map | 2026-09-07 | 8.812 s (0m 8.812s) | `ee4819ca960dbb928e39fc4a476b0e0755f9bf8db97a8b06b29caafeaedc0cfa` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 6 |
+| Intel Sponza | 2026-09-07 | 47.809 s (0m 47.809s) | `530bd391259a69b278a186a47b1994224210d8792ea8a6c90b2a934000e0133d` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| OpenChessSet | 2026-09-07 | 22.350 s (0m 22.350s) | `56287a440d42b8d52b381a1de764efeb4919ceb383bf9a96957349f38a61876e` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall Gold | 2026-09-07 | 26.848 s (0m 26.848s) | `0be10c5a0f3e613bda802e38ba97bc6cbfcfbb77df364b3292d8bbdaa7fc0238` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall Glass | 2026-09-07 | 28.738 s (0m 28.738s) | `01a4439d0ad6538ce0971aabe627c0924f0425db0188d52c090964591b903994` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall BubbleGum | 2026-09-07 | 28.743 s (0m 28.743s) | `ee10141eac077fe1c8475821f82849124bb250767c2edf46ef8a569a00225f86` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Pixar's KitchenSet | 2026-09-07 | 148.486 s (2m 28.486s) | `2b642d33adcdd7879b9ed96269ee896b686a9ecaff5237e7f5635b5dffebda5b` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Collective Project 001 | 2026-09-07 | 16.531 s (0m 16.531s) | `1f296099cc45839ce18dddd9cc1b0fac9efea06a0e5d1d98d3f4b2db4a65c9f2` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| OpenPBR Playground | 2026-09-07 | 61.732 s (1m 1.732s) | `8ba122e2c8d67cef69106405fb8418f996aac6b91a49280fb9897f12dad3ff36` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Subdivision Feature Matrix | 2026-09-07 | 10.526 s (0m 10.526s) | `ee6c5e9d42bccc5e8bbc45a4c77334501af137c3de3a0d33c16a10a620916f0c` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| New Zealand Height Map | 2026-09-07 | 8.483 s (0m 8.483s) | `c7ba8dbd3256ce0d210ab6c4099bf5c394d6a1afb584ecce1d750269f42a7c81` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 6 |
 <!-- gallery-timings:end -->
 
 ## Against hdCodex
@@ -114,13 +114,13 @@ is the crudest possible comparison and the one that separates "different" from
 
 | Scene | RMS vs hdCodex | mean | reading |
 |---|---:|---:|---|
-| StandardShaderBall Gold | 0.043 | 0.702 | closest in the gallery |
-| StandardShaderBall BubbleGum | 0.077 | 0.747 | |
-| StandardShaderBall Glass | 0.087 | 0.672 | dispersion still absent; transport is RGB |
-| Subdivision Feature Matrix | 0.142 | 0.316 | |
+| StandardShaderBall Gold | 0.048 | 0.702 | closest in the gallery |
+| StandardShaderBall BubbleGum | 0.081 | 0.746 | |
+| StandardShaderBall Glass | 0.089 | 0.677 | dispersion still absent; transport is RGB |
+| Subdivision Feature Matrix | 0.134 | 0.310 | the creased cube is a cube again, now that subdivision tags reach the refiner |
 | Pixar's KitchenSet | 0.056 | 0.226 | RMS fell by more than half once instanced meshes stopped losing their transform inside the prototype, and again when the stand-in sun learned which way is up: the stage is Z-up, and the sun's hardcoded Y-up direction had been running horizontally through the room |
-| OpenChessSet | 0.049 | 0.546 | 0.199 four changes ago: a normal-map frame, then its dome kept its range and started being sampled where the light is, and now it is lit by that dome alone -- a dome is not in the light table, so the stand-in sun had been adding a second key light to a scene that lights itself |
-| OpenPBR Playground | 0.262 | 0.417 | brighter than hdCodex now rather than darker; its float textures no longer clamp |
+| OpenChessSet | 0.048 | 0.546 | 0.199 four changes ago: a normal-map frame, then its dome kept its range and started being sampled where the light is, and now it is lit by that dome alone -- a dome is not in the light table, so the stand-in sun had been adding a second key light to a scene that lights itself |
+| OpenPBR Playground | 0.257 | 0.416 | brighter than hdCodex now rather than darker; its float textures no longer clamp |
 | Intel Sponza | 0.368 | 0.018 | hdCodex shades 137 `UsdPreviewSurface` materials as flat grey; hdClaude shades the brick and stone the asset authors, in an arcade lit by a stand-in sky and a stand-in sun, which now stands 70 degrees above the horizon and so reaches the floor and the far columns rather than raking the near wall. Roughness and metalness now reach those materials: the asset connects its scalar inputs to a nodegraph's three-component `outputs:rgb`, which `gallery/intel_sponza.usda` overrides to the single channel the maps carry |
 
 Parity is not the goal where the two disagree about how much of the asset to
@@ -366,7 +366,7 @@ hdClaude renders it in 55 seconds.
 
 ### Subdivision Feature Matrix
 
-![Six subdivision test shapes on a flat blue-grey ground: three rounded forms above -- a dark textured one, brown, and a small cyan one -- and three quads below, the middle quad split olive and violet by its two material subsets](gallery/subdivision_features.jpg)
+![Six subdivision test shapes on a flat blue-grey ground: a dark textured sphere, a sharp-edged brown cube, and a small cyan form above; three quads below, the middle quad split olive and violet by its two material subsets](gallery/subdivision_features.jpg)
 
 A renderer-owned scene isolating six subdivision paths: an indexed face-varying
 UV seam, a Catmull-Clark cube with edge creases and a sharp corner, a Loop
@@ -382,6 +382,12 @@ render_claude.bat --imageWidth 1024 --colorCorrectionMode disabled --camera came
 
 **Current state.** Renders, and is the cheapest scene in the gallery. The
 displacement panel is flat, because displacement is phase 16.
+
+The creased cube was a smooth brown blob until 2026-09-07, when subdivision
+tags started reaching the refiner. Its creases, corners and boundary rule had
+been dropped on the way in, so the one shape in the gallery whose whole purpose
+is to prove creases survive refinement was proving the opposite -- against a
+baseline that had recorded the rounded version as correct.
 
 The UV-seam sphere was a flat magenta until 2026-09-07: its material named
 `newzealand_height_map.png`, which lives under `gallery/textures/`, so the file

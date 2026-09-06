@@ -2179,3 +2179,81 @@ against hdCodex falls from 0.391 to 0.368, the chess set's from 0.060 to 0.049,
 and Kitchen Set's from 0.074 to 0.056. The other seven scenes re-render
 byte-identical, which is what the gating predicts -- the sun cannot reach a scene
 that has lights.
+
+
+---
+
+## 2026-09-07 -- One missing call that read as three separate bugs
+
+Reported as "an issue with potentially subdivision, uvs and textures". It was
+one omission, in `HdClaudeMesh::Sync`: hdClaude never called
+`sceneDelegate->GetSubdivTags(id)`. The string `SubdivTags` did not appear
+anywhere in the source.
+
+**Why that is not obviously a bug.** `GetMeshTopology` returns an
+`HdMeshTopology`, and `HdMeshTopology` *has* subdivision tags -- it stores them
+inside the `PxOsdMeshTopology` that `GetPxOsdMeshTopology` hands to the refiner
+factory. So the code reads as though the tags come along with the topology. They
+do not. The topology call returns the cage -- counts, indices, scheme, holes --
+and the tags are a separate delegate call whose result has to be put back with
+`SetSubdivTags`. Miss it and the tags are simply empty, and nothing complains.
+
+**Why an empty tag set is worse than an error.** The refiner falls back to
+OpenSubdiv's defaults, and OpenSubdiv's defaults are not USD's on any of the
+three things that matter:
+
+| | USD | OpenSubdiv default |
+|---|---|---|
+| `interpolateBoundary` | `edgeAndCorner` | none -- boundaries float |
+| creases and corners | authored sharpness | absent |
+| `faceVaryingLinearInterpolation` | `cornersPlus1` | fully linear |
+
+Each produces a different-looking defect, which is why one bug arrived as three:
+
+* An open boundary left to float shrinks inward at every refinement level. Two
+  shells that meet along a closed seam in the cage pull apart from each other,
+  and the gap has the sawtooth edge of the refined polygons. That is the crack
+  across the Collective Project robot's head -- rendering the control cage at
+  level 0 shows an unbroken shell, and level 2 splits it.
+* Dropped creases round off every edge the model was built sharp on. The
+  gallery's own `creasedCube` had been rendering as a smooth brown blob.
+* Fully linear face-varying interpolation moves texture coordinates at every UV
+  seam, which moves the texture -- the reported "uvs and textures" half.
+
+**The fix is one line** plus `DirtySubdivTags` in the initial dirty-bits mask,
+which was also absent, so the tags would not have been re-read when they
+changed.
+
+**The gallery could not have caught this, and did not.** Seven of the ten scenes
+changed. The one that matters is `subdivision_features`, a renderer-owned scene
+whose second shape exists precisely to prove that creases survive refinement:
+its committed baseline was a rounded blob, and the gate had been comparing that
+blob against itself and passing. Phase 3's exit gate claims subdivision
+"preserves creases, corners, holes, orientation, face-varying seams" against a
+committed baseline; the claim was false for as long as the baseline existed.
+
+This is the third baseline in three days found to have been wrong from the day it
+was adopted -- after the Kitchen Set's instance placement and the UV-seam
+sphere's missing texture. The pattern is now clear enough to name: **a baseline
+proves that nothing changed, and can prove nothing else.** Every gate whose only
+reference is a previous render of the same renderer is a regression test wearing
+a correctness test's clothes. The suite is deliberately USD-free -- the GPU
+backend has no USD dependency and testing it through a stage would couple them --
+which is a good rule that has left the entire Hydra adapter path with no
+automated coverage at all. That gap, not this bug, is the thing worth fixing
+next.
+
+**Measured against hdCodex**, which is an independent renderer and so a check
+this change was not tuned against: the playground falls from 0.262 to 0.257, the
+subdivision matrix from 0.142 to 0.134, the chess set from 0.049 to 0.048. Three
+shader balls move the other way by about 0.004. Correctness is preferred to
+parity where they disagree -- USD says a creased edge is sharp, and hdCodex is
+not ground truth.
+
+**What this did not fix.** Pixar's Kitchen Set was expected to gain, since all
+1462 of its meshes are `catmullClark`; it barely moved (RMS 0.0013), and its
+table legs still taper to needles with one leg passing through the floor.
+hdCodex renders those legs identically, from the same stage, so they are the
+asset's own geometry and not a defect in either renderer. Worth recording
+because the legs look exactly like the boundary-shrinkage artefact this entry is
+about, and are not it.

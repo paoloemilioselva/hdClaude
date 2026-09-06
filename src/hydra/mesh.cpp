@@ -123,7 +123,8 @@ HdDirtyBits HdClaudeMesh::GetInitialDirtyBitsMask() const
            HdChangeTracker::DirtyTopology | HdChangeTracker::DirtyTransform |
            HdChangeTracker::DirtyVisibility | HdChangeTracker::DirtyPrimvar |
            HdChangeTracker::DirtyNormals | HdChangeTracker::DirtyInstancer |
-           HdChangeTracker::DirtyMaterialId | HdChangeTracker::DirtyDisplayStyle;
+           HdChangeTracker::DirtyMaterialId | HdChangeTracker::DirtyDisplayStyle |
+           HdChangeTracker::DirtySubdivTags;
 }
 
 HdDirtyBits HdClaudeMesh::_PropagateDirtyBits(HdDirtyBits bits) const
@@ -183,7 +184,33 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
         SetMaterialId(sceneDelegate->GetMaterialId(id));
     }
 
-    const HdMeshTopology topology = GetMeshTopology(sceneDelegate);
+    HdMeshTopology topology = GetMeshTopology(sceneDelegate);
+
+    // Subdivision tags are a *separate* scene-delegate call, and everything
+    // that makes a subdivision surface look like the model the artist built is
+    // in them.
+    //
+    // `GetMeshTopology` returns the cage -- counts, indices, scheme, holes --
+    // and nothing about how to refine it. Without
+    // `GetSubdivTags` the refiner falls back to OpenSubdiv's own defaults, and
+    // those disagree with USD's on every point that matters:
+    //
+    //   * `interpolateBoundary` defaults to `edgeAndCorner` in USD and to
+    //     "none" in OpenSubdiv, so an open boundary is left to float inward
+    //     instead of being pinned. Every border edge then shrinks away from
+    //     wherever it used to meet its neighbour, which is what had been
+    //     splitting the Collective Project robot's shell open along seams that
+    //     are closed in the asset.
+    //   * `creaseIndices`, `creaseSharpness` and their corner equivalents are
+    //     simply absent, so a creased edge refines as a smooth one and the
+    //     model rounds off where it was built sharp.
+    //   * `faceVaryingLinearInterpolation` defaults to `cornersPlus1` in USD
+    //     and to "all" -- fully linear -- in OpenSubdiv, which moves texture
+    //     coordinates at every UV seam and so moves the texture.
+    //
+    // One missing call, and it reads as three unrelated bugs in geometry, in
+    // UVs, and in texturing.
+    topology.SetSubdivTags(sceneDelegate->GetSubdivTags(id));
 
     HdClaudeMeshEntry entry;
     entry.material = GetMaterialId();
