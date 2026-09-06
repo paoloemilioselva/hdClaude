@@ -97,12 +97,15 @@ the two renderers' images of the same stage, at the same camera and settings,
 is the crudest possible comparison and the one that separates "different" from
 "missing":
 
-| Scene | hdCodex | hdClaude | reading |
+| Scene | RMS vs hdCodex | mean | reading |
 |---|---:|---:|---|
-| Intel Sponza | 0.353 | 0.004 | hdCodex shades 137 `UsdPreviewSurface` materials as flat grey; hdClaude shades the brick and stone the asset authors, in an arcade lit only by a stand-in sky |
-| OpenChessSet | 0.558 | 0.424 | comparable |
-| Pixar's KitchenSet | 0.192 | 0.274 | hdClaude brighter |
-| Subdivision Feature Matrix | 0.344 | 0.316 | comparable |
+| StandardShaderBall Gold | 0.043 | 0.702 | closest in the gallery |
+| StandardShaderBall BubbleGum | 0.077 | 0.747 | |
+| StandardShaderBall Glass | 0.087 | 0.672 | dispersion still absent; transport is RGB |
+| Subdivision Feature Matrix | 0.142 | 0.316 | |
+| Pixar's KitchenSet | 0.194 | 0.230 | |
+| OpenChessSet | 0.199 | 0.484 | the board reads darker than hdCodex's |
+| Intel Sponza | 0.391 | 0.004 | hdCodex shades 137 `UsdPreviewSurface` materials as flat grey; hdClaude shades the brick and stone the asset authors, in an arcade lit only by a stand-in sky |
 
 Parity is not the goal where the two disagree about how much of the asset to
 shade. What the comparison is for is finding the places where hdClaude is
@@ -166,8 +169,11 @@ set "HDCLAUDE_SAMPLES_PER_FRAME=32"
 render_claude.bat --imageWidth 1024 --colorCorrectionMode disabled --camera renderCam gallery\chess_board.usda build\gallery-linear\chess_board.exr
 ```
 
-**Current state.** The closest of the ten to right: instancing, the dome light,
-and the distinct piece materials all read correctly at 1024 samples.
+**Current state.** All thirty-two pieces, in the right places, under the right
+half of the HDRI. It took both: the pawns are a `PointInstancer` whose
+instances hdClaude was not placing, and the dome was sampled half a turn out of
+USD's orientation, so the scene was lit and backed by the wall behind the
+camera. The board surface still reads darker than hdCodex's.
 
 ### StandardShaderBall Gold
 
