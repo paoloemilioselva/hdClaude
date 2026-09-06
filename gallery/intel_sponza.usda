@@ -1,8 +1,729 @@
 #usda 1.0
 (
-    metersPerUnit = 1.0
-    upAxis = "Y"
+    metersPerUnit = 1
     subLayers = [
-        @C:\Users\paolo\Desktop\openusd\main_sponza\NewSponza_Main_USD_Yup_003.usda@,
+        @C:\Users\paolo\Desktop\openusd\main_sponza\NewSponza_Main_USD_Yup_003.usda@
     ]
+    upAxis = "Y"
 )
+
+over "root"
+{
+    over "mtl"
+    {
+        over "arch_stone_wall_01_usd"
+        {
+            over "arch_stone_wall_01_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/arch_stone_wall_01_usd/arch_stone_wall_01_Metalness/arch_stone_wall_01_Metalness.outputs:r>
+
+                over "arch_stone_wall_01_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "arch_stone_wall_01_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/arch_stone_wall_01_usd/arch_stone_wall_01_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/arch_stone_wall_01_usd/arch_stone_wall_01_Roughness.outputs:r>
+            }
+
+            over "arch_stone_wall_01_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/arch_stone_wall_01_usd/arch_stone_wall_01_Roughness/arch_stone_wall_01_Roughness.outputs:r>
+
+                over "arch_stone_wall_01_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "brickwall_01_usd"
+        {
+            over "brickwall_01_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/brickwall_01_usd/brickwall_01_Metalness/brickwall_01_Metalness.outputs:r>
+
+                over "brickwall_01_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "brickwall_01_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/brickwall_01_usd/brickwall_01_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/brickwall_01_usd/brickwall_01_Roughness.outputs:r>
+            }
+
+            over "brickwall_01_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/brickwall_01_usd/brickwall_01_Roughness/brickwall_01_Roughness.outputs:r>
+
+                over "brickwall_01_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "brickwall_02_usd"
+        {
+            over "brickwall_02_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/brickwall_02_usd/brickwall_02_Metalness/brickwall_02_Metalness.outputs:r>
+
+                over "brickwall_02_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "brickwall_02_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/brickwall_02_usd/brickwall_02_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/brickwall_02_usd/brickwall_02_Roughness.outputs:r>
+            }
+
+            over "brickwall_02_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/brickwall_02_usd/brickwall_02_Roughness/brickwall_02_Roughness.outputs:r>
+
+                over "brickwall_02_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "ceiling_plaster_01_usd"
+        {
+            over "ceiling_plaster_01_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/ceiling_plaster_01_usd/ceiling_plaster_01_Metalness/ceiling_plaster_01_Metalness.outputs:r>
+
+                over "ceiling_plaster_01_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "ceiling_plaster_01_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/ceiling_plaster_01_usd/ceiling_plaster_01_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/ceiling_plaster_01_usd/ceiling_plaster_01_Roughness.outputs:r>
+            }
+
+            over "ceiling_plaster_01_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/ceiling_plaster_01_usd/ceiling_plaster_01_Roughness/ceiling_plaster_01_Roughness.outputs:r>
+
+                over "ceiling_plaster_01_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "ceiling_plaster_02_usd"
+        {
+            over "ceiling_plaster_02_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/ceiling_plaster_02_usd/ceiling_plaster_02_Metalness/ceiling_plaster_02_Metalness.outputs:r>
+
+                over "ceiling_plaster_02_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "ceiling_plaster_02_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/ceiling_plaster_02_usd/ceiling_plaster_02_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/ceiling_plaster_02_usd/ceiling_plaster_02_Roughness.outputs:r>
+            }
+
+            over "ceiling_plaster_02_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/ceiling_plaster_02_usd/ceiling_plaster_02_Roughness/ceiling_plaster_02_Roughness.outputs:r>
+
+                over "ceiling_plaster_02_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "column_1stfloor_usd"
+        {
+            over "column_1stfloor_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/column_1stfloor_usd/column_1stfloor_Metalness/column_1stfloor_Metalness.outputs:r>
+
+                over "column_1stfloor_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "column_1stfloor_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/column_1stfloor_usd/column_1stfloor_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/column_1stfloor_usd/column_1stfloor_Roughness.outputs:r>
+            }
+
+            over "column_1stfloor_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/column_1stfloor_usd/column_1stfloor_Roughness/column_1stfloor_Roughness.outputs:r>
+
+                over "column_1stfloor_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "column_brickwall_01_usd"
+        {
+            over "col_brickwall_01_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/column_brickwall_01_usd/col_brickwall_01_Metalness/col_brickwall_01_Metalness.outputs:r>
+
+                over "col_brickwall_01_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "column_brickwall_01_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/column_brickwall_01_usd/col_brickwall_01_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/column_brickwall_01_usd/col_brickwall_01_Roughness.outputs:r>
+            }
+
+            over "col_brickwall_01_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/column_brickwall_01_usd/col_brickwall_01_Roughness/col_brickwall_01_Roughness.outputs:r>
+
+                over "col_brickwall_01_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "column_head_1stfloor_usd"
+        {
+            over "col_head_1stfloor_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/column_head_1stfloor_usd/col_head_1stfloor_Metalness/col_head_1stfloor_Metalness.outputs:r>
+
+                over "col_head_1stfloor_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "column_head_1stfloor_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/column_head_1stfloor_usd/col_head_1stfloor_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/column_head_1stfloor_usd/col_head_1stfloor_Roughness.outputs:r>
+            }
+
+            over "col_head_1stfloor_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/column_head_1stfloor_usd/col_head_1stfloor_Roughness/col_head_1stfloor_Roughness.outputs:r>
+
+                over "col_head_1stfloor_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "column_head_2ndfloor_02_usd"
+        {
+            over "col_head_2ndfloor_02_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/column_head_2ndfloor_02_usd/col_head_2ndfloor_02_Metalness/col_head_2ndfloor_02_Metalness.outputs:r>
+
+                over "col_head_2ndfloor_02_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "column_head_2ndfloor_02_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/column_head_2ndfloor_02_usd/col_head_2ndfloor_02_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/column_head_2ndfloor_02_usd/col_head_2ndfloor_02_Roughness.outputs:r>
+            }
+
+            over "col_head_2ndfloor_02_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/column_head_2ndfloor_02_usd/col_head_2ndfloor_02_Roughness/col_head_2ndfloor_02_Roughness.outputs:r>
+
+                over "col_head_2ndfloor_02_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "column_head_2ndfloor_03_usd"
+        {
+            over "col_head_2ndfloor_03_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/column_head_2ndfloor_03_usd/col_head_2ndfloor_03_Metalness/col_head_2ndfloor_03_Metalness.outputs:r>
+
+                over "col_head_2ndfloor_03_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "column_head_2ndfloor_03_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/column_head_2ndfloor_03_usd/col_head_2ndfloor_03_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/column_head_2ndfloor_03_usd/col_head_2ndfloor_03_Roughness.outputs:r>
+            }
+
+            over "col_head_2ndfloor_03_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/column_head_2ndfloor_03_usd/col_head_2ndfloor_03_Roughness/col_head_2ndfloor_03_Roughness.outputs:r>
+
+                over "col_head_2ndfloor_03_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "dirt_decal_usd"
+        {
+            over "Map__54"
+            {
+                float outputs:r.connect = </root/mtl/dirt_decal_usd/Map__54/Map__54.outputs:r>
+
+                over "Map__54"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "dirt_decal_usd"
+            {
+                float inputs:opacity.connect = </root/mtl/dirt_decal_usd/Map__54.outputs:r>
+            }
+        }
+
+        over "door_stoneframe_01_usd"
+        {
+            over "door_stoneframe_01_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/door_stoneframe_01_usd/door_stoneframe_01_Metalness/door_stoneframe_01_Metalness.outputs:r>
+
+                over "door_stoneframe_01_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "door_stoneframe_01_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/door_stoneframe_01_usd/door_stoneframe_01_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/door_stoneframe_01_usd/door_stoneframe_01_Roughness.outputs:r>
+            }
+
+            over "door_stoneframe_01_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/door_stoneframe_01_usd/door_stoneframe_01_Roughness/door_stoneframe_01_Roughness.outputs:r>
+
+                over "door_stoneframe_01_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "door_stoneframe_02_usd"
+        {
+            over "door_stoneframe_02_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/door_stoneframe_02_usd/door_stoneframe_02_Metalness/door_stoneframe_02_Metalness.outputs:r>
+
+                over "door_stoneframe_02_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "door_stoneframe_02_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/door_stoneframe_02_usd/door_stoneframe_02_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/door_stoneframe_02_usd/door_stoneframe_02_Roughness.outputs:r>
+            }
+
+            over "door_stoneframe_02_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/door_stoneframe_02_usd/door_stoneframe_02_Roughness/door_stoneframe_02_Roughness.outputs:r>
+
+                over "door_stoneframe_02_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "floor_01_usd"
+        {
+            over "floor_01_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/floor_01_usd/floor_01_Metalness/floor_01_Metalness.outputs:r>
+
+                over "floor_01_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "floor_01_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/floor_01_usd/floor_01_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/floor_01_usd/floor_01_Roughness.outputs:r>
+            }
+
+            over "floor_01_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/floor_01_usd/floor_01_Roughness/floor_01_Roughness.outputs:r>
+
+                over "floor_01_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "metal_door_usd"
+        {
+            over "metal_door_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/metal_door_usd/metal_door_Metalness/metal_door_Metalness.outputs:r>
+
+                over "metal_door_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "metal_door_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/metal_door_usd/metal_door_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/metal_door_usd/metal_door_Roughness.outputs:r>
+            }
+
+            over "metal_door_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/metal_door_usd/metal_door_Roughness/metal_door_Roughness.outputs:r>
+
+                over "metal_door_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "ornament_01_usd"
+        {
+            over "ornament_01_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/ornament_01_usd/ornament_01_Metalness/ornament_01_Metalness.outputs:r>
+
+                over "ornament_01_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "ornament_01_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/ornament_01_usd/ornament_01_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/ornament_01_usd/ornament_01_Roughness.outputs:r>
+            }
+
+            over "ornament_01_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/ornament_01_usd/ornament_01_Roughness/ornament_01_Roughness.outputs:r>
+
+                over "ornament_01_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "ornament_lion_usd"
+        {
+            over "ornament_lion_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/ornament_lion_usd/ornament_lion_Metalness/ornament_lion_Metalness.outputs:r>
+
+                over "ornament_lion_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "ornament_lion_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/ornament_lion_usd/ornament_lion_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/ornament_lion_usd/ornament_lion_Roughness.outputs:r>
+            }
+
+            over "ornament_lion_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/ornament_lion_usd/ornament_lion_Roughness/ornament_lion_Roughness.outputs:r>
+
+                over "ornament_lion_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "roof_tiles_01_usd"
+        {
+            over "roof_tiles_01_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/roof_tiles_01_usd/roof_tiles_01_Metalness/roof_tiles_01_Metalness.outputs:r>
+
+                over "roof_tiles_01_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "roof_tiles_01_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/roof_tiles_01_usd/roof_tiles_01_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/roof_tiles_01_usd/roof_tiles_01_Roughness.outputs:r>
+            }
+
+            over "roof_tiles_01_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/roof_tiles_01_usd/roof_tiles_01_Roughness/roof_tiles_01_Roughness.outputs:r>
+
+                over "roof_tiles_01_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "stone_trims_01_usd"
+        {
+            over "stone_trims_01_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/stone_trims_01_usd/stone_trims_01_Metalness/stone_trims_01_Metalness.outputs:r>
+
+                over "stone_trims_01_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "stone_trims_01_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/stone_trims_01_usd/stone_trims_01_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/stone_trims_01_usd/stone_trims_01_Roughness.outputs:r>
+            }
+
+            over "stone_trims_01_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/stone_trims_01_usd/stone_trims_01_Roughness/stone_trims_01_Roughness.outputs:r>
+
+                over "stone_trims_01_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "stone_trims_02_usd"
+        {
+            over "stone_trims_02_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/stone_trims_02_usd/stone_trims_02_Metalness/stone_trims_02_Metalness.outputs:r>
+
+                over "stone_trims_02_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "stone_trims_02_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/stone_trims_02_usd/stone_trims_02_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/stone_trims_02_usd/stone_trims_02_Roughness.outputs:r>
+            }
+
+            over "stone_trims_02_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/stone_trims_02_usd/stone_trims_02_Roughness/stone_trims_02_Roughness.outputs:r>
+
+                over "stone_trims_02_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "stones_01_tile_usd"
+        {
+            over "stones_01_tile_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/stones_01_tile_usd/stones_01_tile_Metalness/stones_01_tile_Metalness.outputs:r>
+
+                over "stones_01_tile_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "stones_01_tile_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/stones_01_tile_usd/stones_01_tile_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/stones_01_tile_usd/stones_01_tile_Roughness.outputs:r>
+            }
+
+            over "stones_01_tile_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/stones_01_tile_usd/stones_01_tile_Roughness/stones_01_tile_Roughness.outputs:r>
+
+                over "stones_01_tile_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "stones_2ndfloor_usd"
+        {
+            over "stones_2ndfloor_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/stones_2ndfloor_usd/stones_2ndfloor_Metalness/stones_2ndfloor_Metalness.outputs:r>
+
+                over "stones_2ndfloor_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "stones_2ndfloor_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/stones_2ndfloor_usd/stones_2ndfloor_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/stones_2ndfloor_usd/stones_2ndfloor_Roughness.outputs:r>
+            }
+
+            over "stones_2ndfloor_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/stones_2ndfloor_usd/stones_2ndfloor_Roughness/stones_2ndfloor_Roughness.outputs:r>
+
+                over "stones_2ndfloor_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "window_frame_01_usd"
+        {
+            over "window_frame_01_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/window_frame_01_usd/window_frame_01_Metalness/window_frame_01_Metalness.outputs:r>
+
+                over "window_frame_01_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "window_frame_01_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/window_frame_01_usd/window_frame_01_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/window_frame_01_usd/window_frame_01_Roughness.outputs:r>
+            }
+
+            over "window_frame_01_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/window_frame_01_usd/window_frame_01_Roughness/window_frame_01_Roughness.outputs:r>
+
+                over "window_frame_01_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "wood_01_usd"
+        {
+            over "wood_01_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/wood_01_usd/wood_01_Metalness/wood_01_Metalness.outputs:r>
+
+                over "wood_01_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "wood_01_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/wood_01_usd/wood_01_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/wood_01_usd/wood_01_Roughness.outputs:r>
+            }
+
+            over "wood_01_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/wood_01_usd/wood_01_Roughness/wood_01_Roughness.outputs:r>
+
+                over "wood_01_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+
+        over "wood_door_01_usd"
+        {
+            over "wood_door_01_Metalness"
+            {
+                float outputs:r.connect = </root/mtl/wood_door_01_usd/wood_door_01_Metalness/wood_door_01_Metalness.outputs:r>
+
+                over "wood_door_01_Metalness"
+                {
+                    float outputs:r
+                }
+            }
+
+            over "wood_door_01_usd"
+            {
+                float inputs:metallic.connect = </root/mtl/wood_door_01_usd/wood_door_01_Metalness.outputs:r>
+                float inputs:roughness.connect = </root/mtl/wood_door_01_usd/wood_door_01_Roughness.outputs:r>
+            }
+
+            over "wood_door_01_Roughness"
+            {
+                float outputs:r.connect = </root/mtl/wood_door_01_usd/wood_door_01_Roughness/wood_door_01_Roughness.outputs:r>
+
+                over "wood_door_01_Roughness"
+                {
+                    float outputs:r
+                }
+            }
+        }
+    }
+}
+
