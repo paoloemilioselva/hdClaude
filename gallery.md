@@ -93,16 +93,16 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 <!-- gallery-timings:start -->
 | Scene | Measured | Wall time | SHA-256 | Device | Settings |
 |---|---:|---:|---|---|---|
-| Intel Sponza | 2026-09-07 | 38.768 s (0m 38.768s) | `be10ab7fc9f08c1a465618a560b1de91a805e828afb79e56768ed3b838935522` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| OpenChessSet | 2026-09-07 | 22.136 s (0m 22.136s) | `7376bd1f3dff21775ca33a0256b14ac5a9793d08a3ec3859603a3f99789e1b83` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall Gold | 2026-09-07 | 26.830 s (0m 26.830s) | `4360aad2450774f2af17437e8f9555b9bff40ed13fa79a6b738b2253646765b7` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall Glass | 2026-09-07 | 28.633 s (0m 28.633s) | `c86ba0c3d48ba1d699f5bf684ac6d75b9eba92703d858af850babcc9c8d6fc0d` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall BubbleGum | 2026-09-07 | 28.537 s (0m 28.537s) | `683448e9627f2a2040cf41935e62b5775a99fdc682e94cb91356fc84b561418d` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Pixar's KitchenSet | 2026-09-07 | 149.374 s (2m 29.374s) | `dd85995b717dd1ea1f834f2f111228f18d27e29793fce62e5881d108c2c04450` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Collective Project 001 | 2026-09-07 | 16.310 s (0m 16.310s) | `5ba442df62aa45d83595523af4f522fb7718ae1d3c852ebca1bc18fe41adefad` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| OpenPBR Playground | 2026-09-07 | 62.710 s (1m 2.710s) | `b06cdc376b81cf089720fc8599f304ae37e9b7b4b358796bd6b43b1e12e10e82` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Subdivision Feature Matrix | 2026-09-07 | 10.461 s (0m 10.461s) | `29bb61a4fab0446a46e61e421d4481fa299a2ca49ddaf0223c6832f25d8f8b92` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| New Zealand Height Map | 2026-09-07 | 8.384 s (0m 8.384s) | `110483c76e93e569c0e40c69a730651e341e859ef1bc27c620a552c2a1e07db9` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 6 |
+| Intel Sponza | 2026-09-07 | 38.812 s (0m 38.812s) | `be10ab7fc9f08c1a465618a560b1de91a805e828afb79e56768ed3b838935522` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| OpenChessSet | 2026-09-07 | 22.639 s (0m 22.639s) | `7376bd1f3dff21775ca33a0256b14ac5a9793d08a3ec3859603a3f99789e1b83` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall Gold | 2026-09-07 | 26.665 s (0m 26.665s) | `4360aad2450774f2af17437e8f9555b9bff40ed13fa79a6b738b2253646765b7` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall Glass | 2026-09-07 | 29.071 s (0m 29.071s) | `c86ba0c3d48ba1d699f5bf684ac6d75b9eba92703d858af850babcc9c8d6fc0d` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall BubbleGum | 2026-09-07 | 28.562 s (0m 28.562s) | `683448e9627f2a2040cf41935e62b5775a99fdc682e94cb91356fc84b561418d` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Pixar's KitchenSet | 2026-09-07 | 151.986 s (2m 31.986s) | `dd85995b717dd1ea1f834f2f111228f18d27e29793fce62e5881d108c2c04450` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Collective Project 001 | 2026-09-07 | 16.137 s (0m 16.137s) | `94c50c08259145b636cdaa4ad17950db8b26c68c821b019590cd79dd045a6aa4` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| OpenPBR Playground | 2026-09-07 | 61.278 s (1m 1.278s) | `b06cdc376b81cf089720fc8599f304ae37e9b7b4b358796bd6b43b1e12e10e82` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Subdivision Feature Matrix | 2026-09-07 | 10.463 s (0m 10.463s) | `f6c3f091dc523b8001a99560b7a6fd26b0dc764cf50b0d875727e2ff384670e0` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| New Zealand Height Map | 2026-09-07 | 8.662 s (0m 8.662s) | `d7cb527a55ddd06bd0009fe587db9fee91d2170b3bb6b2f200983a854f484d44` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 6 |
 <!-- gallery-timings:end -->
 
 ## Against hdCodex
@@ -366,7 +366,7 @@ hdClaude renders it in 55 seconds.
 
 ### Subdivision Feature Matrix
 
-![Six subdivision test shapes on a flat blue-grey ground: three rounded forms above -- purple, brown, and a small cyan one -- and three quads below, the middle quad split olive and violet by its two material subsets](gallery/subdivision_features.jpg)
+![Six subdivision test shapes on a flat blue-grey ground: three rounded forms above -- a dark textured one, brown, and a small cyan one -- and three quads below, the middle quad split olive and violet by its two material subsets](gallery/subdivision_features.jpg)
 
 A renderer-owned scene isolating six subdivision paths: an indexed face-varying
 UV seam, a Catmull-Clark cube with edge creases and a sharp corner, a Loop
@@ -382,6 +382,15 @@ render_claude.bat --imageWidth 1024 --colorCorrectionMode disabled --camera came
 
 **Current state.** Renders, and is the cheapest scene in the gallery. The
 displacement panel is flat, because displacement is phase 16.
+
+The UV-seam sphere was a flat magenta until 2026-09-07: its material named
+`newzealand_height_map.png`, which lives under `gallery/textures/`, so the file
+was never found and hdClaude drew the failure placeholder it draws for a texture
+it cannot read. The baseline had encoded that placeholder since the scene was
+adopted, so the seam test asserted nothing about a seam -- the gate only ever
+compared one flat colour against the same flat colour. `check_usd_materials.py`
+found the broken path on its first run, which is the argument for the tool in
+one line.
 
 ### New Zealand Height Map
 

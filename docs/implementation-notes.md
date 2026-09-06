@@ -2015,3 +2015,109 @@ and the height map, also differ from each other between two consecutive runs of
 this same build -- Collective Project at an RMS of 5.8e-5 then 7.0e-5 against
 the committed baseline -- so what they show is the gallery's own run-to-run
 nondeterminism and not a change in behaviour.
+
+
+---
+
+## 2026-09-07 -- Who is wrong, the scene or the toolchain
+
+Intel Sponza renders with no normal, roughness or metalness maps. All 101 of
+those inputs are dropped by `PruneUndeclaredInputs` because their types do not
+match what MaterialX declares, and the obvious repair -- coerce the type and
+carry on -- is the wrong one. This entry is what was found instead.
+
+**The rule, and its limit.** hdClaude reports malformed input; it does not
+repair it. A renderer that silently patches bad data hides the defect from the
+person who can fix it, and makes its own image untrustworthy, because you can no
+longer tell which pixels came from the asset and which from the workaround. The
+limit of that rule is documentation: if a specification says two things are
+interchangeable, then supporting the equivalence is correctness, not magic.
+
+So the question was whether `color3` and `vector3` are documented as
+interchangeable. They are not, and the specification says so in as many words --
+MaterialX's Specification, on `<input>` elements: "Inputs may only be connected
+to node/nodegraph outputs or nodedef interface inputs of the same type, though
+it is permissible for a `string`-type output to be connected to a `filename`-type
+input (but not the other way around)." One documented exception, and it is not
+this one. Dropping the input with a warning is the spec-correct behaviour, and
+it stays.
+
+**Then the scene must be wrong. It mostly is not.** Sponza authors
+
+```
+normal3f inputs:normal.connect = </root/mtl/..._Normal.outputs:rgb>
+float4   inputs:bias = (-1, -1, -1, 0)
+float3   outputs:rgb
+```
+
+which is exactly what the UsdPreviewSurface and UsdUVTexture schemas require. Of
+the 101 pruned inputs, 52 come from a scene that is authored correctly, and the
+wrong type is manufactured downstream. Three separate upstream defects produce
+them:
+
+1. **`normal3f` is missing from hdMtlx's type table.** `_ConvertToMtlxType` in
+   `pxr/imaging/hdMtlx/hdMtlx.cpp` maps `color3f` and `float3` but has no entry
+   for `normal3f`, `vector3f` or `point3f`. An unmapped type returns the empty
+   string, which reaches `setInputValue(name, value, "")`, and the input is
+   typed **`string`**. That is the four materials that author
+   `normal3f inputs:normal = (0, 0, 1)` as a literal.
+
+2. **A connected input takes its type from the upstream output** (hdMtlx.cpp
+   line 501), and MaterialX's own definitions disagree with each other about
+   what that type is. In `libraries/bxdf/usd_preview_surface.mtlx`,
+   `ND_UsdUVTexture` declares `<output name="rgb" type="color3"/>` while
+   `ND_UsdPreviewSurface_surfaceshader` declares
+   `<input name="normal" type="vector3"/>`. Connecting a texture's `rgb` to a
+   surface's `normal` is what the USD specification prescribes for a normal map,
+   and by MaterialX's own connection rule its own two nodedefs cannot express
+   it. That is the 24.
+
+3. **The same table maps USD `float4` to `vector4`** where that same nodedef
+   declares `scale` and `bias` as `color4`. That is the 48.
+
+**And 49 really are the scene.** Sponza connects `float inputs:roughness` and
+`float inputs:metallic` to `outputs:rgb`, a three-component output. Three numbers
+into a one-component input is a loss USD has no rule to resolve, and the fix is
+one character in the asset: connect `outputs:r`. That is a genuine authoring bug,
+and it is the kind this project now reports rather than guesses at.
+
+**`tools/check_usd_materials.py`.** The distinction above is only cheap to draw
+if something checks the scene *at the USD level*, reading authored types and
+connections and nothing else. Then a finding is a statement about the asset that
+holds for any renderer, and -- the useful half -- a mismatch that the script does
+*not* report but which appears after translation is, by elimination, a bug in the
+translation. Both halves of this entry came out of that one property.
+
+**Three things the first version got wrong, all of which flattered it.** Worth
+recording, because each is a way a checker can look clean and be useless.
+
+It reported all 41 Open Chess Set materials as shading nothing. They bind
+`outputs:mtlx:surface`, a render-context terminal, and `GetSurfaceOutput()`
+returns the universal `outputs:surface`, which is indeed unconnected. Only the
+last component of the name is the terminal.
+
+It reported Pixar's Kitchen Set as authoring no materials at all. `TraverseAll`
+does not descend into an instance -- the contents live in a prototype -- so the
+walk found 453 prims, every one an Xform, and said nothing was wrong. A checker
+that reports a clean bill of health for a scene it never looked at is worse than
+no checker. It now walks the 114 prototypes too, once each rather than once per
+instance. (Kitchen Set genuinely has no `UsdShade` materials -- 1462 meshes and
+zero material prims -- because it is a `displayColor` asset. That is now reported
+as a note rather than as silence.)
+
+And it reported every `<UDIM>` path as a missing file. A tile pattern is not a
+filename and is *supposed* not to resolve; what can be checked is whether any
+tile exists on disk.
+
+Between them these three accounted for 206 of the first run's 258 findings. The
+52 that survive are real.
+
+**The first thing it found was ours.** `gallery/subdivision_features.usda` named
+`newzealand_height_map.png`, which lives under `gallery/textures/`. The file was
+never found, so hdClaude drew the magenta placeholder it draws for an unreadable
+texture -- and the committed baseline had encoded that placeholder since the
+scene was adopted. The face-varying UV seam that sphere exists to test was a flat
+colour, so the gate had been comparing one flat colour against the same flat
+colour and passing. This is the second time a baseline has been wrong from the
+day it was adopted, after the Kitchen Set's, and the second time the gate could
+not catch it, because the gate's only reference is the baseline itself.

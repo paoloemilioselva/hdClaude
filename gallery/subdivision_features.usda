@@ -69,7 +69,7 @@ def Xform "World"
             def Shader "image"
             {
                 uniform token info:id = "ND_image_color3"
-                asset inputs:file = @newzealand_height_map.png@ (
+                asset inputs:file = @textures/newzealand_height_map.png@ (
                     colorSpace = "raw"
                 )
                 float2 inputs:texcoord.connect = </World/Looks/checker/st.outputs:out>
