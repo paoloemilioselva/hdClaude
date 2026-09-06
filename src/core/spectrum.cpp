@@ -350,20 +350,9 @@ float EvaluateReflectance(const SigmoidCoefficients& coefficients, float lambda)
                               coefficients.c2);
 }
 
-Vec3 IntegrateReflectance(const SigmoidCoefficients& coefficients)
-{
-    const Vec3d xyz = IntegrateSigmoidXyz(static_cast<double>(coefficients.c0),
-                                          static_cast<double>(coefficients.c1),
-                                          static_cast<double>(coefficients.c2));
-    return XyzToLinearSrgb(Vec3{static_cast<float>(xyz.x),
-                                static_cast<float>(xyz.y),
-                                static_cast<float>(xyz.z)});
-}
-
 Vec3 XyzToLab(const Vec3& xyz)
 {
     const Vec3 white = D65WhitePoint();
-
     const auto f = [](float ratio) {
         constexpr float delta = 6.0f / 29.0f;
         return ratio > delta * delta * delta
@@ -376,33 +365,65 @@ Vec3 XyzToLab(const Vec3& xyz)
     return {116.0f * fy - 16.0f, 500.0f * (fx - fy), 200.0f * (fy - fz)};
 }
 
-SigmoidCoefficients FitReflectance(const Vec3& linearSrgb)
+namespace {
+
+/// The chromaticity of a colour, and the magnitude divided out of it.
+struct Decomposed {
+    Vec3 chroma{0.0f, 0.0f, 0.0f};
+    float scale = 0.0f;
+    int face = 0;   // which channel was largest
+};
+
+Decomposed Decompose(const Vec3& linearSrgb)
 {
-    // A reflectance above one is not a reflectance, and one below zero is not
-    // either. Clamping here rather than refusing keeps an out-of-range asset
-    // rendering, which is the same choice every other input path makes.
-    const Vec3 clamped{std::clamp(linearSrgb.x, 0.0f, 1.0f),
-                       std::clamp(linearSrgb.y, 0.0f, 1.0f),
-                       std::clamp(linearSrgb.z, 0.0f, 1.0f)};
-    const Vec3 targetXyz = LinearSrgbToXyz(clamped);
+    Decomposed out;
+    const float channels[3] = {std::max(0.0f, linearSrgb.x),
+                               std::max(0.0f, linearSrgb.y),
+                               std::max(0.0f, linearSrgb.z)};
+    out.face = 0;
+    for (int k = 1; k < 3; ++k) {
+        if (channels[k] > channels[out.face]) {
+            out.face = k;
+        }
+    }
+    out.scale = channels[out.face];
+    if (!(out.scale > 0.0f)) {
+        return out;
+    }
+    out.chroma = Vec3{channels[0] / out.scale, channels[1] / out.scale,
+                      channels[2] / out.scale};
+    return out;
+}
+
+/// Fit the three coefficients of a chromaticity, seeded from `seed`.
+///
+/// Split out from `FitSpectrum` because the table builder wants to seed each
+/// fit from its neighbour, which is the whole reason the table is cheap to
+/// build.
+SigmoidCoefficients FitChroma(const Vec3& chroma, const SigmoidCoefficients& seed,
+                              bool useSeed)
+{
+    const Vec3 targetXyz = LinearSrgbToXyz(chroma);
     const Vec3d targetLab = LabDouble({static_cast<double>(targetXyz.x),
                                        static_cast<double>(targetXyz.y),
                                        static_cast<double>(targetXyz.z)});
 
-    // Seed with the flat spectrum whose luminance is already the target's,
-    // found by bisection on the constant term.
-    //
-    // This is not a nicety. White is the sigmoid's own boundary -- a
-    // reflectance of exactly one needs an infinite coefficient -- and
-    // Levenberg-Marquardt cannot climb an asymptote: every step it tries there
-    // improves the residual by less than the last, its damping escalates, and
-    // it gives up around a reflectance of 0.9998, which is 6e-3 dE2000 away
-    // from white. Bisection has no such trouble, because it never needs a
-    // gradient. Starting from a spectrum that already has the right luminance
-    // also leaves Levenberg-Marquardt only the hue to solve, which is the part
-    // it is good at.
-    double coefficients[3] = {0.0, 0.0, 0.0};
-    {
+    double coefficients[3];
+    if (useSeed) {
+        coefficients[0] = seed.c0;
+        coefficients[1] = seed.c1;
+        coefficients[2] = seed.c2;
+    } else {
+        // Seed with the flat spectrum whose luminance is already the target's,
+        // found by bisection on the constant term.
+        //
+        // This is not a nicety. A chromaticity always has a component at one,
+        // and the sigmoid reaches one only in the limit, so Levenberg-Marquardt
+        // starts against an asymptote: every step it tries improves by less
+        // than the last, its damping escalates, and it gives up short.
+        // Bisection has no such trouble, because it never needs a gradient.
+        coefficients[0] = 0.0;
+        coefficients[1] = 0.0;
         const double targetY = static_cast<double>(targetXyz.y);
         double low = -2.0e4;
         double high = 2.0e4;
@@ -431,10 +452,6 @@ SigmoidCoefficients FitReflectance(const Vec3& linearSrgb)
     residual(coefficients, error);
     double damping = 1.0e-3;
 
-    // Levenberg-Marquardt, not plain Gauss-Newton: the residual is very flat
-    // near a saturated colour, where the sigmoid has to be nearly a step, and
-    // an undamped step there overshoots into coefficients whose spectrum is
-    // numerically indistinguishable from a constant.
     for (int iteration = 0; iteration < 600; ++iteration) {
         if (squaredNorm(error) < 1.0e-18) {
             break;
@@ -457,7 +474,6 @@ SigmoidCoefficients FitReflectance(const Vec3& linearSrgb)
             }
         }
 
-        // Normal equations, damped: (J^T J + lambda diag) delta = -J^T r.
         double ata[3][3] = {};
         double atr[3] = {};
         for (int row = 0; row < 3; ++row) {
@@ -532,27 +548,153 @@ SigmoidCoefficients FitReflectance(const Vec3& linearSrgb)
             static_cast<float>(coefficients[2])};
 }
 
-EmissionSpectrum FitEmission(const Vec3& linearSrgb)
+}  // namespace
+
+SpectrumFit FitSpectrum(const Vec3& linearSrgb)
 {
-    EmissionSpectrum emission;
-    const float peak = std::max({linearSrgb.x, linearSrgb.y, linearSrgb.z});
-    if (!(peak > 0.0f)) {
-        // Black emits nothing. A fit would be meaningless and its coefficients
-        // would be whatever the optimiser wandered into.
-        emission.scale = 0.0f;
-        emission.chromaticity = FitReflectance(Vec3{0.0f, 0.0f, 0.0f});
-        return emission;
+    const Decomposed decomposed = Decompose(linearSrgb);
+    SpectrumFit fit;
+    fit.scale = decomposed.scale;
+    if (!(decomposed.scale > 0.0f)) {
+        // Black emits and reflects nothing; a fit would be meaningless and its
+        // coefficients whatever the optimiser wandered into.
+        fit.chroma = {0.0f, 0.0f, -1.0e4f};
+        return fit;
     }
-    emission.scale = peak;
-    emission.chromaticity = FitReflectance(Vec3{linearSrgb.x / peak,
-                                                linearSrgb.y / peak,
-                                                linearSrgb.z / peak});
-    return emission;
+    fit.chroma = FitChroma(decomposed.chroma, {}, false);
+    return fit;
 }
 
-float EvaluateEmission(const EmissionSpectrum& emission, float lambda)
+float EvaluateSpectrum(const SpectrumFit& fit, float lambda)
 {
-    return emission.scale * EvaluateReflectance(emission.chromaticity, lambda);
+    return fit.scale * EvaluateReflectance(fit.chroma, lambda);
+}
+
+Vec3 IntegrateSpectrum(const SpectrumFit& fit)
+{
+    const Vec3d xyz = IntegrateSigmoidXyz(static_cast<double>(fit.chroma.c0),
+                                          static_cast<double>(fit.chroma.c1),
+                                          static_cast<double>(fit.chroma.c2));
+    const Vec3 rgb = XyzToLinearSrgb(Vec3{static_cast<float>(xyz.x),
+                                          static_cast<float>(xyz.y),
+                                          static_cast<float>(xyz.z)});
+    return rgb * fit.scale;
+}
+
+// ---------------------------------------------------------------------------
+// The chromaticity table
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// The chromaticity a table cell stands for.
+///
+/// Face `f` is the channel pinned to one; the two ratios fill the others in
+/// their natural order, so the cell at (1, 1) on every face is white and the
+/// faces agree there.
+Vec3 CellChroma(int face, float a, float b)
+{
+    switch (face) {
+        case 0:  return Vec3{1.0f, a, b};
+        case 1:  return Vec3{a, 1.0f, b};
+        default: return Vec3{a, b, 1.0f};
+    }
+}
+
+}  // namespace
+
+ChromaTable BuildChromaTable()
+{
+    ChromaTable table;
+    table.size = kChromaTableSize;
+    table.coefficients.assign(static_cast<std::size_t>(kChromaTableFaces) *
+                                  table.size * table.size * 3,
+                              0.0f);
+
+    for (int face = 0; face < kChromaTableFaces; ++face) {
+        SigmoidCoefficients seed;
+        bool haveSeed = false;
+        for (int j = 0; j < table.size; ++j) {
+            // Restart each row from the row above rather than from the end of
+            // the previous one, which is a discontinuity in the parameter.
+            SigmoidCoefficients rowSeed = seed;
+            bool haveRowSeed = haveSeed;
+            for (int i = 0; i < table.size; ++i) {
+                const float a =
+                    static_cast<float>(i) / static_cast<float>(table.size - 1);
+                const float b =
+                    static_cast<float>(j) / static_cast<float>(table.size - 1);
+                const SigmoidCoefficients fitted =
+                    FitChroma(CellChroma(face, a, b), rowSeed, haveRowSeed);
+
+                const std::size_t index =
+                    ((static_cast<std::size_t>(face) * table.size + j) *
+                         table.size +
+                     i) *
+                    3;
+                table.coefficients[index + 0] = fitted.c0;
+                table.coefficients[index + 1] = fitted.c1;
+                table.coefficients[index + 2] = fitted.c2;
+
+                rowSeed = fitted;
+                haveRowSeed = true;
+                if (i == 0) {
+                    seed = fitted;
+                    haveSeed = true;
+                }
+            }
+        }
+    }
+    return table;
+}
+
+SigmoidCoefficients LookUpChroma(const ChromaTable& table, const Vec3& linearSrgb)
+{
+    if (!table.Valid()) {
+        return {};
+    }
+    const Decomposed decomposed = Decompose(linearSrgb);
+    if (!(decomposed.scale > 0.0f)) {
+        return {0.0f, 0.0f, -1.0e4f};
+    }
+
+    float a = 0.0f;
+    float b = 0.0f;
+    switch (decomposed.face) {
+        case 0:  a = decomposed.chroma.y; b = decomposed.chroma.z; break;
+        case 1:  a = decomposed.chroma.x; b = decomposed.chroma.z; break;
+        default: a = decomposed.chroma.x; b = decomposed.chroma.y; break;
+    }
+
+    const float last = static_cast<float>(table.size - 1);
+    const float fi = std::clamp(a, 0.0f, 1.0f) * last;
+    const float fj = std::clamp(b, 0.0f, 1.0f) * last;
+    const int i0 = std::min(static_cast<int>(fi), table.size - 1);
+    const int j0 = std::min(static_cast<int>(fj), table.size - 1);
+    const int i1 = std::min(i0 + 1, table.size - 1);
+    const int j1 = std::min(j0 + 1, table.size - 1);
+    const float ti = fi - static_cast<float>(i0);
+    const float tj = fj - static_cast<float>(j0);
+
+    const auto at = [&](int i, int j, int component) {
+        const std::size_t index =
+            ((static_cast<std::size_t>(decomposed.face) * table.size + j) *
+                 table.size +
+             i) *
+            3;
+        return table.coefficients[index + static_cast<std::size_t>(component)];
+    };
+
+    SigmoidCoefficients out;
+    float* destination = &out.c0;
+    for (int component = 0; component < 3; ++component) {
+        const float top = at(i0, j0, component) * (1.0f - ti) +
+                          at(i1, j0, component) * ti;
+        const float bottom = at(i0, j1, component) * (1.0f - ti) +
+                             at(i1, j1, component) * ti;
+        destination[component] = top * (1.0f - tj) + bottom * tj;
+    }
+    return out;
 }
 
 // ---------------------------------------------------------------------------

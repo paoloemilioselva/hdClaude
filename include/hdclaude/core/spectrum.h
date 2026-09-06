@@ -13,6 +13,7 @@
 
 #include <array>
 #include <cstdint>
+#include <vector>
 
 namespace hdclaude {
 
@@ -138,39 +139,101 @@ float ReflectanceSigmoid(float x);
 /// Evaluate an upsampled reflectance at one wavelength. Always in (0, 1).
 float EvaluateReflectance(const SigmoidCoefficients& coefficients, float lambda);
 
-/// Integrate an upsampled reflectance under D65 back to linear sRGB.
+/// An upsampled spectrum: a bounded shape and the magnitude it is scaled by.
 ///
-/// The inverse of `FitReflectance`, and the half of the round trip that says
-/// whether the fit converged.
-Vec3 IntegrateReflectance(const SigmoidCoefficients& coefficients);
-
-/// Fit a reflectance spectrum whose D65 integral is `linearSrgb`.
+/// One type for reflectance and for emission, because splitting a colour into
+/// chromaticity and magnitude is what both of them need and doing it twice is
+/// how the two drift apart.
 ///
-/// Levenberg-Marquardt on the three coefficients, with the residual measured in
-/// CIELab rather than in XYZ: the acceptance criterion is a colour difference,
-/// and a least-squares fit in XYZ spends its accuracy where the eye does not
-/// look. Colours outside [0, 1] are clamped -- a reflectance above one is not a
-/// reflectance -- and the caller is expected to have divided out any magnitude
-/// first (see `FitEmission`).
-SigmoidCoefficients FitReflectance(const Vec3& linearSrgb);
-
-/// An emission spectrum for an authored light colour.
+/// Emission cannot use a bounded model on its own -- a light of RGB (5, 5, 5)
+/// must integrate to five times white, which nothing in [0, 1] expresses -- so
+/// the magnitude has to be carried separately whatever else is true. Once it
+/// is, a reflectance gets the same decomposition for free, and gains two
+/// properties from it: the round trip becomes exact by construction rather than
+/// by convergence, since the scale cancels; and a grey upsamples to a *flat*
+/// spectrum rather than to whatever a three-parameter fit converged on, which
+/// is what a grey physically is.
 ///
-/// Emission cannot use a bounded model directly: a light of RGB (5, 5, 5) must
-/// integrate to five times white, which nothing in [0, 1] expresses. So the
-/// chromaticity is upsampled as a reflectance and the magnitude is carried
-/// alongside, which preserves the authored chromaticity exactly and integrates
-/// to the authored luminance while staying non-negative everywhere.
-struct EmissionSpectrum {
-    SigmoidCoefficients chromaticity;
-    /// Multiplies the bounded spectrum. One for a colour already in [0, 1].
+/// The trade is that every colour's spectrum is a scaled saturated one, where a
+/// direct three-parameter fit would find a flatter spectrum for a desaturated
+/// colour. Both are metameric under D65 and both are smooth and bounded; they
+/// differ only under a narrowband illuminant, which nothing here yet is.
+struct SpectrumFit {
+    /// The shape, whose D65 integral is the colour divided by `scale`. Bounded
+    /// in (0, 1) at every wavelength by the sigmoid, so a reflectance built
+    /// from it cannot create energy.
+    SigmoidCoefficients chroma;
+    /// The largest component of the authored colour. At most one for a
+    /// reflectance; unbounded for emission.
     float scale = 1.0f;
 };
 
-EmissionSpectrum FitEmission(const Vec3& linearSrgb);
+/// Fit the spectrum whose D65 integral is `linearSrgb`.
+///
+/// The magnitude is divided out first, then Levenberg-Marquardt fits the three
+/// coefficients of the remaining chromaticity, with the residual measured in
+/// CIELab rather than in XYZ: the acceptance criterion is a colour difference,
+/// and a least-squares fit in XYZ spends its accuracy where the eye does not
+/// look.
+SpectrumFit FitSpectrum(const Vec3& linearSrgb);
 
-/// Evaluate an emission spectrum at one wavelength. Non-negative, unbounded.
-float EvaluateEmission(const EmissionSpectrum& emission, float lambda);
+/// Evaluate an upsampled spectrum at one wavelength. Never negative.
+float EvaluateSpectrum(const SpectrumFit& fit, float lambda);
+
+/// Integrate an upsampled spectrum under D65 back to linear sRGB.
+///
+/// The other half of the round trip, and the one that says whether the fit
+/// converged.
+Vec3 IntegrateSpectrum(const SpectrumFit& fit);
+
+// ---------------------------------------------------------------------------
+// The chromaticity table
+// ---------------------------------------------------------------------------
+
+/// Resolution of one axis of the chromaticity table.
+inline constexpr int kChromaTableSize = 32;
+
+/// Faces of the table: one per channel that can be the largest.
+inline constexpr int kChromaTableFaces = 3;
+
+/// Sigmoid coefficients for every chromaticity, ready for the GPU.
+///
+/// A shading point's colour is not known until it is shaded -- it comes out of
+/// a texture and a whole MaterialX graph -- so the fit cannot run per hit; it
+/// is an iterative optimisation. Tabulating it is the documented answer
+/// (docs/spectral-rendering.md 2), and the decomposition above is what makes
+/// the table small: only the *chromaticity* needs tabulating, and a
+/// chromaticity has one component pinned to one, so two free axes remain.
+///
+/// Indexed by which channel is largest and by the other two divided by it, so
+/// every entry is a colour on the surface of the unit cube. `size * size`
+/// entries per face, each three coefficients, row-major in the second ratio.
+struct ChromaTable {
+    int size = kChromaTableSize;
+    /// `faces * size * size * 3` floats.
+    std::vector<float> coefficients;
+
+    bool Valid() const
+    {
+        return size > 1 &&
+               coefficients.size() == static_cast<std::size_t>(kChromaTableFaces) *
+                                          size * size * 3;
+    }
+};
+
+/// Build the table.
+///
+/// Each fit is seeded from the one before it in scan order, which is what keeps
+/// this to a fraction of a second: neighbouring chromaticities have
+/// neighbouring coefficients, so a seeded fit converges in a handful of
+/// iterations where a cold one takes dozens.
+ChromaTable BuildChromaTable();
+
+/// Look a chromaticity up in the table, bilinearly, exactly as the GPU does.
+///
+/// Exposed so the two can be tested against each other: a table the shader
+/// reads differently from the host is a table that describes nothing.
+SigmoidCoefficients LookUpChroma(const ChromaTable& table, const Vec3& linearSrgb);
 
 // ---------------------------------------------------------------------------
 // Colour difference

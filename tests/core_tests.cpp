@@ -5,6 +5,8 @@
 #include "hdclaude/core/display.h"
 #include "hdclaude/core/spectrum.h"
 
+#include <algorithm>
+#include <cstdio>
 #include <filesystem>
 #include <limits>
 #include <string>
@@ -283,8 +285,8 @@ void TestReflectanceUpsamplingRoundTrips()
     double worst = 0.0;
     const char* worstName = "";
     for (const Sample& sample : samples) {
-        const SigmoidCoefficients fit = FitReflectance(sample.rgb);
-        const Vec3 back = IntegrateReflectance(fit);
+        const SpectrumFit fit = FitSpectrum(sample.rgb);
+        const Vec3 back = IntegrateSpectrum(fit);
 
         const Vec3 before = XyzToLab(LinearSrgbToXyz(sample.rgb));
         const Vec3 after = XyzToLab(LinearSrgbToXyz(back));
@@ -299,7 +301,7 @@ void TestReflectanceUpsamplingRoundTrips()
         // at every wavelength, which the sigmoid guarantees structurally and
         // this checks has not been undone.
         for (float lambda = kLambdaMin; lambda <= kLambdaMax; lambda += 5.0f) {
-            const float value = EvaluateReflectance(fit, lambda);
+            const float value = EvaluateSpectrum(fit, lambda);
             CHECK(value >= 0.0f && value <= 1.0f);
         }
     }
@@ -323,17 +325,13 @@ void TestEmissionUpsamplingPreservesColourAndMagnitude()
                             {0.0f, 0.0f, 0.0f}};
 
     for (const Vec3& colour : colours) {
-        const EmissionSpectrum emission = FitEmission(colour);
+        const SpectrumFit emission = FitSpectrum(colour);
 
         for (float lambda = kLambdaMin; lambda <= kLambdaMax; lambda += 5.0f) {
-            CHECK(EvaluateEmission(emission, lambda) >= 0.0f);
+            CHECK(EvaluateSpectrum(emission, lambda) >= 0.0f);
         }
 
-        // Integrating the emission spectrum back is the reflectance round trip
-        // scaled, so it returns the authored colour including its magnitude.
-        const Vec3 bounded = IntegrateReflectance(emission.chromaticity);
-        const Vec3 back{bounded.x * emission.scale, bounded.y * emission.scale,
-                        bounded.z * emission.scale};
+        const Vec3 back = IntegrateSpectrum(emission);
         CHECK_NEAR(back.x, colour.x, 1.0e-3 + 1.0e-3 * colour.x);
         CHECK_NEAR(back.y, colour.y, 1.0e-3 + 1.0e-3 * colour.y);
         CHECK_NEAR(back.z, colour.z, 1.0e-3 + 1.0e-3 * colour.z);
@@ -369,6 +367,50 @@ void TestDeltaE2000MatchesPublishedPairs()
     for (const Pair& pair : pairs) {
         CHECK_NEAR(DeltaE2000(pair.a, pair.b), pair.expected, 1.0e-3);
     }
+}
+
+/// The tabulated fit must agree with the fit it stands in for.
+///
+/// A shading point's colour is not known until it is shaded, so the GPU reads
+/// coefficients from a table rather than fitting. A table that disagrees with
+/// the fitter is a renderer whose materials are a slightly different colour
+/// than its own unit tests say they are -- and nothing downstream would show
+/// it, because both answers are smooth, bounded and plausible.
+///
+/// Bilinear interpolation between two fits is not itself a fit, so the bar here
+/// is a tenth of a dE2000 rather than the fitter's own 1e-3: still forty times
+/// under a just-noticeable difference, and it is the interpolation being
+/// measured, not the model.
+void TestChromaTableMatchesTheFit()
+{
+    const ChromaTable table = BuildChromaTable();
+    CHECK(table.Valid());
+    if (!table.Valid()) {
+        return;
+    }
+
+    const Vec3 samples[] = {
+        {1.0f, 0.0f, 0.0f},   {0.0f, 1.0f, 0.0f},   {0.0f, 0.0f, 1.0f},
+        {1.0f, 1.0f, 1.0f},   {0.5f, 0.5f, 0.5f},   {0.55f, 0.38f, 0.31f},
+        {0.16f, 0.29f, 0.12f}, {0.22f, 0.35f, 0.62f}, {0.48f, 0.24f, 0.14f},
+        {0.9f, 0.87f, 0.4f},  {0.05f, 0.42f, 0.37f}, {0.73f, 0.19f, 0.66f},
+    };
+
+    double worst = 0.0;
+    for (const Vec3& rgb : samples) {
+        SpectrumFit tabulated;
+        tabulated.chroma = LookUpChroma(table, rgb);
+        tabulated.scale = std::max({rgb.x, rgb.y, rgb.z});
+
+        const Vec3 back = IntegrateSpectrum(tabulated);
+        const double difference =
+            DeltaE2000(XyzToLab(LinearSrgbToXyz(rgb)),
+                       XyzToLab(LinearSrgbToXyz(back)));
+        worst = std::max(worst, difference);
+    }
+
+    std::printf("  chroma table: worst dE2000 %.2e\n", worst);
+    CHECK(worst < 0.1);
 }
 
 void TestBlackbodyPeakMatchesWien()
@@ -459,6 +501,7 @@ int main()
     TestDeltaE2000MatchesPublishedPairs();
     TestReflectanceUpsamplingRoundTrips();
     TestEmissionUpsamplingPreservesColourAndMagnitude();
+    TestChromaTableMatchesTheFit();
     TestDisplayTransformLeavesTheDiffuseRangeAlone();
     TestDisplayTransformCompressesRatherThanClips();
     TestDisplayTransformSanitisesAndExposes();
