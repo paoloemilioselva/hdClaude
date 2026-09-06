@@ -100,6 +100,7 @@ struct FrameBlock {
     std::uint32_t bounce;
     std::uint32_t lightCount;
     std::uint32_t hasDomeTexture;
+    std::uint32_t hasDomeLight;
     std::uint32_t materialCount;
     std::uint32_t hasEnvironmentDistribution;
     std::uint32_t environmentWidth;
@@ -688,6 +689,7 @@ void PathTracer::SetScene(const Scene& scene,
                 sizeof(_domeWorldToLight));
     std::memcpy(_domeLightToWorld, scene.domeLightToWorld,
                 sizeof(_domeLightToWorld));
+    _hasDomeLight = scene.hasDomeLight;
     _domeColorTemperature = scene.domeColorTemperature;
     _domeTemperatureScale = scene.domeTemperatureScale;
 
@@ -1013,6 +1015,7 @@ std::vector<float> PathTracer::Render(std::uint32_t width, std::uint32_t height,
     block.lightCount = _lightCount;
     block.materialCount = static_cast<std::uint32_t>(_shade.size());
     block.hasDomeTexture = _domeTexture.Valid() ? 1u : 0u;
+    block.hasDomeLight = _hasDomeLight ? 1u : 0u;
     block.hasEnvironmentDistribution = _environmentWidth > 0 ? 1u : 0u;
     block.environmentWidth = _environmentWidth;
     block.environmentHeight = _environmentHeight;

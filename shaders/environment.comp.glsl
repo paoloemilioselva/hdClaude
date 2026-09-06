@@ -55,7 +55,7 @@ void main()
     // estimation skips a delta and this test does not know it happened. That
     // is the gap multiple importance sampling closes, and it is why the sun is
     // documented as a fallback rather than a light.
-    if (frame.lightCount == 0u && frame.bounce == 0u)
+    if (hdclaude_has_stand_in_sun() && frame.bounce == 0u)
     {
         float cosAngle = dot(direction, normalize(frame.sunDirection.xyz));
         if (cosAngle > cos(max(frame.sunDirection.w, 1.0e-4)))

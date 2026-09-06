@@ -26,6 +26,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (samplesPerFrame)
                          (environmentIntensity)
                          (sunIntensity)
+                         (upAxis)
                          (exposure));
 
 }  // namespace
@@ -238,6 +239,32 @@ void HdClaudeRenderPass::_Execute(
     // stand-in sky when the stage has none.
     std::copy(std::begin(_environmentColor), std::end(_environmentColor),
               std::begin(settings.environmentColor));
+
+    // Aim the stand-in sun, which only lights a stage that has no lights of
+    // its own -- `hdclaude_emitter_count` includes it exactly when the light
+    // count is zero.
+    //
+    // 70 degrees of elevation, which is a high sun: it reaches the floor of a
+    // courtyard and the back of an arcade, where a low one rakes across the
+    // near wall and leaves the rest of an enclosed set to the sky alone. The
+    // azimuth is 45 degrees off each horizontal axis so the light is oblique to
+    // an axis-aligned building rather than square to one face of it, which is
+    // what keeps a box reading as a box.
+    //
+    // Elevation is measured about the stage's up axis, and getting that wrong
+    // does not dim the scene, it points the sun *sideways*: Pixar's Kitchen Set
+    // is Z-up, and the Y-up direction this used to hardcode ran horizontally
+    // through it.
+    {
+        const std::string upAxis = _renderDelegate->GetRenderSetting<std::string>(
+            _tokens->upAxis, std::string("Y"));
+        constexpr float kSinElevation = 0.93969262f;  // sin(70 degrees)
+        constexpr float kHorizontal = 0.24184476f;    // cos(70) * cos(45)
+        const bool zUp = (upAxis == "Z" || upAxis == "z");
+        settings.sunDirection[0] = kHorizontal;
+        settings.sunDirection[1] = zUp ? kHorizontal : kSinElevation;
+        settings.sunDirection[2] = zUp ? kSinElevation : kHorizontal;
+    }
 
     // Scale the sky and the stand-in sun. Both default to 1, so this changes
     // nothing until a user asks it to.

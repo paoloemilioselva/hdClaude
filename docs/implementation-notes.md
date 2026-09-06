@@ -2121,3 +2121,61 @@ colour, so the gate had been comparing one flat colour against the same flat
 colour and passing. This is the second time a baseline has been wrong from the
 day it was adopted, after the Kitchen Set's, and the second time the gate could
 not catch it, because the gate's only reference is the baseline itself.
+
+
+---
+
+## 2026-09-07 -- A default sun has to know which way is up, and when not to shine
+
+Two of the ten gallery scenes author no lights at all: Intel Sponza and Pixar's
+Kitchen Set. Both rendered badly, and for two different reasons that a single
+`lightCount == 0` test had run together.
+
+**Which way is up.** The stand-in sun's direction was the constant
+`{0.4, 0.7, 0.5}` -- about 48 degrees of elevation, and hardcoded Y-up. Kitchen
+Set is Z-up. A wrongly assumed up axis does not dim a scene, it points the sun
+*sideways*: the light ran horizontally through the room, along the floor rather
+than down onto it.
+
+A Hydra scene delegate is never told the stage's up axis. usdImaging passes the
+world as authored and there is no `HdTokens` entry for it, so a renderer that
+wants to put a default sun overhead has to be told. It is now a render setting,
+`HDCLAUDE_UP_AXIS`, defaulting to Y, and the gallery script carries the axis per
+scene alongside the camera it already carries for the same reason -- both are
+facts about the stage that the delegate cannot recover.
+
+The elevation is now 70 degrees. A high sun reaches the floor of a courtyard and
+the back of an arcade; a low one rakes the near wall and leaves the rest of an
+enclosed set to the sky. Sponza is the case that shows it -- its mean display
+brightness goes from 0.005 to 0.018, and the image turns from a silhouette into
+an arcade with lit columns and floor shadows.
+
+**When not to shine.** Turning the sun up immediately exposed the other half of
+the bug, in a scene that was never meant to be lit by it: the Open Chess Set
+changed too, and the chess set has a dome light.
+
+A dome light is not an entry in the light table. It supplies the *environment*,
+and `Scene::hasDomeLight` exists precisely so the render pass does not put its
+stand-in sky on top of one. But the stand-in *sun* was gated on
+`frame.lightCount == 0u` alone, and a dome-lit stage has an empty light table.
+So every dome-lit scene with no analytic lights had been rendering under its own
+HDRI plus a second key light nobody authored -- the chess set for as long as it
+has been in the gallery.
+
+The gate is now `hdclaude_has_stand_in_sun()`, which asks for both, and the flag
+is plumbed through the frame block rather than inferred: `hasDomeTexture` was
+already there but means something narrower, since a dome with a constant colour
+and no map lights a scene just as much as a textured one.
+
+The lesson is the one about names. `lightCount` is an honest name for what it
+counts -- entries in the light table -- and the test that used it was asking a
+different question: *did this stage light itself at all*. The two agree for every
+scene that has an analytic light and every scene that has nothing, which is eight
+of the ten, and disagree exactly for the dome-only case.
+
+**All three affected scenes moved toward hdCodex**, which is the check that
+matters, since none of this was tuned against those baselines: Sponza's RMS
+against hdCodex falls from 0.391 to 0.368, the chess set's from 0.060 to 0.049,
+and Kitchen Set's from 0.074 to 0.056. The other seven scenes re-render
+byte-identical, which is what the gating predicts -- the sun cannot reach a scene
+that has lights.

@@ -64,17 +64,21 @@ $samplesPerFrame = 32
 # contract: usdrecord frames its own camera when a stage has none, and a framed
 # camera moves whenever the geometry does, which would silently change what a
 # baseline shows.
+#
+# UpAxis is the stage's own, and it is here because a Hydra scene delegate is
+# never told it. It only affects a stage with no lights, where it aims the
+# stand-in sun; a Y-up sun in the Z-up Kitchen Set shines along the floor.
 $scenes = @(
-    [pscustomobject]@{ Key = 'intel_sponza';          Title = 'Intel Sponza';                 Camera = 'PhysCamera001';     Purposes = $null;   Subdivision = 2 },
-    [pscustomobject]@{ Key = 'chess_board';           Title = 'OpenChessSet';                 Camera = 'renderCam';         Purposes = $null;   Subdivision = 2 },
-    [pscustomobject]@{ Key = 'shader_ball_gold';      Title = 'StandardShaderBall Gold';      Camera = 'camera';            Purposes = $null;   Subdivision = 2 },
-    [pscustomobject]@{ Key = 'shader_ball_glass';     Title = 'StandardShaderBall Glass';     Camera = 'camera';            Purposes = $null;   Subdivision = 2 },
-    [pscustomobject]@{ Key = 'shader_ball_bubblegum'; Title = 'StandardShaderBall BubbleGum'; Camera = 'camera';            Purposes = $null;   Subdivision = 2 },
-    [pscustomobject]@{ Key = 'pixar_kitchen';         Title = "Pixar's KitchenSet";           Camera = 'renderCam';         Purposes = $null;   Subdivision = 2 },
-    [pscustomobject]@{ Key = 'collectiveproject001';  Title = 'Collective Project 001';       Camera = 'mono';              Purposes = 'render'; Subdivision = 2 },
-    [pscustomobject]@{ Key = 'openpbr_playground';    Title = 'OpenPBR Playground';           Camera = 'renderCam_mainCU';  Purposes = 'render'; Subdivision = 2 },
-    [pscustomobject]@{ Key = 'subdivision_features';  Title = 'Subdivision Feature Matrix';   Camera = 'camera';            Purposes = $null;   Subdivision = 2 },
-    [pscustomobject]@{ Key = 'newzealand_heightmap';  Title = 'New Zealand Height Map';       Camera = 'camera';            Purposes = $null;   Subdivision = 6 }
+    [pscustomobject]@{ Key = 'intel_sponza';          Title = 'Intel Sponza';                 Camera = 'PhysCamera001';     Purposes = $null;   Subdivision = 2; UpAxis = 'Y' },
+    [pscustomobject]@{ Key = 'chess_board';           Title = 'OpenChessSet';                 Camera = 'renderCam';         Purposes = $null;   Subdivision = 2; UpAxis = 'Y' },
+    [pscustomobject]@{ Key = 'shader_ball_gold';      Title = 'StandardShaderBall Gold';      Camera = 'camera';            Purposes = $null;   Subdivision = 2; UpAxis = 'Y' },
+    [pscustomobject]@{ Key = 'shader_ball_glass';     Title = 'StandardShaderBall Glass';     Camera = 'camera';            Purposes = $null;   Subdivision = 2; UpAxis = 'Y' },
+    [pscustomobject]@{ Key = 'shader_ball_bubblegum'; Title = 'StandardShaderBall BubbleGum'; Camera = 'camera';            Purposes = $null;   Subdivision = 2; UpAxis = 'Y' },
+    [pscustomobject]@{ Key = 'pixar_kitchen';         Title = "Pixar's KitchenSet";           Camera = 'renderCam';         Purposes = $null;   Subdivision = 2; UpAxis = 'Z' },
+    [pscustomobject]@{ Key = 'collectiveproject001';  Title = 'Collective Project 001';       Camera = 'mono';              Purposes = 'render'; Subdivision = 2; UpAxis = 'Y' },
+    [pscustomobject]@{ Key = 'openpbr_playground';    Title = 'OpenPBR Playground';           Camera = 'renderCam_mainCU';  Purposes = 'render'; Subdivision = 2; UpAxis = 'Y' },
+    [pscustomobject]@{ Key = 'subdivision_features';  Title = 'Subdivision Feature Matrix';   Camera = 'camera';            Purposes = $null;   Subdivision = 2; UpAxis = 'Y' },
+    [pscustomobject]@{ Key = 'newzealand_heightmap';  Title = 'New Zealand Height Map';       Camera = 'camera';            Purposes = $null;   Subdivision = 6; UpAxis = 'Y' }
 )
 
 function Read-Timings {
@@ -207,6 +211,7 @@ if (!$env:HDCLAUDE_GALLERY_EXPOSURE) { $env:HDCLAUDE_GALLERY_EXPOSURE = '0' }
 
 foreach ($item in $selected) {
     $env:HDCLAUDE_SUBDIVISION_LEVEL = [string]$item.Subdivision
+    $env:HDCLAUDE_UP_AXIS = [string]$item.UpAxis
 
     $scenePath = Join-Path $galleryRoot ($item.Key + '.usda')
     $linearPath = Join-Path $linearRoot ($item.Key + '.exr')

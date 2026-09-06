@@ -33,6 +33,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (samplesPerFrame)
                          (environmentIntensity)
                          (sunIntensity)
+                         (upAxis)
                          (exposure));
 
 namespace {
@@ -386,6 +387,17 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
          VtValue(float(TfGetenvDouble("HDCLAUDE_ENVIRONMENT_INTENSITY", 1.0)))},
         {"Sun intensity", _tokens->sunIntensity,
          VtValue(float(TfGetenvDouble("HDCLAUDE_SUN_INTENSITY", 1.0)))},
+
+        // Which way is up, for aiming the stand-in sun.
+        //
+        // A Hydra scene delegate is not told the stage's up axis: usdImaging
+        // passes the world as authored and there is no `HdTokens` for it. So a
+        // renderer that wants to put its default sun overhead has to be told,
+        // and the alternative to a setting is a hardcoded axis that is simply
+        // wrong for half of USD -- hdClaude's own gallery has a Z-up scene, and
+        // a Y-up sun in it shines sideways along the floor.
+        {"Up axis", _tokens->upAxis,
+         VtValue(std::string(TfGetenv("HDCLAUDE_UP_AXIS", "Y")))},
 
         // Exposure, in stops, applied to the resolved image. Zero by default,
         // so the AOV carries the radiance the renderer computed and nothing is

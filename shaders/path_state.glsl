@@ -34,6 +34,7 @@ layout(set = 0, binding = 0, scalar) uniform FrameBlock {
     uint  bounce;               // current bounce, 0 for camera rays
     uint  lightCount;           // entries in the light table
     uint  hasDomeTexture;       // 1 when hdclaude_dome holds an environment map
+    uint  hasDomeLight;         // 1 when a dome light supplied the environment
     uint  materialCount;        // compiled shading pipelines; the sort's key range
     uint  hasEnvironmentDistribution;   // 1 when the dome map has a CDF built
     uint  environmentWidth;
@@ -551,11 +552,24 @@ vec4 hdclaude_upsample_emission(vec3 rgb, vec4 lambda)
 /// enclosed set -- which is what every studio-lit interior is -- otherwise sees
 /// the sky only through a chain of bounces that survives to a miss, and the
 /// image is dark and noisy for want of a shadow ray it never cast.
+/// Whether the stand-in sun lights this frame.
+///
+/// Only when the stage lit itself in no way at all. A dome light is not in the
+/// light table -- it supplies the environment rather than an entry -- so
+/// counting the table alone says a dome-lit stage has no lights, and the sun
+/// was being added on top of an environment the asset had authored. The Open
+/// Chess Set is exactly that stage, and its stand-in sun was a second key light
+/// nobody asked for.
+bool hdclaude_has_stand_in_sun()
+{
+    return frame.lightCount == 0u && frame.hasDomeLight == 0u;
+}
+
 uint hdclaude_emitter_count()
 {
-    // The analytic lights, the environment, and -- only when the stage has no
-    // lights at all -- the stand-in sun.
-    return frame.lightCount + (frame.lightCount == 0u ? 2u : 1u);
+    // The analytic lights, the environment, and -- only when the stage lights
+    // itself in no way at all -- the stand-in sun.
+    return frame.lightCount + (hdclaude_has_stand_in_sun() ? 2u : 1u);
 }
 
 /// Where `direction` lands in the dome map's parameterisation.

@@ -56,7 +56,11 @@ struct RenderSettings {
     bool resetAccumulation = true;
 
     float environmentColor[3] = {0.30f, 0.38f, 0.52f};
-    float sunDirection[3] = {0.4f, 0.7f, 0.5f};
+    /// Direction toward the stand-in sun, at 70 degrees of elevation for a
+    /// Y-up stage. The Hydra render pass re-aims this about the stage's
+    /// actual up axis, which it has to be told; this default is what a
+    /// direct user of `PathTracer` gets.
+    float sunDirection[3] = {0.24184476f, 0.93969262f, 0.24184476f};
     float sunAngularRadius = 0.02f;
     float sunRadiance[3] = {3.0f, 2.9f, 2.7f};
 };
@@ -167,6 +171,9 @@ class PathTracer {
     VulkanImage _domeTexture;
     float _domeWorldToLight[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     float _domeLightToWorld[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    /// Whether the published scene supplied its own environment. The
+    /// stand-in sun is withheld when it did.
+    bool _hasDomeLight = false;
     float _domeColorTemperature = 0.0f;
     float _domeTemperatureScale = 1.0f;
 
