@@ -90,6 +90,27 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 | New Zealand Height Map | 2026-09-06 | 8.298 s (0m 8.298s) | `024ad20e49c119c5030ce56f687b14b57048a8020e61790a022256633eb43643` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 6 |
 <!-- gallery-timings:end -->
 
+## Against hdCodex
+
+Phase 8 asks for parity with the hdCodex baselines. Mean display brightness of
+the two renderers' images of the same stage, at the same camera and settings,
+is the crudest possible comparison and the one that separates "different" from
+"missing":
+
+| Scene | hdCodex | hdClaude | reading |
+|---|---:|---:|---|
+| Intel Sponza | 0.353 | 0.004 | hdCodex shades 137 `UsdPreviewSurface` materials as flat grey; hdClaude shades the brick and stone the asset authors, in an arcade lit only by a stand-in sky |
+| OpenChessSet | 0.558 | 0.424 | comparable |
+| Pixar's KitchenSet | 0.192 | 0.274 | hdClaude brighter |
+| Subdivision Feature Matrix | 0.344 | 0.316 | comparable |
+
+Parity is not the goal where the two disagree about how much of the asset to
+shade. What the comparison is for is finding the places where hdClaude is
+missing something, and Sponza is now understood rather than suspect: the
+estimator is confirmed by a white furnace -- a 0.8 Lambertian under a unit sky
+renders 0.811 against a closed form of 0.800 -- and the same stage rendered
+from outside is bright, textured and correct.
+
 ## External assets
 
 The gallery stages are thin layers that reference assets living outside this

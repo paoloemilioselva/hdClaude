@@ -632,6 +632,48 @@ int main()
             CHECK(top.g > bottom.g * 1.5f);
         }
 
+        // --- A furnace: a diffuse surface under a uniform sky -----------------
+        //
+        // The one lighting assertion with a closed form. A Lambertian surface
+        // of albedo a under a uniform environment of radiance L leaves exactly
+        // a*L, whatever the sampling strategy: the estimator integrates
+        // f * L * cos over the hemisphere, and albedo/pi times pi is albedo.
+        //
+        // It is the test that says whether the environment is a *light* --
+        // sampled by next-event estimation and weighted against BSDF sampling
+        // -- or merely something a lucky ray runs into. The second answer also
+        // converges, eventually, to a much noisier version of this number.
+        {
+            Scene scene;
+            scene.prototypes.push_back(MakeQuad());
+            scene.instances.push_back({0, Transform3x4{}, 0, true});
+            tracer.SetScene(scene, {materials[0]});   // albedo 0.8, grey
+
+            RenderSettings furnace;
+            furnace.samplesPerPixel = 256;
+            furnace.maxBounces = 2;
+            // A white sky and no sun, so the only light in the scene is the one
+            // being tested and the expected value has no second term.
+            furnace.environmentColor[0] = 1.0f;
+            furnace.environmentColor[1] = 1.0f;
+            furnace.environmentColor[2] = 1.0f;
+            furnace.sunRadiance[0] = 0.0f;
+            furnace.sunRadiance[1] = 0.0f;
+            furnace.sunRadiance[2] = 0.0f;
+
+            const std::vector<float> image =
+                tracer.Render(kWidth, kHeight, LookDownZ(4.0f), furnace);
+            const Pixel centre = At(image, 0.5f, 0.5f);
+            std::printf("  furnace: %.4f %.4f %.4f (expected 0.80)\n", centre.r,
+                        centre.g, centre.b);
+
+            // Five per cent, which is sampling noise at 256 samples and nothing
+            // like the factor a missing strategy costs.
+            CHECK_NEAR(centre.r, 0.8, 0.05);
+            CHECK_NEAR(centre.g, 0.8, 0.05);
+            CHECK_NEAR(centre.b, 0.8, 0.05);
+        }
+
         // --- A texture arrives the way round it was decoded -------------------
         //
         // The quad's UVs put v = 0 at the bottom, and the texture's first row
@@ -668,7 +710,7 @@ int main()
             const Pixel topLeft = At(image, 0.375f, 0.625f);
             const Pixel topRight = At(image, 0.625f, 0.625f);
             std::printf("  texture corners: bl %.2f %.2f %.2f, br %.2f %.2f %.2f, "
-                        "tl %.2f %.2f %.2f\n",
+                        "tl %.2f %.2f %.2f, tr %.2f %.2f %.2f\n",
                         bottomLeft.r, bottomLeft.g, bottomLeft.b, bottomRight.r,
                         bottomRight.g, bottomRight.b, topLeft.r, topLeft.g,
                         topLeft.b, topRight.r, topRight.g, topRight.b);
