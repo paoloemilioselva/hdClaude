@@ -41,8 +41,13 @@ void main()
 
     pathOrigin.values[index] = origin;
     pathDirection.values[index] = direction;
-    pathThroughput.values[index] = vec3(1.0);
-    pathRadiance.values[index] = vec3(0.0);
+    // The hero packet, drawn once and held for the life of the path. Its own
+    // random number, taken before the pixel's, so the wavelength sequence is
+    // decorrelated from the lens and light sequences rather than sharing their
+    // stratification.
+    pathWavelengths.values[index] = hdclaude_sample_hero(hdclaude_random(rng));
+    pathThroughput.values[index] = vec4(1.0);
+    pathRadiance.values[index] = vec4(0.0);
     pathPixel.values[index] = index;
     pathRng.values[index] = rng;
     // No scattering produced this ray, so a miss takes the environment in

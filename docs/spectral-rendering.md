@@ -1,10 +1,19 @@
 # Spectral rendering
 
-Status: design of record. Last revised 2026-09-05.
+Status: design of record. Last revised 2026-09-07.
 
 hdClaude transports light spectrally. RGB is an asset-input and display-output
 format; it is never the path throughput representation. This document specifies
 the wavelength model, the RGB-to-spectrum upsampling, and the sensor.
+
+**What is implemented, as of 2026-09-07.** The wavelength model of 1 and the
+sensor of 4; the upsampling of 2 in the form described below, with one
+deliberate difference recorded there; and the transport itself -- a path carries
+four lanes end to end. **Not** implemented: the chromatic path handling of 1
+(dispersion, thin film, and the wavelength MIS they need), and 3 as written --
+upsampling happens where a closure hands back a response rather than at each
+texture fetch inside a MaterialX graph, so a material's own colour arithmetic is
+still RGB. Sections describing the end state say so where they differ.
 
 ## 1. Hero wavelength packets
 
@@ -46,7 +55,7 @@ Three distinct upsampling roles, because they have different constraints:
 
 | Quantity | Method | Constraint |
 | --- | --- | --- |
-| Reflectance, transmittance, albedo | Jakob-Hanika sigmoid polynomial | must stay in [0, 1] at every wavelength |
+| Reflectance, transmittance, albedo | Jakob-Hanika sigmoid polynomial, of the *chromaticity*, scaled by the magnitude | must stay in [0, 1] at every wavelength |
 | Emission, light colour | Smits-style non-negative basis, unnormalised | must stay >= 0; unbounded magnitude |
 | IOR, extinction | Cauchy / Sellmeier from authored dispersion controls | physical, authored, not upsampled |
 
@@ -59,8 +68,24 @@ first use and cached under the same key scheme as compiled shaders.
 
 **Emission.** Bounded upsampling is wrong for emission: a light of RGB (5,5,5)
 must produce a spectrum integrating to five times white, which no [0,1] model
-can express. Emission uses a non-negative basis scaled by luminance, preserving
-chromaticity exactly and integrating to the authored luminance.
+can express. Emission divides out the magnitude, upsamples the chromaticity that
+remains, and reapplies it -- preserving chromaticity exactly and integrating to
+the authored luminance while staying non-negative everywhere.
+
+**Reflectance uses the same decomposition**, which is a deliberate departure
+from fitting the colour directly. It makes the round trip exact by construction
+rather than by convergence, since the scale cancels; and it makes a grey
+upsample to a *flat* spectrum, which is what a grey physically is. The cost is
+that every colour's spectrum is a scaled saturated one where a direct fit would
+find something flatter for a desaturated colour. Both are metameric under D65
+and both are smooth and bounded; they differ under a narrowband illuminant,
+which nothing here is yet.
+
+An emitted spectrum is further multiplied by the illuminant its RGB was authored
+against, so a white light emits D65 -- that is what an RGB emitter means in a
+D65-referred pipeline -- and the film divides by the same illuminant's luminous
+integral, which is what makes a white surface under a white light resolve to
+white.
 
 **Round-trip requirement.** Upsampling followed by CIE integration under the
 D65 illuminant must return the original sRGB value to within 1e-3 dE2000 for

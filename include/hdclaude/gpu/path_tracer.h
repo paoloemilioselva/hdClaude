@@ -133,6 +133,11 @@ class PathTracer {
   private:
     void EnsureResolution(std::uint32_t width, std::uint32_t height);
     void UploadTextures(const std::vector<TextureImage>& textures);
+    /// Sample the colour matching functions and the illuminant, fit the
+    /// chromaticity table, and upload all of it. Once, at construction: none of
+    /// it depends on the scene.
+    void BuildSpectralTables();
+
     VulkanImage UploadTexture(const TextureImage& texture);
 
     /// The image array a material's descriptor set should be written with.
@@ -166,6 +171,18 @@ class PathTracer {
     /// The dome map's sampling distribution, uploaded as one buffer. Always a
     /// real buffer -- a descriptor set cannot point at nothing -- and the
     /// kernels read `hasEnvironmentDistribution` rather than its size.
+    /// The hero packet each path carries.
+    VulkanBuffer _wavelengths;
+
+    /// The colour matching functions, the illuminant, and the chromaticity
+    /// table, in one buffer. Built once at construction: none of it depends on
+    /// the scene, and the table costs the better part of a second to fit.
+    VulkanBuffer _spectralTables;
+    std::uint32_t _spectralSamples = 0;
+    std::uint32_t _chromaTableOffset = 0;
+    std::uint32_t _chromaTableSize = 0;
+    float _spectralNormalisation = 1.0f;
+
     VulkanBuffer _environmentDistribution;
     std::uint32_t _environmentWidth = 0;
     std::uint32_t _environmentHeight = 0;

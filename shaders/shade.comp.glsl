@@ -260,11 +260,12 @@ void main()
 
     ivec4 record = hits.values[path];
 
-    vec3 throughput = pathThroughput.values[path];
+    vec4 throughput = pathThroughput.values[path];
     if (dot(throughput, throughput) <= 0.0)
     {
         return;
     }
+    vec4 lambda = pathWavelengths.values[path];
 
     vec3 rayDirection = pathDirection.values[path];
     vec3 hitPosition = pathOrigin.values[path];
@@ -285,7 +286,8 @@ void main()
     ClosureData emissionData = ClosureData(CLOSURE_TYPE_EMISSION, vec3(0.0), V,
                                            point.shadingNormal, point.position, 1.0);
     hdclaude_material_shade(emissionData);
-    pathRadiance.values[path] += throughput * hdclaude_emission;
+    pathRadiance.values[path] +=
+        throughput * hdclaude_upsample_emission(hdclaude_emission, lambda);
 
     // --- Next-event estimation ----------------------------------------------
     //
@@ -393,9 +395,17 @@ void main()
                                                  hdclaude_bsdf.pdf);
                 }
 
-                vec3 contribution = throughput * hdclaude_bsdf.response *
-                                    lightSample.radiance * weight /
-                                    (lightSample.pdf * selectionPdf);
+                // The closure's response is a reflectance and the light's
+                // radiance is an emission, and the two are upsampled
+                // differently: a reflectance is the bare spectrum, an emission
+                // is that spectrum times the illuminant its RGB was authored
+                // against. Multiplying two reflectances would render every lit
+                // surface under an equal-energy sky nobody authored.
+                vec4 contribution =
+                    throughput *
+                    hdclaude_upsample(hdclaude_bsdf.response, lambda) *
+                    hdclaude_upsample_emission(lightSample.radiance, lambda) *
+                    weight / (lightSample.pdf * selectionPdf);
 
                 if (dot(contribution, contribution) > 0.0)
                 {
@@ -420,7 +430,7 @@ void main()
                             // occlude it.
                             ray.maxDistance = lightSample.distance * 0.9999;
                             ray.path = path;
-                            ray.pad0 = 0u; ray.pad1 = 0u; ray.pad2 = 0u;
+                            ray.pad0 = 0u; ray.pad1 = 0u;
                             shadowRays.values[index] = ray;
                         }
                     }
@@ -431,7 +441,7 @@ void main()
     // --- Scatter -------------------------------------------------------------
     if (frame.bounce + 1u >= frame.maxBounces)
     {
-        pathThroughput.values[path] = vec3(0.0);
+        pathThroughput.values[path] = vec4(0.0);
         pathRng.values[path] = rng;
         return;
     }
@@ -447,7 +457,7 @@ void main()
 
     if (!(dot(L, L) > 0.5))
     {
-        pathThroughput.values[path] = vec3(0.0);
+        pathThroughput.values[path] = vec4(0.0);
         pathRng.values[path] = rng;
         return;
     }
@@ -474,12 +484,12 @@ void main()
         // A direction the sampler produced that the density says is
         // impossible: below the horizon, most often. Terminating is correct and
         // keeps the estimator unbiased.
-        pathThroughput.values[path] = vec3(0.0);
+        pathThroughput.values[path] = vec4(0.0);
         pathRng.values[path] = rng;
         return;
     }
 
-    throughput *= hdclaude_bsdf.response / pdf;
+    throughput *= hdclaude_upsample(hdclaude_bsdf.response, lambda) / pdf;
 
     // What the environment kernel weighs against, if this ray misses. A delta
     // closure reports no finite density and next-event estimation skipped it,
@@ -491,11 +501,12 @@ void main()
     // with a compensating weight rather than traced to the depth limit.
     if (frame.bounce >= 2u)
     {
-        float survival = clamp(max(throughput.x, max(throughput.y, throughput.z)),
+        float survival = clamp(max(max(throughput.x, throughput.y),
+                                   max(throughput.z, throughput.w)),
                                0.05, 1.0);
         if (hdclaude_random(rng) > survival)
         {
-            pathThroughput.values[path] = vec3(0.0);
+            pathThroughput.values[path] = vec4(0.0);
             pathRng.values[path] = rng;
             return;
         }
@@ -504,7 +515,7 @@ void main()
 
     if (!(dot(throughput, throughput) > 0.0))
     {
-        pathThroughput.values[path] = vec3(0.0);
+        pathThroughput.values[path] = vec4(0.0);
         pathRng.values[path] = rng;
         return;
     }

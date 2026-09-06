@@ -24,7 +24,9 @@ void main()
     }
 
     vec3 direction = pathDirection.values[path];
-    vec3 radiance = hdclaude_environment(direction);
+    vec4 lambda = pathWavelengths.values[path];
+    vec4 radiance = hdclaude_upsample_emission(hdclaude_environment(direction),
+                                               lambda);
 
     // Multiple importance sampling against next-event estimation, which
     // samples this same environment at every shading point. Both strategies
@@ -56,10 +58,10 @@ void main()
         float cosAngle = dot(direction, normalize(frame.sunDirection.xyz));
         if (cosAngle > cos(max(frame.sunDirection.w, 1.0e-4)))
         {
-            radiance += frame.sunRadiance.rgb;
+            radiance += hdclaude_upsample_emission(frame.sunRadiance.rgb, lambda);
         }
     }
 
     pathRadiance.values[path] += pathThroughput.values[path] * radiance;
-    pathThroughput.values[path] = vec3(0.0);
+    pathThroughput.values[path] = vec4(0.0);
 }

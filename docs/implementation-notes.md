@@ -1880,3 +1880,74 @@ kernels assign and nothing reads, the film still accumulates RGB, and colour
 temperature is still applied as an RGB tint. Those are the next steps, and the
 documents that describe hdClaude as transporting spectrally today still overstate
 what it does.
+
+---
+
+## 2026-09-07 -- Transport becomes spectral, and the tests find out what that costs
+
+A path now carries four wavelengths and four scalars along them. Throughput and
+radiance are `vec4` lanes rather than RGB channels, the packet is drawn once at
+ray generation and held for the path's life, and RGB survives in exactly two
+places: where an asset authors one, and where the film hands an image back.
+
+**Where the conversion happens, and where it does not.** The MaterialX graph
+still computes in RGB -- its generated code is `vec3` throughout, and changing
+that means changing the code generator's type system -- so the upsampling
+happens at the *closure boundary*: the response a closure returns and the
+radiance a light carries are upsampled to the lanes, not each texel inside the
+graph. A material that multiplies two textures still multiplies them as RGB. The
+transport between surfaces is spectral; the arithmetic within a material is not,
+and `docs/spectral-rendering.md` 3 describes an end state this is a step toward
+rather than the current one.
+
+**Reflectance and emission upsample differently, and getting that wrong renders
+a scene nobody authored.** A closure's response is a reflectance and becomes the
+bare spectrum. A light's colour is an emission and becomes that spectrum *times
+the illuminant its RGB was authored against* -- a white light emits D65, which
+is what an RGB emitter means in a D65-referred pipeline. Multiply two
+reflectances together instead and every lit surface is rendered under an
+equal-energy sky, which is a colour cast with no author.
+
+The film then divides by the same illuminant's luminous integral, which is what
+closes the loop: a white surface under a white light resolves to white rather
+than to whatever the illuminant's absolute power happens to be.
+
+**The tables are sampled, not re-derived.** The colour matching functions and
+D65 already exist on the host, where they are the definitions the upsampling fit
+and its round-trip gate are written against. Giving the shader a second closed
+form would be a second thing to keep in agreement with them, and a disagreement
+would show up as every material being a slightly different colour than its own
+unit test says. So they are sampled at 5 nm, uploaded, and interpolated -- along
+with the chromaticity table, in the same buffer.
+
+**What the tests had to learn.** Every furnace came back with a magenta cast on
+the first run -- 0.836, 0.761, 0.839 against 0.800 -- which looked exactly like a
+bad white point. It was not. It was chromatic noise: a pixel's colour now comes
+from four wavelengths drawn at random, so a grey surface renders a slightly
+different grey in every pixel and is neutral only in the mean. At sixteen times
+the samples the same test read 0.807, 0.793, 0.780; averaged over a window
+instead, at the original sample count, it reads 0.804, 0.801, 0.804.
+
+That is a real and permanent cost of spectral rendering, not a defect: RGB
+transport has *zero* chromatic noise on a grey surface, and there is no
+arrangement of a spectral renderer that also has none. Worth knowing before
+reading the gallery, where every image is now slightly noisier in colour at the
+same sample count.
+
+**And one test had to be rebuilt rather than loosened.** The per-material sort
+test identified a background pixel by its colour being the environment constant
+exactly. Under spectral transport a background pixel is a four-wavelength
+*estimate* of the environment's spectrum, so it lands near the authored colour
+and never on it, and every pixel looked shaded. The fix is not a tolerance: the
+sampler is seeded from the pixel, the sample index and the bounce and from
+nothing else, so a pixel that only ever saw the environment draws the same
+packet whatever the scene contains. Rendering the same frame with the geometry
+moved behind the camera gives a background that a background pixel matches
+*bit for bit*, and a shaded pixel cannot. It still counts 1169 + 1167 = 2336,
+the same numbers as before.
+
+The general lesson is one this project keeps relearning from the other side: a
+test that identifies something by an exact value is testing the estimator's
+determinism as much as the thing it names, and changing the estimator breaks it.
+The repair is usually to find what the two cases actually differ by, which here
+was better than what it replaced.

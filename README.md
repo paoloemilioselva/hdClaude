@@ -25,7 +25,12 @@ is the extension mechanism the MaterialX documentation prescribes, and it is
 why there is no third "approximated" material state: a material either compiles
 and renders with full fidelity, or it is reported as an error.
 
-**Light is transported spectrally.** Four correlated hero wavelengths per path.
+**Light is transported spectrally.** Four correlated hero wavelengths per path,
+drawn at ray generation and held for the path's life; throughput and radiance are
+per wavelength, and RGB appears only where an asset authors one and where the
+film resolves an image. The upsampling happens where a closure hands back a
+response, so a MaterialX graph's own colour arithmetic is still RGB; dispersion
+and its wavelength MIS are not implemented yet.
 Authored RGB reflectances are upsampled to bounded, energy-conserving spectra;
 colour temperature resolves to an actual Planckian blackbody; dielectric IOR
 varies by wavelength where the material says so. The sensor integrates CIE XYZ

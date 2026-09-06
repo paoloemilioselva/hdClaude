@@ -30,8 +30,17 @@ with subdivision at the deterministic level-2 gallery setting. The New Zealand
 height map is the deliberate exception: its single authored quad is uniformly
 refined at level 6.
 
-Two things the settings deliberately do not claim yet. Transport is RGB —
-hero-wavelength transport is phase 6, and the table will say so when it lands.
+**Transport is spectral.** Every image below carries four hero wavelengths per
+path; RGB appears only where the asset authors one and where the film resolves
+the image. That has a visible cost at a fixed sample count, and it is worth
+knowing before reading these images: a pixel's colour comes from four
+wavelengths drawn at random, so a grey surface is neutral only in the mean and
+every image is speckled with colour where an RGB renderer's would be smooth. It
+also costs time -- between fifteen and forty per cent across these ten scenes.
+What is not yet spectral: a MaterialX graph's own colour arithmetic, since the
+upsampling happens where a closure hands back its response; and dispersion,
+which needs the wavelength MIS of phase 6.
+
 There is no displacement — that is phase 16, so the height map's quad is refined
 and flat.
 
@@ -84,16 +93,16 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 <!-- gallery-timings:start -->
 | Scene | Measured | Wall time | SHA-256 | Device | Settings |
 |---|---:|---:|---|---|---|
-| Intel Sponza | 2026-09-06 | 50.858 s (0m 50.858s) | `59a5f9dc8658e1f3655542e99bad71bf848453a2007f28c3e3c60cd8a82adc9b` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| OpenChessSet | 2026-09-06 | 20.964 s (0m 20.964s) | `07e65b1ccf6415b51aecd036ef8ca62c296638a3db6f56995218ec757c833b5d` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall Gold | 2026-09-06 | 36.573 s (0m 36.573s) | `68394a8a687eb51d48443a2f9a77488de507d989cb95f1303c0ba4adf0ad4895` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall Glass | 2026-09-06 | 27.387 s (0m 27.387s) | `6bd9b49781757e19de6386507a10d5c39e8daaade9342e9561444e4420414049` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall BubbleGum | 2026-09-06 | 26.962 s (0m 26.962s) | `3e9f80662b8e18a26583981b59b817bfe7ce0072baf2e961c0d6cc012f4c3084` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Pixar's KitchenSet | 2026-09-06 | 145.103 s (2m 25.103s) | `3f1d4bb6de86b0de05e593d08af8732ae9a7fc0f1437637a15976302ff3cca09` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Collective Project 001 | 2026-09-06 | 21.380 s (0m 21.380s) | `9c5562b047c558e89a260d7ca8173d89ee3adce72d562170daa625b2250d60de` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| OpenPBR Playground | 2026-09-06 | 103.466 s (1m 43.466s) | `02b5bfea13b8913850ba4b31e7abbd66fea0f1c71274b5c6c9a8b025c9572887` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Subdivision Feature Matrix | 2026-09-06 | 12.059 s (0m 12.059s) | `021ef4ca2e01612bd390c448f4fbdc10c1a9fe967ac446b029a4862487567ff9` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| New Zealand Height Map | 2026-09-06 | 7.523 s (0m 7.523s) | `fa27a196694f14ecdb399dcc92a964144a7e34ab6cce8444ea25e120fab63e3c` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 6 |
+| Intel Sponza | 2026-09-07 | 55.623 s (0m 55.623s) | `be10ab7fc9f08c1a465618a560b1de91a805e828afb79e56768ed3b838935522` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| OpenChessSet | 2026-09-07 | 30.138 s (0m 30.138s) | `7376bd1f3dff21775ca33a0256b14ac5a9793d08a3ec3859603a3f99789e1b83` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall Gold | 2026-09-07 | 39.040 s (0m 39.040s) | `4360aad2450774f2af17437e8f9555b9bff40ed13fa79a6b738b2253646765b7` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall Glass | 2026-09-07 | 28.712 s (0m 28.712s) | `c86ba0c3d48ba1d699f5bf684ac6d75b9eba92703d858af850babcc9c8d6fc0d` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall BubbleGum | 2026-09-07 | 28.503 s (0m 28.503s) | `683448e9627f2a2040cf41935e62b5775a99fdc682e94cb91356fc84b561418d` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Pixar's KitchenSet | 2026-09-07 | 162.079 s (2m 42.079s) | `dd85995b717dd1ea1f834f2f111228f18d27e29793fce62e5881d108c2c04450` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Collective Project 001 | 2026-09-07 | 23.107 s (0m 23.107s) | `5b733d02de8aeb0b948191a176dc00ceadba9b59583976921f7310a745bff024` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| OpenPBR Playground | 2026-09-07 | 108.741 s (1m 48.741s) | `b06cdc376b81cf089720fc8599f304ae37e9b7b4b358796bd6b43b1e12e10e82` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Subdivision Feature Matrix | 2026-09-07 | 13.534 s (0m 13.534s) | `29bb61a4fab0446a46e61e421d4481fa299a2ca49ddaf0223c6832f25d8f8b92` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| New Zealand Height Map | 2026-09-07 | 8.506 s (0m 8.506s) | `d7cb527a55ddd06bd0009fe587db9fee91d2170b3bb6b2f200983a854f484d44` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 6 |
 <!-- gallery-timings:end -->
 
 ## Against hdCodex
@@ -111,7 +120,7 @@ is the crudest possible comparison and the one that separates "different" from
 | Subdivision Feature Matrix | 0.142 | 0.316 | |
 | Pixar's KitchenSet | 0.074 | 0.235 | RMS fell by more than half once instanced meshes stopped losing their transform inside the prototype |
 | OpenChessSet | 0.060 | 0.572 | 0.199 three changes ago: a normal-map frame, then its dome kept its range and started being sampled where the light is |
-| OpenPBR Playground | 0.262 | 0.424 | brighter than hdCodex now rather than darker; its float textures no longer clamp |
+| OpenPBR Playground | 0.262 | 0.417 | brighter than hdCodex now rather than darker; its float textures no longer clamp |
 | Intel Sponza | 0.391 | 0.004 | hdCodex shades 137 `UsdPreviewSurface` materials as flat grey; hdClaude shades the brick and stone the asset authors, in an arcade lit only by a stand-in sky |
 
 Parity is not the goal where the two disagree about how much of the asset to

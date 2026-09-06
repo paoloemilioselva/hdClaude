@@ -40,6 +40,11 @@ layout(set = 0, binding = 0, scalar) uniform FrameBlock {
     uint  environmentHeight;
     uint  environmentConditional;       // index of the conditional CDF block
     uint  environmentDensity;           // index of the density block
+    // --- Spectral tables -----------------------------------------------
+    uint  spectralSamples;      // entries in the CIE/illuminant grid
+    uint  chromaTableOffset;    // where the chromaticity table starts
+    uint  chromaTableSize;      // one axis of one face of it
+    float spectralNormalisation;  // 1 / integral of D65 * ybar
     mat4  domeWorldToLight;     // takes a world direction into the dome's frame
     mat4  domeLightToWorld;     // and back, for a direction sampled in the map
 } frame;
@@ -48,8 +53,11 @@ layout(set = 0, binding = 0, scalar) uniform FrameBlock {
 
 layout(set = 0, binding = 1, scalar) buffer PathOrigin   { vec3  values[]; } pathOrigin;
 layout(set = 0, binding = 2, scalar) buffer PathDir      { vec3  values[]; } pathDirection;
-layout(set = 0, binding = 3, scalar) buffer PathThrough  { vec3  values[]; } pathThroughput;
-layout(set = 0, binding = 4, scalar) buffer PathRadiance { vec3  values[]; } pathRadiance;
+// Throughput and radiance are per *lane*, not per colour channel. A path
+// carries four wavelengths and four scalar quantities along them; RGB appears
+// only where an asset supplies one and where the film hands an image back.
+layout(set = 0, binding = 3, scalar) buffer PathThrough  { vec4  values[]; } pathThroughput;
+layout(set = 0, binding = 4, scalar) buffer PathRadiance { vec4  values[]; } pathRadiance;
 layout(set = 0, binding = 5, scalar) buffer PathPixel    { uint  values[]; } pathPixel;
 layout(set = 0, binding = 6, scalar) buffer PathRng      { uint  values[]; } pathRng;
 
@@ -147,12 +155,11 @@ uvec4 hdclaude_dispatch_groups(uint items)
 struct ShadowRay {
     vec3 origin;
     vec3 direction;
-    vec3 contribution;
+    vec4 contribution;   // per lane
     float maxDistance;
     uint path;
     uint pad0;
     uint pad1;
-    uint pad2;
 };
 layout(set = 0, binding = 11, scalar) buffer ShadowRays { ShadowRay values[]; } shadowRays;
 
@@ -314,6 +321,173 @@ layout(set = 0, binding = 17) uniform sampler2D hdclaude_dome;
 layout(set = 0, binding = 22, scalar) readonly buffer EnvironmentDistribution {
     float values[];
 } environmentDistribution;
+
+/// The hero wavelengths this path carries, in nanometres, fixed at ray
+/// generation and held for its life.
+layout(set = 0, binding = 23, scalar) buffer PathWavelengths {
+    vec4 values[];
+} pathWavelengths;
+
+/// Everything spectral the kernels need, in one buffer.
+///
+/// Laid out as `spectralSamples` groups of four -- xbar, ybar, zbar, D65 -- at
+/// 5 nm from 360 nm, followed at `chromaTableOffset` by the chromaticity table
+/// (`hdclaude/core/spectrum.h`).
+///
+/// Sampled rather than evaluated in closed form on purpose. The colour matching
+/// functions and the illuminant both already exist on the host, where they are
+/// the definitions the upsampling fit and its round-trip gate are written
+/// against; a second closed form here would be a second thing to keep in
+/// agreement with them, and a disagreement would show up as every material
+/// being a slightly different colour than its own unit test says.
+layout(set = 0, binding = 24, scalar) readonly buffer SpectralTables {
+    float values[];
+} spectralTables;
+
+// --- Spectral -----------------------------------------------------------
+
+const float kHdclaudeLambdaMin = 360.0;
+const float kHdclaudeLambdaMax = 830.0;
+
+/// One row of the sampled tables, linearly interpolated.
+///
+/// Returns (xbar, ybar, zbar, D65). Outside the visible range everything is
+/// zero, which is what makes a wavelength the sampler cannot produce contribute
+/// nothing rather than an extrapolated tail.
+vec4 hdclaude_spectral_row(float lambda)
+{
+    if (lambda < kHdclaudeLambdaMin || lambda > kHdclaudeLambdaMax)
+    {
+        return vec4(0.0);
+    }
+    float position = (lambda - kHdclaudeLambdaMin) / 5.0;
+    uint last = frame.spectralSamples - 1u;
+    uint index = min(uint(position), last);
+    uint next = min(index + 1u, last);
+    float t = position - float(index);
+
+    vec4 low = vec4(spectralTables.values[index * 4u + 0u],
+                    spectralTables.values[index * 4u + 1u],
+                    spectralTables.values[index * 4u + 2u],
+                    spectralTables.values[index * 4u + 3u]);
+    vec4 high = vec4(spectralTables.values[next * 4u + 0u],
+                     spectralTables.values[next * 4u + 1u],
+                     spectralTables.values[next * 4u + 2u],
+                     spectralTables.values[next * 4u + 3u]);
+    return mix(low, high, t);
+}
+
+/// Density of the wavelength sampler, matching `VisibleWavelengthPdf`.
+float hdclaude_wavelength_pdf(float lambda)
+{
+    if (lambda < kHdclaudeLambdaMin || lambda > kHdclaudeLambdaMax)
+    {
+        return 0.0;
+    }
+    float c = cosh(0.0072 * (lambda - 538.0));
+    return 0.0039398042 / (c * c);
+}
+
+/// A correlated hero packet from one uniform sample, matching
+/// `SampleHeroWavelengths`.
+vec4 hdclaude_sample_hero(float u)
+{
+    float hero = 538.0 - (1.0 / 0.0072) *
+                             atanh(0.8569106254 - 1.8275019724 * clamp(u, 0.0, 1.0));
+    const float range = kHdclaudeLambdaMax - kHdclaudeLambdaMin;
+    const float stride = range * 0.25;
+
+    vec4 lambda;
+    lambda.x = hero;
+    lambda.y = hero + stride;
+    lambda.z = hero + 2.0 * stride;
+    lambda.w = hero + 3.0 * stride;
+    // Wrapped, which is what keeps the rotation a bijection of the visible
+    // range onto itself -- and therefore what makes every lane's density the
+    // hero's own.
+    lambda.y -= lambda.y > kHdclaudeLambdaMax ? range : 0.0;
+    lambda.z -= lambda.z > kHdclaudeLambdaMax ? range : 0.0;
+    lambda.w -= lambda.w > kHdclaudeLambdaMax ? range : 0.0;
+    return lambda;
+}
+
+/// The bounded sigmoid the upsampling model is built on.
+vec4 hdclaude_reflectance_sigmoid(vec4 x)
+{
+    return 0.5 * (1.0 + x * inversesqrt(1.0 + x * x));
+}
+
+/// The sigmoid coefficients for a chromaticity, read from the table.
+///
+/// `rgb` is expected to have its largest component at one. Bilinear in the two
+/// free ratios, exact in the face, which is the same lookup `LookUpChroma`
+/// performs on the host so the two describe one function.
+vec3 hdclaude_chroma_coefficients(vec3 chroma, uint face)
+{
+    vec2 ratio;
+    if (face == 0u)      { ratio = vec2(chroma.y, chroma.z); }
+    else if (face == 1u) { ratio = vec2(chroma.x, chroma.z); }
+    else                 { ratio = vec2(chroma.x, chroma.y); }
+
+    uint size = frame.chromaTableSize;
+    float last = float(size - 1u);
+    vec2 position = clamp(ratio, vec2(0.0), vec2(1.0)) * last;
+    uvec2 low = uvec2(min(uint(position.x), size - 1u),
+                      min(uint(position.y), size - 1u));
+    uvec2 high = uvec2(min(low.x + 1u, size - 1u), min(low.y + 1u, size - 1u));
+    vec2 t = position - vec2(low);
+
+    uint base = frame.chromaTableOffset + face * size * size * 3u;
+    vec3 result;
+    for (uint component = 0u; component < 3u; ++component)
+    {
+        float c00 = spectralTables.values[base + (low.y * size + low.x) * 3u + component];
+        float c10 = spectralTables.values[base + (low.y * size + high.x) * 3u + component];
+        float c01 = spectralTables.values[base + (high.y * size + low.x) * 3u + component];
+        float c11 = spectralTables.values[base + (high.y * size + high.x) * 3u + component];
+        result[component] = mix(mix(c00, c10, t.x), mix(c01, c11, t.x), t.y);
+    }
+    return result;
+}
+
+/// Upsample an authored RGB to the four lanes.
+///
+/// The magnitude is divided out and reapplied, so this is bounded by that
+/// magnitude and never negative -- a reflectance cannot create energy, and an
+/// emitter of any brightness is expressible. The same decomposition the host
+/// fitter uses (`hdclaude/core/spectrum.h`).
+vec4 hdclaude_upsample(vec3 rgb, vec4 lambda)
+{
+    vec3 clamped = max(rgb, vec3(0.0));
+    float scale = max(clamped.r, max(clamped.g, clamped.b));
+    if (!(scale > 0.0))
+    {
+        return vec4(0.0);
+    }
+    uint face = clamped.r >= clamped.g
+                    ? (clamped.r >= clamped.b ? 0u : 2u)
+                    : (clamped.g >= clamped.b ? 1u : 2u);
+
+    vec3 c = hdclaude_chroma_coefficients(clamped / scale, face);
+    vec4 t = (lambda - kHdclaudeLambdaMin) / (kHdclaudeLambdaMax - kHdclaudeLambdaMin);
+    return scale * hdclaude_reflectance_sigmoid((c.x * t + c.y) * t + c.z);
+}
+
+/// Upsample an authored *emission* RGB to the four lanes.
+///
+/// An emitted spectrum is its upsampled reflectance times the illuminant the
+/// colour was authored against. That is what an RGB emitter means in a
+/// D65-referred pipeline -- a white light emits D65 -- and it is what makes a
+/// white surface under a white light come back white, since the film divides
+/// by the same illuminant's luminous integral.
+vec4 hdclaude_upsample_emission(vec3 rgb, vec4 lambda)
+{
+    vec4 illuminant = vec4(hdclaude_spectral_row(lambda.x).w,
+                           hdclaude_spectral_row(lambda.y).w,
+                           hdclaude_spectral_row(lambda.z).w,
+                           hdclaude_spectral_row(lambda.w).w);
+    return hdclaude_upsample(rgb, lambda) * illuminant;
+}
 
 /// How many emitters next-event estimation chooses between.
 ///

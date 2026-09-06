@@ -432,6 +432,44 @@ Pixel At(const std::vector<float>& image, float u, float v)
     return {image[i], image[i + 1], image[i + 2]};
 }
 
+/// The mean of a square window, for assertions about *colour*.
+///
+/// Spectral transport has chromatic noise where RGB transport has none: a
+/// pixel's colour comes from four wavelengths drawn at random, so a grey
+/// surface renders a slightly different grey in every pixel and converges only
+/// in the mean. A single-pixel read of a colour ratio is therefore measuring
+/// the sampler as much as the renderer. Averaging a window costs nothing here,
+/// because every test that uses one asks about a region that is uniform by
+/// construction.
+Pixel Window(const std::vector<float>& image, float u, float v, int halfWidth)
+{
+    const auto cx = static_cast<int>(u * (kWidth - 1));
+    const auto cy = static_cast<int>(v * (kHeight - 1));
+    double r = 0.0;
+    double g = 0.0;
+    double b = 0.0;
+    int count = 0;
+    for (int y = cy - halfWidth; y <= cy + halfWidth; ++y) {
+        for (int x = cx - halfWidth; x <= cx + halfWidth; ++x) {
+            if (x < 0 || y < 0 || x >= static_cast<int>(kWidth) ||
+                y >= static_cast<int>(kHeight)) {
+                continue;
+            }
+            const std::size_t i =
+                (static_cast<std::size_t>(y) * kWidth + x) * 4;
+            r += image[i];
+            g += image[i + 1];
+            b += image[i + 2];
+            ++count;
+        }
+    }
+    if (count == 0) {
+        return {};
+    }
+    return {static_cast<float>(r / count), static_cast<float>(g / count),
+            static_cast<float>(b / count)};
+}
+
 float Luminance(const Pixel& p)
 {
     return 0.2126f * p.r + 0.7152f * p.g + 0.0722f * p.b;
@@ -600,8 +638,27 @@ int main()
             single.maxBounces = 1;
             const std::vector<float> image =
                 tracer.Render(kWidth, kHeight, LookDownZ(6.0f), single);
-
             const std::vector<std::uint32_t> counts = tracer.MaterialCounts();
+
+            // The same frame with the geometry moved behind the camera, which
+            // makes every pixel a background pixel.
+            //
+            // Comparing against the environment constant no longer works: with
+            // spectral transport a background pixel is a four-wavelength
+            // estimate of the environment's spectrum, so it lands near the
+            // authored colour rather than exactly on it and every pixel differs
+            // from it. But the sampler is seeded from the pixel, the sample
+            // index and the bounce and from nothing else, so a pixel that only
+            // ever saw the environment draws the same packet in both renders
+            // and comes back bit-identical. A pixel that hit a quad does not.
+            Scene empty = scene;
+            empty.instances[0].transform =
+                Transform(0.8f, 0.8f, 1.0f, -1.0f, 0.0f, 1000.0f);
+            empty.instances[1].transform =
+                Transform(0.8f, 0.8f, 1.0f, 1.0f, 0.0f, 1000.0f);
+            tracer.SetScene(empty, materials);
+            const std::vector<float> background =
+                tracer.Render(kWidth, kHeight, LookDownZ(6.0f), single);
             CHECK_EQ(counts.size(), std::size_t(2));
             if (counts.size() == 2) {
                 // Every pixel that is not the untouched background hit one of
@@ -611,11 +668,9 @@ int main()
                 // produces.
                 std::size_t hits = 0;
                 for (std::size_t i = 0; i < kWidth * kHeight; ++i) {
-                    const Pixel pixel{image[i * 4], image[i * 4 + 1],
-                                      image[i * 4 + 2]};
-                    if (std::abs(pixel.r - single.environmentColor[0]) > 1e-5f ||
-                        std::abs(pixel.g - single.environmentColor[1]) > 1e-5f ||
-                        std::abs(pixel.b - single.environmentColor[2]) > 1e-5f) {
+                    if (image[i * 4] != background[i * 4] ||
+                        image[i * 4 + 1] != background[i * 4 + 1] ||
+                        image[i * 4 + 2] != background[i * 4 + 2]) {
                         ++hits;
                     }
                 }
@@ -871,7 +926,7 @@ int main()
 
             const std::vector<float> image =
                 tracer.Render(kWidth, kHeight, LookDownZ(4.0f), furnace);
-            const Pixel centre = At(image, 0.5f, 0.5f);
+            const Pixel centre = Window(image, 0.5f, 0.5f, 12);
             std::printf("  furnace: %.4f %.4f %.4f (expected 0.80)\n", centre.r,
                         centre.g, centre.b);
 
@@ -917,7 +972,7 @@ int main()
 
             const std::vector<float> image =
                 tracer.Render(kWidth, kHeight, LookDownZ(4.0f), furnace);
-            const Pixel centre = At(image, 0.5f, 0.5f);
+            const Pixel centre = Window(image, 0.5f, 0.5f, 12);
             std::printf("  textured furnace: %.4f %.4f %.4f (expected 0.80)\n",
                         centre.r, centre.g, centre.b);
 
@@ -969,7 +1024,7 @@ int main()
 
             const std::vector<float> image =
                 tracer.Render(kWidth, kHeight, LookDownZ(4.0f), half);
-            const Pixel centre = At(image, 0.5f, 0.5f);
+            const Pixel centre = Window(image, 0.5f, 0.5f, 12);
             std::printf("  half sky: %.4f %.4f %.4f (expected 0.40)\n",
                         centre.r, centre.g, centre.b);
 
@@ -1009,10 +1064,10 @@ int main()
             // texel centres at uv 0.25 and 0.75 are at 0.375 and 0.625 of the
             // image; sampling further out blends across the wrap seam and the
             // corners stop being one colour each.
-            const Pixel bottomLeft = At(image, 0.375f, 0.375f);
-            const Pixel bottomRight = At(image, 0.625f, 0.375f);
-            const Pixel topLeft = At(image, 0.375f, 0.625f);
-            const Pixel topRight = At(image, 0.625f, 0.625f);
+            const Pixel bottomLeft = Window(image, 0.375f, 0.375f, 8);
+            const Pixel bottomRight = Window(image, 0.625f, 0.375f, 8);
+            const Pixel topLeft = Window(image, 0.375f, 0.625f, 8);
+            const Pixel topRight = Window(image, 0.625f, 0.625f, 8);
             std::printf("  texture corners: bl %.2f %.2f %.2f, br %.2f %.2f %.2f, "
                         "tl %.2f %.2f %.2f, tr %.2f %.2f %.2f\n",
                         bottomLeft.r, bottomLeft.g, bottomLeft.b, bottomRight.r,

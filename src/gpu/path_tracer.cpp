@@ -1,6 +1,7 @@
 #include "hdclaude/gpu/path_tracer.h"
 
 #include "hdclaude/gpu/environment_distribution.h"
+#include "hdclaude/core/spectrum.h"
 
 #include <cstring>
 #include <fstream>
@@ -78,6 +79,8 @@ std::vector<BindingDescription> KernelBindings()
     bindings.push_back(storage(20, "dispatchArgs"));
     bindings.push_back(storage(21, "pathScatterPdf"));
     bindings.push_back(storage(22, "environmentDistribution"));
+    bindings.push_back(storage(23, "pathWavelengths"));
+    bindings.push_back(storage(24, "spectralTables"));
 
     return bindings;
 }
@@ -103,6 +106,10 @@ struct FrameBlock {
     std::uint32_t environmentHeight;
     std::uint32_t environmentConditional;
     std::uint32_t environmentDensity;
+    std::uint32_t spectralSamples;
+    std::uint32_t chromaTableOffset;
+    std::uint32_t chromaTableSize;
+    float spectralNormalisation;
     float domeWorldToLight[16];
     float domeLightToWorld[16];
 };
@@ -343,6 +350,8 @@ PathTracer::PathTracer(const VulkanContext& context, VulkanAllocator& allocator,
     placeholder.debugName = "texture.placeholder";
     _placeholderTexture = UploadTexture(placeholder);
 
+    BuildSpectralTables();
+
     UploadTextures({});
 }
 
@@ -355,6 +364,65 @@ PathTracer::~PathTracer()
         vkDestroySampler(_context.Device(), _sampler, nullptr);
         _sampler = VK_NULL_HANDLE;
     }
+}
+
+void PathTracer::BuildSpectralTables()
+{
+    // The colour matching functions and the illuminant, sampled at 5 nm across
+    // the visible range, followed by the chromaticity table.
+    //
+    // Sampled rather than given to the shader in closed form: both already
+    // exist on the host, where they are the definitions the upsampling fit and
+    // its round-trip gate are written against. A second closed form in GLSL
+    // would be a second thing to keep in agreement with them, and the
+    // disagreement would show as every material being a slightly different
+    // colour than its own unit test says it is.
+    constexpr float kStep = 5.0f;
+    std::vector<float> data;
+    _spectralSamples = 0;
+    for (float lambda = kLambdaMin; lambda <= kLambdaMax; lambda += kStep) {
+        const Vec3 bar = CieXyzBar(lambda);
+        data.push_back(bar.x);
+        data.push_back(bar.y);
+        data.push_back(bar.z);
+        data.push_back(IlluminantD65(lambda));
+        ++_spectralSamples;
+    }
+
+    // The film divides by the illuminant's luminous integral, which is what
+    // makes a white surface under a white light resolve to white rather than to
+    // the illuminant's absolute power. Computed from the same samples the
+    // shader interpolates, so the two cannot disagree about the grid.
+    double luminous = 0.0;
+    for (std::uint32_t i = 0; i < _spectralSamples; ++i) {
+        luminous += static_cast<double>(data[i * 4 + 1]) *
+                    static_cast<double>(data[i * 4 + 3]);
+    }
+    luminous *= static_cast<double>(kStep);
+    _spectralNormalisation =
+        luminous > 0.0 ? static_cast<float>(1.0 / luminous) : 1.0f;
+
+    _chromaTableOffset = static_cast<std::uint32_t>(data.size());
+    const ChromaTable table = BuildChromaTable();
+    _chromaTableSize = static_cast<std::uint32_t>(table.size);
+    data.insert(data.end(), table.coefficients.begin(), table.coefficients.end());
+
+    const VkDeviceSize size = data.size() * sizeof(float);
+    BufferDescription staging;
+    staging.size = size;
+    staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    staging.domain = BufferDomain::HostUpload;
+    staging.debugName = "spectralTables.staging";
+    VulkanBuffer upload(_allocator, staging);
+    upload.Write(data.data(), size);
+
+    _spectralTables = MakeStorage(_allocator, size, "spectralTables");
+    _context.SubmitImmediate([&](VkCommandBuffer command) {
+        VkBufferCopy region{};
+        region.size = size;
+        vkCmdCopyBuffer(command, upload.Handle(), _spectralTables.Handle(), 1,
+                        &region);
+    });
 }
 
 VulkanImage PathTracer::UploadTexture(const TextureImage& texture)
@@ -723,8 +791,11 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
     // (docs/architecture.md 6 rule 1).
     VulkanBuffer origin = MakeStorage(_allocator, paths * 12, "path.origin");
     VulkanBuffer direction = MakeStorage(_allocator, paths * 12, "path.direction");
-    VulkanBuffer throughput = MakeStorage(_allocator, paths * 12, "path.throughput");
-    VulkanBuffer radiance = MakeStorage(_allocator, paths * 12, "path.radiance");
+    // Sixteen bytes, not twelve: a path carries four spectral lanes, not three
+    // colour channels.
+    VulkanBuffer throughput = MakeStorage(_allocator, paths * 16, "path.throughput");
+    VulkanBuffer radiance = MakeStorage(_allocator, paths * 16, "path.radiance");
+    VulkanBuffer wavelengths = MakeStorage(_allocator, paths * 16, "path.wavelengths");
     VulkanBuffer pixel = MakeStorage(_allocator, paths * 4, "path.pixel");
     VulkanBuffer rng = MakeStorage(_allocator, paths * 4, "path.rng");
     // The density of the scattering behind each path's current ray, for the
@@ -758,6 +829,7 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
     _direction = std::move(direction);
     _throughput = std::move(throughput);
     _radiance = std::move(radiance);
+    _wavelengths = std::move(wavelengths);
     _pixel = std::move(pixel);
     _rng = std::move(rng);
     _scatterPdf = std::move(scatterPdf);
@@ -821,6 +893,8 @@ void PathTracer::WriteDescriptors(VkDescriptorSet set,
     pipeline.WriteBuffer(set, 20, _dispatchArgs);
     pipeline.WriteBuffer(set, 21, _scatterPdf);
     pipeline.WriteBuffer(set, 22, _environmentDistribution);
+    pipeline.WriteBuffer(set, 23, _wavelengths);
+    pipeline.WriteBuffer(set, 24, _spectralTables);
 }
 
 std::vector<std::uint32_t> PathTracer::MaterialCounts() const
@@ -940,6 +1014,10 @@ std::vector<float> PathTracer::Render(std::uint32_t width, std::uint32_t height,
     block.environmentHeight = _environmentHeight;
     block.environmentConditional = _environmentConditional;
     block.environmentDensity = _environmentDensity;
+    block.spectralSamples = _spectralSamples;
+    block.chromaTableOffset = _chromaTableOffset;
+    block.chromaTableSize = _chromaTableSize;
+    block.spectralNormalisation = _spectralNormalisation;
     std::memcpy(block.domeWorldToLight, _domeWorldToLight,
                 sizeof(block.domeWorldToLight));
     std::memcpy(block.domeLightToWorld, _domeLightToWorld,
