@@ -1435,3 +1435,39 @@ Worth keeping: the comment stating the invariant was two files away from the
 code that broke it, and it was accurate the whole time. What would have caught
 this is an assertion that `shadowCount` never exceeds the path count, which the
 GPU can check and the host currently never reads.
+
+---
+
+## 2026-09-06 -- The missing TIFF decoder that was neither missing nor a decoder
+
+Twenty-one of the OpenPBR playground's textures failed to open, all of them
+`.tif`, and the conclusion wrote itself: this OpenUSD distribution has no TIFF
+plugin, and hdClaude would need OpenImageIO. Both halves were wrong.
+
+The distribution ships `hioOiio` -- the OpenImageIO plugin -- registered for
+`tif`, `tiff`, `zfile` and `tx`, with `OpenImageIO.dll` and `tiff.dll` beside
+it. Hio was reading those files perfectly well. The failures were hdClaude's,
+in two places, and the file extension they had in common was a coincidence.
+
+**A UDIM set does not necessarily start at 1001.** The `<UDIM>` expansion added
+earlier assumed it did. The playground's tools are authored on tile 1003, so
+every one of their textures resolved to a path with no file at it. The tile is
+now found by asking the resolver, walking the 10x10 grid the UDIM convention
+defines and taking the first that exists.
+
+**Sixteen bits is not an exotic format.** `Widen` accepted unsigned byte, half
+and float, and refused everything else with "unsupported component type" --
+which included the `HioTypeUnsignedShort` a paint package writes a mask or a
+height map as. Three textures failed on that, and the message was as unhelpful
+as it sounds. Every component type Hio can produce is now converted through one
+function, which is also the place to change when the texture pool carries more
+than RGBA8.
+
+The playground now loads all 100 of its textures.
+
+The lesson is about the shape of the evidence, not about images. Twenty-one
+failures that shared a file extension and *no other property* looked like one
+cause, and the extension was the one thing that had nothing to do with it. What
+would have separated them sooner is the error text: "no image plugin opened"
+and "unsupported component type" are different failures, and they were being
+read as one because they arrived in the same list.

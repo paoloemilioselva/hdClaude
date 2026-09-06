@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -19,6 +21,61 @@ namespace {
 /// a plugin is free to decline a conversion, and a silently unconverted read
 /// is a buffer of the wrong stride rather than an error. Reading in the file's
 /// own format and widening here is the version that cannot be quietly wrong.
+/// One decoded component, as the eight-bit value the GPU texture holds.
+///
+/// The renderer's textures are RGBA8, so everything wider is quantised here
+/// rather than at upload; a 16-bit source is a finer *source*, not a finer
+/// texture, until the pool carries more than one format.
+std::uint8_t Quantise(const char* source, HioType type)
+{
+    const auto fromUnit = [](float unit) {
+        return static_cast<std::uint8_t>(std::clamp(unit, 0.0f, 1.0f) * 255.0f + 0.5f);
+    };
+    switch (type) {
+        case HioTypeUnsignedByte:
+        case HioTypeUnsignedByteSRGB:
+            return static_cast<std::uint8_t>(
+                *reinterpret_cast<const unsigned char*>(source));
+        case HioTypeSignedByte: {
+            std::int8_t value = 0;
+            std::memcpy(&value, source, sizeof(value));
+            return fromUnit(static_cast<float>(value) / 127.0f);
+        }
+        case HioTypeUnsignedShort: {
+            std::uint16_t value = 0;
+            std::memcpy(&value, source, sizeof(value));
+            return fromUnit(static_cast<float>(value) / 65535.0f);
+        }
+        case HioTypeSignedShort: {
+            std::int16_t value = 0;
+            std::memcpy(&value, source, sizeof(value));
+            return fromUnit(static_cast<float>(value) / 32767.0f);
+        }
+        case HioTypeUnsignedInt: {
+            std::uint32_t value = 0;
+            std::memcpy(&value, source, sizeof(value));
+            return fromUnit(static_cast<float>(value) / 4294967295.0f);
+        }
+        case HioTypeInt: {
+            std::int32_t value = 0;
+            std::memcpy(&value, source, sizeof(value));
+            return fromUnit(static_cast<float>(value) / 2147483647.0f);
+        }
+        case HioTypeHalfFloat: {
+            GfHalf value;
+            std::memcpy(&value, source, sizeof(value));
+            return fromUnit(static_cast<float>(value));
+        }
+        case HioTypeFloat: {
+            float value = 0.0f;
+            std::memcpy(&value, source, sizeof(value));
+            return fromUnit(value);
+        }
+        default:
+            return 0;
+    }
+}
+
 bool Widen(const HioImageSharedPtr& image, hdclaude::TextureImage* out,
            std::string* error)
 {
@@ -37,10 +94,20 @@ bool Widen(const HioImageSharedPtr& image, hdclaude::TextureImage* out,
         return false;
     }
 
+    // The component types a decoder actually produces. Sixteen-bit is not
+    // exotic -- it is what a mask or a height map authored in a paint package
+    // saves as, and three of the OpenPBR playground's TIFFs are exactly that --
+    // and refusing it looked from the outside like a missing TIFF decoder.
     size_t bytesPerComponent = 0;
     switch (type) {
-        case HioTypeUnsignedByte: bytesPerComponent = 1; break;
+        case HioTypeUnsignedByte:
+        case HioTypeUnsignedByteSRGB:
+        case HioTypeSignedByte:   bytesPerComponent = 1; break;
+        case HioTypeUnsignedShort:
+        case HioTypeSignedShort:
         case HioTypeHalfFloat:    bytesPerComponent = 2; break;
+        case HioTypeUnsignedInt:
+        case HioTypeInt:
         case HioTypeFloat:        bytesPerComponent = 4; break;
         default:
             if (error) {
@@ -85,39 +152,12 @@ bool Widen(const HioImageSharedPtr& image, hdclaude::TextureImage* out,
         for (size_t c = 0; c < 4; ++c) {
             std::uint8_t value = (c == 3) ? 255 : 0;
             if (c < channels) {
-                const char* source =
-                    raw.data() + (i * channels + c) * bytesPerComponent;
-                switch (type) {
-                    case HioTypeUnsignedByte:
-                        value = static_cast<std::uint8_t>(
-                            *reinterpret_cast<const unsigned char*>(source));
-                        break;
-                    case HioTypeHalfFloat: {
-                        GfHalf half;
-                        std::memcpy(&half, source, sizeof(GfHalf));
-                        value = static_cast<std::uint8_t>(
-                            std::clamp(static_cast<float>(half), 0.0f, 1.0f) *
-                                255.0f + 0.5f);
-                        break;
-                    }
-                    case HioTypeFloat: {
-                        float f = 0.0f;
-                        std::memcpy(&f, source, sizeof(float));
-                        value = static_cast<std::uint8_t>(
-                            std::clamp(f, 0.0f, 1.0f) * 255.0f + 0.5f);
-                        break;
-                    }
-                    default:
-                        break;
-                }
+                value = Quantise(raw.data() + (i * channels + c) * bytesPerComponent,
+                                 type);
             } else if (c < 3 && channels == 1) {
                 // A single-channel image reads as grey rather than as red,
                 // which is what a greyscale roughness or mask map means.
-                const char* source = raw.data() + i * bytesPerComponent;
-                if (type == HioTypeUnsignedByte) {
-                    value = static_cast<std::uint8_t>(
-                        *reinterpret_cast<const unsigned char*>(source));
-                }
+                value = Quantise(raw.data() + i * bytesPerComponent, type);
             }
             out->rgba[i * 4 + c] = value;
         }
@@ -135,20 +175,39 @@ bool HdClaudeLoadTexture(const std::string& assetPath,
         return false;
     }
 
-    // A UDIM set, reduced to its first tile.
+    // A UDIM set, reduced to its first *existing* tile.
     //
     // `<UDIM>` is a token USD leaves in the path for the renderer to expand
     // into one texture per tile, selected by which unit square of UV space a
-    // sample lands in. hdClaude has no tile selection yet, so it loads tile
-    // 1001 and shades every tile with it. That is wrong for a multi-tile
-    // asset and right for the many that ship one tile, and both are better
-    // than the alternative: an unexpanded token opens nothing, and the OpenPBR
-    // playground rendered as 85 magenta placeholders because of it.
+    // sample lands in. hdClaude has no tile selection yet, so it shades every
+    // tile with one of them -- wrong for a multi-tile asset, right for the
+    // many that ship one, and far better than the alternative: an unexpanded
+    // token opens nothing at all.
+    //
+    // Which tile is found by asking, not assumed. 1001 is the first index of
+    // the grid and not necessarily the first index an asset uses: the OpenPBR
+    // playground's tools are authored on tile 1003, and hard-coding 1001 left
+    // twenty-one of its textures unopened while looking exactly like a missing
+    // TIFF decoder.
     std::string path = assetPath;
     const std::string udim = "<UDIM>";
     const std::size_t token = path.find(udim);
     if (token != std::string::npos) {
-        path.replace(token, udim.size(), "1001");
+        // The 10x10 grid UDIM defines, in order.
+        for (int tile = 1001; tile <= 1100; ++tile) {
+            std::string candidate = path;
+            candidate.replace(token, udim.size(), std::to_string(tile));
+            if (ArGetResolver().Resolve(candidate)) {
+                path = candidate;
+                break;
+            }
+        }
+        if (path.find(udim) != std::string::npos) {
+            if (error) {
+                *error = "no tile of the UDIM set '" + assetPath + "' exists";
+            }
+            return false;
+        }
     }
 
     // Resolve through Ar so a path relative to a layer, or inside a package,
