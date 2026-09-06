@@ -395,8 +395,8 @@ void PathTracerShaderGenerator::emitInputs(GenContext& context,
             // knowledge to the only place that has it.
             emitComment("Filled by the shade kernel; members vary by material", stage);
             emitLine("void " + string(kSurfaceHitSetter) +
-                         "(vec3 P, vec3 N, vec3 T, vec3 Pobj, vec3 Nobj, "
-                         "vec3 Tobj, vec2 uv)",
+                         "(vec3 P, vec3 N, vec3 T, vec3 B, vec3 Pobj, "
+                         "vec3 Nobj, vec3 Tobj, vec3 Bobj, vec2 uv)",
                      stage, false);
             emitScopeBegin(stage);
             // Names are matched case-insensitively. A vertex-data variable can
@@ -430,7 +430,13 @@ void PathTracerShaderGenerator::emitInputs(GenContext& context,
                     // is asked first and the bitangent silently becomes the
                     // tangent. Every anisotropic closure and every normal map
                     // then works from a degenerate frame.
-                    emitLine(instance + "." + variable + " = cross(N, T)", stage);
+                    //
+                    // Taken from the kernel rather than rebuilt as cross(N, T):
+                    // the sign is a property of the *parameterisation*, and a
+                    // mirrored UV island runs v the other way round. Deriving
+                    // it here would silently invert every normal-mapped detail
+                    // on the mirrored half of a symmetric asset.
+                    emitLine(instance + "." + variable + " = B", stage);
                 } else if (key.find("tangentworld") != string::npos) {
                     emitLine(instance + "." + variable + " = T", stage);
                 } else if (key.find("positionobject") != string::npos) {
@@ -438,8 +444,7 @@ void PathTracerShaderGenerator::emitInputs(GenContext& context,
                 } else if (key.find("normalobject") != string::npos) {
                     emitLine(instance + "." + variable + " = Nobj", stage);
                 } else if (key.find("bitangentobject") != string::npos) {
-                    emitLine(instance + "." + variable + " = cross(Nobj, Tobj)",
-                             stage);
+                    emitLine(instance + "." + variable + " = Bobj", stage);
                 } else if (key.find("tangentobject") != string::npos) {
                     emitLine(instance + "." + variable + " = Tobj", stage);
                 } else if (key.find("texcoord") != string::npos) {

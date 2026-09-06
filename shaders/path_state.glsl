@@ -179,7 +179,7 @@ layout(buffer_reference, scalar) readonly buffer TriMaterialBuffer { uint values
 struct InstanceGeometry {
     uint64_t positions;
     uint64_t indices;
-    uint64_t normals;   // zero if the mesh has no authored normals
+    uint64_t normals;   // zero if the mesh has no normals at all
     uint64_t uvs;       // zero if the mesh has no texture coordinates
     // Per-triangle material, from GeomSubsets. Zero when every triangle uses
     // the instance's own binding, which is the common case.
@@ -192,8 +192,12 @@ struct InstanceGeometry {
     /// be expressed any other way, and neither can a textured quad whose four
     /// vertices carry six coordinates.
     uint uvsPerCorner;
+    /// 1 when `normals` holds one normal per triangle *corner* rather than per
+    /// vertex. That is how a face-varying or uniform primvar arrives, and it
+    /// is the only way a hard edge can be expressed: the two sides of a crease
+    /// need different normals at the same vertex.
+    uint normalsPerCorner;
     uint pad1;
-    uint pad2;
 };
 
 /// The 3x3 linear part of an instance transform.

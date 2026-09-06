@@ -41,7 +41,14 @@ struct SurfacePoint {
     vec3 geometricNormal;
     /// geometricNormal, turned to the side the incoming ray came from.
     vec3 frontGeometricNormal;
+    /// The texture-space frame: `tangent` runs along increasing u and
+    /// `bitangent` along increasing v, both made orthogonal to the shading
+    /// normal. A tangent-space normal map is defined against exactly these
+    /// axes, so a frame taken from anywhere else -- a triangle edge, a world
+    /// axis -- applies every map at a rotation that changes from triangle to
+    /// triangle.
     vec3 tangent;
+    vec3 bitangent;
     vec2 uv;
 
     /// The same point in the instance's object space.
@@ -55,6 +62,7 @@ struct SurfacePoint {
     vec3 objectPosition;
     vec3 objectNormal;
     vec3 objectTangent;
+    vec3 objectBitangent;
 };
 
 /// Reconstruct the hit from the record and the instance's geometry buffers.
@@ -92,18 +100,40 @@ SurfacePoint hdclaude_reconstruct(ivec4 record, vec3 rayDirection, vec3 hitPosit
     mat3 normalMatrix = transpose(hdclaude_linear(geometry.worldToObject));
     point.geometricNormal = normalize(normalMatrix * objectGeometric);
 
+    // The object-space shading normal, interpolated over the triangle. Kept in
+    // a local as well as on the point: the object-space frame below wants it,
+    // and re-reading three buffer entries to rebuild it is the kind of
+    // duplication that drifts.
+    vec3 objectShading = objectGeometric;
     if (geometry.normals != 0ul)
     {
         NormalBuffer normals = NormalBuffer(geometry.normals);
-        vec3 objectShading = normalize(w * normals.values[i0] +
-                                       u * normals.values[i1] +
-                                       v * normals.values[i2]);
-        point.shadingNormal = normalize(normalMatrix * objectShading);
+        if (geometry.normalsPerCorner != 0u)
+        {
+            // Face-varying: three normals belong to this triangle alone, in
+            // the order its indices were written. A crease is authored exactly
+            // this way, so indexing these by vertex would average the two
+            // sides of it back together.
+            uint corner = uint(record.y) * 3u;
+            objectShading = w * normals.values[corner + 0u] +
+                            u * normals.values[corner + 1u] +
+                            v * normals.values[corner + 2u];
+        }
+        else
+        {
+            objectShading = w * normals.values[i0] + u * normals.values[i1] +
+                            v * normals.values[i2];
+        }
+        // A degenerate interpolation -- opposed authored normals, or a vertex
+        // left at zero by a mesh with no adjacency there -- would normalize to
+        // a NaN and take the whole path with it.
+        if (!(dot(objectShading, objectShading) > 1.0e-20))
+        {
+            objectShading = objectGeometric;
+        }
+        objectShading = normalize(objectShading);
     }
-    else
-    {
-        point.shadingNormal = point.geometricNormal;
-    }
+    point.shadingNormal = normalize(normalMatrix * objectShading);
 
     // The viewer-facing copy, for ray offsets and light-side tests. The true
     // normals above are left alone; see the note on SurfacePoint.
@@ -111,6 +141,12 @@ SurfacePoint hdclaude_reconstruct(ivec4 record, vec3 rayDirection, vec3 hitPosit
                                      ? -point.geometricNormal
                                      : point.geometricNormal;
 
+    // The three corners' coordinates, not just the interpolated one: the
+    // tangent frame below is the rate at which the surface moves per unit of
+    // u and of v, and that can only be read off the triangle as a whole.
+    vec2 uv0 = vec2(0.0, 0.0);
+    vec2 uv1 = vec2(1.0, 0.0);
+    vec2 uv2 = vec2(0.0, 1.0);
     if (geometry.uvs != 0ul)
     {
         UvBuffer uvs = UvBuffer(geometry.uvs);
@@ -119,49 +155,91 @@ SurfacePoint hdclaude_reconstruct(ivec4 record, vec3 rayDirection, vec3 hitPosit
             // Face-varying: three coordinates belong to this triangle alone,
             // in the order its indices were written.
             uint corner = uint(record.y) * 3u;
-            point.uv = w * uvs.values[corner + 0u] + u * uvs.values[corner + 1u] +
-                       v * uvs.values[corner + 2u];
+            uv0 = uvs.values[corner + 0u];
+            uv1 = uvs.values[corner + 1u];
+            uv2 = uvs.values[corner + 2u];
         }
         else
         {
-            point.uv = w * uvs.values[i0] + u * uvs.values[i1] + v * uvs.values[i2];
+            uv0 = uvs.values[i0];
+            uv1 = uvs.values[i1];
+            uv2 = uvs.values[i2];
         }
+    }
+    // The defaults above are the barycentric parameterisation, so a mesh with
+    // no coordinates falls out of the same arithmetic with (u, v) as its
+    // surface parameters rather than needing a branch of its own.
+    point.uv = w * uv0 + u * uv1 + v * uv2;
+
+    // --- The tangent frame ---------------------------------------------------
+    //
+    // dP/du and dP/dv, solved from how position and texture coordinate vary
+    // together across this triangle. This is what a tangent-space normal map
+    // is defined against: its x perturbs the surface along increasing u and
+    // its y along increasing v. A tangent taken from an edge instead -- which
+    // is what this did -- is a different rotation on every triangle, so a
+    // normal map becomes per-triangle noise, and the two triangles of a quad
+    // disagree by roughly ninety degrees. Every chess piece and every OpenPBR
+    // Playground surface reads its normal map through this frame.
+    vec3 e1 = p1 - p0;
+    vec3 e2 = p2 - p0;
+    vec2 duv1 = uv1 - uv0;
+    vec2 duv2 = uv2 - uv0;
+    float uvDeterminant = duv1.x * duv2.y - duv2.x * duv1.y;
+
+    vec3 objectDpDu;
+    vec3 objectDpDv;
+    if (abs(uvDeterminant) > 1.0e-20)
+    {
+        float inverse = 1.0 / uvDeterminant;
+        objectDpDu = (duv2.y * e1 - duv1.y * e2) * inverse;
+        objectDpDv = (duv1.x * e2 - duv2.x * e1) * inverse;
     }
     else
     {
-        point.uv = vec2(u, v);
+        // A collapsed UV triangle: the parameterisation says nothing about
+        // direction here, so fall back to the edge. Anisotropy then rotates
+        // with the surface, which is the best available answer; a normal map
+        // on such a triangle has no defined orientation to begin with.
+        objectDpDu = e1;
+        objectDpDv = cross(objectGeometric, e1);
     }
 
-    // A tangent orthogonal to the shading normal. Derived from the triangle
-    // edge rather than an arbitrary axis, so anisotropic closures rotate with
-    // the surface instead of with the world.
-    vec3 edge = p1 - p0;
-    vec3 worldEdge = hdclaude_linear(geometry.objectToWorld) * edge;
-    point.tangent = normalize(worldEdge - point.shadingNormal *
-                                              dot(point.shadingNormal, worldEdge));
-    if (!(dot(point.tangent, point.tangent) > 0.5))
+    mat3 objectToWorldLinear = hdclaude_linear(geometry.objectToWorld);
+    vec3 dpdu = objectToWorldLinear * objectDpDu;
+    vec3 dpdv = objectToWorldLinear * objectDpDv;
+
+    // Orthogonalised against the *shading* normal, because that is the third
+    // axis MaterialX's normalmap builds its frame from; leaving the tangent in
+    // the geometric plane tilts every perturbed normal by the angle between
+    // the two.
+    point.tangent = dpdu - point.shadingNormal * dot(point.shadingNormal, dpdu);
+    if (!(dot(point.tangent, point.tangent) > 1.0e-20))
     {
-        // Degenerate edge; any orthogonal direction will do.
+        // dP/du parallel to the normal, or degenerate; any orthogonal
+        // direction will do.
         vec3 fallback = abs(point.shadingNormal.z) < 0.9 ? vec3(0.0, 0.0, 1.0)
                                                          : vec3(1.0, 0.0, 0.0);
-        point.tangent = normalize(cross(fallback, point.shadingNormal));
+        point.tangent = cross(fallback, point.shadingNormal);
     }
+    point.tangent = normalize(point.tangent);
+
+    // Handedness read from dP/dv rather than assumed. A mirrored UV island --
+    // which is how half of a symmetric asset is normally laid out, both chess
+    // pieces included -- runs v the other way round, and a bitangent fixed at
+    // cross(N, T) inverts every mapped detail on exactly those islands.
+    vec3 bitangent = cross(point.shadingNormal, point.tangent);
+    point.bitangent = dot(bitangent, dpdv) < 0.0 ? -bitangent : bitangent;
 
     // The object-space frame. The position is interpolated from the vertices
     // rather than taken back through the inverse transform, so it is exact at
     // the scales where a world position has already lost precision; the
     // directions come back through the transform because that is all there is.
     point.objectPosition = w * p0 + u * p1 + v * p2;
-    point.objectNormal = normalize(objectGeometric);
-    if (geometry.normals != 0ul)
-    {
-        NormalBuffer normals = NormalBuffer(geometry.normals);
-        point.objectNormal = normalize(w * normals.values[i0] +
-                                       u * normals.values[i1] +
-                                       v * normals.values[i2]);
-    }
-    point.objectTangent =
-        normalize(hdclaude_linear(geometry.worldToObject) * point.tangent);
+    point.objectNormal = objectShading;
+    mat3 worldToObjectLinear = hdclaude_linear(geometry.worldToObject);
+    point.objectTangent = normalize(worldToObjectLinear * point.tangent);
+    point.objectBitangent = normalize(worldToObjectLinear * point.bitangent);
 
     return point;
 }
@@ -198,8 +276,9 @@ void main()
     // Hand the geometry to the generated material. The setter assigns only the
     // members this material actually reads.
     hdclaude_set_surface_hit(point.position, point.shadingNormal, point.tangent,
-                             point.objectPosition, point.objectNormal,
-                             point.objectTangent, point.uv);
+                             point.bitangent, point.objectPosition,
+                             point.objectNormal, point.objectTangent,
+                             point.objectBitangent, point.uv);
     hdclaude_wavelengths = vec4(450.0, 550.0, 600.0, 650.0);
 
     // --- Emission -----------------------------------------------------------

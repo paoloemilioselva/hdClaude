@@ -127,7 +127,9 @@ struct InstanceGeometry {
     std::uint32_t material;
     /// 1 when `uvs` holds one coordinate per triangle corner.
     std::uint32_t uvsPerCorner;
-    std::uint32_t pad[2];
+    /// 1 when `normals` holds one normal per triangle corner.
+    std::uint32_t normalsPerCorner;
+    std::uint32_t pad;
 };
 
 VulkanBuffer MakeStorage(VulkanAllocator& allocator, VkDeviceSize size,
@@ -522,6 +524,8 @@ void PathTracer::SetScene(const Scene& scene,
         if (instance.prototype < scene.prototypes.size()) {
             entry.uvsPerCorner =
                 scene.prototypes[instance.prototype].uvsPerCorner ? 1u : 0u;
+            entry.normalsPerCorner =
+                scene.prototypes[instance.prototype].normalsPerCorner ? 1u : 0u;
         }
         table.push_back(entry);
     }

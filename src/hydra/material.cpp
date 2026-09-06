@@ -58,8 +58,10 @@ void HdClaudeMaterial::Sync(HdSceneDelegate* sceneDelegate,
         // that names the same image.
         if (HdClaudeTexturePool* pool = param->TexturePool()) {
             entry.compiled.textureSlots.reserve(compiled.texturePaths.size());
-            for (const std::string& assetPath : compiled.texturePaths) {
-                entry.compiled.textureSlots.push_back(pool->Acquire(assetPath));
+            for (const HdClaudeMaterialCompiler::TextureRequest& texture :
+                 compiled.texturePaths) {
+                entry.compiled.textureSlots.push_back(
+                    pool->Acquire(texture.path, texture.colorSpace));
             }
         }
     } else {

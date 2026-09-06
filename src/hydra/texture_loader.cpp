@@ -77,7 +77,7 @@ std::uint8_t Quantise(const char* source, HioType type)
 }
 
 bool Widen(const HioImageSharedPtr& image, hdclaude::TextureImage* out,
-           std::string* error)
+           std::string* error, HdClaudeTextureColorSpace colorSpace)
 {
     const int width = image->GetWidth();
     const int height = image->GetHeight();
@@ -144,7 +144,20 @@ bool Widen(const HioImageSharedPtr& image, hdclaude::TextureImage* out,
 
     out->width = static_cast<std::uint32_t>(width);
     out->height = static_cast<std::uint32_t>(height);
-    out->srgb = image->IsColorSpaceSRGB();
+    // What the file says it holds, overruled by what the material says it
+    // means. Hio answers from the format alone -- an 8-bit three-channel image
+    // is sRGB to it -- and that is right for a colour map and wrong for every
+    // data map shipped in the same container. The chess set's normal, roughness
+    // and metalness maps are all 8-bit JPEGs whose MaterialX nodes are
+    // `vector3` and `float` with no colorspace: reading them as sRGB tilted
+    // every surface and exaggerated every bump.
+    switch (colorSpace) {
+        case HdClaudeTextureColorSpace::Srgb: out->srgb = true; break;
+        case HdClaudeTextureColorSpace::Raw:  out->srgb = false; break;
+        case HdClaudeTextureColorSpace::Auto:
+            out->srgb = image->IsColorSpaceSRGB();
+            break;
+    }
     out->rgba.assign(static_cast<size_t>(width) * height * 4, 0);
 
     const size_t pixels = static_cast<size_t>(width) * height;
@@ -168,7 +181,8 @@ bool Widen(const HioImageSharedPtr& image, hdclaude::TextureImage* out,
 }  // namespace
 
 bool HdClaudeLoadTexture(const std::string& assetPath,
-                         hdclaude::TextureImage* out, std::string* error)
+                         hdclaude::TextureImage* out, std::string* error,
+                         HdClaudeTextureColorSpace colorSpace)
 {
     if (assetPath.empty() || out == nullptr) {
         if (error) *error = "no asset path";
@@ -226,20 +240,22 @@ bool HdClaudeLoadTexture(const std::string& assetPath,
     }
 
     out->debugName = assetPath;
-    return Widen(image, out, error);
+    return Widen(image, out, error, colorSpace);
 }
 
-std::uint32_t HdClaudeTexturePool::Acquire(const std::string& assetPath)
+std::uint32_t HdClaudeTexturePool::Acquire(const std::string& assetPath,
+                                           HdClaudeTextureColorSpace colorSpace)
 {
     std::lock_guard<std::mutex> lock(_mutex);
 
-    const auto found = _slots.find(assetPath);
+    const auto key = std::make_pair(assetPath, colorSpace);
+    const auto found = _slots.find(key);
     if (found != _slots.end()) {
         return found->second;
     }
 
     const auto slot = static_cast<std::uint32_t>(_images.size());
-    _slots[assetPath] = slot;
+    _slots[key] = slot;
 
     hdclaude::TextureImage image;
     std::string error;
@@ -267,7 +283,7 @@ std::uint32_t HdClaudeTexturePool::Acquire(const std::string& assetPath)
         return slot;
     }
 
-    if (HdClaudeLoadTexture(assetPath, &image, &error)) {
+    if (HdClaudeLoadTexture(assetPath, &image, &error, colorSpace)) {
         HdClaudeTrace("texture %u: %s (%ux%u, %s)", slot, assetPath.c_str(),
                       image.width, image.height, image.srgb ? "sRGB" : "linear");
     } else {

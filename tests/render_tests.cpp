@@ -201,6 +201,82 @@ CompiledMaterial MakeTexcoordMaterial(mx::DocumentPtr libraries,
     return CompileMaterial(doc, compiler, shadeKernel, name);
 }
 
+/// A material whose albedo is its own world-space tangent.
+///
+/// The tangent is not a value a material invents: it is the direction the
+/// surface moves in as `u` increases, so it belongs to the *parameterisation*
+/// and the kernel has to solve it from the triangle. Making it the albedo is
+/// the only way to see it from a rendered image.
+CompiledMaterial MakeTangentMaterial(mx::DocumentPtr libraries,
+                                     const GlslCompiler& compiler,
+                                     const std::string& shadeKernel,
+                                     const std::string& name)
+{
+    mx::DocumentPtr doc = mx::createDocument();
+    doc->importLibrary(libraries);
+
+    mx::NodePtr tangent = AddNode(doc, "tangent", "t", "vector3");
+    SetValue(tangent, "space", std::string("world"));
+
+    // Named rather than inferred, for the reason MakeTexcoordMaterial gives:
+    // `convert` is overloaded on its input type and resolves to the wrong
+    // overload before the input is connected.
+    mx::NodePtr colour = doc->addNode("convert", "c", "color3");
+    colour->setNodeDefString("ND_convert_vector3_color3");
+    if (mx::InputPtr in = colour->addInput("in", "vector3")) {
+        in->setConnectedNode(tangent);
+    }
+
+    mx::NodePtr bsdf = AddNode(doc, "oren_nayar_diffuse_bsdf", "d", "BSDF");
+    SetValue(bsdf, "weight", 1.0f);
+    SetValue(bsdf, "roughness", 0.0f);
+    Connect(bsdf, "color", colour);
+
+    mx::NodePtr surface = AddNode(doc, "surface", "s", "surfaceshader");
+    Connect(surface, "bsdf", bsdf);
+    SetValue(surface, "opacity", 1.0f);
+    mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+    Connect(material, "surfaceshader", surface);
+
+    return CompileMaterial(doc, compiler, shadeKernel, name);
+}
+
+/// A material whose albedo is its own world-space shading normal.
+///
+/// The only way to read back what the kernel interpolated. Every other view of
+/// a normal is filtered through a lighting response, which hides a normal that
+/// is merely the *wrong* one as long as it still faces the light.
+CompiledMaterial MakeNormalMaterial(mx::DocumentPtr libraries,
+                                    const GlslCompiler& compiler,
+                                    const std::string& shadeKernel,
+                                    const std::string& name)
+{
+    mx::DocumentPtr doc = mx::createDocument();
+    doc->importLibrary(libraries);
+
+    mx::NodePtr normal = AddNode(doc, "normal", "n", "vector3");
+    SetValue(normal, "space", std::string("world"));
+
+    mx::NodePtr colour = doc->addNode("convert", "c", "color3");
+    colour->setNodeDefString("ND_convert_vector3_color3");
+    if (mx::InputPtr in = colour->addInput("in", "vector3")) {
+        in->setConnectedNode(normal);
+    }
+
+    mx::NodePtr bsdf = AddNode(doc, "oren_nayar_diffuse_bsdf", "d", "BSDF");
+    SetValue(bsdf, "weight", 1.0f);
+    SetValue(bsdf, "roughness", 0.0f);
+    Connect(bsdf, "color", colour);
+
+    mx::NodePtr surface = AddNode(doc, "surface", "s", "surfaceshader");
+    Connect(surface, "bsdf", bsdf);
+    SetValue(surface, "opacity", 1.0f);
+    mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+    Connect(material, "surfaceshader", surface);
+
+    return CompileMaterial(doc, compiler, shadeKernel, name);
+}
+
 /// A material whose albedo is a sampled image.
 ///
 /// The file name is never opened: the test publishes the decoded image straight
@@ -630,6 +706,100 @@ int main()
 
             CHECK(right.r > left.r * 1.5f);
             CHECK(top.g > bottom.g * 1.5f);
+        }
+
+        // --- The tangent follows the UVs, not the triangle's first edge ------
+        //
+        // A tangent-space normal map is defined against the texture's own axes:
+        // its x perturbs the surface along increasing u. So the frame has to be
+        // solved from how position and coordinate vary together across the
+        // triangle. Taking the first edge instead also produces a unit vector
+        // orthogonal to the normal -- it is simply a different rotation on
+        // every triangle, which turns a normal map into per-triangle noise and
+        // makes the two triangles of a quad disagree by ninety degrees.
+        //
+        // This quad's coordinates are laid out deliberately across its edges:
+        // u runs along world +Y and v along world -X, while the first edge of
+        // both triangles runs along +X. A material whose albedo is its own
+        // tangent must therefore render *green*. The edge-derived tangent this
+        // replaced rendered it red, and every chess piece and every OpenPBR
+        // Playground surface read its normal map through that frame.
+        {
+            const CompiledMaterial tangentMaterial = MakeTangentMaterial(
+                libraries, compiler, tracer.ShadeKernelSource(), "tangent");
+            CHECK(!tangentMaterial.spirv.empty());
+
+            MeshPrototype quad = MakeQuad();
+            // Vertices are (-1,-1), (1,-1), (1,1), (-1,1) in the XY plane.
+            // u = (y + 1) / 2, v = (1 - x) / 2.
+            quad.uvs = {0, 1, 0, 0, 1, 0, 1, 1};
+
+            Scene scene;
+            scene.prototypes.push_back(quad);
+            scene.instances.push_back({0, Transform3x4{}, 0, true});
+            tracer.SetScene(scene, {tangentMaterial});
+
+            const std::vector<float> image =
+                tracer.Render(kWidth, kHeight, LookDownZ(4.0f), settings);
+            SavePpm(image, "tangent");
+
+            const Pixel centre = At(image, 0.5f, 0.5f);
+            std::printf("  tangent as albedo %.4f %.4f %.4f\n", centre.r,
+                        centre.g, centre.b);
+
+            // (0, 1, 0), not (1, 0, 0): green dominates, and by a lot, because
+            // the two candidate frames are a right angle apart.
+            CHECK(centre.g > 0.0f);
+            CHECK(centre.g > centre.r * 4.0f);
+            CHECK(centre.g > centre.b * 4.0f);
+        }
+
+        // --- Per-corner normals belong to a triangle, not to a vertex --------
+        //
+        // Face-varying normals are how a hard edge is authored: the two sides
+        // of a crease need different normals at the same point, so they cannot
+        // be stored per vertex at all. The kernel must therefore index them by
+        // *primitive*, and a kernel that indexes them by vertex still produces
+        // a plausible image -- it just averages the crease away.
+        //
+        // The two triangles of this quad are given normals that differ in a
+        // channel the albedo shows directly: the lower-right half leans in x
+        // and the upper-left half in y. Indexed by vertex, both halves would
+        // read the same three entries and neither lean would appear.
+        {
+            const CompiledMaterial normalMaterial = MakeNormalMaterial(
+                libraries, compiler, tracer.ShadeKernelSource(), "normal");
+            CHECK(!normalMaterial.spirv.empty());
+
+            MeshPrototype quad = MakeQuad();
+            quad.normalsPerCorner = true;
+            // Triangle 0 is (v0, v1, v2), the lower-right half; triangle 1 is
+            // (v0, v2, v3), the upper-left. Both still lean towards the camera,
+            // so both are lit and the difference is in the albedo alone.
+            const float lean = 0.6f;
+            const float face = 0.8f;
+            quad.normals = {
+                lean, 0.0f, face,  lean, 0.0f, face,  lean, 0.0f, face,
+                0.0f, lean, face,  0.0f, lean, face,  0.0f, lean, face,
+            };
+
+            Scene scene;
+            scene.prototypes.push_back(quad);
+            scene.instances.push_back({0, Transform3x4{}, 0, true});
+            tracer.SetScene(scene, {normalMaterial});
+
+            const std::vector<float> image =
+                tracer.Render(kWidth, kHeight, LookDownZ(4.0f), settings);
+            SavePpm(image, "corner-normals");
+
+            const Pixel lowerRight = At(image, 0.7f, 0.3f);
+            const Pixel upperLeft = At(image, 0.3f, 0.7f);
+            std::printf("  corner normals lower-right %.4f %.4f, "
+                        "upper-left %.4f %.4f\n",
+                        lowerRight.r, lowerRight.g, upperLeft.r, upperLeft.g);
+
+            CHECK(lowerRight.r > lowerRight.g * 4.0f);
+            CHECK(upperLeft.g > upperLeft.r * 4.0f);
         }
 
         // --- A furnace: a diffuse surface under a uniform sky -----------------

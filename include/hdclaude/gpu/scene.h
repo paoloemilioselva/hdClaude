@@ -44,8 +44,18 @@ struct MeshPrototype {
     std::vector<float> positions;
     /// Triangle indices, three per triangle.
     std::vector<std::uint32_t> indices;
-    /// Interleaved xyz shading normals, one per vertex. May be empty.
+    /// Interleaved xyz shading normals. May be empty.
+    ///
+    /// Three per *vertex* normally, and three per triangle *corner* when
+    /// `normalsPerCorner` is set. Face-varying normals are how a hard edge is
+    /// authored -- the two sides of a crease need different normals at the
+    /// same point -- so an adapter that only accepts a vertex-length array
+    /// throws away exactly the meshes whose shading was authored most
+    /// deliberately.
     std::vector<float> normals;
+    /// True when `normals` holds one normal per triangle corner rather than
+    /// per vertex, which is how a face-varying or uniform primvar arrives.
+    bool normalsPerCorner = false;
     /// Interleaved uv. May be empty.
     ///
     /// Two per *vertex* normally, and two per triangle *corner* when
@@ -178,7 +188,13 @@ struct TextureImage {
     /// first**: row 0 is v = 0, which is where USD and MaterialX put the
     /// origin of a texture and what the sampler reads as v = 0.
     std::vector<std::uint8_t> rgba;
-    /// True if the bytes are sRGB-encoded and want hardware decode.
+    /// True if the bytes are sRGB-encoded colour and want hardware decode.
+    ///
+    /// A property of what the image *means*, not of how it is stored: a normal,
+    /// roughness or metalness map is data, and is routinely shipped in the same
+    /// 8-bit JPEG a colour map would be. Decoding one of those as sRGB bends
+    /// every value it holds -- a flat normal map stops being flat, so the whole
+    /// surface tilts and its detail is exaggerated.
     bool srgb = false;
     std::string debugName;
 

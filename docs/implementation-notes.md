@@ -1604,3 +1604,88 @@ substring of the second, so the looser match won. Every anisotropic closure and
 every normal map was working from a degenerate frame. This is the third
 substring bug in a day -- `geomprop_strand_u` matched `geomprop_st`, and now
 this -- which is enough to call it a pattern rather than an accident.
+
+---
+
+## 2026-09-06 -- The normals were fine; the frame they were read in was not
+
+The chess set's pieces were faceted and its board was covered in a fine
+herringbone; the OpenPBR Playground was a blizzard of fireflies on every
+surface. Both look like a normals problem, and the obvious suspects were both
+wrong: the chess set authors no normals at all and gets generated ones, and the
+playground's authored normals belong to control cages that are refined away. The
+generated normals were correct. What was wrong was the **tangent frame** they
+were handed to the material in, and how the maps that perturb them were decoded.
+
+**A tangent is a property of the parameterisation, not of the triangle.**
+`hdclaude_reconstruct` built its tangent from the first edge of the triangle,
+orthogonalised against the shading normal. That is a perfectly good unit vector
+in the tangent plane, and it is the wrong one. A tangent-space normal map is
+defined against the *texture's* axes -- its x perturbs the surface along
+increasing `u`, its y along increasing `v` -- so a frame taken from an edge
+applies every map at a rotation that changes from triangle to triangle, and the
+two triangles of a quad disagree by roughly ninety degrees. That is what the
+herringbone was: a normal map resolved into per-triangle noise. Every chess
+material and 132 of the playground's nodes are `<normalmap>`.
+
+The frame now comes from solving dP/du and dP/dv out of how position and
+coordinate vary together across the triangle, with the tangent orthogonalised
+against the shading normal -- not the geometric one, because the shading normal
+is the third axis MaterialX's `normalmap` builds its frame from. A mesh with no
+coordinates falls out of the same arithmetic: the corner defaults (0,0), (1,0)
+and (0,1) *are* the barycentric parameterisation, so it needs no branch.
+
+**The bitangent's sign is data, not a cross product.** The generated geometry
+setter had been assigning `cross(N, T)`. A mirrored UV island -- how the second
+half of a symmetric asset is normally laid out, both chess pieces included --
+runs `v` the other way round, and a fixed cross product inverts every mapped
+detail on exactly those islands. The kernel now reads the handedness off dP/dv
+and passes the bitangent through the setter, so the generator no longer derives
+a value it has no way to know.
+
+**An 8-bit JPEG holding a normal map is not sRGB.** Textures were being marked
+sRGB from `HioImage::IsColorSpaceSRGB`, which answers from the file format
+alone: three 8-bit channels means sRGB to it. That is right for a colour map and
+wrong for every data map shipped in the same container, and the chess set's
+normal, roughness and metalness maps are all 8-bit JPEGs. Hardware-decoding a
+normal map turns its flat (0.5, 0.5, 1) into roughly (0.21, 0.21, 1), so every
+surface acquires a constant tilt and every bump is exaggerated -- which is where
+the fireflies came from.
+
+Only the material knows what an image means, and it says so three different ways
+depending on who exported it: a `colorspace` attribute on the `file` input,
+which is what a MaterialX document authors; a `sourceColorSpace` input, which is
+what a `UsdUVTexture` authors; or nothing at all, in which case the node's
+*type* is the answer -- an `image` returning `color3` is colour, one returning
+`float` or `vector3` is data. The chess set relies on the third. All three are
+now read, and the decision travels with the asset path to the texture pool,
+which keys its cache on the pair: the same image can legitimately be sampled as
+both.
+
+Note what the document-level `colorspace="lin_rec709"` on `<materialx>` is *not*:
+it is the working space, not the file's encoding. Reading it as the latter --
+which `getActiveColorSpace` would, since it inherits -- calls every texture in
+the document linear.
+
+**And the authored normals hdClaude could not see.** Separately, and matching the
+user's own guess: normals were read with a bare `Get(id, HdTokens->normals)` and
+accepted only when the array happened to be one per vertex. USD spells authored
+normals two ways -- the `normals` attribute and a `primvars:normals` primvar --
+and Hydra presents both as a primvar named `normals`, so that part worked; but
+asking `Get` says nothing about how the array is *indexed*, and a face-varying
+or uniform set was silently dropped. Those are not an exotic variant. They are
+how a hard edge is authored, since the two sides of a crease need different
+normals at the same vertex, and 195 of the playground's meshes author exactly
+that. They now go through the same triangulation the face-varying UVs do, and
+the prototype carries a `normalsPerCorner` flag the kernel indexes by primitive.
+
+**The general lesson**, and it is the same one the film flip and the pre-flipped
+glass normals taught: all three defects were in a *convention* -- which axes a
+frame is built from, which sign a bitangent has, what a byte in a texture means
+-- and every one of them produced a plausible image. A wrong tangent is still
+unit length and still orthogonal to the normal; an sRGB-decoded normal map still
+normalises. Nothing here is catchable by a test that checks magnitudes, which is
+why the two new render tests assert on *direction*: a material whose albedo is
+its own tangent must come back green on a quad whose `u` runs along world +Y,
+and one whose albedo is its own normal must show the two triangles of a quad
+differing when their normals are authored per corner.

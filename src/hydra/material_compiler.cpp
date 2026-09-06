@@ -96,8 +96,64 @@ std::map<std::string, std::string> ResolvedTexturePaths(
     return resolved;
 }
 
-std::string ResolveTexturePath(const mx::DocumentPtr& document,
-                               const std::string& uniformName)
+/// How the bytes behind an <image> node are to be read.
+///
+/// MaterialX and USD each say this a different way and an asset uses whichever
+/// its exporter wrote:
+///
+///   * a `colorspace` attribute on the `file` input -- what a MaterialX
+///     document authors, and the only one of the three that is explicit;
+///   * a `sourceColorSpace` input -- what a `UsdUVTexture` authors, and what
+///     hdMtlx carries across as an input rather than as an attribute;
+///   * nothing at all, in which case the node's *type* is the answer. An
+///     `image` returning `color3` or `color4` is colour, and an 8-bit file
+///     holding it is sRGB-encoded; one returning `float`, `vector2` or
+///     `vector3` is data, and decoding data as sRGB is what turns a flat
+///     normal map into a tilt and a subtle bump into a dent.
+///
+/// The chess set relies on the third: its normal, roughness and metalness maps
+/// are JPEGs on `vector3` and `float` nodes with no colour space anywhere.
+HdClaudeTextureColorSpace ImageColorSpace(const mx::NodePtr& node,
+                                          const mx::InputPtr& fileInput)
+{
+    // Non-inherited on purpose. A document routinely declares its *working*
+    // space at the top -- the chess set says `colorspace="lin_rec709"` on
+    // <materialx> -- and reading that as the file's encoding would call every
+    // texture in it linear.
+    std::string declared = fileInput->getAttribute(mx::Element::COLOR_SPACE_ATTRIBUTE);
+    if (declared.empty()) {
+        if (const mx::InputPtr source = node->getInput("sourceColorSpace")) {
+            declared = source->getValueString();
+        }
+    }
+    if (!declared.empty() && declared != "auto") {
+        // "auto" is `UsdUVTexture`'s default and its own word for "the file
+        // decides", so it is deliberately not a declaration; reading it as one
+        // would call every UsdPreviewSurface texture linear.
+        //
+        // `g22_rec709` is gamma 2.2 rather than the sRGB curve exactly, but the
+        // two differ only in the bottom of the ramp and the hardware decode is
+        // much closer to it than no decode at all.
+        return (declared == "srgb_texture" || declared == "sRGB" ||
+                declared == "g22_rec709")
+                   ? HdClaudeTextureColorSpace::Srgb
+                   : HdClaudeTextureColorSpace::Raw;
+    }
+
+    const std::string& type = node->getType();
+    if (type == "color3" || type == "color4") {
+        return HdClaudeTextureColorSpace::Auto;
+    }
+    if (type == "multioutput") {
+        // A `UsdUVTexture` with `sourceColorSpace` left at its "auto" default,
+        // which USD defines as "the file decides".
+        return HdClaudeTextureColorSpace::Auto;
+    }
+    return HdClaudeTextureColorSpace::Raw;
+}
+
+HdClaudeMaterialCompiler::TextureRequest ResolveTexturePath(
+    const mx::DocumentPtr& document, const std::string& uniformName)
 {
     // The whole tree, not just the document's own children: hdMtlx wraps a
     // material's pattern nodes in a nodegraph, so every <image> in a real
@@ -117,11 +173,14 @@ std::string ResolveTexturePath(const mx::DocumentPtr& document,
             const std::string candidate =
                 mx::createValidName(node->getName() + "_" + input->getName());
             if (candidate == uniformName) {
-                return input->getResolvedValueString();
+                HdClaudeMaterialCompiler::TextureRequest request;
+                request.path = input->getResolvedValueString();
+                request.colorSpace = ImageColorSpace(node, input);
+                return request;
             }
         }
     }
-    return std::string();
+    return HdClaudeMaterialCompiler::TextureRequest();
 }
 
 /// The MaterialX nodedef behind a USD-native shader node type.
@@ -342,7 +401,7 @@ HdClaudeMaterialCompiler::HdClaudeMaterialCompiler(std::string shadeKernel)
 
 hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
     mx::DocumentPtr document, const std::string& name, std::string* error,
-    std::vector<std::string>* texturePaths,
+    std::vector<TextureRequest>* texturePaths,
     const std::map<std::string, std::string>* resolvedTextures)
 {
     // Caller holds _mutex: this touches the shared library document, the
@@ -414,20 +473,20 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
                     dynamic_cast<hdclaude::PathTracerShaderGenerator*>(
                         generator.get())) {
                 for (const std::string& uniform : ptGenerator->TextureOrder()) {
-                    // The network's resolved path first; the document's
-                    // authored one only when the network had nothing, which
-                    // happens for a material hdClaude built itself.
-                    std::string path;
+                    // The colour space always comes from the document --
+                    // it is a property of the <image> node, which the network
+                    // does not carry -- while the path prefers the network's
+                    // resolved one and falls back to the document's authored
+                    // one, which is what a material hdClaude built itself has.
+                    TextureRequest request = ResolveTexturePath(document, uniform);
                     if (resolvedTextures) {
                         const auto found = resolvedTextures->find(uniform);
-                        if (found != resolvedTextures->end()) {
-                            path = found->second;
+                        if (found != resolvedTextures->end() &&
+                            !found->second.empty()) {
+                            request.path = found->second;
                         }
                     }
-                    if (path.empty()) {
-                        path = ResolveTexturePath(document, uniform);
-                    }
-                    if (path.empty()) {
+                    if (request.path.empty()) {
                         // An image node with no file at all. That is legal and
                         // common -- an asset authors the node and leaves the
                         // file to a stronger opinion that never arrives -- and
@@ -441,7 +500,7 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
                             "backs; it reads the image node's default",
                             name.c_str(), uniform.c_str());
                     }
-                    texturePaths->push_back(path);
+                    texturePaths->push_back(std::move(request));
                 }
             }
         }

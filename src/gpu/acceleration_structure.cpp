@@ -124,6 +124,8 @@ std::uint64_t MeshPrototype::Fingerprint() const
     // four distinguishable quadrants to see it.
     if (!normals.empty()) {
         hash = Fnv1a64(normals.data(), normals.size() * sizeof(float), hash);
+        const auto perCorner = static_cast<std::uint8_t>(normalsPerCorner);
+        hash = Fnv1a64(&perCorner, sizeof(perCorner), hash);
     }
     if (!uvs.empty()) {
         hash = Fnv1a64(uvs.data(), uvs.size() * sizeof(float), hash);

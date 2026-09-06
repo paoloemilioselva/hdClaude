@@ -14,8 +14,23 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <utility>
 
 PXR_NAMESPACE_OPEN_SCOPE
+
+/// What a material says about a texture's encoding.
+///
+/// The file format alone cannot answer this. An 8-bit JPEG is sRGB-encoded if
+/// it holds colour and linear if it holds a normal or a roughness, and the two
+/// are indistinguishable in the file; only the material knows which it authored.
+enum class HdClaudeTextureColorSpace {
+    /// Nothing was declared, so the file's own encoding stands.
+    Auto,
+    /// Declared sRGB-encoded colour.
+    Srgb,
+    /// Declared linear data: a normal, roughness, metalness or mask map.
+    Raw,
+};
 
 /// Loads textures once each and hands out their pool indices.
 ///
@@ -32,7 +47,12 @@ class HdClaudeTexturePool {
     /// invalid image. The renderer binds its placeholder there, so a missing
     /// texture is visibly wrong rather than silently black, and the material's
     /// other indices are unaffected.
-    std::uint32_t Acquire(const std::string& assetPath);
+    /// The same path can be asked for twice with different colour spaces --
+    /// an asset may use one image as both colour and data -- so the pool is
+    /// keyed on both and decodes each reading separately.
+    std::uint32_t Acquire(
+        const std::string& assetPath,
+        HdClaudeTextureColorSpace colorSpace = HdClaudeTextureColorSpace::Auto);
 
     /// Every loaded image, indexed by the slot Acquire returned.
     const std::vector<hdclaude::TextureImage>& Images() const { return _images; }
@@ -44,13 +64,16 @@ class HdClaudeTexturePool {
 
   private:
     mutable std::mutex _mutex;
-    std::map<std::string, std::uint32_t> _slots;
+    std::map<std::pair<std::string, HdClaudeTextureColorSpace>, std::uint32_t>
+        _slots;
     std::vector<hdclaude::TextureImage> _images;
     std::vector<std::string> _failures;
 };
 
 /// Decode one image. Exposed for testing; callers should use the pool.
 bool HdClaudeLoadTexture(const std::string& assetPath,
-                         hdclaude::TextureImage* out, std::string* error);
+                         hdclaude::TextureImage* out, std::string* error,
+                         HdClaudeTextureColorSpace colorSpace =
+                             HdClaudeTextureColorSpace::Auto);
 
 PXR_NAMESPACE_CLOSE_SCOPE

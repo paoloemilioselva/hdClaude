@@ -145,7 +145,8 @@ void main()
     // through the generated setter, because the SurfaceHit struct holds only
     // the members this particular material reads.
     hdclaude_set_surface_hit(vec3(0.0), vec3(0.0, 0.0, 1.0), vec3(1.0, 0.0, 0.0),
-                             vec3(0.0), vec3(0.0, 0.0, 1.0), vec3(1.0, 0.0, 0.0),
+                             vec3(0.0, 1.0, 0.0), vec3(0.0), vec3(0.0, 0.0, 1.0),
+                             vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0),
                              vec2(0.5));
 
     // Per-invocation path state the closures read.

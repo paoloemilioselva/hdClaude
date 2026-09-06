@@ -12,6 +12,8 @@
 // built from its displayColor, which is an honest "we did not shade this as
 // authored" rather than a lookalike that quietly disagrees with the asset.
 
+#include "texture_loader.h"
+
 #include "hdclaude/gpu/glsl_compiler.h"
 #include "hdclaude/gpu/path_tracer.h"
 
@@ -35,15 +37,24 @@ class HdClaudeMaterialCompiler {
     /// place rather than restated here.
     HdClaudeMaterialCompiler(std::string shadeKernel);
 
+    /// One texture a material samples: where it is, and how to read it.
+    ///
+    /// The colour space travels with the path because only the material knows
+    /// it. The pool decodes and caches on the pair.
+    struct TextureRequest {
+        std::string path;
+        HdClaudeTextureColorSpace colorSpace = HdClaudeTextureColorSpace::Auto;
+    };
+
     struct Result {
         hdclaude::CompiledMaterial material;
         /// Empty when the authored network compiled. Otherwise says why it did
         /// not, in terms a user can act on.
         std::string fallbackReason;
-        /// Asset paths of the textures the material samples, in the order the
-        /// generator assigned their local indices. The caller loads these and
-        /// fills in `material.textureSlots`.
-        std::vector<std::string> texturePaths;
+        /// The textures the material samples, in the order the generator
+        /// assigned their local indices. The caller loads these and fills in
+        /// `material.textureSlots`.
+        std::vector<TextureRequest> texturePaths;
     };
 
     /// Compile a Hydra material network.
@@ -71,7 +82,7 @@ class HdClaudeMaterialCompiler {
     hdclaude::CompiledMaterial CompileDocument(
         MaterialX::DocumentPtr document, const std::string& name,
         std::string* error,
-        std::vector<std::string>* texturePaths = nullptr,
+        std::vector<TextureRequest>* texturePaths = nullptr,
         const std::map<std::string, std::string>* resolvedTextures = nullptr);
 
     /// Serialises generation and compilation.

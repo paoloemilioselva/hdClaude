@@ -67,6 +67,27 @@ bool ExtractPoints(const VtValue& value, std::vector<float>& out)
     return false;
 }
 
+/// Flatten a VtValue of vectors into a GfVec3f array, whatever its precision.
+///
+/// Normals reach Hydra as `normal3f`, `vector3f`, or either one's double
+/// spelling, and a reader that accepts only the first quietly drops the rest.
+bool ExtractVectors(const VtValue& value, VtVec3fArray& out)
+{
+    if (value.IsHolding<VtVec3fArray>()) {
+        out = value.UncheckedGet<VtVec3fArray>();
+        return true;
+    }
+    if (value.IsHolding<VtVec3dArray>()) {
+        const VtVec3dArray& source = value.UncheckedGet<VtVec3dArray>();
+        out.resize(source.size());
+        for (std::size_t i = 0; i < source.size(); ++i) {
+            out[i] = GfVec3f(source[i]);
+        }
+        return true;
+    }
+    return false;
+}
+
 /// Where a mesh's generated displayColor material is published.
 ///
 /// A property path, so it can never be mistaken for -- or collide with -- a
@@ -359,20 +380,156 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     entry.prototype.indices = std::move(indices);
 
     // --- Normals -------------------------------------------------------------
-    // Authored normals if the mesh has vertex-interpolated ones; otherwise
-    // smooth normals from the public adjacency API. Generating them rather than
-    // falling back to flat shading matters for the shader balls, whose
-    // silhouettes are the whole point of the asset.
-    std::vector<float> normals;
+    // Authored normals win, in whatever interpolation they were authored in;
+    // otherwise they are generated, because a mesh shaded from its triangle
+    // planes reads as a modelling error rather than as a missing primvar.
+    //
+    // USD spells authored normals two ways -- the `normals` attribute
+    // UsdGeomMesh declares, and a `primvars:normals` primvar -- and Hydra
+    // presents both as a primvar named `normals`. Asking the *descriptors* for
+    // it is therefore what finds either one, and it is also what says how the
+    // array is indexed. Asking `Get` for a vertex-length array instead, as this
+    // used to, silently dropped every face-varying and uniform set: those are
+    // how a hard edge is authored, since the two sides of a crease need
+    // different normals at the same vertex.
+    //
     // Authored normals belong to the control cage. After refinement they
-    // describe a mesh that no longer exists, so they are not consulted.
-    const VtValue normalsValue =
-        subdivided ? VtValue() : sceneDelegate->Get(id, HdTokens->normals);
+    // describe a mesh that no longer exists -- and UsdGeomMesh gives a
+    // subdivision surface its normals from the limit surface regardless -- so
+    // they are not consulted then.
     const std::size_t vertexCount = entry.prototype.VertexCount();
-    if (ExtractPoints(normalsValue, normals) &&
-        normals.size() == vertexCount * 3) {
-        entry.prototype.normals = std::move(normals);
-    } else if (subdivided) {
+
+    VtVec3fArray authoredNormals;
+    HdInterpolation normalInterpolation = HdInterpolationVertex;
+    bool haveAuthoredNormals = false;
+    if (!subdivided) {
+        for (const HdInterpolation interpolation :
+             {HdInterpolationVertex, HdInterpolationVarying,
+              HdInterpolationFaceVarying, HdInterpolationUniform,
+              HdInterpolationConstant}) {
+            for (const HdPrimvarDescriptor& descriptor :
+                 GetPrimvarDescriptors(sceneDelegate, interpolation)) {
+                if (descriptor.name != HdTokens->normals) {
+                    continue;
+                }
+                if (!ExtractVectors(sceneDelegate->Get(id, descriptor.name),
+                                    authoredNormals) ||
+                    authoredNormals.empty()) {
+                    continue;
+                }
+                normalInterpolation = interpolation;
+                haveAuthoredNormals = true;
+                break;
+            }
+            if (haveAuthoredNormals) {
+                break;
+            }
+        }
+    }
+
+    // A per-vertex array, copied straight across.
+    auto assignPerVertex = [&](const VtVec3fArray& source) {
+        if (source.size() != vertexCount) {
+            return false;
+        }
+        entry.prototype.normals.resize(vertexCount * 3);
+        for (std::size_t i = 0; i < vertexCount; ++i) {
+            entry.prototype.normals[i * 3 + 0] = source[i][0];
+            entry.prototype.normals[i * 3 + 1] = source[i][1];
+            entry.prototype.normals[i * 3 + 2] = source[i][2];
+        }
+        return true;
+    };
+
+    // One normal per triangle corner, in the triangle order the indices were
+    // written in, so the kernel indexes them by primitive.
+    auto assignPerCorner = [&](const VtVec3fArray& corners) {
+        if (corners.size() != entry.prototype.indices.size()) {
+            return false;
+        }
+        entry.prototype.normals.resize(corners.size() * 3);
+        for (std::size_t i = 0; i < corners.size(); ++i) {
+            entry.prototype.normals[i * 3 + 0] = corners[i][0];
+            entry.prototype.normals[i * 3 + 1] = corners[i][1];
+            entry.prototype.normals[i * 3 + 2] = corners[i][2];
+        }
+        entry.prototype.normalsPerCorner = true;
+        return true;
+    };
+
+    bool normalsAssigned = false;
+    if (haveAuthoredNormals) {
+        if (normalInterpolation == HdInterpolationVertex ||
+            normalInterpolation == HdInterpolationVarying) {
+            normalsAssigned = assignPerVertex(authoredNormals);
+        } else if (normalInterpolation == HdInterpolationFaceVarying) {
+            // The same triangulation the face-varying UVs get, and for the same
+            // reason: HdMeshUtil owns the corner ordering, including the
+            // winding flip a left-handed mesh needs, so walking the faces here
+            // would be a second chance to disagree with the indices.
+            HdMeshUtil meshUtil(&topology, id);
+            VtValue triangulated;
+            const HdMeshComputationResult computed =
+                meshUtil.ComputeTriangulatedFaceVaryingPrimvar(
+                    authoredNormals.cdata(),
+                    static_cast<int>(authoredNormals.size()), HdTypeFloatVec3,
+                    &triangulated);
+
+            // `Unchanged` means the mesh was already triangles and the *input*
+            // is the answer; reading it as a failure would drop the normals of
+            // every triangulated asset.
+            if (computed == HdMeshComputationResult::Success &&
+                triangulated.IsHolding<VtVec3fArray>()) {
+                normalsAssigned =
+                    assignPerCorner(triangulated.UncheckedGet<VtVec3fArray>());
+            } else if (computed == HdMeshComputationResult::Unchanged) {
+                normalsAssigned = assignPerCorner(authoredNormals);
+            }
+        } else if (normalInterpolation == HdInterpolationUniform) {
+            // One per coarse face, expanded to that face's triangles. Held per
+            // corner rather than per vertex because a vertex is shared between
+            // faces that disagree, which is the whole point of a uniform
+            // normal.
+            if (authoredNormals.size() ==
+                    static_cast<std::size_t>(topology.GetNumFaces()) &&
+                coarseFaces.size() == entry.prototype.TriangleCount()) {
+                VtVec3fArray corners(entry.prototype.indices.size());
+                for (std::size_t t = 0; t < coarseFaces.size(); ++t) {
+                    const int face = coarseFaces[t];
+                    if (face < 0 || static_cast<std::size_t>(face) >=
+                                        authoredNormals.size()) {
+                        continue;
+                    }
+                    corners[t * 3 + 0] = authoredNormals[face];
+                    corners[t * 3 + 1] = authoredNormals[face];
+                    corners[t * 3 + 2] = authoredNormals[face];
+                }
+                normalsAssigned = assignPerCorner(corners);
+            }
+        } else if (normalInterpolation == HdInterpolationConstant) {
+            entry.prototype.normals.resize(vertexCount * 3);
+            for (std::size_t i = 0; i < vertexCount; ++i) {
+                entry.prototype.normals[i * 3 + 0] = authoredNormals[0][0];
+                entry.prototype.normals[i * 3 + 1] = authoredNormals[0][1];
+                entry.prototype.normals[i * 3 + 2] = authoredNormals[0][2];
+            }
+            normalsAssigned = true;
+        }
+
+        if (!normalsAssigned) {
+            // A set that does not describe this mesh: the wrong length for the
+            // interpolation it was declared with. Generating instead is better
+            // than shading from the triangle planes, but the mismatch is worth
+            // saying out loud rather than absorbing silently.
+            HdClaudeTrace(
+                "mesh <%s>: %zu authored normals do not match the mesh "
+                "(%zu vertices, %zu triangles); generating instead",
+                id.GetText(), authoredNormals.size(), vertexCount,
+                entry.prototype.TriangleCount());
+        }
+    }
+
+    if (!normalsAssigned && subdivided) {
         // The coarse adjacency does not describe the refined cage, so normals
         // come from the refined triangles: accumulate each triangle's normal
         // at its corners, then normalise.
@@ -407,7 +564,7 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
             entry.prototype.normals[i * 3 + 1] = n[1];
             entry.prototype.normals[i * 3 + 2] = n[2];
         }
-    } else {
+    } else if (!normalsAssigned) {
         Hd_VertexAdjacency adjacency;
         adjacency.BuildAdjacencyTable(&topology);
 
@@ -545,7 +702,11 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
                   id.GetText(), subdivided ? " [subdivided]" : "",
                   entry.prototype.VertexCount(),
                   entry.prototype.TriangleCount(), entry.transforms.size(),
-                  entry.prototype.normals.empty() ? "no" : "yes",
+                  entry.prototype.normals.empty() ? "no"
+                  : !normalsAssigned                ? "generated"
+                  : entry.prototype.normalsPerCorner
+                      ? "authored (per corner)"
+                      : "authored",
                   entry.prototype.uvs.empty()
                       ? (haveUvs ? (uvInterpolation == HdInterpolationFaceVarying
                                         ? "no (face-varying, dropped)"
