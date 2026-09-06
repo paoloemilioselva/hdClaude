@@ -1689,3 +1689,53 @@ why the two new render tests assert on *direction*: a material whose albedo is
 its own tangent must come back green on a quad whose `u` runs along world +Y,
 and one whose albedo is its own normal must show the two triangles of a quad
 differing when their normals are authored per corner.
+
+---
+
+## 2026-09-06 -- An instanced rprim's transform is not its world transform
+
+The Kitchen Set was missing its refrigerator, its stove, its table and its
+chairs, while the props that were visible floated in the air near the window.
+Reported by comparing against hdCodex's baseline, which has all of them.
+
+Nothing was missing. The trace said 1462 prototypes and 1788 instances, and
+walking the stage with `Usd.TraverseInstanceProxies` says the stage holds
+exactly 1788 mesh instances. Every prim was published, with the right count, and
+put in the wrong place.
+
+`Kitchen_set_instanced.usd` is native USD instancing, so every rprim on this
+stage lives inside a prototype -- the paths are all
+`/UsdNiPropagatedPrototypes/.../UsdNiInstancer/UsdNiPrototype/Geom/...`. For
+such an rprim there are *two* transforms and both are needed: the rprim's own,
+which places the mesh within the prototype, and the instancer's, which places
+the prototype in the world. The mesh adapter used the instancer's alone.
+
+That collapses every mesh of a model onto its model's origin. 1460 of the
+Kitchen Set's 1462 meshes carry a non-identity transform inside their
+prototype, several with translations of a couple of hundred units, so the parts
+of each model scattered around the room -- a cup where its table's root is, a
+refrigerator's panels somewhere outside the frame or inside a wall. The failure
+therefore reads as *missing geometry*, not as misplaced geometry, which is why
+it survived a look at the image.
+
+The composition is `mesh * instance`: USD composes a row vector's transforms
+left to right, so the mesh goes into the prototype and the prototype into the
+world. hdEmbree writes the same thing as `_transform * transforms[i]`, and
+hdClaude's own instancer already composed in that direction -- a translation
+primvar is applied as `step * transform` and a nested instancer as
+`inner * outer`. The adapter was the one place that did not.
+
+**Why nothing caught it.** The render tests build a `Scene` directly, so they
+never reach the mesh adapter; there is no Hydra-linked test target at all. And
+the gallery gate compares each render against its *committed baseline*, so it
+catches a change and cannot catch a baseline that was wrong when it was
+committed. This one was: the kitchen has looked like this since it was first
+adopted. A gate built on self-comparison has that blind spot by construction,
+and the only thing that closed it here was a second renderer's image of the
+same stage.
+
+That is an argument for the "Against hdCodex" table earning its place, and for
+a renderer-owned scene whose correct appearance is checkable by construction --
+a prototype whose meshes are deliberately offset from its root, instanced
+several times, so that dropping either transform is unmistakable. Recorded in
+docs/roadmap.md rather than built here.

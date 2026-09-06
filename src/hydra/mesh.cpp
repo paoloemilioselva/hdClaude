@@ -649,8 +649,23 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     // the parent chain -- the instancer's own transform -- so reading it as the
     // per-instance list draws a point-instanced prototype exactly once, which
     // is how the OpenChessSet lost most of its pieces.
+    //
+    // An instanced rprim's own transform is *not* its world transform: it
+    // places the mesh within the prototype, and the instancer places the
+    // prototype. Both are needed. Dropping the first collapses every mesh of a
+    // model onto that model's origin, which is a failure that reads as missing
+    // geometry rather than as misplaced geometry -- an asset whose parts are
+    // authored a couple of hundred units from its root ends up scattered
+    // around the room or inside a wall. Pixar's Kitchen Set is 1462 meshes of
+    // which 1460 are placed this way, so it lost its refrigerator, its stove,
+    // its table and its chairs while still reporting every instance present.
+    //
+    // Local first, then the placement: USD composes a row vector's transforms
+    // left to right, so `mesh * instance` is the mesh taken into the
+    // prototype and the prototype into the world.
+    const GfMatrix4d meshTransform = sceneDelegate->GetTransform(id);
     if (GetInstancerId().IsEmpty()) {
-        entry.transforms.push_back(ToTransform(sceneDelegate->GetTransform(id)));
+        entry.transforms.push_back(ToTransform(meshTransform));
     } else {
         VtMatrix4dArray transforms;
         HdInstancer* instancer =
@@ -660,7 +675,7 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
         }
         entry.transforms.reserve(transforms.size());
         for (const GfMatrix4d& matrix : transforms) {
-            entry.transforms.push_back(ToTransform(matrix));
+            entry.transforms.push_back(ToTransform(meshTransform * matrix));
         }
         if (entry.transforms.empty()) {
             // An instancer with no instances draws nothing. Publishing the
