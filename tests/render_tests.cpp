@@ -172,6 +172,17 @@ CompiledMaterial MakeDiffuseMaterial(mx::DocumentPtr libraries,
 /// evaluates to nothing at the surface itself, because absorption happens along
 /// the flight *between* surfaces and there is no distance to integrate over at a
 /// point.
+/// The same quad wound the other way, so a pair of them encloses a volume.
+MeshPrototype MakeQuadFacingBack()
+{
+    MeshPrototype prototype;
+    prototype.debugName = "quad.back";
+    prototype.positions = {-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0};
+    prototype.indices = {0, 2, 1, 0, 3, 2};
+    prototype.normals = {0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1};
+    return prototype;
+}
+
 CompiledMaterial MakeAbsorbingMaterial(mx::DocumentPtr libraries,
                                        const GlslCompiler& compiler,
                                        const std::string& shadeKernel,
@@ -1367,6 +1378,67 @@ int main()
             CHECK_NEAR(gotR, wantR, wantR * 0.08);
             CHECK_NEAR(gotG, wantG, wantG * 0.08);
             CHECK_NEAR(gotB, wantB, wantB * 0.08);
+        }
+
+        // --- A lossless slab in a furnace renders the furnace -----------------
+        //
+        // The only exact assertion available about a transmissive surface, and
+        // the one a random walk needs behind it. A closed object that absorbs
+        // nothing, in a uniform environment of unit radiance, must render
+        // exactly one however the light gets around inside it: every direction
+        // sees the same radiance, so bending a path cannot change what it finds.
+        //
+        // A dielectric reflects and transmits and destroys nothing, so a slab of
+        // one is lossless by construction. Anything but one here is energy the
+        // closure invented or dropped, and it compounds: a path crosses this
+        // slab twice, and a medium inside it many more times.
+        {
+            const auto furnace = [&](const CompiledMaterial& material,
+                                     const char* label) {
+                if (material.spirv.empty()) {
+                    return Pixel{0.0f, 0.0f, 0.0f};
+                }
+                Scene scene;
+                scene.prototypes.push_back(MakeQuad());
+                scene.prototypes.push_back(MakeQuadFacingBack());
+                Transform3x4 back;
+                back.m[11] = -0.2f;
+                scene.instances.push_back({0, Transform3x4{}, 0, true});
+                scene.instances.push_back({1, back, 0, true});
+                tracer.SetScene(scene, {material});
+
+                RenderSettings box;
+                box.samplesPerPixel = 512;
+                box.maxBounces = 16;
+                for (int i = 0; i < 3; ++i) {
+                    box.environmentColor[i] = 1.0f;
+                    box.sunRadiance[i] = 0.0f;
+                }
+                const std::vector<float> image =
+                    tracer.Render(kWidth, kHeight, LookDownZ(3.0f), box);
+                const Pixel centre = Window(image, 0.5f, 0.5f, 10);
+                std::printf("  furnace, %-16s %.4f %.4f %.4f (expected 1.00)\n",
+                            label, centre.r, centre.g, centre.b);
+                return centre;
+            };
+
+            const CompiledMaterial bare = MakeDielectricMaterial(
+                libraries, compiler, tracer.ShadeKernelSource(), 1.5f,
+                "bare dielectric", 0.0f, "RT");
+            CHECK(!bare.spirv.empty());
+            const Pixel bareResult = furnace(bare, "dielectric_bsdf");
+
+            // `open_pbr_surface` deliberately does *not* run here yet. The same
+            // slab built from it reads 1.1505 -- it gains fifteen per cent per
+            // crossing -- and the defect is in how OpenPBR's graph layers a
+            // reflection-only dielectric over a transmission-only one rather
+            // than in the closure both of them call, which this case pins at
+            // one. Asserting it now would fail the suite; asserting it at a
+            // tolerance that passes would record the defect as correct. It is
+            // written up in the notes and comes back with its fix.
+            CHECK_NEAR(bareResult.r, 1.0, 0.03);
+            CHECK_NEAR(bareResult.g, 1.0, 0.03);
+            CHECK_NEAR(bareResult.b, 1.0, 0.03);
         }
 
         // --- A rect light is an emitter a ray can hit, and MIS splits it ------

@@ -2767,3 +2767,50 @@ So the furnace waits for the fix it is diagnosing, and the fix is the next piece
 of work: whatever `open_pbr_surface` does to transmitted energy, it adds fifteen
 per cent per crossing, and every transmissive material in the gallery is
 carrying it.
+
+
+---
+
+## 2026-09-07 -- Which of the two dielectrics is wrong
+
+The furnace from the previous entry said a transmissive slab gains fifteen per
+cent. It did not say *whose* fifteen per cent. Running it twice, over the same
+geometry and the same environment, does:
+
+| slab material | rendered | expected |
+|---|---|---|
+| bare `dielectric_bsdf`, scatter mode RT | 1.0001, 0.9987, 0.9979 | 1.0 |
+| `open_pbr_surface`, transmission weight 1 | 1.1505, 1.1481, 1.1480 | 1.0 |
+
+Both call the same closure. hdClaude's `mx_dielectric_bsdf` conserves energy to
+within two parts in a thousand across a slab a path crosses twice, which is as
+close as 512 samples can report. So the closure is right and the defect is in how
+`open_pbr_surface` *composes* it.
+
+**What OpenPBR does differently.** It does not ask the dielectric for reflection
+and transmission together. It calls it twice -- once with scatter mode R and once
+with T -- and then, at the end of the graph, does
+
+    dielectric_substrate = mix(volume_transmission, opaque_base, transmission_weight)
+    dielectric_base      = layer(dielectric_reflection, dielectric_substrate)
+
+So a reflection-only lobe is layered over a transmission-only lobe.
+`mx_layer_bsdf` evaluates that as `top.response + base.response * top.throughput`,
+and with the transmission lobe already carrying its own `1 - F`, the *response*
+is `R + T(1 - F)` -- about four per cent short at normal incidence, not fifteen
+per cent over. **The evaluation loses; the render gains.** Whatever is wrong is
+therefore in the layer's sampling and the mixture density it reports, not in the
+arithmetic of its response. That is a narrow enough place to look, and it is
+where the next attempt should start.
+
+**What went in and what did not.** The bare-dielectric case is committed as a
+gate, because it passes and because it is the assertion that will say the fix did
+not break the closure while fixing the graph. The `open_pbr_surface` case is
+written, measured, and left unasserted, with the number in a comment beside it.
+Committing it failing would break the suite; committing it at a tolerance wide
+enough to pass would record a fifteen per cent energy gain as correct, which is
+the exact failure this project has now found in three separate committed
+baselines. A gate loosened until it passes is not a gate.
+
+Every transmissive material in the gallery is carrying this: glass, honey, the
+playground's jars, Collective Project's canopy.
