@@ -163,6 +163,10 @@ int Scan(const char* path)
     double sum = 0.0;
     float smallest = 0.0f;
     float largest = 0.0f;
+    std::size_t brightest = 0;
+    std::size_t overHundred = 0;
+    std::size_t overTenThousand = 0;
+    std::size_t overHundredMillion = 0;
     std::vector<std::size_t> firstNonFinite;
     std::vector<std::size_t> firstNegative;
 
@@ -199,7 +203,16 @@ int Scan(const char* path)
             }
             sum += value;
             smallest = std::min(smallest, value);
-            largest = std::max(largest, value);
+            if (value > largest) {
+                largest = value;
+                brightest = pixel;
+            }
+            // How the magnitudes are distributed, not only how far they reach.
+            // Three pixels at 1e25 and three thousand at 1e3 are different
+            // defects, and the range alone cannot tell them apart.
+            if (value > 1.0e2f) ++overHundred;
+            if (value > 1.0e4f) ++overTenThousand;
+            if (value > 1.0e8f) ++overHundredMillion;
         }
     }
 
@@ -207,6 +220,13 @@ int Scan(const char* path)
     std::cout << "  scan: mean " << mean << ", range [" << smallest << ", "
               << largest << "], " << nonFinite << " non-finite, " << negative
               << " negative\n";
+    if (overHundred > 0) {
+        std::cout << "        " << overHundred << " over 1e2, "
+                  << overTenThousand << " over 1e4, " << overHundredMillion
+                  << " over 1e8; brightest at ("
+                  << brightest % static_cast<std::size_t>(image.width) << ", "
+                  << brightest / static_cast<std::size_t>(image.width) << ")\n";
+    }
 
     bool pass = true;
     const auto report = [](const char* what,

@@ -3934,3 +3934,51 @@ The scan is deliberately **not** wired into the gallery gate yet, because that
 scene fails it. A gate committed while a scene fails it either blocks the
 gallery or gets loosened until it passes, and the rule here is that a gate goes
 in with its fix. It goes in when the playground's magnitudes are understood.
+
+
+---
+
+## 2026-09-08 -- Where the Playground's magnitudes are, and how old they are
+
+Two questions answered before any hypothesis was allowed: where in the frame,
+and since when.
+
+**Where.** `--scan` gained a magnitude histogram and the position of the
+brightest sample, because a range alone cannot separate three stray pixels from
+a broken region. It is a region: **7970 samples over 1e2, 6709 over 1e4, 1534
+over 1e8**, brightest at (534, 402). Plotted, the ones over 1e8 form a dense
+cluster on **the dark green bottle** lying on the desk -- the scene's
+transmissive object -- with a thin scatter of ordinary fireflies over the rest of
+the frame.
+
+**Since when.** Not from any of this week's work, which was the first thing worth
+ruling out given how much of the transmissive path has moved. Rebuilding the
+walk as it stood before the spectral MIS gives a range to 1.19e23 and 1546
+samples over 1e8; rebuilding the closures as they stood before the relative-index
+fix gives 8.33e22 and 1323. The defect is older than both.
+
+It is worth recording that both fixes *reduced* it. Before the dielectric work
+the scene had 13543 samples over 1e2 and 10630 negatives; it now has 7970 and
+5998. Neither change was aimed at this and neither cured it.
+
+So a transmissive OpenPBR material produces radiance twenty-five orders of
+magnitude too large, in a gallery scene, at the gallery's own settings, and has
+done for a long time. The display transform clamps it to white and the gate
+compares the clamped image, which is why nothing has ever said so.
+
+**What has been ruled out so far**, each by checking rather than by argument:
+the balance heuristic is applied to every analytic light's next-event estimate;
+the stand-in sun, which is a delta emitter carrying no MIS weight by design, is
+not in this scene at all, since `hdclaude_has_stand_in_sun` requires a stage with
+neither lights nor a dome; and it is not the spectral walk or the dielectric
+closure as changed this week. `hdclaude_lane_extinction` clamps a negative
+coefficient to zero before the exponential, so an authored `transmission_color`
+above one -- which would otherwise make absorption amplify along a path -- cannot
+be the mechanism either.
+
+The next thing to establish is which term in the estimator is large, rather than
+which object it lands on. The scene bisects easily: it has several lights and
+many materials, and rendering it with the bottle's material substituted, or with
+the lights removed one at a time, localises the term far faster than reading the
+transport does. That is the approach that worked for the medium furnace and the
+one that failed, twice, when it was skipped.
