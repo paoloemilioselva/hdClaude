@@ -2991,3 +2991,51 @@ Worth noting for its own sake: a gate that reads 1.0145 was hiding a four per
 cent error and a five per cent error. A tolerance of three per cent passes that
 and would have passed it indefinitely. The furnace is doing its job precisely
 because it is tight enough to have made this visible at all.
+
+
+---
+
+## 2026-09-07 -- Both halves, and why neither could go first
+
+The furnace now reads 0.9953 on a layered slab, against 1.0145 before and 1.1505
+before that. Both errors are fixed, and the reason they took three passes to find
+is worth keeping.
+
+**The gain: a single-lobe request that still pretended to choose.**
+`mx_dielectric_bsdf` guarded its reflect/refract split on
+`transmissive = scatter_mode != 0`, which is true for T-only as well as for RT.
+A lobe asked for transmission alone therefore reflected one sample in twenty --
+the clamp floors the split at 0.05 -- and divided its density by 0.95. The split
+is a choice, and a closure asked for one lobe has nothing to choose between, so
+it now applies only when `scatter_mode == 2`.
+
+**The loss: Fresnel applied twice.** `mx_layer_bsdf` evaluates
+`top.response + base.response * top.throughput`, and the reflection lobe reports
+`throughput = 1 - F`. The transmission lobe's response carried its own `1 - F` as
+well, so the layered response was `F + (1 - F)^2`. MaterialX's layering
+convention settles which of the two is the deviation: a base sees what the top
+transmits, so a base must *not* know the top's Fresnel -- the layer supplies it.
+A transmission-only lobe exists only to be layered under a reflection one, which
+is the only way `open_pbr_surface` uses it, so it stops carrying the factor. RT
+keeps it, because there the closure weighs its own two lobes and nothing above
+supplies anything.
+
+**Why neither could be fixed first.** They are of opposite sign and nearly equal.
+Removing the gain alone took the furnace from 1.0145 to **0.9206** -- a change
+that is right on its own terms and makes every transmissive image in the gallery
+worse. Any attempt to fix one and check the result would have been reverted as a
+regression, which is exactly what happened on the first attempt. The two had to
+be understood as a pair before either could move.
+
+**What that says about tolerances.** The gate stood at three per cent while the
+slab read 1.0145. That passes, and it would have passed indefinitely, and behind
+it sat a four per cent error and a five per cent error. A tolerance wide enough
+to accommodate a defect is wide enough to accommodate two defects whose sum is
+smaller than either. The gate is now two per cent, three times the measured
+error, and the two numbers this furnace has already caught -- 1.1505 and 1.0145
+-- are written beside it so that widening it again has to be argued for.
+
+Against hdCodex the glass ball falls from 0.113 to 0.112, the playground from
+0.236 to 0.235 and the chess set from 0.0454 to 0.0453; Collective Project holds.
+Small, and all in the same direction, which is what a correction of a fraction of
+a per cent should look like.

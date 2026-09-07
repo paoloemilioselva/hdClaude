@@ -61,6 +61,11 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
     float etaInv = etaT / etaI;          // for the Jacobian
 
     bool transmissive = scatter_mode != 0;
+    // Whether this closure chooses between lobes, and whether it is somebody's
+    // layer base. `scatter_mode` is MaterialX's enum: 0 is R, 1 is T, 2 is RT.
+    // Only RT chooses; only T is a base.
+    bool choosesLobe = scatter_mode == 2;
+    bool layerBase = scatter_mode == 1;
     bool smoothSurface = avgAlpha <= M_FLOAT_EPS;
 
     // The tangent frame is built once so sampling and evaluation share it.
@@ -89,8 +94,13 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
         // the split between the lobes.
         float VdotH = clamp(dot(V, H), M_FLOAT_EPS, 1.0);
         vec3 Fh = mx_compute_fresnel(VdotH, fd);
+        // The reflect/refract split is a choice only RT has to make. Asked for
+        // one lobe, this closure has no alternative to weigh, and applying the
+        // split anyway makes a transmission-only request reflect one sample in
+        // twenty that nobody asked for.
         float reflectProbability =
-            transmissive ? clamp(mx_pt_luminance_weight(Fh), 0.05, 0.95) : 1.0;
+            choosesLobe ? clamp(mx_pt_luminance_weight(Fh), 0.05, 0.95)
+                        : (transmissive ? 0.0 : 1.0);
 
         float u = hdclaude_sample_u.z;
         float selectionPdf;
@@ -134,7 +144,7 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
         // reflect/refract lobe rather than of the reflection lobe alone.
         float G1V = mx_ggx_smith_G1(NdotV, avgAlpha);
         float reflectProbability =
-            transmissive ? clamp(mx_pt_luminance_weight(F), 0.05, 0.95) : 1.0;
+            choosesLobe ? clamp(mx_pt_luminance_weight(F), 0.05, 0.95) : 1.0;
         bsdf.pdf = dot(N, L) > 0.0
                        ? mx_ggx_VNDF_reflection_PDF(Ht, safeAlpha, G1V, NdotV) *
                              reflectProbability
@@ -190,7 +200,16 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
                                (NdotV * denom)
                          : 0.0;
 
-        bsdf.response = (vec3(1.0) - F) * btdf * safeTint * weight;
+        // A transmission-only lobe exists to be layered *under* a reflection
+        // one -- that is the only way `open_pbr_surface` uses it -- and
+        // MaterialX's layering convention is that a base does not know the top's
+        // Fresnel: `layer` supplies it as `top.throughput`, which is `1 - F`.
+        // Carrying it here as well applies it twice, and `F + (1 - F)^2` is four
+        // per cent short of one at normal incidence. The RT mode keeps it,
+        // because there it weighs its own two lobes against each other and
+        // nothing above supplies anything.
+        vec3 fresnelWeight = layerBase ? vec3(1.0) : (vec3(1.0) - F);
+        bsdf.response = fresnelWeight * btdf * safeTint * weight;
 
         // ---- hdClaude: density -----------------------------------------------
         float G1V = mx_ggx_smith_G1(NdotV, avgAlpha);
@@ -198,7 +217,8 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
                      max(NdotV, M_FLOAT_EPS);
         float jacobian = mx_pt_refraction_jacobian(VdotH, LdotH, etaInv);
         float refractProbability =
-            1.0 - clamp(mx_pt_luminance_weight(F), 0.05, 0.95);
+            choosesLobe ? 1.0 - clamp(mx_pt_luminance_weight(F), 0.05, 0.95)
+                        : 1.0;
         bsdf.pdf = pdfH * jacobian * refractProbability;
 
         bsdf.isDelta = smoothSurface ? 1.0 : 0.0;

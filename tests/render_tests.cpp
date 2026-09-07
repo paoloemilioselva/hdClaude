@@ -1483,19 +1483,20 @@ int main()
             CHECK_NEAR(bareResult.g, 1.0, 0.03);
             CHECK_NEAR(bareResult.b, 1.0, 0.03);
 
-            // The layered surface is held to three per cent rather than to the
-            // closure's own two parts in a thousand, and the difference is not
-            // noise: it measures about 1.4 per cent high, and that residual is
-            // *not* explained. It is gated anyway because this same slab read
-            // 1.1505 before the layer's selection probability stopped being
-            // clamped off zero, and a gate that catches a return to fifteen per
-            // cent is worth having while the last per cent is chased. The
-            // number is written here so widening this tolerance further is a
-            // decision someone has to make deliberately.
-            CHECK_NEAR(layeredResult.g, 1.0, 0.03);
-            CHECK_NEAR(openPbrResult.r, 1.0, 0.03);
-            CHECK_NEAR(openPbrResult.g, 1.0, 0.03);
-            CHECK_NEAR(openPbrResult.b, 1.0, 0.03);
+            // Two per cent, which is three times the layered slab's measured
+            // error and tight enough to catch either defect this furnace has
+            // already found: 1.1505, when a layer of zero weight could still
+            // claim a twentieth of the mixture density, and 1.0145, when a four
+            // per cent loss and a five per cent gain were cancelling. Those two
+            // are within three per cent of each other, which is exactly why the
+            // earlier and looser tolerance would have passed the second one
+            // indefinitely.
+            CHECK_NEAR(layeredResult.r, 1.0, 0.02);
+            CHECK_NEAR(layeredResult.g, 1.0, 0.02);
+            CHECK_NEAR(layeredResult.b, 1.0, 0.02);
+            CHECK_NEAR(openPbrResult.r, 1.0, 0.02);
+            CHECK_NEAR(openPbrResult.g, 1.0, 0.02);
+            CHECK_NEAR(openPbrResult.b, 1.0, 0.02);
         }
 
         // --- A rect light is an emitter a ray can hit, and MIS splits it ------
