@@ -12,14 +12,13 @@
 
 void mx_layer_vdf(ClosureData closureData, BSDF top, BSDF base, out BSDF result)
 {
-    result.response = top.response + base.response;
-    result.throughput = top.throughput + base.throughput;
-
-    // ---- hdClaude ----------------------------------------------------------
-    result.pdf = top.pdf;
-    result.sampledL = top.sampledL;
-    result.isDelta = top.isDelta;
-    result.spectrum = top.spectrum + base.spectrum;
-    result.guideAlbedo = top.guideAlbedo;
-    result.guideRoughness = top.guideRoughness;
+    // The surface is unchanged by what it encloses. Stock MaterialX folds the
+    // medium into the layer's throughput as `exp(-absorption)` -- absorption
+    // over one unit of distance, evaluated at a point, which is the
+    // approximation a path tracer exists to avoid. hdClaude's volume node
+    // publishes the coefficient instead and the integrator applies
+    // Beer-Lambert over the flight it actually measures, so there is nothing
+    // for the base to add here and adding it would double the medium or, when
+    // the base is untouched, corrupt the surface.
+    result = top;
 }

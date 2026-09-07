@@ -513,6 +513,25 @@ void main()
 
     throughput *= hdclaude_upsample(hdclaude_bsdf.response, lambda) / pdf;
 
+    // --- Crossing into or out of an interior medium --------------------------
+    //
+    // Only a transmission changes which volume the path is in, and which way it
+    // crossed decides whether the medium is entered or left. `V` points back
+    // along the incoming ray, so a geometric normal facing it means the ray
+    // arrived from outside and this transmission goes *in*.
+    //
+    // The closure has just been evaluated, so a material with a volume has
+    // published its coefficient in `hdclaude_medium_absorption`; a material
+    // without one leaves it zero, which is vacuum and costs nothing. Leaving is
+    // unconditional: the far side of a closed object is whatever contains it,
+    // and nesting media is a scope this does not claim.
+    if (scatterClosure == CLOSURE_TYPE_TRANSMISSION)
+    {
+        bool goingIn = dot(point.geometricNormal, V) > 0.0;
+        pathMedium.values[path] =
+            goingIn ? vec4(hdclaude_medium_absorption, 0.0) : vec4(0.0);
+    }
+
     // What the environment kernel weighs against, if this ray misses. A delta
     // closure reports no finite density and next-event estimation skipped it,
     // so it stores zero and takes the environment in full.

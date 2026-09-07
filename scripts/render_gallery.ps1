@@ -74,6 +74,7 @@ $scenes = @(
     [pscustomobject]@{ Key = 'shader_ball_gold';      Title = 'StandardShaderBall Gold';      Camera = 'camera';            Purposes = $null;   Subdivision = 2; UpAxis = 'Y' },
     [pscustomobject]@{ Key = 'shader_ball_glass';     Title = 'StandardShaderBall Glass';     Camera = 'camera';            Purposes = $null;   Subdivision = 2; UpAxis = 'Y' },
     [pscustomobject]@{ Key = 'shader_ball_bubblegum'; Title = 'StandardShaderBall BubbleGum'; Camera = 'camera';            Purposes = $null;   Subdivision = 2; UpAxis = 'Y' },
+    [pscustomobject]@{ Key = 'shader_ball_honey';      Title = 'StandardShaderBall Honey';     Camera = 'camera';            Purposes = $null;   Subdivision = 2; UpAxis = 'Y' },
     [pscustomobject]@{ Key = 'pixar_kitchen';         Title = "Pixar's KitchenSet";           Camera = 'renderCam';         Purposes = $null;   Subdivision = 2; UpAxis = 'Z' },
     [pscustomobject]@{ Key = 'collectiveproject001';  Title = 'Collective Project 001';       Camera = 'mono';              Purposes = 'render'; Subdivision = 2; UpAxis = 'Y' },
     [pscustomobject]@{ Key = 'openpbr_playground';    Title = 'OpenPBR Playground';           Camera = 'renderCam_mainCU';  Purposes = 'render'; Subdivision = 2; UpAxis = 'Y' },

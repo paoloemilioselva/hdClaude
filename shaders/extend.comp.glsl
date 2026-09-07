@@ -45,6 +45,31 @@ void main()
     int light = hdclaude_nearest_light(origin, direction, tGeometry, tLight,
                                        lightNormal);
 
+    // --- Beer-Lambert over the flight just measured --------------------------
+    //
+    // Absorption belongs to the volume *between* surfaces, so this is the only
+    // kernel that can apply it: it is the one that knows how far the ray
+    // actually travelled. The closure that published the coefficient ran at the
+    // surface the path entered through, a bounce ago.
+    //
+    // Two limits, both deliberate and neither hidden. A ray that hits nothing
+    // while inside a medium is not attenuated -- the physical answer over an
+    // unbounded distance is zero, but reaching this means the medium was never
+    // closed, and rendering a leaky asset black teaches nobody anything.
+    // Shadow rays are not attenuated either, so a light sampled from inside
+    // glass arrives without the tint the glass would give it; that wants the
+    // medium carried on the shadow ray and is not done here.
+    vec3 absorption = pathMedium.values[path].xyz;
+    if (dot(absorption, absorption) > 0.0)
+    {
+        float flight = (light >= 0) ? tLight : tGeometry;
+        if (flight < 1.0e29)
+        {
+            pathThroughput.values[path] *= hdclaude_transmittance(
+                absorption, flight, pathWavelengths.values[path]);
+        }
+    }
+
     if (light >= 0)
     {
         // Encoded below -1 so the sort skips it exactly as it skips a miss,

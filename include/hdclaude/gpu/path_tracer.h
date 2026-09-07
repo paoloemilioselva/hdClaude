@@ -216,6 +216,10 @@ class PathTracer {
     VulkanBuffer _frameUniforms;
     VulkanBuffer _origin, _direction, _throughput, _radiance, _pixel, _rng;
     VulkanBuffer _scatterPdf;
+    /// Absorption coefficient of the medium each path is currently inside,
+    /// or zero in vacuum. Written when a transmission event crosses into a
+    /// surface whose closure published one.
+    VulkanBuffer _medium;
     VulkanBuffer _hits, _counters, _activeQueue, _nextActiveQueue, _shadowRays;
     VulkanBuffer _accumulation;
     VulkanBuffer _readback;

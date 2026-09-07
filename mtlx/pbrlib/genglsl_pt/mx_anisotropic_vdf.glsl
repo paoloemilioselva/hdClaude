@@ -25,4 +25,19 @@ void mx_anisotropic_vdf(ClosureData closureData, vec3 absorption, vec3 scatterin
     hdclaude_medium_scattering = scattering;
     hdclaude_medium_anisotropy = anisotropy;
     hdclaude_medium_present = 1.0;
+
+    // The volume contributes nothing *at* the surface -- there is no distance to
+    // integrate over at a point -- and it is zeroed rather than left alone
+    // because the parameter is `inout`. An untouched `inout` carries whatever
+    // the generated code declared, and a layer that adds it is adding
+    // uninitialised state: `layer(dielectric_bsdf, anisotropic_vdf)` rendered
+    // black for exactly that reason.
+    bsdf.response = vec3(0.0);
+    bsdf.throughput = vec3(0.0);
+    bsdf.spectrum = vec4(0.0);
+    bsdf.sampledL = vec3(0.0);
+    bsdf.pdf = 0.0;
+    bsdf.isDelta = 0.0;
+    bsdf.guideAlbedo = vec3(0.0);
+    bsdf.guideRoughness = 0.0;
 }

@@ -2593,3 +2593,73 @@ happens where the old code returned early. Kitchen Set goes from 164 to 167
 seconds and the playground from 108 to 113, about three to five per cent. Every
 scene's image moved slightly because the random sequence shifted, while the means
 did not -- Sponza 0.018298 to 0.018306, Kitchen Set 0.225991 to 0.225977.
+
+
+---
+
+## 2026-09-07 -- A honey that was glass, and the volume nobody read
+
+A honey shader ball rendered identically to the clear one. The question asked was
+the right one -- are we reading all the inputs? -- and the answer was yes,
+completely: no input was pruned, and `transmission_depth`, `transmission_color`
+and `transmission_scatter` all arrive in the generated shader.
+
+**The colour was never on the surface to begin with.** OpenPBR replaces a
+transmissive material's surface tint with white the moment `transmission_depth`
+rises above zero, and hands the colour to the interior instead as an absorption
+of `-log(colour) / depth`. Honey at depth 2 has therefore given up its only
+surface colour by design. A renderer that ignores the volume does not render a
+slightly-wrong honey; it renders clear glass.
+
+**And the volume was published into globals nothing read.** `mx_anisotropic_vdf`
+set `hdclaude_medium_absorption` and its neighbours; grepping the kernels and the
+host for `hdclaude_medium` returned nothing. Worse, two comments asserted the
+opposite -- the node's own header said the `shade` kernel applied Beer-Lambert
+absorption and Henyey-Greenstein scattering, and the generated ABI block said
+"read by the integrator". Both were false, and either would have stopped this
+investigation early if believed. A comment that describes an intention in the
+present tense is a trap.
+
+**Where absorption has to be applied.** Not at the surface: there is no distance
+to integrate over at a point, which is exactly why stock MaterialX's
+`exp(-absorption)` -- absorption over one implied unit of distance -- is the
+approximation a path tracer exists to avoid. So the coefficient rides on the path
+and `extend` applies the attenuation, because `extend` is the kernel that knows
+how far the ray actually went. Entering and leaving is decided by the side a
+transmission crossed on: a geometric normal facing the incoming ray means the
+path is going in.
+
+**The transmittance is upsampled, not the coefficient.** `exp(-sigma d)` is
+bounded in (0, 1] whatever the coefficient is, which is precisely the range the
+reflectance fit is built for and guaranteed on; an absorption coefficient is
+unbounded and has no such fit. It also keeps the one rule this renderer has about
+colour, that RGB becomes spectral at the closure boundary and nowhere else.
+
+**Two override bugs found on the way.** `mx_anisotropic_vdf` takes an `inout
+BSDF` and wrote nothing to it, so a layer adding that value was adding whatever
+the generated code had declared. And `mx_layer_vdf` added the base's response and
+throughput to the top's, which for a volume meant adding 1.0 to the surface's
+throughput -- stock MaterialX does that because *its* volume node folds the
+medium into the throughput, and hdClaude's does not. The layer now passes the top
+through unchanged, which is what "the surface is unchanged by what it encloses"
+actually means. This visibly corrects the OpenPBR Playground, whose green jar was
+washed out and is now green.
+
+**Testing it needed the assertion to be a ratio.** The absolute value carries
+whatever factor `open_pbr_surface` puts on transmission -- energy compensation
+among them -- which came out about twelve per cent above `(1 - R(0))` and is not
+something a medium test has any business predicting. Dividing two renders that
+differ only in the interior cancels it exactly. What survives is Beer-Lambert
+alone: 0.6402, 0.3596, 0.1599 against a closed form of 0.6400, 0.3600, 0.1600.
+
+The first attempt built the material by wiring `anisotropic_vdf` under a `layer`
+by hand and rendered black, for reasons in MaterialX's node resolution that were
+not worth chasing. Building it as `open_pbr_surface` instead is both simpler and
+better: it is the route a real asset takes, so the test exercises the path honey
+exercises rather than one invented for it.
+
+**What honey still is not.** `transmission_scatter` is authored at 0.9 and is
+published and not transported. The medium absorbs and does not scatter, so the
+ball is a clear amber rather than the cloudy material honey actually is. That is
+a random walk with a phase function, not a multiply, and it is recorded as
+remaining rather than approximated.

@@ -75,6 +75,16 @@ layout(set = 0, binding = 6, scalar) buffer PathRng      { uint  values[]; } pat
 // estimation skips entirely and which therefore takes the emitter in full.
 layout(set = 0, binding = 21, scalar) buffer PathScatterPdf { float values[]; } pathScatterPdf;
 
+// The interior medium a path is currently inside, as an absorption coefficient
+// per unit distance, or zero in vacuum.
+//
+// Absorption is a property of the *volume between* surfaces, not of any surface,
+// so it cannot live in a closure's response: the closure that publishes it is
+// evaluated where the path enters, and the light it removes is removed over the
+// flight that follows. Carrying it on the path is what lets `extend` apply
+// Beer-Lambert over the distance it just measured.
+layout(set = 0, binding = 25, scalar) buffer PathMedium { vec4 values[]; } pathMedium;
+
 // Hit record written by `extend` and read by `shade`.
 //
 //   x  instance custom index, or -1 for a miss
@@ -526,6 +536,20 @@ vec4 hdclaude_emitter_illuminant(vec4 lambda, float kelvin, float scale)
                 hdclaude_spectral_row(lambda.y).w,
                 hdclaude_spectral_row(lambda.z).w,
                 hdclaude_spectral_row(lambda.w).w);
+}
+
+/// Beer-Lambert transmittance through `distance` of a medium, on the four lanes.
+///
+/// The transmittance is upsampled rather than the coefficient. `exp(-sigma * d)`
+/// is bounded in (0, 1] whatever the coefficient is, which is exactly the range
+/// the reflectance fit is built for and guaranteed on; an absorption coefficient
+/// is unbounded and has no such fit. It also keeps the one rule this renderer
+/// has about colour -- RGB becomes spectral at the closure boundary and nowhere
+/// else.
+vec4 hdclaude_transmittance(vec3 absorption, float distance, vec4 lambda)
+{
+    vec3 transmittance = exp(-max(absorption, vec3(0.0)) * max(distance, 0.0));
+    return hdclaude_upsample(transmittance, lambda);
 }
 
 /// Upsample an authored *emission* RGB to the four lanes.

@@ -165,6 +165,47 @@ CompiledMaterial MakeDiffuseMaterial(mx::DocumentPtr libraries,
     return CompileMaterial(doc, compiler, shadeKernel, name);
 }
 
+/// A transmissive dielectric with an absorbing interior, for Beer-Lambert.
+///
+/// `layer(top: dielectric_bsdf, base: anisotropic_vdf)` is how MaterialX says
+/// "this surface encloses a medium". The volume node publishes a coefficient and
+/// evaluates to nothing at the surface itself, because absorption happens along
+/// the flight *between* surfaces and there is no distance to integrate over at a
+/// point.
+CompiledMaterial MakeAbsorbingMaterial(mx::DocumentPtr libraries,
+                                       const GlslCompiler& compiler,
+                                       const std::string& shadeKernel,
+                                       float ior,
+                                       const mx::Color3& transmissionColour,
+                                       float depth,
+                                       const std::string& name)
+{
+    mx::DocumentPtr doc = mx::createDocument();
+    doc->importLibrary(libraries);
+
+    // Built as `open_pbr_surface` rather than by wiring `anisotropic_vdf` under
+    // a `layer` by hand, because this is the route a real asset takes: OpenPBR
+    // is what decides that a transmissive material with a depth carries its
+    // colour in the volume instead of on the surface, and it derives the
+    // coefficient itself as -log(colour) / depth.
+    mx::NodePtr surface = AddNode(doc, "open_pbr_surface", "s", "surfaceshader");
+    SetValue(surface, "base_weight", 0.0f);
+    SetValue(surface, "specular_roughness", 0.0f);
+    SetValue(surface, "specular_ior", ior);
+    SetValue(surface, "transmission_weight", 1.0f);
+    SetValue(surface, "transmission_color", transmissionColour);
+    SetValue(surface, "transmission_depth", depth);
+    SetValue(surface, "transmission_scatter", mx::Color3(0.0f, 0.0f, 0.0f));
+    SetValue(surface, "subsurface_weight", 0.0f);
+    SetValue(surface, "coat_weight", 0.0f);
+    SetValue(surface, "fuzz_weight", 0.0f);
+
+    mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+    Connect(material, "surfaceshader", surface);
+
+    return CompileMaterial(doc, compiler, shadeKernel, name);
+}
+
 /// A smooth dielectric that only reflects, for measuring Fresnel directly.
 ///
 /// `dielectric_bsdf` with zero roughness and the default "R" scatter mode: no
@@ -1223,6 +1264,105 @@ int main()
                         measured[0], measured[1], expected);
             CHECK_NEAR(measured[0], expected, expected * 0.10);
             CHECK_NEAR(measured[1], expected, expected * 0.10);
+        }
+
+        // --- An interior medium absorbs over the distance travelled -----------
+        //
+        // What makes honey honey rather than clear glass. OpenPBR hands the
+        // colour of a transmissive material to its *volume* whenever
+        // `transmission_depth` is above zero -- the surface tint is dropped
+        // deliberately -- so a renderer that publishes the medium and never
+        // transports it renders honey, wine and coloured glass identically, and
+        // identically wrong.
+        //
+        // Beer-Lambert has a closed form and only one variable that matters, so
+        // the test is exact: with the light `d` behind the quad and an
+        // absorption of `sigma`, the pixel must read
+        // `(1 - R(0)) * L * exp(-sigma * d)`. Absorption applied at the surface
+        // instead of over the flight would be independent of `d`; applied with
+        // the wrong sign or base it would not match at three different
+        // coefficients at once.
+        {
+            const float ior = 1.5f;
+            const float emitted = 2.0f;
+            const float distance = 2.0f;   // quad at the origin, light at -2
+            // OpenPBR's own mapping: an absorption of -log(colour)/depth.
+            const mx::Color3 tint(0.8f, 0.6f, 0.4f);
+            const float depth = 1.0f;
+            const double sigma[3] = {-std::log(0.8) / depth,
+                                     -std::log(0.6) / depth,
+                                     -std::log(0.4) / depth};
+            const double reflectance =
+                ((ior - 1.0) / (ior + 1.0)) * ((ior - 1.0) / (ior + 1.0));
+
+            // Measured as a *ratio* against the same surface with a clear
+            // interior, which is what makes this an assertion about the medium
+            // rather than about OpenPBR. The absolute value carries whatever
+            // factor `open_pbr_surface` puts on transmission -- energy
+            // compensation among them, which is not (1 - R(0)) and is not
+            // something this test has any business predicting. Dividing two
+            // renders that differ only in the interior cancels it exactly, and
+            // what survives is Beer-Lambert alone.
+            const auto renderWith = [&](const mx::Color3& colour,
+                                        const char* label) {
+                const CompiledMaterial material = MakeAbsorbingMaterial(
+                    libraries, compiler, tracer.ShadeKernelSource(), ior, colour,
+                    depth, label);
+                CHECK(!material.spirv.empty());
+                if (material.spirv.empty()) {
+                    return Pixel{0.0f, 0.0f, 0.0f};
+                }
+
+                Scene scene;
+                scene.prototypes.push_back(MakeQuad());
+                scene.instances.push_back({0, Transform3x4{}, 0, true});
+
+                Light rect;
+                rect.type = static_cast<std::uint32_t>(LightType::Rect);
+                rect.position[2] = -distance;
+                rect.direction[0] = 0.0f;
+                rect.direction[1] = 0.0f;
+                rect.direction[2] = 1.0f;
+                rect.uAxis[0] = 4.0f; rect.uAxis[1] = 0.0f; rect.uAxis[2] = 0.0f;
+                rect.vAxis[0] = 0.0f; rect.vAxis[1] = 4.0f; rect.vAxis[2] = 0.0f;
+                rect.area = 8.0f * 8.0f;
+                for (int i = 0; i < 3; ++i) {
+                    rect.radiance[i] = emitted;
+                }
+                scene.lights.push_back(rect);
+                tracer.SetScene(scene, {material});
+
+                RenderSettings tinted;
+                tinted.samplesPerPixel = 512;
+                tinted.maxBounces = 3;
+                for (int i = 0; i < 3; ++i) {
+                    tinted.environmentColor[i] = 0.0f;
+                    tinted.sunRadiance[i] = 0.0f;
+                }
+                const std::vector<float> image =
+                    tracer.Render(kWidth, kHeight, LookDownZ(1.0f), tinted);
+                return Window(image, 0.5f, 0.5f, 4);
+            };
+
+            const Pixel clear = renderWith(mx::Color3(1.0f, 1.0f, 1.0f), "clear");
+            const Pixel absorbing = renderWith(tint, "absorbing");
+
+            const double gotR = absorbing.r / std::max(clear.r, 1.0e-6f);
+            const double gotG = absorbing.g / std::max(clear.g, 1.0e-6f);
+            const double gotB = absorbing.b / std::max(clear.b, 1.0e-6f);
+            const double wantR = std::exp(-sigma[0] * distance);
+            const double wantG = std::exp(-sigma[1] * distance);
+            const double wantB = std::exp(-sigma[2] * distance);
+            std::printf("  absorbing medium: %.4f %.4f %.4f "
+                        "(closed form %.4f %.4f %.4f)\n",
+                        gotR, gotG, gotB, wantR, wantG, wantB);
+
+            // Wider than the other closed forms: the transmittance is upsampled
+            // to the hero wavelengths and integrated back, so it carries the
+            // round trip's error as well as the estimator's.
+            CHECK_NEAR(gotR, wantR, wantR * 0.08);
+            CHECK_NEAR(gotG, wantG, wantG * 0.08);
+            CHECK_NEAR(gotB, wantB, wantB * 0.08);
         }
 
         // --- A rect light is an emitter a ray can hit, and MIS splits it ------
