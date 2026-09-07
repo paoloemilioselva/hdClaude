@@ -3117,3 +3117,49 @@ deferring since the walk landed.
 
 The subsurface furnace committed alongside this note is the gate for all of it,
 and passes at 0.9995 on the Lambertian that subsurface currently is.
+
+
+---
+
+## 2026-09-07 -- Spectral media MIS, and a test that could not judge it
+
+Balance-heuristic multiple importance sampling across the four lanes was
+implemented for the medium walk and then reverted, and the reason it was reverted
+is not the reason it first appeared to be. Recording both, because the second
+attempt at this should not repeat the first's mistake in *reading* the result.
+
+**What it does.** One lane is chosen uniformly to drive the free flight, and the
+density is the average of all four lanes' densities rather than the sampled
+lane's alone. That is the standard fix for the overflow described earlier: a lane
+that is dense where the sampled lane is thin no longer carries
+`exp((control - sigma_lane) * flight)` without bound, because dividing by the
+mean caps any lane's weight at four however long the walk.
+
+**It removed the overflow.** The chromatic slab that previously rendered NaN
+rendered finite numbers, and every existing furnace and the absorbing-medium
+closed form were unchanged to four decimals.
+
+**But the test built to judge it was unsound, and the numbers looked like a
+verdict.** A slab with `transmission_scatter` chromatic and `transmission_color`
+white was assumed lossless -- absorption is `-log(1)/depth`, which is zero -- and
+it read 1.03, 0.47, 0.49. That looks exactly like a spectral estimator losing the
+lanes it did not sample from, and it was written up that way.
+
+It is not. Reverting to the achromatic walk and re-running the same test gives
+1.05, 0.44, 0.41: the *same* loss, from a code path where the walk multiplies
+throughput by exactly one and cannot lose anything at all. Whatever removes that
+energy is in the material or the surface, not the transport, and the colour in
+the result cannot come from an averaged scattering coefficient either. The test
+was measuring something else entirely.
+
+So the honest position is that spectral MIS across the lanes is **unjudged**, not
+refuted. It was reverted because a change that cannot be validated should not
+ship, not because it was shown wrong. The next attempt needs a lossless medium it
+can actually construct -- most likely `anisotropic_vdf` wired directly, where the
+scattering and absorption coefficients are the authored inputs rather than
+whatever OpenPBR derives from a colour and a depth -- and only then is the
+question of per-step versus per-walk lane selection worth asking.
+
+The unsound test is withdrawn rather than left in place with a comment. A test
+whose premise has not been established measures nothing, and this one had already
+produced one confident wrong conclusion.
