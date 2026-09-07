@@ -3039,3 +3039,42 @@ Against hdCodex the glass ball falls from 0.113 to 0.112, the playground from
 0.236 to 0.235 and the chess set from 0.0454 to 0.0453; Collective Project holds.
 Small, and all in the same direction, which is what a correction of a fraction of
 a per cent should look like.
+
+
+---
+
+## 2026-09-07 -- Bisecting the subsurface attempt
+
+The earlier attempt changed two things at once and produced a confusing result:
+six failing checks, and the glass and honey balls moving by RMS 0.188 and 0.107
+despite having no subsurface at all. Applying the two halves separately says
+which did what.
+
+**The closure change alone is well behaved.** Making `mx_subsurface_bsdf` sample
+about `-N` and evaluate `CLOSURE_TYPE_TRANSMISSION` -- so that a path entering a
+subsurface material actually goes in -- leaves all 93 render checks passing and
+every gallery scene byte-identical **except the Open Chess Set**, whose stone
+pieces are the only geometry in the gallery that authors subsurface at all.
+Sponza, glass and honey do not move.
+
+So the glass and honey regression belonged to the *other* half: dropping the
+`hdclaude_medium_present < 0.5` guard on the hand-off in `shade`. Something is
+publishing a volume for those materials, and removing the guard let a subsurface
+publication that should never have applied to them take it over. That is the
+thing to understand next, and it is a question about what `standard_surface` and
+`open_pbr_surface` publish for a material with no subsurface, not about the
+closure.
+
+**But the closure change is not right yet either.** It takes the chess set from
+0.0453 to 0.0500 against hdCodex -- worse, and not obviously excusable the way
+the hittable-lights divergence was, because hdCodex almost certainly renders
+subsurface as diffuse and so did hdClaude until this change. Without the radius
+mapping fixed first, entering the surface hands the path to a walk whose
+extinction is `1 / radius` with an epsilon clamp, and the bubblegum material
+authors a zero radius component. The order stated in the previous entry -- get
+the mapping right, then the publication question, then the entry direction -- is
+the right one, and this was an attempt to take the third step first.
+
+Reverted. What it bought is the isolation: the closure change is safe and
+narrow, and the regression that made the first attempt look catastrophic lives
+entirely in the hand-off guard.
