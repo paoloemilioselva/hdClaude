@@ -3163,3 +3163,42 @@ question of per-step versus per-walk lane selection worth asking.
 The unsound test is withdrawn rather than left in place with a comment. A test
 whose premise has not been established measures nothing, and this one had already
 produced one confident wrong conclusion.
+
+
+---
+
+## 2026-09-07 -- Dispersion cannot come through the closure
+
+The question was whether dispersion should travel to the integrator through a
+revived `BSDF::spectrum` channel or as a published parameter like the medium.
+Neither: MaterialX 1.39.3 discards it before any closure can see it.
+
+`open_pbr_surface` declares `transmission_dispersion_scale` and
+`transmission_dispersion_abbe_number`, threads both through the generated
+`NG_open_pbr_surface_surfaceshader` signature, and then **never reads either in
+the body**. `ND_dielectric_bsdf` has no dispersion input to pass them to -- the
+nodedef simply does not have one. So the graph accepts the parameters, carries
+them as far as the function that would use them, and drops them.
+
+That is not a hdClaude bug and there is nothing in the closure ABI to fix. A
+per-lane response channel would have nothing to put in it.
+
+**So dispersion has to come from the host.** hdClaude's material compiler reads
+the authored network and can see `transmission_dispersion_abbe_number` on the
+surface node directly, exactly as it reads any other input. The value becomes
+per-material data alongside the compiled program, and the integrator applies it
+at a transmission event: per-lane index from `DispersedIor`, refract on the hero
+lane, and terminate the other three, because one path can only take one
+direction.
+
+This is the same division of labour the medium already uses -- the material
+states a property, the integrator transports it -- and it needs no ABI change at
+all, which makes it smaller than either option that was on the table. What it
+does need is host plumbing that no other closure parameter uses: every other
+material input reaches the GPU inside the generated program, and this one has to
+travel beside it.
+
+Recorded rather than started, because the shape of the change moved: it is now a
+host-side feature with a shader consumer, not a closure feature. The
+wavelength-to-index relation it will call is already in the core and tested
+against BK7, SF11 and diamond.
