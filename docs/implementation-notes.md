@@ -2447,3 +2447,49 @@ response is enormous and the light's density small, which is unbiased and very
 loud. Weighting it correctly hands the work to the strategy that does it quietly.
 The gold ball shows what that is worth; the glass ball spends the same
 improvement on a term that is a twentieth the size.
+
+
+---
+
+## 2026-09-07 -- Does a transmissive surface still reflect?
+
+Sharper observation again: on the glass ball the reflections appear to be on the
+*internal* faces pointed at the camera, and not on the outer shell. That is a
+specific enough claim to have a specific test, and the obvious suspect is real:
+every Fresnel assertion so far used `dielectric_bsdf` in its default
+`scatter_mode` of "R", reflection only. The shader ball's glass transmits. A
+closure that dropped its reflection lobe the moment transmission was enabled
+would produce exactly the reported image and would pass every existing test.
+
+**It does not.** The same rig -- a rect light wide enough to swallow the lobe,
+mirrored back at the camera, nothing behind the quad but blackness so whatever
+is transmitted leaves the scene -- now runs a third case with
+`scatter_mode = "RT"`. The front face reflects **0.0808** against the closed
+form's 0.0800, alongside 0.0800 for the reflection-only delta and 0.0800 for the
+gloss. What a surface does with the light it does not reflect does not change
+how much it reflects, and the renderer agrees.
+
+**So why does the shell look empty?** Two reasons, and neither is a defect.
+
+The outer face reflects about four and a half per cent of a bright white room
+while transmitting about ninety-five per cent of *the same* bright white room.
+The reflection and what lies behind it are nearly the same colour, so there is
+almost no contrast to reveal one against the other. This is why glass in an
+evenly lit room looks like a hole rather than a mirror, and it is why the light's
+reflection is legible on the ball only when transmission is removed -- rendering
+at two bounces, which is not enough to enter the ball and leave it again, drops
+the shell to near black and puts the area light's diamond plainly on the dome.
+
+The interior faces are bright for a reason the exterior cannot be: **total
+internal reflection**. Beyond the critical angle -- 41.2 degrees at n = 1.5 --
+a ray inside the glass reflects *entirely*, with no transmitted part at all. So
+interior surfaces at glancing angles are perfect mirrors while the exterior at
+the same angle is still only a few per cent. Real glass does this, and it is
+where a paperweight's bright internal patterns come from.
+
+**And some of it is the display, not the render.** The screenshots are usdview
+at default exposure, where everything above 1.0 clips to white and the bright
+transmitted light flattens whatever structure sits on top of it. The same frame
+display-transformed at minus two stops shows the shell's gradients and
+reflections perfectly well. Worth checking the exposure before reading a glass
+render.

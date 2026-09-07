@@ -177,7 +177,8 @@ CompiledMaterial MakeDielectricMaterial(mx::DocumentPtr libraries,
                                         const std::string& shadeKernel,
                                         float ior,
                                         const std::string& name,
-                                        float roughness = 0.0f)
+                                        float roughness = 0.0f,
+                                        const std::string& scatterMode = "R")
 {
     mx::DocumentPtr doc = mx::createDocument();
     doc->importLibrary(libraries);
@@ -186,6 +187,7 @@ CompiledMaterial MakeDielectricMaterial(mx::DocumentPtr libraries,
     SetValue(bsdf, "weight", 1.0f);
     SetValue(bsdf, "ior", ior);
     SetValue(bsdf, "roughness", mx::Vector2(roughness, roughness));
+    bsdf->setInputValue("scatter_mode", scatterMode, "string");
 
     mx::NodePtr surface = AddNode(doc, "surface", "s", "surfaceshader");
     Connect(surface, "bsdf", bsdf);
@@ -1053,16 +1055,30 @@ int main()
             const double reflectance =
                 ((ior - 1.0) / (ior + 1.0)) * ((ior - 1.0) / (ior + 1.0));
 
-            const struct { float roughness; const char* name; } lobes[] = {
-                {0.0f, "delta"},
-                {0.02f, "gloss 0.02"},
+            // The third case is what the shader ball's glass actually is: a
+            // dielectric that *transmits*. Its front face has to reflect the
+            // same Fresnel share as one that cannot transmit at all -- what a
+            // surface does with the light it does not reflect cannot change how
+            // much it reflects. With nothing behind the quad but blackness,
+            // whatever is transmitted leaves the scene, so this pixel is the
+            // reflection alone and must read the same number as the other two.
+            const struct {
+                float roughness;
+                const char* mode;
+                const char* name;
+            } lobes[] = {
+                {0.0f, "R", "delta"},
+                {0.02f, "R", "gloss 0.02"},
+                {0.0f, "RT", "delta, transmissive"},
             };
+            constexpr int kLobes = 3;
 
-            double measured[2] = {0.0, 0.0};
-            for (int which = 0; which < 2; ++which) {
+            double measured[kLobes] = {0.0, 0.0, 0.0};
+            for (int which = 0; which < kLobes; ++which) {
                 const CompiledMaterial mirror = MakeDielectricMaterial(
                     libraries, compiler, tracer.ShadeKernelSource(), ior,
-                    lobes[which].name, lobes[which].roughness);
+                    lobes[which].name, lobes[which].roughness,
+                    lobes[which].mode);
                 CHECK(!mirror.spirv.empty());
                 if (mirror.spirv.empty()) {
                     continue;
@@ -1106,11 +1122,12 @@ int main()
             }
 
             const double expected = reflectance * emitted;
-            std::printf("  specular under a light: delta %.4f, gloss %.4f "
-                        "(closed form %.4f)\n",
-                        measured[0], measured[1], expected);
-            CHECK_NEAR(measured[0], expected, expected * 0.10);
-            CHECK_NEAR(measured[1], expected, expected * 0.10);
+            std::printf("  specular under a light: delta %.4f, gloss %.4f, "
+                        "transmissive %.4f (closed form %.4f)\n",
+                        measured[0], measured[1], measured[2], expected);
+            for (int which = 0; which < kLobes; ++which) {
+                CHECK_NEAR(measured[which], expected, expected * 0.10);
+            }
         }
 
         // --- A rect light is an emitter a ray can hit, and MIS splits it ------
