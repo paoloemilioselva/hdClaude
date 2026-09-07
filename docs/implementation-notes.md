@@ -3301,3 +3301,85 @@ are unchanged to six digits, which is what a rescheduled estimator looks like
 and is not what a changed closure looks like. Avoiding it entirely would need a
 specialisation constant per material pipeline, which is machinery bought for
 byte-identity rather than for correctness.
+
+
+---
+
+## 2026-09-07 -- The medium's furnace, and the container it needs
+
+Spectral MIS across the lanes is what the chromatic medium is blocked on, and
+the chromatic medium is what subsurface is blocked on. The previous attempt at
+it was reverted because it could not be validated, and the note on that reversal
+named what the next attempt needs first: a lossless medium a test can actually
+construct. This is that instrument. It found three things before a line of
+transport was changed, which is the whole argument for building it first.
+
+**The medium is wired by hand.** `MakeScatteringMedium` builds
+`layer(R, layer_vdf(T, anisotropic_vdf))` -- the structure `open_pbr_surface`
+generates for a transmissive material -- with the absorption and scattering
+coefficients as authored inputs. Going through OpenPBR instead is what made the
+reverted attempt unmeasurable: it derives its coefficients from a colour and a
+depth, so the test could not state the medium it was testing, and the loss it
+reported turned out not to be in the transport at all.
+
+**A `layer` node has to be named, not categorised.** `layer` is two nodedefs
+with the same category and the same output type: `ND_layer_bsdf`, whose base is
+a BSDF, and `ND_layer_vdf`, whose base is a VDF. Adding one by category resolves
+to the first, and connecting a VDF to a base declared BSDF produces a graph that
+validates, generates, compiles, and silently layers the surface over a null
+closure. A slab enclosing a vacuum read **0.8095** that way -- nineteen per cent
+gone -- and the generated code was the only place that said why: it called
+`mx_layer_bsdf` where the material meant `mx_layer_vdf`. `AddNodeOfDef`
+instantiates a nodedef by name, and the render tests gained the
+`HDCLAUDE_DUMP_SHADERS` facility the Hydra compiler already had, because a
+material that compiles cleanly and renders wrongly leaves the generated source
+as the only witness.
+
+**Two parallel quads are not a container.** With the graph corrected, the slab
+enclosing a vacuum read 0.9953 -- exactly the layered dielectric, so the wrapper
+costs nothing -- and the same slab enclosing a *lossless* medium read **1.2494**,
+rising to 1.2969 when the bounce limit went from 16 to 64 and to 1.3497 at four
+times the scattering coefficient. A medium that absorbs nothing multiplies
+throughput by exactly one, so none of that is the walk's arithmetic.
+
+It is the geometry. The slab is two quads with open sides. A path that enters the
+medium and then scatters sideways leaves through the open edge *still flagged as
+being inside the medium*, and walks in an unbounded one until the step cap ends
+it. Every furnace in the suite has used those two quads, and for a surface-only
+material they are a perfectly good furnace, because a delta refraction never
+leaves by the side.
+
+**So the gate moved to a sphere, and on a sphere everything conserves.** A closed
+sphere of the same material, same coefficients, reads 1.0001, 0.9963, 0.9960
+isotropic; 1.0020 forward; 0.9923 dense; and 1.0023 chromatic at four-to-one
+across the channels. The walk is right. The chromatic cases pass for a reason
+worth stating plainly rather than for the reason they will pass later: the walk
+collapses the scattering coefficient to its mean, and the mean of a lossless
+medium is still lossless. They are in place so that they still have to hold when
+the lanes carry their own coefficients.
+
+**The sphere is also the first furnace that varies the angle.** Two flat parallel
+quads present a delta refraction at one incidence per pixel and never a steep
+one, so every furnace written until now was, without intending to be, a
+near-normal measurement -- and an energy error that vanishes at normal incidence
+had nowhere it could have been caught. A sphere presents every angle at once and
+sends a large share of its interior paths past the critical angle, where they are
+totally reflected and cross the boundary many more times. The bare
+`dielectric_bsdf` reads 0.9980 and 0.9847 across the disc and `layer(R, T)` reads
+0.9938 and 0.9833, so the closures hold up at angle. That was worth knowing
+independently of the medium, and it is why the gate stays in the suite rather
+than being deleted once the medium question is settled.
+
+**Open question: why the unclosed medium *gains*.** The recorded expectation for
+a medium that is never closed is that a path escaping it is not attenuated --
+which for a medium that absorbs nothing is not an error at all. The measured
+behaviour is a gain of a quarter that grows with the bounce limit and with the
+scattering coefficient, and that is not explained. Every candidate checked
+accounts for none of it: the walk multiplies by one when absorption is zero;
+Russian roulette in the walk is unbiased and does not fire when throughput is
+one; the environment kernel retires a path it pays out; the step cap loses rather
+than gains; and the closures conserve at every angle on the sphere. It is
+recorded here unexplained rather than given an explanation that sounds right,
+because an explanation is not a measurement. It matters in practice for any asset
+whose transmissive geometry is an open shell, which is common, and it should be
+chased before a medium feature is built on top of it.

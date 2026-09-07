@@ -30,6 +30,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -98,6 +99,18 @@ CompiledMaterial CompileMaterial(mx::DocumentPtr doc, const GlslCompiler& compil
     }
     mx::ShaderPtr shader = generator->generate(name, renderable.front(), genContext);
     const std::string source = shader->getSourceCode(mx::Stage::PIXEL) + shadeKernel;
+
+    // HDCLAUDE_DUMP_SHADERS=<dir> writes what was generated, the same facility
+    // the Hydra compiler has. Generated code is the one artefact in this
+    // pipeline nobody ever reads unless it fails to compile, and a material
+    // that compiles cleanly and renders wrongly is exactly the case where it is
+    // the only place the answer can be.
+    if (const char* dumpDir = std::getenv("HDCLAUDE_DUMP_SHADERS")) {
+        std::error_code code;
+        std::filesystem::create_directories(dumpDir, code);
+        std::ofstream out(std::filesystem::path(dumpDir) / (name + ".comp.glsl"));
+        out << shader->getSourceCode(mx::Stage::PIXEL);
+    }
 
     GlslCompileOptions options;
     options.moduleName = name;
@@ -219,6 +232,90 @@ CompiledMaterial MakeLayeredDielectric(mx::DocumentPtr libraries,
     mx::NodePtr layered = AddNode(doc, "layer", "ly", "BSDF");
     Connect(layered, "top", reflection);
     Connect(layered, "base", transmission);
+
+    mx::NodePtr surface = AddNode(doc, "surface", "s", "surfaceshader");
+    Connect(surface, "bsdf", layered);
+    SetValue(surface, "opacity", 1.0f);
+    mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+    Connect(material, "surfaceshader", surface);
+
+    return CompileMaterial(doc, compiler, shadeKernel, name);
+}
+
+/// Instantiate a *named* nodedef, rather than letting the category pick one.
+///
+/// `layer` is two nodedefs with the same category and the same output type:
+/// `ND_layer_bsdf`, whose base is a BSDF, and `ND_layer_vdf`, whose base is a
+/// VDF. Adding one by category resolves to the first, and connecting a VDF to
+/// a base input declared BSDF then produces a graph that generates, compiles,
+/// and silently layers the surface over a null closure -- a slab enclosing a
+/// vacuum read 0.8095 against one before this existed. The name is the only
+/// way to say which of the two is meant.
+mx::NodePtr AddNodeOfDef(mx::DocumentPtr doc, const std::string& nodeDef,
+                         const std::string& name)
+{
+    mx::NodeDefPtr definition = doc->getNodeDef(nodeDef);
+    if (!definition) {
+        std::fprintf(stderr, "  no nodedef '%s'\n", nodeDef.c_str());
+        return nullptr;
+    }
+    return doc->addNodeInstance(definition, name);
+}
+
+/// A slab whose interior scatters, with the coefficients authored directly.
+///
+/// The structure is the one `open_pbr_surface` generates for a transmissive
+/// material, built by hand: a reflection lobe layered over a transmission lobe
+/// that in turn carries the volume, which is
+/// `layer(R, layer_vdf(T, anisotropic_vdf))`. Going through it by hand rather
+/// than through OpenPBR is the point -- OpenPBR derives its coefficients from a
+/// colour and a depth, so a test written against it cannot state the medium it
+/// is testing, and an earlier attempt at spectral scattering was reverted
+/// against a measurement taken that way.
+///
+/// Neither the interface nor the layering is the thing under test. The same
+/// graph without the volume is `MakeLayeredDielectric`, gated on its own at
+/// 0.9953, so whatever this slab reads that the layered dielectric does not
+/// belongs to the interior.
+CompiledMaterial MakeScatteringMedium(mx::DocumentPtr libraries,
+                                      const GlslCompiler& compiler,
+                                      const std::string& shadeKernel,
+                                      const mx::Vector3& absorption,
+                                      const mx::Vector3& scattering,
+                                      float anisotropy,
+                                      const std::string& name,
+                                      float ior = 1.5f)
+{
+    mx::DocumentPtr doc = mx::createDocument();
+    doc->importLibrary(libraries);
+
+    mx::NodePtr reflection = AddNode(doc, "dielectric_bsdf", "dr", "BSDF");
+    SetValue(reflection, "weight", 1.0f);
+    SetValue(reflection, "ior", ior);
+    SetValue(reflection, "roughness", mx::Vector2(0.0f, 0.0f));
+    reflection->setInputValue("scatter_mode", std::string("R"), "string");
+
+    mx::NodePtr transmission = AddNode(doc, "dielectric_bsdf", "dt", "BSDF");
+    SetValue(transmission, "weight", 1.0f);
+    SetValue(transmission, "ior", ior);
+    SetValue(transmission, "roughness", mx::Vector2(0.0f, 0.0f));
+    transmission->setInputValue("scatter_mode", std::string("T"), "string");
+
+    mx::NodePtr volume = AddNode(doc, "anisotropic_vdf", "vd", "VDF");
+    // vector3, not color3: these are coefficients per unit distance and the
+    // nodedef says so. Authoring them as a colour would put a medium's
+    // parameters through a colour pipeline they are not colours in.
+    SetValue(volume, "absorption", absorption);
+    SetValue(volume, "scattering", scattering);
+    SetValue(volume, "anisotropy", anisotropy);
+
+    mx::NodePtr interior = AddNodeOfDef(doc, "ND_layer_vdf", "lv");
+    Connect(interior, "top", transmission);
+    Connect(interior, "base", volume);
+
+    mx::NodePtr layered = AddNodeOfDef(doc, "ND_layer_bsdf", "ly");
+    Connect(layered, "top", reflection);
+    Connect(layered, "base", interior);
 
     mx::NodePtr surface = AddNode(doc, "surface", "s", "surfaceshader");
     Connect(surface, "bsdf", layered);
@@ -572,6 +669,43 @@ MeshPrototype MakeQuad()
     prototype.positions = {-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0};
     prototype.indices = {0, 1, 2, 0, 2, 3};
     prototype.normals = {0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1};
+    return prototype;
+}
+
+/// A closed sphere of unit radius, for a furnace that probes every angle.
+///
+/// The two flat quads the other furnaces use only ever present a surface at the
+/// angles the camera happens to look through it at, which for a delta
+/// refraction is one angle per pixel and never a steep one. A sphere presents
+/// every angle of incidence at once, including everything past the critical
+/// angle, and it is closed, so a path inside it cannot leave by the side and
+/// take the environment early. Both of those are needed to see an energy error
+/// that is zero at normal incidence and grows away from it.
+MeshPrototype MakeSphere(int rings = 48, int segments = 96)
+{
+    MeshPrototype prototype;
+    prototype.debugName = "sphere";
+    constexpr double kPi = 3.14159265358979323846;
+    for (int ring = 0; ring <= rings; ++ring) {
+        const double theta = kPi * double(ring) / double(rings);
+        for (int segment = 0; segment <= segments; ++segment) {
+            const double phi = 2.0 * kPi * double(segment) / double(segments);
+            const auto x = static_cast<float>(std::sin(theta) * std::cos(phi));
+            const auto y = static_cast<float>(std::cos(theta));
+            const auto z = static_cast<float>(std::sin(theta) * std::sin(phi));
+            prototype.positions.insert(prototype.positions.end(), {x, y, z});
+            prototype.normals.insert(prototype.normals.end(), {x, y, z});
+        }
+    }
+    const int stride = segments + 1;
+    for (int ring = 0; ring < rings; ++ring) {
+        for (int segment = 0; segment < segments; ++segment) {
+            const auto a = static_cast<std::uint32_t>(ring * stride + segment);
+            const auto b = static_cast<std::uint32_t>(a + stride);
+            prototype.indices.insert(prototype.indices.end(),
+                                     {a, b, a + 1u, a + 1u, b, b + 1u});
+        }
+    }
     return prototype;
 }
 
@@ -1518,6 +1652,48 @@ int main()
                 return centre;
             };
 
+            // The same furnace on a *sphere*, which is what makes it a test of
+            // angle rather than of one angle.
+            //
+            // Two flat parallel quads present a delta refraction with exactly
+            // one incidence per pixel and never a steep one, so every furnace
+            // above is, without meaning to be, a near-normal measurement. A
+            // sphere presents every angle at once and sends a large share of
+            // its interior paths past the critical angle. It is still closed
+            // and still lossless, so it must still read one.
+            const auto sphereFurnace = [&](const CompiledMaterial& material,
+                                           const char* label, float u) {
+                if (material.spirv.empty()) {
+                    return Pixel{0.0f, 0.0f, 0.0f};
+                }
+                Scene scene;
+                scene.prototypes.push_back(MakeSphere());
+                scene.instances.push_back({0, Transform3x4{}, 0, true});
+                tracer.SetScene(scene, {material});
+
+                RenderSettings box;
+                // Half the slab furnace's samples over a window four times its
+                // area: a sphere fills the frame where two quads fill a patch
+                // of it, so the same number of paths reaches the measurement.
+                box.samplesPerPixel = 256;
+                // Deeper than the slab's sixteen. A path inside a sphere of
+                // glass is totally reflected at every incidence past 41.8
+                // degrees, so it crosses the boundary many more times before it
+                // finds an angle steep enough to leave by.
+                box.maxBounces = 32;
+                for (int i = 0; i < 3; ++i) {
+                    box.environmentColor[i] = 1.0f;
+                    box.sunRadiance[i] = 0.0f;
+                }
+                const std::vector<float> image =
+                    tracer.Render(kWidth, kHeight, LookDownZ(3.0f), box);
+                const Pixel patch = Window(image, u, 0.5f, 6);
+                std::printf("  sphere furnace, %-14s u=%.2f  %.4f %.4f %.4f "
+                            "(expected 1.00)\n",
+                            label, u, patch.r, patch.g, patch.b);
+                return patch;
+            };
+
             const CompiledMaterial bare = MakeDielectricMaterial(
                 libraries, compiler, tracer.ShadeKernelSource(), 1.5f,
                 "bare dielectric", 0.0f, "RT");
@@ -1612,6 +1788,112 @@ int main()
             CHECK_NEAR(authoredResult.r, 1.0, 0.04);
             CHECK_NEAR(authoredResult.g, 1.0, 0.04);
             CHECK_NEAR(authoredResult.b, 1.0, 0.04);
+
+            // --- The same closures, at angles the flat furnaces never reach ---
+            //
+            // A solid glass sphere in a uniform environment must render one at
+            // every pixel, exactly as a slab must. It is the same claim and the
+            // same closures; the only thing that changes is that a curved
+            // surface presents every angle of incidence, so an error that
+            // vanishes at normal incidence has nowhere to hide.
+            //
+            // Sampled across the disc rather than at its centre. The centre of
+            // a sphere is a normal-incidence measurement and reproduces the
+            // slab; the interesting pixels are the ones whose refracted path
+            // meets the far side steeply enough to be totally reflected.
+            {
+                const CompiledMaterial solid = MakeDielectricMaterial(
+                    libraries, compiler, tracer.ShadeKernelSource(), 1.5f,
+                    "sphere bare", 0.0f, "RT");
+                CHECK(!solid.spirv.empty());
+
+                const CompiledMaterial layeredSphere = MakeLayeredDielectric(
+                    libraries, compiler, tracer.ShadeKernelSource(), 1.5f,
+                    "sphere layered");
+                CHECK(!layeredSphere.spirv.empty());
+
+                for (const float u : {0.50f, 0.36f}) {
+                    const Pixel bareSphere = sphereFurnace(solid, "RT", u);
+                    const Pixel layeredPatch =
+                        sphereFurnace(layeredSphere, "layer(R, T)", u);
+                    CHECK_NEAR(bareSphere.g, 1.0, 0.03);
+                    CHECK_NEAR(layeredPatch.g, 1.0, 0.03);
+                }
+
+                // --- And the walk's own furnace, in a container that closes ---
+                //
+                // A medium that scatters and absorbs nothing loses no light: a
+                // photon entering it leaves it, however many times it changes
+                // direction on the way. So a sphere full of one, in a uniform
+                // environment, must render one -- and must render *neutral*,
+                // which is the half a chromatic coefficient can break.
+                //
+                // It has to be the sphere. The two parallel quads every other
+                // furnace here uses are not a container: a path that scatters
+                // sideways leaves through the open edge still believing itself
+                // to be in the medium, walks in an unbounded one, and the same
+                // slab that reads 0.9953 with a vacuum inside reads 1.2494 with
+                // a lossless medium in it, growing to 1.2969 when the bounce
+                // limit is raised. That is not the transport -- this gate reads
+                // one on the identical material -- and it is written up as an
+                // open question in docs/implementation-notes.md.
+                //
+                // The medium is wired from `anisotropic_vdf` by hand rather
+                // than through `open_pbr_surface` because OpenPBR derives its
+                // coefficients from a colour and a depth, so a test written
+                // against it cannot state the medium it is testing. An earlier
+                // attempt at spectral scattering was reverted on a measurement
+                // taken that way and the loss it reported was not in the
+                // transport at all.
+                //
+                // The chromatic cases pass today for a reason worth writing
+                // down rather than for the reason they will pass later: the
+                // walk collapses the scattering coefficient to its mean, and
+                // the mean of a lossless medium is still lossless. They are
+                // here so that they still have to when the lanes carry their
+                // own coefficients.
+                const struct {
+                    mx::Vector3 scattering;
+                    float anisotropy;
+                    const char* name;
+                } media[] = {
+                    // The control: the same graph with nothing inside it, which
+                    // must read what the layered dielectric reads. Anything
+                    // wrong here belongs to `layer(bsdf, vdf)`, not the walk.
+                    {mx::Vector3(0.0f, 0.0f, 0.0f), 0.0f, "vacuum"},
+                    {mx::Vector3(2.0f, 2.0f, 2.0f), 0.0f, "isotropic"},
+                    // Forward scattering makes the longest walks, so it is where
+                    // a per-step weight that does not cancel compounds furthest
+                    // before roulette ends it.
+                    {mx::Vector3(2.0f, 2.0f, 2.0f), 0.8f, "forward"},
+                    {mx::Vector3(8.0f, 8.0f, 8.0f), 0.0f, "dense"},
+                    // Four to one across the channels is far more chromatic
+                    // than any real medium, which is the point of a gate.
+                    {mx::Vector3(4.0f, 2.0f, 1.0f), 0.0f, "chromatic"},
+                    {mx::Vector3(4.0f, 2.0f, 1.0f), 0.8f, "chromatic fwd"},
+                };
+
+                for (const auto& probe : media) {
+                    const CompiledMaterial medium = MakeScatteringMedium(
+                        libraries, compiler, tracer.ShadeKernelSource(),
+                        mx::Vector3(0.0f, 0.0f, 0.0f), probe.scattering,
+                        probe.anisotropy, probe.name);
+                    CHECK(!medium.spirv.empty());
+                    if (medium.spirv.empty()) {
+                        continue;
+                    }
+                    const Pixel patch = sphereFurnace(medium, probe.name, 0.5f);
+                    CHECK_NEAR(patch.r, 1.0, 0.03);
+                    CHECK_NEAR(patch.g, 1.0, 0.03);
+                    CHECK_NEAR(patch.b, 1.0, 0.03);
+                    // Neutral, asserted separately from unity: a lane weighting
+                    // wrong by a common factor moves all three together, and one
+                    // wrong per lane pulls them apart. Only the second is a
+                    // chromatic defect.
+                    CHECK(std::abs(patch.r - patch.b) < 0.025);
+                    CHECK(std::abs(patch.r - patch.g) < 0.025);
+                }
+            }
         }
 
         // --- Dispersion refracts each wavelength by its own index -------------
