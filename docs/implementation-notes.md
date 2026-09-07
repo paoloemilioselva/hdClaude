@@ -2911,3 +2911,32 @@ this channel", and the mapping has to say so rather than divide by an epsilon.
 The next attempt should start from the third point and work back: get the
 parameter mapping right first, then find out why glass and honey see a subsurface
 publication at all, and only then change the closure's entry direction.
+
+
+---
+
+## 2026-09-07 -- One more fact about the 1.45 per cent
+
+Reading `mx_dielectric_bsdf` for what it hands the layer above it turned up
+something worth writing down before the next attempt.
+
+`bsdf.throughput = 1.0 - dirAlbedoV * weight` is computed *before* the
+scatter-mode branch dispatch, deliberately -- the comment says so, and the reason
+given is sound: an early return that skipped it would leave a layer above
+choosing on a stale value. But `dirAlbedoV` is the **reflection** directional
+albedo, `mx_ggx_dir_albedo` times the GGX energy compensation. So a lobe asked
+for transmission only still reports `1 - F` as its throughput, which is the
+fraction of light a *reflector* would pass down, not anything about the
+transmission it was actually asked for.
+
+For `layer(R, T)` the layer reads only `top.throughput`, and the top is the
+reflection lobe, so that value is the right one by luck. What it also does is
+make `result.throughput = top.throughput + base.throughput` -- 1.39.3's additive
+form -- come out near `2(1 - F)` rather than anything meaningful, and any layer
+wrapped around *that* selects on it.
+
+That is one of the two places the missing 1.45 per cent can be. The other is the
+density a delta lobe reports: a smooth dielectric sets `isDelta` and the layer
+mixes `top.pdf` and `base.pdf` as though both were solid-angle densities of the
+same kind. Both are cheap to check with the furnace already in the suite, and
+neither has been checked yet.
