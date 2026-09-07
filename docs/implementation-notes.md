@@ -2940,3 +2940,54 @@ density a delta lobe reports: a smooth dielectric sets `isDelta` and the layer
 mixes `top.pdf` and `base.pdf` as though both were solid-angle densities of the
 same kind. Both are cheap to check with the furnace already in the suite, and
 neither has been checked yet.
+
+
+---
+
+## 2026-09-07 -- The 1.45 per cent is two errors of opposite sign
+
+Both halves are now measured, and neither can be fixed alone. The residual on
+`layer(R, T)` is not a small error; it is a four per cent loss and a five per
+cent gain that very nearly cancel.
+
+**The gain, in the closure.** `mx_dielectric_bsdf` splits between reflection and
+refraction with
+
+    reflectProbability = transmissive ? clamp(luminance(F), 0.05, 0.95) : 1.0
+    refractProbability = 1.0 - clamp(luminance(F), 0.05, 0.95)
+
+and `transmissive` is `scatter_mode != 0`, which is true for **T-only** as well as
+for RT. So a lobe asked for transmission alone still behaves as though a
+reflection alternative existed: at normal incidence the clamp floors the split at
+0.05, so it reflects one sample in twenty that the caller never asked for, and
+divides its density by 0.95. That is the same clamp-off-zero mistake already
+found in `mx_layer_bsdf`, one level down, and it is the third time this pattern
+has appeared.
+
+**The loss, in the layer.** `mx_layer_bsdf` evaluates
+`top.response + base.response * top.throughput`. With the reflection lobe
+reporting `throughput = 1 - F` and the transmission lobe's response *already*
+carrying its own `1 - F`, the factor is applied twice: the layered response is
+`F + (1 - F)^2`, about four per cent short of one at normal incidence, and a slab
+is crossed twice.
+
+**They cancel, and the proof is what happens when one is removed.** Restricting
+the split to `scatter_mode == 2`, so a single-lobe request no longer pretends to
+choose, takes the furnace from **1.0145 to 0.9206** -- from 1.5 per cent over to
+8 per cent under, and 0.9206 is close to what `(F + (1 - F)^2)` squared predicts
+for two crossings. The change is right on its own terms and makes the image
+worse, so it was reverted rather than shipped.
+
+**What the next attempt has to decide.** Whether the transmission lobe's response
+should carry `1 - F` at all. MaterialX's layering convention is that a base sees
+what the top transmits, which means the base should *not* know about the top's
+Fresnel; if that is right, our transmission response is the deviation and the
+layer is correct. If instead the response is right, then `layer` must not
+re-apply `top.throughput` to a base that is the same closure's other half. One of
+those two, and the furnace already in the suite will say which, because only one
+of them lands on 1.0.
+
+Worth noting for its own sake: a gate that reads 1.0145 was hiding a four per
+cent error and a five per cent error. A tolerance of three per cent passes that
+and would have passed it indefinitely. The furnace is doing its job precisely
+because it is tight enough to have made this visible at all.
