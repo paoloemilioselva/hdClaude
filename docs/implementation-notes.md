@@ -3500,3 +3500,98 @@ the layering defect above is fixed. Shipping it would change the honey ball with
 nothing able to say whether the change was an improvement, which is the same
 mistake the reverted subsurface attempt made. It goes in behind the fix, with
 the furnace.
+
+
+---
+
+## 2026-09-08 -- A dielectric seen from the inside
+
+The layering defect the sphere furnace found is fixed, and it was not in the
+layering. `mx_dielectric_bsdf` handed the *absolute* index to both sides of the
+interface, so a path inside glass was shown the reflectance curve of a path
+outside it.
+
+Those two curves agree near normal incidence, which is why this survived every
+test written until now. They diverge fast: at 35 degrees of internal incidence
+the correct reflectance is 0.0863 and the outside curve gives 0.0431, a factor
+of two; past the critical angle the correct value is exactly one and the outside
+curve is still about 0.05, a factor of twenty. And a path could not previously
+*get* to those angles. Refraction maps the whole outside hemisphere into a cone
+of exactly the critical half-angle, so a solid glass sphere's internal rays
+never exceed it and a flat slab never produces oblique internal directions at
+all. A scattering interior was the first thing in this renderer that ever
+totally internally reflected.
+
+**Three things had to move together.**
+
+*The Fresnel.* `mx_fresnel_dielectric` already returns exactly 1.0 when
+`eta^2 + cos^2 - 1 < 0`, which is the critical angle written out; it was simply
+never given an `eta` below one. Passing the relative index makes it right at
+every internal angle. The normal-incidence reflectance does not move, since
+`((n-1)/(n+1))^2` is the same for `n` and `1/n`.
+
+*The directional albedo.* `layer` reads `1 - albedo` as the fraction of light
+handed to the base, so the albedo has to agree with the Fresnel the response is
+computed from. `mx_ggx_dir_albedo(NdotV, alpha, F0, 1.0)` interpolates F0 to F90
+on a Schlick-shaped curve, which is the right family from outside and the wrong
+one from inside -- it reaches one only at grazing. Below the critical angle it
+understates the reflectance, the layer hands the surplus to the transmission
+lobe, and the interface passes on more light than it received. On the inside the
+same lobe energy is now weighted by the Fresnel actually in force:
+`mx_ggx_dir_albedo(NdotV, alpha, 1.0, 1.0)`, the library's own `Ess`, times
+`Fv`. For a smooth surface `Ess` is one and this is exactly the reflectance.
+
+*The reflect/refract split.* Its `[0.05, 0.95]` clamp was documented as a guard
+against a lobe contributing with zero probability. With a correct Fresnel the
+two conditions coincide -- a dielectric's reflectance is never zero, and where
+it is one the transmission lobe contributes nothing -- so the clamp can go. The
+ceiling was the expensive half: past the critical angle the sampler reflects
+every time whatever the split says, so reporting 0.95 divided each of those
+samples by a density five per cent smaller than the one that produced it, on
+every crossing.
+
+**Asking which side you are on turned out to be the hard part**, and two wrong
+answers were shipped and caught before this was right.
+
+The first was the *shading* normal. `entering = dot(N, V) > 0` reads correctly
+on a flat test surface and badly on a real one: an interpolated normal tilts
+past the horizon near a silhouette, so `dot(N, V) < 0` happens all over the
+outside of a perfectly opaque object. The first gallery render put a rim of
+total internal reflection around every rounded thing in the subdivision scene.
+The geometric normal is the only normal that answers the question, and closures
+were not given it; they are now, through the ABI, with a fall back to the
+shading normal when a caller supplies none.
+
+That was not enough. The subdivision scene's meshes have *holes*, so their back
+faces are genuinely visible, and a ray reaching the back of an opaque surface
+arrives from behind while standing in the air. Gating on `scatter_mode` does not
+separate those either: the reflection half of a split transmissive interface and
+a coat over an opaque substrate are both reflection-only lobes, and the first is
+inside glass while the second is not. What separates them is the path's own
+history -- it is inside a medium because a transmission event put it there --
+and only the integrator knows that. So the shade kernel publishes it, and a
+closure reads the inside curve only when the path is inside something.
+
+**What it is measured against.** The closure validation harness gained internal
+incidences, which it reaches by taking `viewTheta` past 90 degrees, and the
+reflectance is asserted against a closed form written independently of
+MaterialX's: 0.0859 against 0.0860 at 35 degrees, 0.0403 against 0.0403 at 14,
+0.9980 against 1.0 past the critical angle, and 1.0176 against 1.0 at grazing.
+The old code would have read about half the first of those.
+
+The sphere furnace with a lossless scattering interior falls from **1.4214 to
+1.0110**, and the gate is now committed and asserted -- isotropic, forward,
+dense, and chromatic at four to one across the channels, all within 1.2 per cent
+of one and neutral. Two furnaces that already passed improved as well, which is
+the corroboration that matters most: the layered dielectric slab from 0.9953 to
+0.9978, and the same through `open_pbr_surface` with it.
+
+**The gallery moved exactly where it should.** Sponza, the gold ball, Pixar's
+kitchen, the New Zealand height map and the subdivision matrix are byte
+identical. The bubblegum ball moves by an RMS of 9.2e-05 and Collective Project
+by 0.0016, which is rerouted paths rather than changed shading. Everything with
+transmission in it moves properly: the glass ball by 0.065, honey by 0.031, the
+OpenPBR playground by 0.073, the chess set by 0.0035. The playground's dark
+bottle stops clipping to white and reads as glass, and its bright-pixel count
+falls slightly rather than rising, so the extra internal reflection did not cost
+noise.

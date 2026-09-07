@@ -335,6 +335,55 @@ void CheckClosure(const char* label, const Measurement& m, double tolerance)
     CHECK_NEAR(m.densityIntegral + m.discardedFraction, 1.0, tolerance);
 }
 
+/// Reflectance of a smooth dielectric interface at one incidence.
+///
+/// `eta` is the *relative* index -- the transmitted side over the incident one
+/// -- so a path inside glass looking out is asked about 1/1.5, not 1.5. The
+/// same closed form as `mx_fresnel_dielectric`, written independently here so
+/// that agreeing with it means something.
+double DielectricFresnel(double cosTheta, double eta)
+{
+    const double g2 = eta * eta + cosTheta * cosTheta - 1.0;
+    if (g2 < 0.0) {
+        return 1.0;   // total internal reflection
+    }
+    const double g = std::sqrt(g2);
+    const double a = (g - cosTheta) / (g + cosTheta);
+    const double b = ((g + cosTheta) * cosTheta - 1.0) /
+                     ((g - cosTheta) * cosTheta + 1.0);
+    return 0.5 * a * a * (1.0 + b * b);
+}
+
+/// The directional albedo a closure reports, against a closed form.
+///
+/// The harness evaluates every sampled direction as a *reflection*, so a
+/// transmitted sample reports no density, contributes nothing, and is still
+/// counted. The mean weight over all samples is therefore the reflection lobe's
+/// directional albedo -- which for a smooth interface is exactly its Fresnel
+/// reflectance, whichever side the path is on.
+///
+/// The probability-mass check is deliberately not applied here. It integrates
+/// the density by uniform sampling of the sphere, which measures nothing useful
+/// for a delta lobe; the rough cases above are what constrain that, and this is
+/// what constrains the value.
+void CheckReflectance(const char* label, const Measurement& m, double expected,
+                      double tolerance)
+{
+    if (!m.ok) {
+        std::fprintf(stderr, "  %s: %s\n", label, m.error.c_str());
+    }
+    CHECK(m.ok);
+    if (!m.ok) return;
+
+    std::printf("  %-30s albedo %.4f (closed form %.4f)\n", label, m.albedo,
+                expected);
+    CHECK(!m.saturated);
+    CHECK_EQ(m.nonFinite, std::uint32_t(0));
+    CHECK_EQ(m.negative, std::uint32_t(0));
+    CHECK(m.sampledCount > kSampleCount / 4);
+    CHECK_NEAR(m.albedo, expected, tolerance);
+}
+
 /// Tolerance for the probability-mass check.
 ///
 /// The density integral is estimated by uniform sampling of the sphere, which
@@ -421,6 +470,52 @@ int main()
             CheckClosure("dielectric (reflection)",
                          validator.Measure(WrapInMaterial(doc, n), "vDielectric", 0.4f),
                          kBroadLobeTolerance);
+        }
+
+        // --- The inside of a dielectric --------------------------------------
+        //
+        // Every measurement above looks at a surface from outside it, which is
+        // the only side a camera ray ever starts on and, until a scattering
+        // medium existed, very nearly the only side anything reached. It is
+        // also the side on which an interface's two Fresnel curves agree near
+        // normal incidence, which is why handing the absolute index to both
+        // sides went unnoticed.
+        //
+        // From inside, the relative index is 1/1.5 and the curve is a different
+        // one: it reaches unity at the critical angle, 41.8 degrees, and stays
+        // there. The outside curve reaches unity only at grazing. Just below
+        // the critical angle the two differ by a factor of two, and past it by
+        // a factor of twenty.
+        //
+        // `viewTheta` past 90 degrees puts the view direction on the far side
+        // of the surface. The lobe is RT: only a lobe that can transmit can
+        // have carried a path inside itself, so only such a lobe reads the
+        // inside curve. A reflection-only lobe hit from behind is a back face
+        // in the air, not glass, and keeps the authored index.
+        struct InsideProbe { float theta; const char* name; };
+        const InsideProbe insideProbes[] = {
+            {2.531f, "dielectric inside, 35 deg"},
+            {2.897f, "dielectric inside, 14 deg"},
+            {2.200f, "dielectric inside, past critical"},
+            {1.800f, "dielectric inside, grazing"},
+        };
+        for (const InsideProbe& probe : insideProbes) {
+            mx::DocumentPtr doc = validator.NewDocument();
+            mx::NodePtr n = AddNode(doc, "dielectric_bsdf", "vDiIn", "BSDF");
+            SetValue(n, "weight", 1.0f);
+            SetValue(n, "ior", 1.5f);
+            SetValue(n, "roughness", mx::Vector2(0.0f, 0.0f));
+            n->setInputValue("scatter_mode", std::string("RT"), "string");
+
+            // The incidence the harness will present, and the reflectance the
+            // closed form gives for it on the inside.
+            const double cosTheta = std::abs(std::cos(double(probe.theta)));
+            const double expected = DielectricFresnel(cosTheta, 1.0 / 1.5);
+
+            CheckReflectance(probe.name,
+                             validator.Measure(WrapInMaterial(doc, n), "vDiIn",
+                                               probe.theta),
+                             expected, 0.02);
         }
         {
             mx::DocumentPtr doc = validator.NewDocument();

@@ -108,6 +108,15 @@ void main()
                              N, vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0),
                              vec2(0.5));
     hdclaude_wavelengths = vec4(450.0, 550.0, 600.0, 650.0);
+    // A flat surface, so the geometric and shading normals are the same one.
+    // Supplying it is what makes `viewTheta` past 90 degrees mean "inside" to a
+    // closure rather than "a silhouette".
+    hdclaude_geometric_normal = N;
+    // A view direction behind the surface is declared to be inside the medium,
+    // which is what the integrator would have recorded for a path that got
+    // there by refracting in. Without it the inside probes would measure the
+    // outside curve and pass for the wrong reason.
+    hdclaude_inside_medium = params.viewTheta > 1.5707963 ? 1.0 : 0.0;
 
     // --- Pass A: sample a direction, then evaluate f and pdf at it -----------
     hdclaude_sample_u = vec3(randomFloat(rng), randomFloat(rng), randomFloat(rng));

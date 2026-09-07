@@ -69,6 +69,41 @@ struct ClosureData {
 vec4 hdclaude_wavelengths = vec4(0.0);  // hero wavelengths, nanometres
 vec3 hdclaude_sample_u = vec3(0.0);     // stratified sample: xy direction, z lobe
 
+// The *geometric* normal at the hit, unflipped, or zero where none was supplied.
+//
+// A closure that has to know which side of an interface it is on cannot ask the
+// shading normal. On a smooth-shaded mesh the interpolated normal tilts past the
+// horizon near a silhouette, so `dot(N, V) < 0` happens routinely on the outside
+// of a perfectly opaque object -- and a closure reading that as "inside" lights
+// up every silhouette in the scene. Only the geometric normal answers the
+// question the closure is actually asking.
+//
+// Zero means the caller did not supply one, and a closure must fall back to the
+// shading normal rather than treating the surface as edge-on.
+vec3 hdclaude_geometric_normal = vec3(0.0);
+
+// Whether the path is currently *inside* a dense medium, as the integrator
+// tracks it: set by a transmission event that carried the path through a
+// surface, cleared by the one that carried it back out.
+//
+// A closure cannot work this out for itself and must not guess. "Arriving from
+// behind" is not the same question: a ray reaching the back face of an opaque
+// object with a hole in it arrives from behind and is in the air, while a ray
+// inside a glass ball is in glass whichever of its lobes is being asked. The
+// first must see the authored index and the second its reciprocal, and only the
+// path's own history separates them.
+float hdclaude_inside_medium = 0.0;
+
+/// Which side of an interface `V` is on, from the geometric normal when there is
+/// one and the shading normal otherwise.
+bool hdclaude_entering(vec3 shadingNormal, vec3 V)
+{
+    vec3 side = dot(hdclaude_geometric_normal, hdclaude_geometric_normal) > 0.5
+                    ? hdclaude_geometric_normal
+                    : shadingNormal;
+    return dot(side, V) > 0.0;
+}
+
 // Interior medium, published by anisotropic_vdf and read by the integrator.
 //
 // Volumetric absorption and scattering are integrated *along a ray inside the

@@ -302,6 +302,14 @@ void main()
     // connected.
     hdclaude_wavelengths = lambda;
     hdclaude_dispersion_abbe = shadeParams.dispersionAbbe;
+    // The true geometric normal, so a closure can tell which side of the
+    // interface it is on. The shading normal cannot answer that: near a
+    // silhouette it tilts past the horizon on a perfectly opaque object.
+    hdclaude_geometric_normal = point.geometricNormal;
+    // Whether this path is inside a dense medium, which decides which way round
+    // a dielectric's relative index goes. A closure cannot know it; only the
+    // transmission events that carried the path here do.
+    hdclaude_inside_medium = pathMedium.values[2u * path + 1u].w;
 
     // --- Dispersion: collapse the packet onto its hero wavelength ------------
     //

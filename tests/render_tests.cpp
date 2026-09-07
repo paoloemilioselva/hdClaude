@@ -1849,21 +1849,46 @@ int main()
                 // rather than ahead of it. `MakeScatteringMedium` and the sphere
                 // stay so that it can, and the measurements are in
                 // docs/implementation-notes.md.
-                const CompiledMaterial vacuumInterior = MakeScatteringMedium(
-                    libraries, compiler, tracer.ShadeKernelSource(),
-                    mx::Vector3(0.0f, 0.0f, 0.0f), mx::Vector3(0.0f, 0.0f, 0.0f),
-                    0.0f, "vacuum interior");
-                CHECK(!vacuumInterior.spirv.empty());
-                if (!vacuumInterior.spirv.empty()) {
-                    // The structure `open_pbr_surface` generates, enclosing
-                    // nothing. It must read what the layered dielectric reads,
-                    // which is what says the wrapper costs nothing and puts any
-                    // future failure inside the volume rather than around it.
-                    const Pixel patch =
-                        sphereFurnace(vacuumInterior, "vacuum interior", 0.5f);
+                const struct {
+                    mx::Vector3 scattering;
+                    float anisotropy;
+                    const char* name;
+                } media[] = {
+                    // The control: the same graph enclosing nothing, which must
+                    // read what the layered dielectric reads. Anything wrong
+                    // here belongs to `layer(bsdf, vdf)`, not to the walk.
+                    {mx::Vector3(0.0f, 0.0f, 0.0f), 0.0f, "vacuum"},
+                    {mx::Vector3(2.0f, 2.0f, 2.0f), 0.0f, "isotropic"},
+                    // Forward scattering makes the longest walks, so it is where
+                    // a per-step weight that does not cancel compounds furthest
+                    // before roulette ends it.
+                    {mx::Vector3(2.0f, 2.0f, 2.0f), 0.8f, "forward"},
+                    {mx::Vector3(8.0f, 8.0f, 8.0f), 0.0f, "dense"},
+                    // Four to one across the channels is far more chromatic than
+                    // any real medium, which is the point of a gate.
+                    {mx::Vector3(4.0f, 2.0f, 1.0f), 0.0f, "chromatic"},
+                    {mx::Vector3(4.0f, 2.0f, 1.0f), 0.8f, "chromatic fwd"},
+                };
+
+                for (const auto& probe : media) {
+                    const CompiledMaterial medium = MakeScatteringMedium(
+                        libraries, compiler, tracer.ShadeKernelSource(),
+                        mx::Vector3(0.0f, 0.0f, 0.0f), probe.scattering,
+                        probe.anisotropy, probe.name);
+                    CHECK(!medium.spirv.empty());
+                    if (medium.spirv.empty()) {
+                        continue;
+                    }
+                    const Pixel patch = sphereFurnace(medium, probe.name, 0.5f);
                     CHECK_NEAR(patch.r, 1.0, 0.03);
                     CHECK_NEAR(patch.g, 1.0, 0.03);
                     CHECK_NEAR(patch.b, 1.0, 0.03);
+                    // Neutral, asserted separately from unity: a lane weighting
+                    // wrong by a common factor moves all three together, and one
+                    // wrong per lane pulls them apart. Only the second is a
+                    // chromatic defect.
+                    CHECK(std::abs(patch.r - patch.b) < 0.025);
+                    CHECK(std::abs(patch.r - patch.g) < 0.025);
                 }
             }
         }
