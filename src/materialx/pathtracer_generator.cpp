@@ -689,4 +689,94 @@ mx::DocumentPtr LoadDefaultMaterialXLibraries()
                                   mx::FilePath(HDCLAUDE_MTLX_LIBRARY_DIR));
 }
 
+namespace {
+
+/// One float input of a node: the authored value, else the nodedef's default.
+///
+/// The default matters as much as the authored value here. A material that says
+/// nothing about dispersion still *has* a dispersion scale -- zero -- and
+/// reading it from the declaration rather than assuming it is what keeps this
+/// answering the same question MaterialX would.
+float ReadFloatInput(const mx::NodePtr& node, const char* input, bool* connected)
+{
+    *connected = false;
+    if (const mx::InputPtr authored = node->getInput(input)) {
+        if (authored->hasNodeName() || authored->hasNodeGraphString() ||
+            authored->hasInterfaceName()) {
+            *connected = true;
+            return 0.0f;
+        }
+        if (const mx::ValuePtr value = authored->getValue()) {
+            if (value->isA<float>()) {
+                return value->asA<float>();
+            }
+        }
+    }
+    if (const mx::NodeDefPtr definition = node->getNodeDef()) {
+        if (const mx::InputPtr declared = definition->getActiveInput(input)) {
+            if (const mx::ValuePtr value = declared->getValue()) {
+                if (value->isA<float>()) {
+                    return value->asA<float>();
+                }
+            }
+        }
+    }
+    return 0.0f;
+}
+
+}  // namespace
+
+float AuthoredDispersion(const mx::DocumentPtr& document,
+                         std::vector<std::string>* diagnostics)
+{
+    if (!document) {
+        return 0.0f;
+    }
+
+    float effective = 0.0f;
+    for (const mx::NodePtr& node : document->getNodes()) {
+        if (node->getCategory() != "open_pbr_surface") {
+            continue;
+        }
+
+        bool scaleConnected = false;
+        bool abbeConnected = false;
+        const float scale =
+            ReadFloatInput(node, "transmission_dispersion_scale", &scaleConnected);
+        const float abbe = ReadFloatInput(
+            node, "transmission_dispersion_abbe_number", &abbeConnected);
+
+        if (scaleConnected || abbeConnected) {
+            // A connected input varies over the surface, and dispersion reaches
+            // the integrator as one number for the whole material. Reported
+            // rather than sampled somewhere arbitrary: an index of refraction
+            // taken from the wrong texel is worse than no dispersion at all.
+            if (diagnostics) {
+                diagnostics->push_back(
+                    "node '" + node->getName() +
+                    "' connects a transmission dispersion input; dispersion is "
+                    "a per-material property here and only an authored value "
+                    "can be honoured, so it renders without dispersion");
+            }
+            continue;
+        }
+        if (!(scale > 0.0f) || !(abbe > 0.0f)) {
+            continue;
+        }
+
+        const float authored = abbe / scale;
+        if (effective > 0.0f && authored != effective) {
+            if (diagnostics) {
+                diagnostics->push_back(
+                    "surface node '" + node->getName() +
+                    "' authors a different dispersion from an earlier one; the "
+                    "first is used");
+            }
+            continue;
+        }
+        effective = authored;
+    }
+    return effective;
+}
+
 }  // namespace hdclaude

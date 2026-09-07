@@ -9,8 +9,10 @@ the wavelength model, the RGB-to-spectrum upsampling, and the sensor.
 **What is implemented, as of 2026-09-07.** The wavelength model of 1 and the
 sensor of 4; the upsampling of 2 in the form described below, with one
 deliberate difference recorded there; and the transport itself -- a path carries
-four lanes end to end. **Not** implemented: the chromatic path handling of 1
-(dispersion, thin film, and the wavelength MIS they need), and 3 as written --
+four lanes end to end. Dispersion is transported, in the reduced form 1
+describes below: a dispersive interface keeps the hero lane and terminates the
+other three rather than weighing them against each other. **Not** implemented:
+the wavelength MIS that would keep them, thin film, and 3 as written --
 upsampling happens where a closure hands back a response rather than at each
 texture fetch inside a MaterialX graph, so a material's own colour arithmetic is
 still RGB. Sections describing the end state say so where they differ.
@@ -39,6 +41,17 @@ path on `lambda_0` and applies single-wavelength MIS with the balance heuristic
 over the four lanes, terminating the other three into the film. This is
 unbiased and avoids maintaining four geometric paths.
 
+*As implemented,* the collapse happens without the MIS weight: the hero lane
+continues at its own index and the other three are terminated outright. That is
+still unbiased, because `lambda_0` is drawn from the film's own density and the
+surviving lane is scaled by the lane count the film divides by -- the estimator
+becomes the single-wavelength one rather than an average of four. It is
+correspondingly four times noisier on any path that meets a dispersive surface,
+which is what the balance heuristic over the lanes' densities would recover.
+The compensation is applied exactly once per path, which needs a flag: a path
+that enters a glass slab and leaves it meets the same dispersive material twice,
+and three empty lanes are indistinguishable from a terminated path.
+
 **Every mode uses four lanes.** The interactive preview reduces samples per
 pixel and path length. It does not reduce lane count. Dropping to one lane adds
 chromatic noise that is not zero-mean over a short temporal window — noise a
@@ -57,7 +70,7 @@ Three distinct upsampling roles, because they have different constraints:
 | --- | --- | --- |
 | Reflectance, transmittance, albedo | Jakob-Hanika sigmoid polynomial, of the *chromaticity*, scaled by the magnitude | must stay in [0, 1] at every wavelength |
 | Emission, light colour | Smits-style non-negative basis, unnormalised | must stay >= 0; unbounded magnitude |
-| IOR, extinction | Cauchy / Sellmeier from authored dispersion controls | physical, authored, not upsampled |
+| IOR, extinction | two-term Cauchy from the authored index and Abbe number | physical, authored, not upsampled |
 
 **Reflectance.** The Jakob-Hanika model represents a spectrum as
 `S(lambda) = sigmoid(c0*l^2 + c1*l + c2)` with `l` a normalised wavelength. The

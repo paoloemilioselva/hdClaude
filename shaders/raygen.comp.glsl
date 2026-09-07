@@ -53,6 +53,8 @@ void main()
     // No scattering produced this ray, so a miss takes the environment in
     // full rather than a weighted share of it.
     pathScatterPdf.values[index] = 0.0;
+    // The full packet, until a dispersive surface forces a choice of one.
+    pathHeroOnly.values[index] = 0u;
     // A camera ray starts in vacuum.
     pathMedium.values[2u * index + 0u] = vec4(0.0);
     pathMedium.values[2u * index + 1u] = vec4(0.0);

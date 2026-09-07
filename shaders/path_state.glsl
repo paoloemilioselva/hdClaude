@@ -87,6 +87,23 @@ layout(set = 0, binding = 21, scalar) buffer PathScatterPdf { float values[]; } 
 //   values[2*path + 1] = scattering rgb, 1 in w when a medium is present
 layout(set = 0, binding = 25, scalar) buffer PathMedium { vec4 values[]; } pathMedium;
 
+// Whether this path has already been collapsed onto its hero wavelength.
+//
+// A dispersive surface refracts each wavelength into a different direction, and
+// a path can only take one of them, so the first such event keeps the hero lane
+// and terminates the other three -- with the survivor scaled by the lane count,
+// because the film divides the packet by it (`film.comp.glsl`).
+//
+// The flag exists because that compensation must happen exactly *once*. A ray
+// entering a glass slab and leaving it shades the same dispersive material
+// twice, and scaling twice would make the second crossing four times too
+// bright. Nothing else on the path records that the packet is already a single
+// wavelength: three zero lanes are what a terminated path looks like too.
+//
+//   0  the packet is intact, all four lanes live
+//   1  hero only, and already compensated
+layout(set = 0, binding = 26, scalar) buffer PathHeroOnly { uint values[]; } pathHeroOnly;
+
 
 
 // Hit record written by `extend` and read by `shade`.

@@ -21,6 +21,19 @@ layout(push_constant) uniform ShadeParams {
     /// the dispatch is sized to that group rather than to the frame
     /// (docs/wavefront-integrator.md 3).
     uint materialId;
+
+    /// This material's Abbe number, or zero where it authors no dispersion.
+    ///
+    /// The one material property that does not reach the GPU inside the
+    /// generated program. MaterialX 1.39.3 declares
+    /// `transmission_dispersion_abbe_number` on `open_pbr_surface`, threads it
+    /// into the generated function's signature, and never reads it, and
+    /// `ND_dielectric_bsdf` has no input to receive it -- so the graph drops it
+    /// before any closure can see it. hdClaude's material compiler reads it
+    /// from the authored network instead and it arrives here, beside the
+    /// program rather than inside it (docs/implementation-notes.md,
+    /// 2026-09-07).
+    float dispersionAbbe;
 } shadeParams;
 
 /// Interpolated geometry at a hit.
@@ -288,6 +301,38 @@ void main()
     // model that does not work rather than like an input that was never
     // connected.
     hdclaude_wavelengths = lambda;
+    hdclaude_dispersion_abbe = shadeParams.dispersionAbbe;
+
+    // --- Dispersion: collapse the packet onto its hero wavelength ------------
+    //
+    // A dispersive interface sends every wavelength somewhere else, and a path
+    // is one direction. So the packet stops being four correlated estimates the
+    // moment it meets one: the hero lane is refracted by its own index and the
+    // other three are terminated, because there is no direction they could
+    // honestly be carried along.
+    //
+    // Terminating alone would be four times too dark. The film averages the
+    // four lanes -- it divides by `4 * p(lambda_hero)`, and every lane shares
+    // the hero's density -- so three empty lanes make an average of a quarter of
+    // one estimate. Scaling the survivor by the lane count restores the single
+    // wavelength estimator `CMF(lambda_0) * L_0 / p`, which is unbiased and
+    // simply four times noisier. That is the true cost of dispersion, and it is
+    // paid only by paths that touch a dispersive material.
+    //
+    // Radiance already gathered in the other lanes is untouched: it was
+    // estimated before the collapse and is still theirs.
+    //
+    // Done before the emission and next-event blocks rather than at the scatter,
+    // because the closure below is about to be evaluated at the hero index and
+    // everything it returns is that wavelength's alone.
+    if (shadeParams.dispersionAbbe > 0.0 && pathHeroOnly.values[path] == 0u)
+    {
+        throughput.x *= float(HDCLAUDE_SPECTRAL_LANES);
+        throughput.y = 0.0;
+        throughput.z = 0.0;
+        throughput.w = 0.0;
+        pathHeroOnly.values[path] = 1u;
+    }
 
     // --- Emission -----------------------------------------------------------
     ClosureData emissionData = ClosureData(CLOSURE_TYPE_EMISSION, vec3(0.0), V,

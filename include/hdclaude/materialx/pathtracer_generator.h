@@ -33,6 +33,7 @@
 #include <cstdint>
 
 #include <string>
+#include <vector>
 
 namespace hdclaude {
 
@@ -232,6 +233,35 @@ mx::DocumentPtr LoadMaterialXLibraries(const mx::FilePath& stdlibDir,
 
 /// The same, using the paths compiled in at build time.
 mx::DocumentPtr LoadDefaultMaterialXLibraries();
+
+/// The effective Abbe number a document's surface authors, or zero for none.
+///
+/// The one material property that cannot travel inside the generated program.
+/// MaterialX 1.39.3's `open_pbr_surface` declares
+/// `transmission_dispersion_scale` and `transmission_dispersion_abbe_number`,
+/// threads both into the generated function's signature, and reads neither;
+/// `ND_dielectric_bsdf` has no dispersion input they could be passed to. The
+/// graph therefore accepts dispersion, carries it as far as the function that
+/// would use it, and drops it, and no closure can be handed it through the ABI
+/// (docs/implementation-notes.md, 2026-09-07). So it is read from the document
+/// here, and the integrator applies it.
+///
+/// OpenPBR's scale "linearly scales the amount of dispersion", which is the
+/// dispersive power `1 / V`, so the two authored numbers resolve to a single
+/// effective Abbe number `V / scale`. A scale of zero -- the nodedef default,
+/// and what every material that never mentions dispersion has -- returns zero,
+/// which is what makes this cost nothing where it is not used.
+///
+/// This lives beside the generator rather than in the Hydra layer because it is
+/// a statement about a MaterialX document, and because that is what makes it
+/// testable without OpenUSD.
+///
+/// `diagnostics`, when given, collects anything the caller should report: a
+/// connected dispersion input, which cannot be honoured by a per-material
+/// value, or a second surface node that disagrees with the first. They are
+/// returned rather than logged so this stays free of a diagnostic system.
+float AuthoredDispersion(const mx::DocumentPtr& document,
+                         std::vector<std::string>* diagnostics = nullptr);
 
 }  // namespace hdclaude
 

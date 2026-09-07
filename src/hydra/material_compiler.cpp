@@ -408,6 +408,16 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
     // generator, and glslang, none of which are thread-safe.
     hdclaude::CompiledMaterial result;
     result.debugName = name;
+    // Read before generation, because generation is where MaterialX discards
+    // it. The value travels beside the program instead of inside it, and
+    // anything the document gets wrong about it is reported rather than
+    // guessed at.
+    std::vector<std::string> dispersionDiagnostics;
+    result.dispersionAbbe =
+        hdclaude::AuthoredDispersion(document, &dispersionDiagnostics);
+    for (const std::string& diagnostic : dispersionDiagnostics) {
+        TF_WARN("hdClaude: material %s: %s", name.c_str(), diagnostic.c_str());
+    }
 
     try {
         mx::ShaderGeneratorPtr generator =

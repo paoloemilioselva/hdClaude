@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 namespace mx = MaterialX;
 using namespace hdclaude;
@@ -417,6 +418,122 @@ void TestNamedSurfaceGeneratesAndCompiles(const GlslCompiler& compiler,
     }
 }
 
+/// What the document says about dispersion, and what it must not say.
+///
+/// The reason this is read from the document at all is that MaterialX drops it:
+/// `open_pbr_surface` declares `transmission_dispersion_scale` and
+/// `transmission_dispersion_abbe_number`, threads both into the generated
+/// function's signature, and reads neither, and `ND_dielectric_bsdf` has no
+/// input to receive them. The first assertion below is that claim itself, made
+/// against the generated code rather than against a reading of the library, so
+/// that a MaterialX release which starts honouring dispersion is a test failure
+/// here rather than a renderer that silently applies it twice.
+///
+/// The rest is the reader. The cases that matter are the ones that must return
+/// *nothing*: an untouched surface, and one whose scale is zero. Every material
+/// in every scene is one of those, so a reader that answered anything else
+/// would make every path in the gallery four times noisier for no effect at
+/// all.
+void TestDispersionIsReadFromTheDocument(mx::DocumentPtr libraries)
+{
+    std::printf("  --- dispersion ---\n");
+
+    // 1. MaterialX still discards it.
+    {
+        mx::DocumentPtr doc = BuildNamedSurfaceMaterial(libraries, "open_pbr_surface");
+        CHECK(doc != nullptr);
+        if (!doc) {
+            return;
+        }
+        const Generated generated = GenerateMaterial(doc, "open_pbr_dispersion");
+        CHECK(generated.ok);
+        if (generated.ok) {
+            const std::string code = StripComments(generated.source);
+            // Declared and threaded through the signature...
+            CHECK(code.find("transmission_dispersion_abbe_number") !=
+                  std::string::npos);
+            // ...and never given to the closure that would need it. Every
+            // dielectric_bsdf call in the generated body takes the same fixed
+            // argument list, and no dispersion argument exists to appear in it.
+            CHECK(code.find("mx_dielectric_bsdf") != std::string::npos);
+            const std::size_t call = code.find("mx_dielectric_bsdf(");
+            const std::size_t abbe = code.find("transmission_dispersion_abbe_number",
+                                               call);
+            const std::size_t end = code.find(')', call);
+            CHECK(call == std::string::npos || abbe == std::string::npos ||
+                  abbe > end);
+        }
+    }
+
+    struct Case {
+        float scale;
+        float abbe;
+        bool author;
+        float expected;
+        const char* name;
+    };
+    const Case cases[] = {
+        // The two that every existing scene is: nothing authored at all, and a
+        // scale of zero. Both must be no dispersion.
+        {0.0f, 0.0f, false, 0.0f, "unauthored"},
+        {0.0f, 40.0f, true, 0.0f, "scale zero"},
+        // Full scale is the Abbe number as authored.
+        {1.0f, 40.0f, true, 40.0f, "full scale"},
+        // And a partial scale halves the dispersive power `1 / V`, which is the
+        // reciprocal of the number, not the number. Reading this backwards
+        // gives a glass ten times too dispersive and looks like a working
+        // feature.
+        {0.5f, 40.0f, true, 80.0f, "half scale"},
+    };
+
+    for (const Case& probe : cases) {
+        mx::DocumentPtr doc = mx::createDocument();
+        doc->importLibrary(libraries);
+        mx::NodePtr shader = AddNode(doc, "open_pbr_surface", "s", "surfaceshader");
+        CHECK(shader != nullptr);
+        if (!shader) {
+            continue;
+        }
+        if (probe.author) {
+            SetValue(shader, "transmission_dispersion_scale", probe.scale);
+            SetValue(shader, "transmission_dispersion_abbe_number", probe.abbe);
+        }
+        mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+        Connect(material, "surfaceshader", shader);
+
+        std::vector<std::string> diagnostics;
+        const float read = hdclaude::AuthoredDispersion(doc, &diagnostics);
+        std::printf("  dispersion %s: Abbe %g (expected %g)\n", probe.name,
+                    double(read), double(probe.expected));
+        CHECK_NEAR(read, probe.expected, 1.0e-4);
+        CHECK(diagnostics.empty());
+    }
+
+    // A connected input is reported, not sampled from somewhere arbitrary. A
+    // per-material number cannot honour a value that varies over the surface,
+    // and an index of refraction taken from the wrong texel is worse than none.
+    {
+        mx::DocumentPtr doc = mx::createDocument();
+        doc->importLibrary(libraries);
+        mx::NodePtr constant = AddNode(doc, "constant", "c", "float");
+        SetValue(constant, "value", 40.0f);
+        mx::NodePtr shader = AddNode(doc, "open_pbr_surface", "s", "surfaceshader");
+        SetValue(shader, "transmission_dispersion_scale", 1.0f);
+        Connect(shader, "transmission_dispersion_abbe_number", constant);
+        mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+        Connect(material, "surfaceshader", shader);
+
+        std::vector<std::string> diagnostics;
+        const float read = hdclaude::AuthoredDispersion(doc, &diagnostics);
+        CHECK_NEAR(read, 0.0, 1.0e-6);
+        CHECK(!diagnostics.empty());
+        if (!diagnostics.empty()) {
+            std::printf("  dispersion connected: %s\n",
+                        diagnostics.front().c_str());
+        }
+    }
+}
+
 }  // namespace
 
 int main()
@@ -441,6 +558,7 @@ int main()
     mx::DocumentPtr libraries = LoadLibraries();
     TestNamedSurfaceGeneratesAndCompiles(compiler, libraries, "standard_surface");
     TestNamedSurfaceGeneratesAndCompiles(compiler, libraries, "open_pbr_surface");
+    TestDispersionIsReadFromTheDocument(libraries);
 
     return hdclaude_test::Summarize("hdClaudeMaterialXTests");
 }

@@ -79,12 +79,23 @@ std::vector<BindingDescription> KernelBindings()
     bindings.push_back(storage(20, "dispatchArgs"));
     bindings.push_back(storage(21, "pathScatterPdf"));
     bindings.push_back(storage(25, "pathMedium"));
+    bindings.push_back(storage(26, "pathHeroOnly"));
     bindings.push_back(storage(22, "environmentDistribution"));
     bindings.push_back(storage(23, "pathWavelengths"));
     bindings.push_back(storage(24, "spectralTables"));
 
     return bindings;
 }
+
+/// Mirrors the ShadeParams push constant in shade.comp.glsl.
+///
+/// The shading dispatch is already per material, so a material property that
+/// cannot travel inside the generated program travels here at no cost: there is
+/// exactly one dispatch per material and the value is constant across it.
+struct ShadePush {
+    std::uint32_t materialId = 0;
+    float dispersionAbbe = 0.0f;
+};
 
 /// Mirrors the FrameBlock uniform in path_state.glsl, scalar layout.
 struct FrameBlock {
@@ -747,11 +758,14 @@ void PathTracer::SetScene(const Scene& scene,
     _shade.reserve(materials.size());
     _materialTextureSlots.clear();
     _materialTextureSlots.reserve(materials.size());
+    _materialDispersion.clear();
+    _materialDispersion.reserve(materials.size());
     for (const CompiledMaterial& material : materials) {
         _shade.push_back(ComputePipeline(_context, material.spirv, bindings,
-                                         sizeof(std::uint32_t),
+                                         sizeof(ShadePush),
                                          "shade." + material.debugName));
         _materialTextureSlots.push_back(material.textureSlots);
+        _materialDispersion.push_back(material.dispersionAbbe);
     }
 
     // --- The sort's tables ---------------------------------------------------
@@ -810,6 +824,9 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
     VulkanBuffer scatterPdf = MakeStorage(_allocator, paths * 4, "path.scatterPdf");
     // The interior medium a path is inside, as an absorption coefficient.
     VulkanBuffer medium = MakeStorage(_allocator, paths * 32, "path.medium");
+    // Whether a dispersive surface has already collapsed the path's packet onto
+    // its hero wavelength.
+    VulkanBuffer heroOnly = MakeStorage(_allocator, paths * 4, "path.heroOnly");
     VulkanBuffer hits = MakeStorage(_allocator, paths * 16, "path.hits");
     VulkanBuffer counters = MakeStorage(_allocator, 16, "counters");
     VulkanBuffer activeQueue = MakeStorage(_allocator, paths * 4, "queue.active");
@@ -843,6 +860,7 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
     _rng = std::move(rng);
     _scatterPdf = std::move(scatterPdf);
     _medium = std::move(medium);
+    _heroOnly = std::move(heroOnly);
     _hits = std::move(hits);
     _counters = std::move(counters);
     _activeQueue = std::move(activeQueue);
@@ -903,6 +921,7 @@ void PathTracer::WriteDescriptors(VkDescriptorSet set,
     pipeline.WriteBuffer(set, 20, _dispatchArgs);
     pipeline.WriteBuffer(set, 21, _scatterPdf);
     pipeline.WriteBuffer(set, 25, _medium);
+    pipeline.WriteBuffer(set, 26, _heroOnly);
     pipeline.WriteBuffer(set, 22, _environmentDistribution);
     pipeline.WriteBuffer(set, 23, _wavelengths);
     pipeline.WriteBuffer(set, 24, _spectralTables);
@@ -1122,11 +1141,14 @@ std::vector<float> PathTracer::Render(std::uint32_t width, std::uint32_t height,
                 Barrier(command);
 
                 for (std::size_t i = 0; i < _shade.size(); ++i) {
-                    const auto materialId = static_cast<std::uint32_t>(i);
+                    ShadePush push;
+                    push.materialId = static_cast<std::uint32_t>(i);
+                    push.dispersionAbbe = _materialDispersion[i];
                     _shade[i].DispatchIndirect(
                         command, shadeSets[i], _dispatchArgs,
-                        (kDispatchSlotFirstMaterial + materialId) * kDispatchArgStride,
-                        &materialId, sizeof(materialId));
+                        (kDispatchSlotFirstMaterial + push.materialId) *
+                            kDispatchArgStride,
+                        &push, sizeof(push));
                     Barrier(command);
                 }
 

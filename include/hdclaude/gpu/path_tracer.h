@@ -79,6 +79,24 @@ struct CompiledMaterial {
     /// is written, which is what lets two materials both use local index 0 for
     /// different images while one pool holds each distinct image once.
     std::vector<std::uint32_t> textureSlots;
+
+    /// The Abbe number of this material's transmission, or zero for none.
+    ///
+    /// The one material property that travels beside the program instead of
+    /// inside it. MaterialX 1.39.3's `open_pbr_surface` declares
+    /// `transmission_dispersion_abbe_number` and
+    /// `transmission_dispersion_scale`, threads both into the generated
+    /// function's signature, and reads neither; `ND_dielectric_bsdf` has no
+    /// dispersion input to receive them. So the graph accepts dispersion,
+    /// carries it as far as the function that would use it, and drops it, and
+    /// no closure can be handed it through the ABI. The material compiler reads
+    /// it from the authored network and the integrator applies it
+    /// (docs/implementation-notes.md, 2026-09-07).
+    ///
+    /// Already scaled: OpenPBR's `transmission_dispersion_scale` multiplies the
+    /// dispersive power `1 / V`, so a scale of zero -- the default, and what
+    /// every material that does not ask for dispersion has -- leaves this zero.
+    float dispersionAbbe = 0.0f;
 };
 
 /// Resolves `#include` directives in the kernel sources.
@@ -200,6 +218,9 @@ class PathTracer {
     VkSampler _sampler = VK_NULL_HANDLE;
     /// Per-material texture slots, parallel to _shade.
     std::vector<std::vector<std::uint32_t>> _materialTextureSlots;
+    /// Per-material Abbe number, parallel to _shade. Pushed with the material
+    /// id at each shading dispatch.
+    std::vector<float> _materialDispersion;
 
     ComputePipeline _raygen;
     ComputePipeline _extend;
@@ -220,6 +241,9 @@ class PathTracer {
     /// or zero in vacuum. Written when a transmission event crosses into a
     /// surface whose closure published one.
     VulkanBuffer _medium;
+    /// Whether each path has already been collapsed onto its hero wavelength
+    /// by a dispersive surface, so the collapse compensates exactly once.
+    VulkanBuffer _heroOnly;
     VulkanBuffer _hits, _counters, _activeQueue, _nextActiveQueue, _shadowRays;
     VulkanBuffer _accumulation;
     VulkanBuffer _readback;

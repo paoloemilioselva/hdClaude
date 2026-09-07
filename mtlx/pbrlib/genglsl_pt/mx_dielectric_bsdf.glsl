@@ -43,6 +43,26 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
     // "outside", which silently makes exit refractions behave like entries.
     bool entering = dot(N, V) > 0.0;
 
+    // Dispersion, if the material authored it and this lobe transmits.
+    //
+    // `scatter_mode` 0 is R: a coat, a plastic's specular, anything that only
+    // reflects. OpenPBR's dispersion is a property of the *transmitted* medium
+    // -- the input is `transmission_dispersion_abbe_number` -- so a reflection
+    // only lobe is left alone, and a material that authors dispersion still
+    // gets an undispersed coat.
+    //
+    // The index is taken at the hero wavelength alone, and the shade kernel has
+    // already collapsed the packet to that one lane before calling here, so
+    // this path carries one wavelength and one refracted direction. Every
+    // quantity below -- Fresnel, the refraction direction, the Jacobian, the
+    // density -- is then consistently that wavelength's, which is what a
+    // per-lane index applied to the direction alone would not be.
+    if (scatter_mode != 0)
+    {
+        ior = hdclaude_dispersed_ior(ior, hdclaude_dispersion_abbe,
+                                     hdclaude_wavelengths.x);
+    }
+
     N = mx_forward_facing_normal(N, V);
     float NdotV = clamp(dot(N, V), M_FLOAT_EPS, 1.0);
 

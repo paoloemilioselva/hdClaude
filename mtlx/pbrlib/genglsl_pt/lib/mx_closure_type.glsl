@@ -90,6 +90,52 @@ vec3  hdclaude_subsurface_radius = vec3(0.0);   // per-channel mean free path
 float hdclaude_subsurface_anisotropy = 0.0;     // Henyey-Greenstein g
 float hdclaude_subsurface_present = 0.0;
 
+// Dispersion, written by the integrator rather than published by a closure.
+//
+// The direction of travel is the opposite of the medium's, and it has to be.
+// MaterialX 1.39.3's `open_pbr_surface` declares
+// `transmission_dispersion_abbe_number`, threads it into the generated
+// function's signature, and never reads it; `ND_dielectric_bsdf` has no
+// dispersion input to receive it. So no closure can learn the Abbe number from
+// the graph it is generated in. The material compiler reads it from the
+// authored network instead and the shade kernel sets it here, per dispatch,
+// beside the wavelengths it already sets (docs/implementation-notes.md,
+// 2026-09-07).
+//
+// Zero means no dispersion, which is what every material that does not author
+// it gets, and what makes this cost nothing where it is not used.
+float hdclaude_dispersion_abbe = 0.0;
+
+// The three Fraunhofer lines the Abbe number is defined against, in nanometres.
+// Same values as `kFraunhoferF/D/C` in hdclaude/core/spectrum.h.
+#define HDCLAUDE_FRAUNHOFER_F 486.13
+#define HDCLAUDE_FRAUNHOFER_D 587.56
+#define HDCLAUDE_FRAUNHOFER_C 656.27
+
+/// Index of refraction at `lambda` nanometres, from a nominal index and an
+/// Abbe number. Mirrors hdclaude::DispersedIor, and is checked against it.
+///
+/// Two-term Cauchy, `n = A + B / lambda^2`. Both coefficients are fixed by the
+/// two numbers an asset authors: B by the Abbe number's own definition,
+/// `V = (nd - 1) / (nF - nC)`, and A by the curve passing through the quoted
+/// index at the d-line. A smaller Abbe number is a *more* dispersive glass.
+float hdclaude_dispersed_ior(float ior, float abbe, float lambda)
+{
+    if (!(abbe > 0.0))
+    {
+        return ior;
+    }
+    const float inverseF = 1.0 / (HDCLAUDE_FRAUNHOFER_F * HDCLAUDE_FRAUNHOFER_F);
+    const float inverseC = 1.0 / (HDCLAUDE_FRAUNHOFER_C * HDCLAUDE_FRAUNHOFER_C);
+    const float inverseD = 1.0 / (HDCLAUDE_FRAUNHOFER_D * HDCLAUDE_FRAUNHOFER_D);
+
+    float b = (ior - 1.0) / (abbe * (inverseF - inverseC));
+    float a = ior - b * inverseD;
+
+    float safe = max(1.0, lambda);
+    return a + b / (safe * safe);
+}
+
 // The BSDF struct is extended by hdClaude's Syntax override rather than
 // declared here, because MaterialX registers it as a type syntax in GlslSyntax
 // rather than emitting it from a library file. See

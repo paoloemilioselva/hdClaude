@@ -106,7 +106,14 @@ CompiledMaterial CompileMaterial(mx::DocumentPtr doc, const GlslCompiler& compil
         std::fprintf(stderr, "  material %s failed:\n%s\n", name.c_str(),
                      compiled.log.c_str());
     }
-    return CompiledMaterial{compiled.spirv, name};
+    CompiledMaterial material{compiled.spirv, name};
+    // The same read the Hydra material compiler performs, for the same reason:
+    // MaterialX drops dispersion during generation, so it has to be taken from
+    // the document and carried beside the program. Done here rather than in
+    // each test that needs it, so a test authoring the OpenPBR inputs exercises
+    // the whole chain rather than a value set by hand.
+    material.dispersionAbbe = AuthoredDispersion(doc);
+    return material;
 }
 
 /// Generate a diffuse material of the given colour and compile it with the
@@ -263,7 +270,9 @@ CompiledMaterial MakeAbsorbingMaterial(mx::DocumentPtr libraries,
                                        const std::string& name,
                                        const mx::Color3& scatter =
                                            mx::Color3(0.0f, 0.0f, 0.0f),
-                                       float anisotropy = 0.0f)
+                                       float anisotropy = 0.0f,
+                                       float dispersionScale = 0.0f,
+                                       float abbeNumber = 20.0f)
 {
     mx::DocumentPtr doc = mx::createDocument();
     doc->importLibrary(libraries);
@@ -282,6 +291,11 @@ CompiledMaterial MakeAbsorbingMaterial(mx::DocumentPtr libraries,
     SetValue(surface, "transmission_depth", depth);
     SetValue(surface, "transmission_scatter", scatter);
     SetValue(surface, "transmission_scatter_anisotropy", anisotropy);
+    // Authored on the surface node, which is the only place they can be. The
+    // generated program will accept both and read neither, which is why they
+    // have to be read back off the document instead.
+    SetValue(surface, "transmission_dispersion_scale", dispersionScale);
+    SetValue(surface, "transmission_dispersion_abbe_number", abbeNumber);
     SetValue(surface, "subsurface_weight", 0.0f);
     SetValue(surface, "coat_weight", 0.0f);
     SetValue(surface, "fuzz_weight", 0.0f);
@@ -1438,7 +1452,7 @@ int main()
                 }
                 const std::vector<float> image =
                     tracer.Render(kWidth, kHeight, LookDownZ(1.0f), tinted);
-                return Window(image, 0.5f, 0.5f, 4);
+                return Window(image, 0.5f, 0.5f, 8);
             };
 
             const Pixel clear = renderWith(mx::Color3(1.0f, 1.0f, 1.0f), "clear");
@@ -1555,6 +1569,240 @@ int main()
             CHECK_NEAR(openPbrResult.r, 1.0, 0.02);
             CHECK_NEAR(openPbrResult.g, 1.0, 0.02);
             CHECK_NEAR(openPbrResult.b, 1.0, 0.02);
+
+            // Dispersion moves light between wavelengths; it does not create or
+            // destroy any. So the same slab, authored dispersive, must still
+            // render one -- and still render *neutral*, which is the second
+            // half of the claim and the one a tint would break.
+            //
+            // This is the gate on the packet collapse rather than on the
+            // refraction. A dispersive surface can carry only its hero
+            // wavelength, so the other three lanes are terminated there, and
+            // the film averages four lanes whether or not three of them are
+            // empty. Terminating without compensating renders a quarter of the
+            // right answer; compensating twice -- which is what happens without
+            // the flag that records the collapse, because a ray entering this
+            // slab and leaving it shades the same material twice -- renders
+            // four times it. Both are far outside any tolerance a furnace has,
+            // which is what makes this the right instrument for a change whose
+            // visible effect is a faint colour fringe nobody can check by eye.
+            CompiledMaterial dispersive = MakeDielectricMaterial(
+                libraries, compiler, tracer.ShadeKernelSource(), 1.5f,
+                "dispersive dielectric", 0.0f, "RT");
+            CHECK(!dispersive.spirv.empty());
+            // Set here rather than authored, so this measures the transport
+            // alone: `dielectric_bsdf` has no dispersion input of its own, and
+            // the document route is asserted separately below.
+            dispersive.dispersionAbbe = 20.0f;
+            const Pixel dispersiveResult = furnace(dispersive, "dispersive RT");
+            CHECK_NEAR(dispersiveResult.r, 1.0, 0.04);
+            CHECK_NEAR(dispersiveResult.g, 1.0, 0.04);
+            CHECK_NEAR(dispersiveResult.b, 1.0, 0.04);
+
+            // And the same again through the whole chain: the Abbe number
+            // authored on `open_pbr_surface`, read back off the document
+            // because MaterialX drops it, and applied by the integrator.
+            const CompiledMaterial authored = MakeAbsorbingMaterial(
+                libraries, compiler, tracer.ShadeKernelSource(), 1.5f,
+                mx::Color3(1.0f, 1.0f, 1.0f), 1.0f, "openpbr dispersive",
+                mx::Color3(0.0f, 0.0f, 0.0f), 0.0f, 1.0f, 20.0f);
+            CHECK(!authored.spirv.empty());
+            CHECK_NEAR(authored.dispersionAbbe, 20.0, 1.0e-4);
+            const Pixel authoredResult = furnace(authored, "open_pbr dispersive");
+            CHECK_NEAR(authoredResult.r, 1.0, 0.04);
+            CHECK_NEAR(authoredResult.g, 1.0, 0.04);
+            CHECK_NEAR(authoredResult.b, 1.0, 0.04);
+        }
+
+        // --- Dispersion refracts each wavelength by its own index -------------
+        //
+        // The conservation gate above says the collapse loses nothing. This says
+        // the index actually varies, in the right direction and by the right
+        // amount, which is the half a furnace can never see: a lossless slab
+        // renders one whether the index moves with wavelength or not.
+        //
+        // The measurement is Fresnel, not the bend. A dispersive surface's
+        // reflectance is `R(lambda) = ((n(lambda) - 1) / (n(lambda) + 1))^2`,
+        // and with a rect light mirrored back at the camera and nothing else in
+        // the scene, that spectrum *is* the pixel: everything transmitted leaves
+        // into blackness. So the answer is the colour of a known reflectance
+        // spectrum under a white light, which is an integral the host can do
+        // exactly rather than a previous render to compare against.
+        //
+        // At n = 1.5 and an Abbe number of 20 -- a dense flint, more dispersive
+        // than SF11 -- the index runs from 1.4888 at 700 nm to 1.5439 at 400 nm,
+        // so blue reflects about a fifth more strongly than red. That is a
+        // visible tint and a tiny absolute difference, 0.0386 against 0.0457,
+        // which is exactly the shape of error an image cannot be checked for.
+        //
+        // The closed form is asserted against the bare `dielectric_bsdf` in RT
+        // mode, which is one closure at one interface with one index. An
+        // `open_pbr_surface` is measured beside it but held to a weaker claim,
+        // and the difference is a real limit rather than a tolerance: MaterialX
+        // builds OpenPBR's specular lobe as a *reflection-only* dielectric
+        // layered over a transmission-only one, and dispersion is a property of
+        // the transmitted medium, so only the second of the two is given the
+        // wavelength's index. The first is indistinguishable at runtime from a
+        // coat, which is a different interface and must not be dispersed at all.
+        // So an OpenPBR glass refracts a spectrum and reflects a highlight that
+        // is only partly tinted -- 1.04 blue over red where the interface itself
+        // gives 1.15. It is recorded in docs/implementation-notes.md.
+        {
+            const float ior = 1.5f;
+            // Authored as scale 1 at Abbe 20; the reader resolves the two to one
+            // effective number and only that reaches the integrator.
+            const float abbe = 20.0f;
+            const float emitted = 2.0f;
+
+            // The closed form. `R(lambda)` weighted by the illuminant a white
+            // light emits, integrated against the colour matching functions, and
+            // normalised by the illuminant's own luminous integral -- which is
+            // the normalisation the film applies, and is what makes a perfect
+            // reflector come back as the light's own colour rather than as its
+            // absolute power.
+            //
+            // Stepped at 5 nm because that is the grid the film's tables are
+            // uploaded on, and comparing two integrals of the same integrand on
+            // different grids measures the grids.
+            Vec3 xyz{};
+            double norm = 0.0;
+            for (float lambda = kLambdaMin; lambda <= kLambdaMax; lambda += 5.0f) {
+                const float d65 = IlluminantD65(lambda);
+                const Vec3 bar = CieXyzBar(lambda);
+                const double n = DispersedIor(ior, abbe, lambda);
+                const double r = ((n - 1.0) / (n + 1.0)) * ((n - 1.0) / (n + 1.0));
+                xyz += bar * float(double(d65) * r);
+                norm += double(bar.y) * double(d65);
+            }
+            const Vec3 expected =
+                XyzToLinearSrgb(xyz * float(1.0 / norm)) * emitted;
+
+            const auto mirrorUnderLight = [&](const CompiledMaterial& material) {
+                Scene scene;
+                scene.prototypes.push_back(MakeQuad());
+                scene.instances.push_back({0, Transform3x4{}, 0, true});
+
+                // Wide and close, so the whole mirrored lobe lands on it.
+                Light rect;
+                rect.type = static_cast<std::uint32_t>(LightType::Rect);
+                rect.position[2] = 2.0f;
+                rect.direction[2] = -1.0f;
+                rect.uAxis[0] = 4.0f;
+                rect.vAxis[1] = 4.0f;
+                rect.area = 8.0f * 8.0f;
+                for (int i = 0; i < 3; ++i) {
+                    rect.radiance[i] = emitted;
+                }
+                scene.lights.push_back(rect);
+                tracer.SetScene(scene, {material});
+
+                RenderSettings settings;
+                // Many times the samples the same measurement needs without
+                // dispersion, because a collapsed packet carries one lane where
+                // it used to carry four, and because sRGB red is a difference of
+                // large XYZ terms and so amplifies what noise is left. That cost
+                // is the honest price of dispersion, not a defect to tune away:
+                // at 4096 the red channel lands 4.3 per cent below the closed
+                // form and at 8192 it lands 2.9 per cent below it.
+                settings.samplesPerPixel = 8192;
+                settings.maxBounces = 2;
+                for (int i = 0; i < 3; ++i) {
+                    settings.environmentColor[i] = 0.0f;
+                    settings.sunRadiance[i] = 0.0f;
+                }
+                const std::vector<float> image =
+                    tracer.Render(kWidth, kHeight, LookDownZ(1.0f), settings);
+                return Window(image, 0.5f, 0.5f, 4);
+            };
+
+            // The control: the same surface with no dispersion authored. It must
+            // read the achromatic Fresnel value, which is what says the setup
+            // measures reflectance and that the tint below comes from the index.
+            const CompiledMaterial flat = MakeAbsorbingMaterial(
+                libraries, compiler, tracer.ShadeKernelSource(), ior,
+                mx::Color3(1.0f, 1.0f, 1.0f), 0.0f, "openpbr flat",
+                mx::Color3(0.0f, 0.0f, 0.0f), 0.0f, 0.0f, abbe);
+            CHECK(!flat.spirv.empty());
+            CHECK_NEAR(flat.dispersionAbbe, 0.0, 1.0e-6);
+
+            const CompiledMaterial spread = MakeAbsorbingMaterial(
+                libraries, compiler, tracer.ShadeKernelSource(), ior,
+                mx::Color3(1.0f, 1.0f, 1.0f), 0.0f, "openpbr spread",
+                mx::Color3(0.0f, 0.0f, 0.0f), 0.0f, 1.0f, abbe);
+            CHECK(!spread.spirv.empty());
+            CHECK_NEAR(spread.dispersionAbbe, double(abbe), 1.0e-4);
+
+            // The closure itself: one `dielectric_bsdf` in RT mode, whose single
+            // index is the one dispersion moves. Set here rather than authored,
+            // because `dielectric_bsdf` has no dispersion input of its own --
+            // which is the whole reason this arrives from the host.
+            CompiledMaterial bare = MakeDielectricMaterial(
+                libraries, compiler, tracer.ShadeKernelSource(), ior,
+                "bare dispersive", 0.0f, "RT");
+            CHECK(!bare.spirv.empty());
+            bare.dispersionAbbe = abbe;
+
+            if (!flat.spirv.empty() && !spread.spirv.empty() &&
+                !bare.spirv.empty()) {
+                const Pixel bareResult = mirrorUnderLight(bare);
+                const Pixel flatResult = mirrorUnderLight(flat);
+                const Pixel spreadResult = mirrorUnderLight(spread);
+
+                const double achromatic =
+                    ((ior - 1.0) / (ior + 1.0)) * ((ior - 1.0) / (ior + 1.0)) *
+                    emitted;
+                std::printf("  dispersion off:      %.4f %.4f %.4f "
+                            "(closed form %.4f, neutral)\n",
+                            flatResult.r, flatResult.g, flatResult.b, achromatic);
+                std::printf("  dispersion on:       %.4f %.4f %.4f "
+                            "(closed form %.4f %.4f %.4f)\n",
+                            bareResult.r, bareResult.g, bareResult.b,
+                            expected.x, expected.y, expected.z);
+                std::printf("  through open_pbr:    %.4f %.4f %.4f "
+                            "(reflection lobe not dispersed)\n",
+                            spreadResult.r, spreadResult.g, spreadResult.b);
+
+                // The control has no dispersion and must read the achromatic
+                // Fresnel value, which is what says this setup measures
+                // reflectance and that the tint below comes from the index.
+                CHECK_NEAR(flatResult.r, achromatic, achromatic * 0.08);
+                CHECK_NEAR(flatResult.g, achromatic, achromatic * 0.08);
+                CHECK_NEAR(flatResult.b, achromatic, achromatic * 0.08);
+
+                // And the dispersive closure must read the reflectance spectrum
+                // its own relation implies, channel by channel.
+                CHECK_NEAR(bareResult.r, expected.x, expected.x * 0.08);
+                CHECK_NEAR(bareResult.g, expected.y, expected.y * 0.08);
+                CHECK_NEAR(bareResult.b, expected.z, expected.z * 0.08);
+
+                // The direction, asserted separately from the magnitude. A
+                // dispersion relation with its sign inverted still produces a
+                // tinted highlight, and still lands near a closed form computed
+                // with the same inverted sign; what it cannot do is make blue
+                // the strongly reflected end. Blue is the more strongly
+                // refracted -- which is why a prism puts it at the bottom -- and
+                // so also the more strongly reflected.
+                const double bareRatio =
+                    bareResult.r > 0.0 ? bareResult.b / bareResult.r : 0.0;
+                const double spreadRatio =
+                    spreadResult.r > 0.0 ? spreadResult.b / spreadResult.r : 0.0;
+                const double flatRatio =
+                    flatResult.r > 0.0 ? flatResult.b / flatResult.r : 0.0;
+                std::printf("  blue/red: %.4f closure, %.4f open_pbr, "
+                            "%.4f flat (closed form %.4f)\n",
+                            bareRatio, spreadRatio, flatRatio,
+                            expected.z / expected.x);
+                CHECK(bareRatio > 1.08);
+                CHECK(flatRatio > 0.96 && flatRatio < 1.04);
+
+                // The authored route reaches the image. The number it reaches it
+                // by is smaller than the interface's own, for the structural
+                // reason in the comment above this block, so what is asserted is
+                // that a value read off the document changed the render at all
+                // and changed it in the right direction -- not that it produced
+                // the full spread, which through this graph it cannot.
+                CHECK(spreadRatio > flatRatio + 0.02);
+            }
         }
 
         // --- A rect light is an emitter a ray can hit, and MIS splits it ------

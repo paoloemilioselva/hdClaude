@@ -3202,3 +3202,102 @@ Recorded rather than started, because the shape of the change moved: it is now a
 host-side feature with a shader consumer, not a closure feature. The
 wavelength-to-index relation it will call is already in the core and tested
 against BK7, SF11 and diamond.
+
+
+---
+
+## 2026-09-07 -- Dispersion, host-side, and what it costs
+
+The previous entry established that dispersion cannot come through the closure
+and has to arrive from the host. It now does.
+
+**The route.** `AuthoredDispersion` in the MaterialX layer reads
+`transmission_dispersion_scale` and `transmission_dispersion_abbe_number` off
+the document -- the authored value where there is one, the nodedef's own default
+where there is not, because a material that says nothing about dispersion still
+*has* a scale, and it is zero. OpenPBR's scale "linearly scales the amount of
+dispersion", and dispersion is the dispersive power `1 / V`, so the two numbers
+resolve to one effective Abbe number `V / scale`. It lives beside the generator
+rather than in the Hydra layer because it is a statement about a MaterialX
+document, and because that is what makes it testable without OpenUSD. A
+connected input is reported rather than sampled: an index of refraction taken
+from the wrong texel is worse than no dispersion.
+
+The number rides on `CompiledMaterial` and reaches the GPU as a push constant on
+the shading dispatch. That dispatch is already per material, so a per-material
+value costs nothing there -- which is why this needed no uniform block and no
+ABI change. `mx_dielectric_bsdf` reads it from a global the shade kernel sets,
+the same mechanism the medium uses in the opposite direction.
+
+**The collapse, and the factor of four.** A dispersive interface sends every
+wavelength somewhere else and a path is one direction, so the packet stops being
+four correlated estimates the moment it meets one. The hero lane keeps going at
+its own index; the other three are terminated.
+
+Terminating alone renders a *quarter* of the right answer. The film averages the
+four lanes -- it divides by `4 * p(lambda_hero)`, and every lane shares the
+hero's density -- so three empty lanes make an average of a quarter of one
+estimate. The survivor is scaled by the lane count to restore the single
+wavelength estimator `CMF(lambda_0) * L_0 / p`, which is unbiased and four times
+noisier. That is the true cost of dispersion and it is paid only by paths that
+touch a dispersive material.
+
+The compensation has to happen exactly once, and nothing else on the path
+records that it already has: three zero lanes are what a terminated path looks
+like too. So a path carries a flag. Without it, a ray entering a glass slab and
+leaving it shades the same dispersive material twice and comes out four times
+too bright.
+
+Both failures are caught by a furnace rather than by an eye: a closed dispersive
+slab that absorbs nothing, in a uniform environment, must still render one and
+must still render neutral. It reads 0.9919, 0.9969, 1.0061.
+
+**What the closed form says.** Dispersion's visible effect is a faint colour
+fringe, which is precisely the kind of thing an image cannot be checked for, so
+the magnitude is asserted against an integral. A smooth `dielectric_bsdf` in RT
+mode, mirrored back at a rect light with nothing else in the scene, reflects
+`R(lambda) = ((n(lambda) - 1) / (n(lambda) + 1))^2` and transmits everything
+else into blackness, so the pixel *is* that spectrum's colour under the light.
+At n = 1.5 and an Abbe number of 20 -- a dense flint, more dispersive than SF11
+-- it renders 0.0759, 0.0811, 0.0876 against the closed form's 0.0782, 0.0816,
+0.0874, and 1.154 blue over red against 1.118. Red is the loose channel because
+sRGB red is a difference of large XYZ terms and so amplifies what noise a
+collapsed packet leaves; it converges from 4.3 per cent low at 4096 samples to
+2.9 per cent at 8192.
+
+The ratio is asserted separately from the magnitude, because a dispersion
+relation with its sign inverted still produces a tinted highlight and still
+lands near a closed form computed with the same inverted sign. What it cannot do
+is make blue the strongly reflected end.
+
+**The limit, and it is a real one.** Dispersion is applied only to a
+`dielectric_bsdf` whose `scatter_mode` transmits. That is what OpenPBR's input
+says -- it is named `transmission_dispersion_*`, and it describes the medium the
+light is refracted into -- and it is also all that can be said safely, because a
+reflection-only dielectric is indistinguishable at runtime from a **coat**,
+which is a different interface with its own index and no Abbe number at all.
+
+The consequence is visible in the same measurement. MaterialX builds OpenPBR's
+specular lobe as `layer(top: reflection-only dielectric, base: transmission-only
+dielectric)`, so an `open_pbr_surface` glass refracts a full spectrum and
+reflects a highlight that is only partly tinted: 1.037 blue over red where the
+interface itself gives 1.154. Energy is still conserved -- the layer hands the
+base `1 - F` and the base transmits it whatever its own index -- so this costs
+colour in a highlight and nothing else. Applying the transmission medium's Abbe
+number to every dielectric lobe would fix the highlight and disperse every coat
+in the scene along with it, which is a worse trade and an invention rather than
+an implementation.
+
+**The gallery moved, slightly, and not because anything shades differently.**
+`hdclaude_dispersed_ior(ior, 0, lambda)` returns its argument by an early return
+and performs no arithmetic at all, so a non-dispersive material is handed a
+bit-identical index. What changed is that `ior` is now a value the closure
+assigns rather than a literal the compiler can fold through, and a different
+schedule of the same arithmetic moves a Fresnel term in its last bits. In a path
+tracer that reroutes a handful of paths, which is why two of the eleven scenes
+shifted: OpenChessSet by an RMS of 0.00049 with 0.001 per cent of pixels over
+the per-pixel limit, and Collective Project 001 by 6.1e-05 with none. Both means
+are unchanged to six digits, which is what a rescheduled estimator looks like
+and is not what a changed closure looks like. Avoiding it entirely would need a
+specialisation constant per material pipeline, which is machinery bought for
+byte-identity rather than for correctness.
