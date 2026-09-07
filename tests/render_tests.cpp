@@ -1903,6 +1903,87 @@ int main()
             }
         }
 
+        // --- No pixel is ever non-finite, however long the path --------------
+        //
+        // The gallery renders at eight bounces and has never seen this. Raise
+        // the limit on the glass shader ball and the renderer starts producing
+        // non-finite samples -- 208 at sixteen, 115 at thirty-two, 78 at
+        // sixty-four, none at eight -- and it predates every closure change
+        // made this week, since the code as it stood before them gives 103 at
+        // sixteen (docs/implementation-notes.md, 2026-09-08).
+        //
+        // `hdClaudeImageDiff` already treats a non-finite sample as a gate
+        // failure, so the gallery gate is capable of catching this and has
+        // simply never been pointed at a long enough path. Nothing in the
+        // suite was either: every render test above runs at three bounces or
+        // fewer except the furnaces, which run in an empty uniform environment
+        // with no lights in it at all.
+        //
+        // So this is the reproduction attempt, built from what the shader ball
+        // has and the furnaces do not: glass, an emitter a ray can hit, and a
+        // path long enough to find the awkward parts of both.
+        {
+            const auto anyNonFinite = [](const std::vector<float>& image) {
+                std::size_t count = 0;
+                for (std::size_t i = 0; i < image.size(); i += 4) {
+                    for (int c = 0; c < 3; ++c) {
+                        if (!std::isfinite(image[i + c])) {
+                            ++count;
+                            break;
+                        }
+                    }
+                }
+                return count;
+            };
+
+            const CompiledMaterial glass = MakeDielectricMaterial(
+                libraries, compiler, tracer.ShadeKernelSource(), 1.5f,
+                "deep glass", 0.02f, "RT");
+            CHECK(!glass.spirv.empty());
+
+            if (!glass.spirv.empty()) {
+                Scene scene;
+                scene.prototypes.push_back(MakeSphere());
+                scene.instances.push_back({0, Transform3x4{}, 0, true});
+
+                // An emitter a scattered ray can reach, which is what the
+                // furnaces deliberately do not have.
+                Light rect;
+                rect.type = static_cast<std::uint32_t>(LightType::Rect);
+                rect.position[1] = 2.5f;
+                rect.direction[1] = -1.0f;
+                rect.uAxis[0] = 1.0f;
+                rect.vAxis[2] = 1.0f;
+                rect.area = 4.0f;
+                for (int i = 0; i < 3; ++i) {
+                    rect.radiance[i] = 12.0f;
+                }
+                scene.lights.push_back(rect);
+                tracer.SetScene(scene, {glass});
+
+                for (const std::uint32_t bounces : {8u, 16u, 32u, 64u}) {
+                    RenderSettings deep;
+                    deep.samplesPerPixel = 256;
+                    deep.maxBounces = bounces;
+                    for (int i = 0; i < 3; ++i) {
+                        deep.environmentColor[i] = 0.4f;
+                        // The stand-in sun, which the shader ball scenes get
+                        // because they author no dome, and which every furnace
+                        // above deliberately switches off.
+                        deep.sunRadiance[i] = 3.0f;
+                    }
+                    const std::vector<float> image =
+                        tracer.Render(kWidth, kHeight, LookDownZ(3.0f), deep);
+                    const std::size_t bad = anyNonFinite(image);
+                    const Pixel centre = Window(image, 0.5f, 0.5f, 20);
+                    std::printf("  depth %2u: %zu non-finite pixels, "
+                                "centre %.4f %.4f %.4f\n",
+                                bounces, bad, centre.r, centre.g, centre.b);
+                    CHECK_EQ(bad, std::size_t(0));
+                }
+            }
+        }
+
         // --- Dispersion refracts each wavelength by its own index -------------
         //
         // The conservation gate above says the collapse loses nothing. This says

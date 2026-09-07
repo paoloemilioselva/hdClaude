@@ -472,6 +472,82 @@ int main()
                          kBroadLobeTolerance);
         }
 
+        // --- Grazing incidence, where the fits run out ------------------------
+        //
+        // Every probe above looks at a surface from somewhere comfortable. The
+        // renderer produces non-finite samples once the bounce limit rises
+        // above eight, and a long path is mostly made of *awkward* angles: at a
+        // silhouette `NdotV` is clamped to an epsilon, and the analytic fits
+        // the closures lean on are least trustworthy exactly there.
+        //
+        // `mx_ggx_energy_compensation` is the specific worry. It returns
+        // `1 + Fss * (1 - Ess) / Ess`, dividing by a lobe energy that tends to
+        // zero as the view goes edge-on, so if `Ess` underflows the closure
+        // returns an infinity and every path through it is poisoned. This asks
+        // whether it does.
+        //
+        // Exactly ninety degrees and beyond are included deliberately. A
+        // concave surface presents both: the inside of a ring or a tab is seen
+        // edge-on and past edge-on all along its curve, and `NdotV` is then
+        // clamped to an epsilon that several of these expressions divide by.
+        // That is where the renderer's non-finite samples live -- they sit on
+        // the inside of the shader ball's base ring and on the inside of its
+        // tab, and nowhere else.
+        // Three per cent rather than the two ordinary angles are held to, and
+        // the extra one per cent is named rather than hidden. A smooth
+        // dielectric seen exactly edge-on from inside reads 1.0219 where the
+        // closed form is exactly one, and the excess is `mx_ggx_dir_albedo`'s
+        // own accuracy as `NdotV` goes to zero: the compensation term is
+        // `1 + Fss (1 - Ess) / Ess`, which under total internal reflection is
+        // exactly `1 / Ess`, and multiplying a lobe whose true energy is `Ess`
+        // by that returns one only insofar as the fit is right about `Ess`. An
+        // upstream fit's error at the far end of its domain, not a transport
+        // defect; it goes away with a better `Ess` rather than with anything
+        // here. Recorded so this bound is a known quantity and not a round
+        // number chosen to pass.
+        constexpr double kGrazingEnergyBound = 1.03;
+        for (float theta : {1.4f, 1.5f, 1.55f, 1.5707963f, 1.6f, 2.0f}) {
+            for (float roughness : {0.1f, 0.4f, 0.8f}) {
+                mx::DocumentPtr doc = validator.NewDocument();
+                mx::NodePtr c = AddNode(doc, "conductor_bsdf", "vGzC", "BSDF");
+                SetValue(c, "weight", 1.0f);
+                SetValue(c, "roughness", mx::Vector2(roughness, roughness));
+                char conductorLabel[80];
+                std::snprintf(conductorLabel, sizeof(conductorLabel),
+                              "conductor grazing %.4f r%.1f", theta, roughness);
+                const Measurement mc =
+                    validator.Measure(WrapInMaterial(doc, c), "vGrazingC", theta);
+                CHECK(mc.ok);
+                if (mc.ok) {
+                    std::printf("  %-34s albedo %.4f  %u non-finite, %u negative\n",
+                                conductorLabel, mc.albedo, mc.nonFinite,
+                                mc.negative);
+                    CHECK_EQ(mc.nonFinite, std::uint32_t(0));
+                    CHECK(mc.albedo <= kGrazingEnergyBound);
+                }
+
+                doc = validator.NewDocument();
+                mx::NodePtr n = AddNode(doc, "dielectric_bsdf", "vGz", "BSDF");
+                SetValue(n, "weight", 1.0f);
+                SetValue(n, "ior", 1.5f);
+                SetValue(n, "roughness", mx::Vector2(roughness, roughness));
+                n->setInputValue("scatter_mode", std::string("RT"), "string");
+
+                char label[80];
+                std::snprintf(label, sizeof(label),
+                              "dielectric grazing %.4f r%.1f", theta, roughness);
+                const Measurement m =
+                    validator.Measure(WrapInMaterial(doc, n), "vGrazing", theta);
+                CHECK(m.ok);
+                if (!m.ok) continue;
+                std::printf("  %-34s albedo %.4f  %u non-finite, %u negative\n",
+                            label, m.albedo, m.nonFinite, m.negative);
+                CHECK_EQ(m.nonFinite, std::uint32_t(0));
+                CHECK_EQ(m.negative, std::uint32_t(0));
+                CHECK(m.albedo <= kGrazingEnergyBound);
+            }
+        }
+
         // --- The inside of a dielectric --------------------------------------
         //
         // Every measurement above looks at a surface from outside it, which is

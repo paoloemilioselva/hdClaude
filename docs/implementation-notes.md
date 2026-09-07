@@ -3796,3 +3796,70 @@ same estimator drawing a different sequence. The chromatic transport is correct
 and gated, and no asset in this gallery has a medium chromatic enough to show it
 as a colour. That is worth saying plainly rather than implying the images
 improved.
+
+
+---
+
+## 2026-09-08 -- The non-finite samples are older and wider than reported
+
+Yesterday's entry said the renderer produces non-finite samples *above eight
+bounces*. Both halves of that are wrong, and the correction matters more than
+the original observation.
+
+**They are there at eight bounces**, which is the gallery's own contract. The
+earlier reading came from an interleaved console: `hdClaudeImageDiff` prints its
+measurements on stdout and its non-finite report on stderr, and the report for
+the eight-bounce image appeared underneath the sixteen-bounce heading. Comparing
+the eight-bounce render against *itself* -- rms exactly zero -- still reports 208
+of them. The count then *falls* with depth: 208 at eight, 115 at sixteen, 78 at
+thirty-two, 77 at sixty-four.
+
+**They are in every shader ball, not only the transmissive ones.** At 512 pixels
+and 256 samples, the gold ball has 2450, honey has 1345, and glass has 208.
+Gold is an opaque conductor with no transmission and no medium at all, so
+nothing about this belongs to the volumetric work. Switching subdivision off
+changes glass's count from 208 to 184, so it is not the refiner either.
+
+**And the gallery gate cannot see any of it.** The gate compares the committed
+JPEG against a *display-transformed* JPEG, and the display transform sanitises
+non-finite values on the way through -- there is a core test asserting exactly
+that. So `hdClaudeImageDiff`'s non-finite check, which is real and works, is
+structurally unreachable for the gallery: by the time it sees an image, every
+infinity has already been turned into a number. The roadmap's claim that the
+gate "fails on ... a non-finite sample" is true of the tool and false of the
+pipeline it sits in. That is why this has never fired.
+
+**Where they are.** `hdClaudeImageDiff` now reports the first few positions
+rather than only a count, which is what a defect needs and a tally cannot give.
+Plotted over the gold ball, all 2448 of them sit on **concave interior surfaces
+seen at or past edge-on**: the inside of the base ring, the inside of the small
+tab, the underside of the dome's rim. Nowhere else in the frame.
+
+**It is not the closures.** That was the obvious hypothesis and it is wrong. The
+closure validation suite gained a grazing sweep -- conductor and dielectric, at
+roughness 0.1, 0.4 and 0.8, at 1.4, 1.5, 1.55 radians, at exactly pi/2, and past
+it at 1.6 and 2.0 -- and every one of the thirty-six probes reports **zero**
+non-finite samples. A closure driven to the exact clamp does not produce one.
+
+The sweep did find something else, small and real: a smooth dielectric seen
+exactly edge-on from inside reads an albedo of 1.0219 where the closed form is
+exactly one. Under total internal reflection the compensation term is exactly
+`1 / Ess`, so a lobe whose true energy is `Ess` comes back as one only insofar
+as `mx_ggx_dir_albedo` is right about `Ess` -- and at `NdotV` approaching zero it
+is about two per cent out. That is an upstream fit's accuracy at the far end of
+its domain rather than a transport defect, and the grazing sweep's energy bound
+is set at 1.03 with that named, rather than at a round number chosen to pass.
+
+**Nor is it reproducible from the parts.** A glass sphere with a rect light, a
+constant environment and the stand-in sun, at 8, 16, 32 and 64 bounces and 256
+samples, produces exactly zero non-finite pixels in all four. That test is
+committed, because the reproduction it *fails* to achieve is itself information:
+whatever is responsible is not glass, not a light, not the sun, and not path
+length.
+
+What is left is what the shader ball has and that scene does not: real geometry
+with authored normals, several materials at once, textures, and concave surfaces
+that face away from the camera. The overlay says concave-and-edge-on, and the
+closure sweep says the closure is fine when driven there directly -- so the next
+place to look is what the *integrator* hands a closure at such a point, and
+whether some part of the geometric reconstruction degenerates there.

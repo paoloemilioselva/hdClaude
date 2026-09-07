@@ -188,6 +188,11 @@ try {
     std::size_t failedPixels = 0;
     double candidateSum = 0.0;
     std::size_t nonFinite = 0;
+    // Where the first few are, not only how many. A non-finite sample is a
+    // defect to be found rather than a number to be reported, and its position
+    // says which object produced it -- the one thing a count cannot.
+    constexpr std::size_t kReportedPositions = 8;
+    std::vector<std::size_t> nonFinitePixels;
 
     for (std::size_t pixel = 0; pixel < count; ++pixel) {
         float pixelWorst = 0.0f;
@@ -196,6 +201,10 @@ try {
             const float b = candidate.pixels[pixel * 4 + static_cast<std::size_t>(channel)];
             if (!std::isfinite(b)) {
                 ++nonFinite;
+                if (nonFinitePixels.size() < kReportedPositions &&
+                    (nonFinitePixels.empty() || nonFinitePixels.back() != pixel)) {
+                    nonFinitePixels.push_back(pixel);
+                }
                 continue;
             }
             candidateSum += b;
@@ -222,7 +231,12 @@ try {
     bool pass = true;
     if (nonFinite > 0) {
         std::cerr << "  " << nonFinite
-                  << " non-finite samples in the candidate\n";
+                  << " non-finite samples in the candidate, first at";
+        for (const std::size_t pixel : nonFinitePixels) {
+            std::cerr << " (" << pixel % candidate.width << ", "
+                      << pixel / candidate.width << ")";
+        }
+        std::cerr << '\n';
         pass = false;
     }
     // A render that produced nothing is a failure whatever the difference says,
