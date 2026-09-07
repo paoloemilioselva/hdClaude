@@ -3717,3 +3717,82 @@ the same distribution rather than a separate fault.
 It is recorded rather than chased here, with the reproduction written down: 512
 pixels, 256 samples, `HDCLAUDE_MAX_BOUNCES` at 16 or above, the glass shader
 ball, and `hdClaudeImageDiff` against the 8-bounce render to count them.
+
+
+---
+
+## 2026-09-08 -- Spectral MIS, per walk instead of per step
+
+The estimator refused earlier today now ships, with one change: the lane that
+proposes the free flights is chosen **once per walk** rather than once per step.
+
+That is the whole difference, and the earlier measurement is what specified it.
+Per-step selection bounds each step's weight by the lane count, but a walk
+multiplies steps, so the path's weight is bounded only by the lane count raised
+to the step count. Per-walk selection makes the balance heuristic apply to the
+whole walk's density, and the weight is again one density over the mean of four
+-- bounded by the lane count over the path.
+
+**The density has a closed form, which is what makes this cheap.** For lane j,
+the un-normalised probability of the sampled sequence is
+
+```
+q_j = sigma_s[j]^collisions * exp(-sigma_s[j] * distance)
+```
+
+because a product of exponentials is an exponential of a sum and every collision
+contributes one factor of the coefficient. The walk carries two accumulators --
+a collision count and a total distance -- and no per-step product at all. It is
+evaluated in logarithms with the largest term factored out, so the ratio is
+stable however far apart the coefficients are and however long the walk ran.
+
+**Roulette had to move.** It divided the throughput after every step, and the
+throughput is no longer updated until the walk ends. It now weighs the
+absorption accumulated so far, which is the part of the weight that actually
+decays, and its compensation is carried as a scalar and applied at the end. In a
+medium that absorbs nothing this leaves the incoming throughput untouched and
+roulette never fires, which is right: such a walk has lost nothing and should end
+when it reaches a boundary rather than when it gives up.
+
+**It converges, which is the claim the previous version failed.** On the
+four-to-one chromatic sphere the channel spread is 3.2 per cent at 256 samples
+and 1.4 at 2048, and on the forward-scattering one 3.7 falling to 0.8 -- about
+the square root of the sample ratio, which is what honest variance does. The
+per-step form sat near five per cent at both. The medium gate is asserted at
+1024 samples for the media and 256 for the closure probes, and reads 1.0075,
+1.0098, 1.0081 isotropic; 1.0035 forward; 1.0067 dense; 0.9991, 1.0037, 1.0085
+chromatic; and 1.0007, 1.0038, 0.9996 chromatic forward.
+
+**Three guards keep the change attributable**, and each is exact rather than a
+tolerance.
+
+A path in vacuum draws nothing, because every kernel shares one random stream
+per path and a draw taken where it is not needed shifts what every later sampler
+in the frame sees.
+
+Whether a medium scatters is read from the *authored* coefficient rather than
+the upsampled one. Upsampling a zero coefficient goes through a chroma table and
+returns a hair under one before the logarithm, so the resolved `sigma_s` is a
+millionth rather than nothing -- enough to make a clear glass look like a
+scattering medium to a test on the resolved value.
+
+And an achromatic medium draws nothing either. All four lanes then carry the
+same coefficient, so the four techniques are one technique, the average equals
+any one of them, and every weight is one whichever lane is named. Choosing lane
+zero there is not a fixed control wavelength -- the thing this design exists to
+avoid -- it is a choice among identical options, and it is gated on exact
+equality because that is the condition under which the claim holds.
+
+**What moved in the gallery, and what did not.** Seven scenes are byte
+identical, including honey and the chess set, which the guards recovered: their
+media scatter achromatically, so they now render the sequence they always did.
+Intel Sponza moves by an RMS of 0.0037 -- its derived coefficient is not exactly
+grey, so it does draw -- and the glass ball and the OpenPBR playground move by
+0.031 and 0.057, which is where genuinely chromatic scattering lives.
+
+Every per-channel mean is unchanged to four decimal places, in every scene. So
+none of the visible movement is a change in what the estimator returns; it is the
+same estimator drawing a different sequence. The chromatic transport is correct
+and gated, and no asset in this gallery has a medium chromatic enough to show it
+as a colour. That is worth saying plainly rather than implying the images
+improved.

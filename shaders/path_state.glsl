@@ -20,6 +20,16 @@
 
 // --- Frame constants --------------------------------------------------------
 
+// Number of correlated hero wavelengths a path carries. Must equal
+// hdclaude::kSpectralLanes in include/hdclaude/core/spectrum.h.
+//
+// Guarded because the closure ABI declares the same constant: a generated
+// material includes `lib/mx_closure_type.glsl` and the shade kernel is appended
+// to it, so both definitions are in scope there and only there.
+#ifndef HDCLAUDE_SPECTRAL_LANES
+#define HDCLAUDE_SPECTRAL_LANES 4
+#endif
+
 layout(set = 0, binding = 0, scalar) uniform FrameBlock {
     mat4  cameraToWorld;
     vec4  environmentColor;     // rgb, w unused

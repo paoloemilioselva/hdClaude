@@ -1669,7 +1669,8 @@ int main()
             // its interior paths past the critical angle. It is still closed
             // and still lossless, so it must still read one.
             const auto sphereFurnace = [&](const CompiledMaterial& material,
-                                           const char* label, float u) {
+                                           const char* label, float u,
+                                           std::uint32_t samples) {
                 if (material.spirv.empty()) {
                     return Pixel{0.0f, 0.0f, 0.0f};
                 }
@@ -1682,7 +1683,7 @@ int main()
                 // Half the slab furnace's samples over a window four times its
                 // area: a sphere fills the frame where two quads fill a patch
                 // of it, so the same number of paths reaches the measurement.
-                box.samplesPerPixel = 256;
+                box.samplesPerPixel = samples;
                 // Deeper than the slab's sixteen. A path inside a sphere of
                 // glass is totally reflected at every incidence past 41.8
                 // degrees, so it crosses the boundary many more times before it
@@ -1820,9 +1821,9 @@ int main()
                 CHECK(!layeredSphere.spirv.empty());
 
                 for (const float u : {0.50f, 0.36f}) {
-                    const Pixel bareSphere = sphereFurnace(solid, "RT", u);
+                    const Pixel bareSphere = sphereFurnace(solid, "RT", u, 256);
                     const Pixel layeredPatch =
-                        sphereFurnace(layeredSphere, "layer(R, T)", u);
+                        sphereFurnace(layeredSphere, "layer(R, T)", u, 256);
                     CHECK_NEAR(bareSphere.g, 1.0, 0.03);
                     CHECK_NEAR(layeredPatch.g, 1.0, 0.03);
                 }
@@ -1879,7 +1880,16 @@ int main()
                     if (medium.spirv.empty()) {
                         continue;
                     }
-                    const Pixel patch = sphereFurnace(medium, probe.name, 0.5f);
+                    // Four times the closure probes' samples. A chromatic
+                    // medium's lanes carry different weights, where an
+                    // achromatic one's are all exactly one, so the channels
+                    // separate at a rate the cheap count cannot resolve against
+                    // a gate this tight. The spread halves as it should with
+                    // sample count -- 3.2 per cent at 256 and 1.4 at 2048 --
+                    // which is what says it is variance and not the compounding
+                    // the per-step form had.
+                    const Pixel patch =
+                        sphereFurnace(medium, probe.name, 0.5f, 1024);
                     CHECK_NEAR(patch.r, 1.0, 0.03);
                     CHECK_NEAR(patch.g, 1.0, 0.03);
                     CHECK_NEAR(patch.b, 1.0, 0.03);

@@ -58,6 +58,112 @@ void main()
     int instance = -1;
     int primitive = -1;
 
+    // --- The medium, and the walk's spectral bookkeeping ---------------------
+    //
+    // Both coefficients are per lane. The medium does not change inside one
+    // invocation, so they are resolved once rather than per step.
+    //
+    // Absorption stays analytic. Sampling a collision and weighting by the
+    // single-scattering albedo is the textbook form and is unbiased, but in a
+    // medium that only absorbs it turns a closed-form attenuation into a coin
+    // flip that kills the path -- right in the mean and far noisier for nothing.
+    // Honey and coloured glass are exactly that medium. So the distance is
+    // proposed from the *scattering* coefficient alone.
+    //
+    // Whether the medium scatters at all is read from the *authored*
+    // coefficient rather than from the upsampled one. Upsampling a zero
+    // coefficient goes through a chroma table and comes back a hair under one
+    // before the logarithm, so `sigma_s` is a millionth rather than nothing --
+    // enough to make a clear glass look like a scattering medium to a test on
+    // the resolved value, and to cost it a random draw it does not need.
+    vec3 authoredScattering = max(mediumScattering.xyz, vec3(0.0));
+    bool scatters = inMedium && max(max(authoredScattering.x,
+                                        authoredScattering.y),
+                                    authoredScattering.z) > 0.0;
+
+    vec4 sigmaA = vec4(0.0);
+    vec4 sigmaS = vec4(0.0);
+    if (inMedium)
+    {
+        sigmaA = hdclaude_lane_extinction(mediumAbsorption.xyz, lambda);
+    }
+    if (scatters)
+    {
+        sigmaS = hdclaude_lane_extinction(mediumScattering.xyz, lambda);
+    }
+
+    // The lane that proposes every free flight in this walk, chosen uniformly
+    // and *once*.
+    //
+    // Once, not per step, and that is the whole design. Weighting each step by
+    // the balance heuristic over the four lanes' step densities is unbiased and
+    // bounds each step's weight by the lane count -- but a walk multiplies
+    // steps, so the path's weight is bounded only by the lane count raised to
+    // the step count, and a dense chromatic medium then refuses to converge.
+    // That was measured: per-step selection reads 1.02, 1.06, 1.01 on a
+    // four-to-one medium and does not tighten at eight times the samples, while
+    // the same estimator on a medium thin enough to scatter once is exact
+    // (docs/implementation-notes.md, 2026-09-08).
+    //
+    // With one proposer for the whole walk the balance heuristic applies to the
+    // whole walk's density, and the weight is again one density over the mean of
+    // four -- bounded by the lane count over the *path*, which is what the
+    // per-step form could not deliver.
+    //
+    // A fixed control wavelength would have the same shape and be wrong: the
+    // weights are only unbiased because this is a random choice among the
+    // techniques they average over.
+    //
+    // Drawn only when there is something to scatter off. Every kernel shares
+    // one random stream per path, so a draw taken where it is not needed shifts
+    // what every later sampler in the frame sees -- and a surface that merely
+    // transmits marks the path as being in a medium whether or not that medium
+    // scatters. Guarding on the coefficient rather than on the flag keeps a
+    // clear glass, a purely absorbing one, and a path in vacuum on exactly the
+    // sequence they had.
+    //
+    // An achromatic medium needs no draw at all, and that is exact rather than
+    // an optimisation. All four lanes then carry the same coefficient, so the
+    // four techniques are the same technique, the balance heuristic's average
+    // equals any one of them, and every weight is one whichever lane is named.
+    // Choosing lane zero is therefore not a fixed control wavelength -- the
+    // thing this design exists to avoid -- it is a choice among identical
+    // options. It is gated on exact equality of the authored coefficient,
+    // because that is the condition under which the claim holds.
+    //
+    // It also keeps every scene whose medium does not scatter chromatically
+    // rendering the sequence it already rendered, which is what makes a change
+    // to this kernel attributable to the media it actually affects.
+    bool achromatic = authoredScattering.x == authoredScattering.y &&
+                      authoredScattering.y == authoredScattering.z;
+    float control = 0.0;
+    if (scatters)
+    {
+        uint proposer = 0u;
+        if (!achromatic)
+        {
+            proposer = min(uint(hdclaude_random(rng) *
+                                float(HDCLAUDE_SPECTRAL_LANES)),
+                           uint(HDCLAUDE_SPECTRAL_LANES - 1));
+        }
+        control = sigmaS[proposer];
+    }
+
+    // The walk's density needs only these two. For lane j the un-normalised
+    // probability of this exact sequence is
+    //
+    //     q_j = sigma_s[j]^collisions * exp(-sigma_s[j] * distance)
+    //
+    // because the per-step factors collapse: a product of exponentials is an
+    // exponential of a sum, and every collision contributes one factor of the
+    // coefficient. No per-step product has to be carried at all.
+    int collisions = 0;
+    float distance = 0.0;
+    // Compensation for surviving roulette, applied with the weight at the end.
+    // Roulette can no longer divide the throughput as it goes, because the
+    // throughput is not updated until the walk finishes.
+    float rouletteWeight = 1.0;
+
     for (int step = 0; step <= kMaxWalkSteps; ++step)
     {
         rayQueryEXT query;
@@ -89,47 +195,64 @@ void main()
             break;
         }
 
-        // Absorption is spectral and deterministic; scattering is sampled and
-        // achromatic. Both halves of that are deliberate.
-        //
-        // Applying absorption by sampling a collision and weighting by the
-        // single-scattering albedo is the textbook form and is unbiased, but in
-        // a medium that only absorbs it turns a closed-form attenuation into a
-        // coin flip that kills the path -- right in the mean and far noisier for
-        // nothing. Honey and coloured glass are exactly that medium.
-        //
-        // Scattering is achromatic because a *chromatic* scattering coefficient
-        // sampled against one control wavelength makes every other lane carry
-        // `exp((control - sigma_lane) * flight)`, which grows with the flight
-        // and compounds over a walk until it overflows. It did: a strongly
-        // forward-scattering slab produced NaN before this. Fixing that
-        // properly means multiple importance sampling across the lanes'
-        // densities, which is a real piece of work and is recorded as remaining.
-        // Taking the mean makes every lane share one density, so the scattering
-        // weight is exactly one and only absorption carries colour -- which is
-        // where a medium's colour comes from in almost every real material.
-        vec4 sigmaA = hdclaude_lane_extinction(mediumAbsorption.xyz, lambda);
-        float sigmaS = max((mediumScattering.x + mediumScattering.y +
-                            mediumScattering.z) / 3.0,
-                           0.0);
-
-        float control = max(sigmaS, 1.0e-6);
-        float flight = -log(max(1.0e-8, hdclaude_random(rng))) / control;
+        // A lane with no scattering proposes no collision, which is the honest
+        // answer rather than a division by zero; the weights below then hand
+        // the sample to whichever lanes do scatter.
+        float flight = control > 0.0
+                           ? -log(max(1.0e-8, hdclaude_random(rng))) / control
+                           : 1.0e30;
 
         if (flight >= tBoundary || step == kMaxWalkSteps)
         {
-            // Reached the boundary. The scattering term cancels against its own
-            // density exactly, so what is left is the absorption over the
-            // flight -- and with no scattering at all this is the whole medium,
-            // applied in closed form with no randomness.
-            throughput *= exp(-sigmaA * tBoundary);
+            if (tBoundary > 1.0e29)
+            {
+                // Inside a medium with no boundary anywhere ahead, which can
+                // only mean the medium was never closed -- an open shell, or
+                // faces with nothing joining their edges. The physical answer
+                // over an unbounded scattering medium is that the path never
+                // gets out, and reaching this says the scene is wrong rather
+                // than the transport.
+                throughput = vec4(0.0);
+                hitGeometry = false;
+                light = -1;
+                break;
+            }
+            distance += tBoundary;
+
+            // The walk is over, so its density is known and the balance
+            // heuristic can be applied to the whole of it. Each lane
+            // contributes the probability it would have produced this exact
+            // sequence, divided by the average over the four lanes that could
+            // have proposed it.
+            //
+            // In logarithms, because `sigma_s^collisions` overflows and
+            // `exp(-sigma_s * distance)` underflows long before their ratio
+            // does anything interesting. The largest is factored out and
+            // cancels exactly, which leaves at least one lane at one and the
+            // mean strictly positive however far apart the coefficients are.
+            vec4 logDensity = float(collisions) * log(max(sigmaS, vec4(1.0e-30)))
+                              - sigmaS * distance;
+            float peak = max(max(logDensity.x, logDensity.y),
+                             max(logDensity.z, logDensity.w));
+            vec4 density = exp(logDensity - peak);
+            float mean = 0.25 * (density.x + density.y + density.z + density.w);
+
+            // Every weight is now one density over the mean of four, so no lane
+            // can carry more than the lane count however long the walk was.
+            // With achromatic coefficients all four are equal, the mean is that
+            // value, and every weight is exactly one -- the achromatic walk is
+            // this walk's own special case rather than a second path to keep in
+            // agreement with it.
+            throughput *= (density / mean) * exp(-sigmaA * distance) *
+                          rouletteWeight;
             break;
         }
 
         // A real scattering event. The phase function cancels, being what the
-        // direction is sampled from, and the scattering coefficient cancels
-        // against the density that produced this distance.
-        throughput *= exp(-sigmaA * flight);
+        // direction is sampled from; the coefficients are accounted for once,
+        // at the end, by the density above.
+        distance += flight;
+        ++collisions;
 
         origin = origin + direction * flight;
         direction = hdclaude_sample_phase(
@@ -138,8 +261,16 @@ void main()
 
         // Roulette on the walk itself. A dense, dark medium would otherwise
         // spend the whole cap carrying almost nothing.
-        float survival = clamp(max(max(throughput.x, throughput.y),
-                                   max(throughput.z, throughput.w)),
+        //
+        // It weighs the absorption accumulated so far rather than the
+        // throughput, which is no longer updated as the walk runs. That is the
+        // part of the weight which actually decays: in a medium that absorbs
+        // nothing this stays at the incoming throughput and roulette never
+        // fires, which is right, because such a walk has lost nothing and ends
+        // when it reaches a boundary rather than when it gives up.
+        vec4 carried = throughput * exp(-sigmaA * distance) * rouletteWeight;
+        float survival = clamp(max(max(carried.x, carried.y),
+                                   max(carried.z, carried.w)),
                                0.05, 1.0);
         if (hdclaude_random(rng) > survival)
         {
@@ -148,7 +279,7 @@ void main()
             light = -1;
             break;
         }
-        throughput /= survival;
+        rouletteWeight /= survival;
     }
 
     pathThroughput.values[path] = throughput;
