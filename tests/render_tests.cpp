@@ -862,7 +862,7 @@ int main()
                 tracer.Render(kTimingSize, kTimingSize, LookDownZ(2.2f), timed);
 
                 double best = 1.0e30;
-                for (int run = 0; run < 3; ++run) {
+                for (int run = 0; run < 5; ++run) {
                     const auto start = std::chrono::steady_clock::now();
                     tracer.Render(kTimingSize, kTimingSize, LookDownZ(2.2f), timed);
                     const std::chrono::duration<double, std::milli> elapsed =
@@ -872,9 +872,20 @@ int main()
                 return best;
             };
 
-            const double neither = timeScene({materials[0], materials[1]});
+            // The baseline is measured at both ends and the faster taken. It is
+            // the term the ratio below is most sensitive to -- it appears in the
+            // numerator and the denominator -- and it is also the first thing
+            // timed, so it carries whatever the GPU had not finished settling
+            // into: clocks still ramping, a driver still compiling, a cache
+            // still cold. A single warm-up render does not always clear that,
+            // and when it does not the baseline reads slow, `added` collapses,
+            // and the ratio explodes. This test failed twice on that and passed
+            // on re-run both times, which is the signature.
+            const double neitherFirst = timeScene({materials[0], materials[1]});
             const double one = timeScene({materials[0], heavyRed});
             const double both = timeScene({heavyWhite, heavyRed});
+            const double neitherLast = timeScene({materials[0], materials[1]});
+            const double neither = std::min(neitherFirst, neitherLast);
 
             std::printf("  shading %d-octave graph: none %.1f ms, one %.1f ms, "
                         "both %.1f ms\n",
