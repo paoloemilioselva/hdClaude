@@ -3078,3 +3078,42 @@ the right one, and this was an attempt to take the third step first.
 Reverted. What it bought is the isolation: the closure change is safe and
 narrow, and the regression that made the first attempt look catastrophic lives
 entirely in the hand-off guard.
+
+
+---
+
+## 2026-09-07 -- Subsurface is blocked on chromatic media, not on its own mapping
+
+The next step for subsurface was going to be the radius mapping: `extinction =
+1 / max(radius, 1e-4)` turns the zero component the bubblegum material authors
+into an extinction of ten thousand, which is not what a zero mean free path
+means. That is true, and it is not the blocker.
+
+**The colour of a subsurface material is its per-channel mean free path.** Red
+travels far in skin and blue does not; that difference *is* the effect. In the
+parameters it appears as a chromatic `radius`, and bubblegum authors
+`(1, 0, 0.068)` -- a ratio of about 1 : 0 : 15 between the channels.
+
+**The walk averages it away.** `extend` collapses the scattering coefficient to
+its mean before sampling a free flight, because a chromatic coefficient sampled
+against one control wavelength makes every other lane carry a weight that grows
+with the flight and overflows -- it produced NaN, and taking the mean was the
+containment. Absorption stays spectral, so *some* colour survives, but it is the
+wrong mechanism: absorption removes light over a path length the walk has already
+made achromatic, and it cannot reproduce a target diffuse albedo per channel the
+way differing mean free paths do.
+
+So fixing the mapping recovers information that is destroyed one step later. A
+third attempt at subsurface transport would fail for a reason none of the first
+two revealed, and it would fail *quietly* -- a plausible, desaturated result that
+looks like a tuning problem rather than a structural one.
+
+**The order is therefore:** multiple importance sampling across the four lanes'
+densities for media, then the radius mapping, then the publication question --
+why glass and honey see a subsurface publication at all -- and only then the
+entry direction. The first of those is the one item that unblocks both honey's
+chromatic scattering and subsurface, and it is the piece the medium work has been
+deferring since the walk landed.
+
+The subsurface furnace committed alongside this note is the gate for all of it,
+and passes at 0.9995 on the Lambertian that subsurface currently is.
