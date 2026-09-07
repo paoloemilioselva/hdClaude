@@ -2814,3 +2814,49 @@ baselines. A gate loosened until it passes is not a gate.
 
 Every transmissive material in the gallery is carrying this: glass, honey, the
 playground's jars, Collective Project's canopy.
+
+
+---
+
+## 2026-09-07 -- Three layers nobody switched on, taking five per cent each
+
+The furnace said a slab of `open_pbr_surface` gains fifteen per cent and a bare
+`dielectric_bsdf` gains nothing. Both call the same closure, so the fault was in
+the composition, and the direction of the error said where: `mx_layer_bsdf`
+evaluates `top.response + base.response * top.throughput`, which for a
+reflection lobe over a transmission lobe is `R + T(1 - F)` -- about four per cent
+*short*. The evaluation loses while the render gains, so the error had to be in
+the sampling and the density, not the arithmetic.
+
+It was one clamp:
+
+    float pTop = clamp(mean(1 - top.throughput), 0.05, 0.95);
+
+The intent was defensible -- neither lobe should be selectable with zero
+probability while still contributing to the response, which would be an infinite
+weight -- and the floor was the expensive half of it. `open_pbr_surface` layers a
+coat over a fuzz over its base *whether or not they are enabled*, and a layer of
+zero weight has zero albedo. So three dead lobes claimed five per cent of the
+mixture density each, and a density that does not describe the sampling is not a
+density. Fifteen per cent, from three layers nobody switched on.
+
+**Zero is safe, and for a reason worth stating.** The two conditions coincide: a
+top layer with unit throughput has taken nothing from the ray, so its response is
+zero and there is nothing left to weigh. `mix` at zero returns the base's density
+exactly, and the selector never picks a lobe it was given no probability for. The
+guard was protecting against a case that cannot arise.
+
+**What it was worth.** The slab goes from 1.1505 to 1.0145. Against hdCodex --
+an independent renderer, and not something this was tuned against -- the glass
+ball falls from 0.145 to 0.113, the playground from 0.248 to 0.236, the chess set
+from 0.049 to 0.045 and Collective Project from 0.118 to 0.116; the gold ball and
+bubblegum drift the other way by about 0.007. Every mean in the gallery drops,
+which is what removing invented energy looks like.
+
+**And a residual that is not explained.** 1.4 per cent remains. It is gated at
+three, which is loose against the closure's own two parts in a thousand and tight
+enough that a return to fifteen cannot pass unnoticed, and the number is written
+in the test beside the tolerance so that widening it further has to be somebody's
+deliberate decision. Chasing the last per cent means auditing the other
+combinators the same way -- `mx_mix_bsdf` and the thin-film mixes are the
+untested ones -- and the furnace now exists to do it with.

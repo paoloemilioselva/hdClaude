@@ -30,11 +30,23 @@ void mx_layer_bsdf(ClosureData closureData, BSDF top, BSDF base, out BSDF result
     result.throughput = top.throughput + base.throughput;
 
     // ---- hdClaude ----------------------------------------------------------
-    // Clamped away from both endpoints so neither lobe can be selected with
-    // zero probability while still contributing to the response, which would be
-    // an infinite weight.
+    // The top layer is selected exactly as often as it contributes, and no
+    // more. An earlier version clamped this to [0.05, 0.95] so that neither
+    // lobe could be selected with zero probability while still contributing --
+    // which would be an infinite weight -- and the floor was the expensive
+    // half of that bargain. `open_pbr_surface` layers a coat and a fuzz over
+    // its base whether or not they are switched on, and a layer whose weight is
+    // zero has zero albedo, so the floor made three dead lobes claim five per
+    // cent of the mixture density each. The density then no longer described
+    // the sampling, and a closed slab of glass gained fifteen per cent of the
+    // light passing through it.
+    //
+    // Zero is safe here because the two conditions coincide: a top layer with
+    // unit throughput has taken nothing, so its response is zero and there is
+    // nothing to weigh. `mix` at zero returns the base's density exactly, and
+    // the selector never picks a lobe it was given no probability for.
     vec3 topAlbedo = clamp(vec3(1.0) - top.throughput, 0.0, 1.0);
-    float pTop = clamp((topAlbedo.x + topAlbedo.y + topAlbedo.z) / 3.0, 0.05, 0.95);
+    float pTop = clamp((topAlbedo.x + topAlbedo.y + topAlbedo.z) / 3.0, 0.0, 1.0);
 
     result.pdf = mix(base.pdf, top.pdf, pTop);
     result.spectrum = top.spectrum + base.spectrum * vec4(top.throughput, 1.0);

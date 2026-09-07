@@ -1428,17 +1428,28 @@ int main()
             CHECK(!bare.spirv.empty());
             const Pixel bareResult = furnace(bare, "dielectric_bsdf");
 
-            // `open_pbr_surface` deliberately does *not* run here yet. The same
-            // slab built from it reads 1.1505 -- it gains fifteen per cent per
-            // crossing -- and the defect is in how OpenPBR's graph layers a
-            // reflection-only dielectric over a transmission-only one rather
-            // than in the closure both of them call, which this case pins at
-            // one. Asserting it now would fail the suite; asserting it at a
-            // tolerance that passes would record the defect as correct. It is
-            // written up in the notes and comes back with its fix.
+            const CompiledMaterial openPbr = MakeAbsorbingMaterial(
+                libraries, compiler, tracer.ShadeKernelSource(), 1.5f,
+                mx::Color3(1.0f, 1.0f, 1.0f), 1.0f, "openpbr",
+                mx::Color3(0.0f, 0.0f, 0.0f), 0.0f);
+            CHECK(!openPbr.spirv.empty());
+            const Pixel openPbrResult = furnace(openPbr, "open_pbr_surface");
             CHECK_NEAR(bareResult.r, 1.0, 0.03);
             CHECK_NEAR(bareResult.g, 1.0, 0.03);
             CHECK_NEAR(bareResult.b, 1.0, 0.03);
+
+            // The layered surface is held to three per cent rather than to the
+            // closure's own two parts in a thousand, and the difference is not
+            // noise: it measures about 1.4 per cent high, and that residual is
+            // *not* explained. It is gated anyway because this same slab read
+            // 1.1505 before the layer's selection probability stopped being
+            // clamped off zero, and a gate that catches a return to fifteen per
+            // cent is worth having while the last per cent is chased. The
+            // number is written here so widening this tolerance further is a
+            // decision someone has to make deliberately.
+            CHECK_NEAR(openPbrResult.r, 1.0, 0.03);
+            CHECK_NEAR(openPbrResult.g, 1.0, 0.03);
+            CHECK_NEAR(openPbrResult.b, 1.0, 0.03);
         }
 
         // --- A rect light is an emitter a ray can hit, and MIS splits it ------
