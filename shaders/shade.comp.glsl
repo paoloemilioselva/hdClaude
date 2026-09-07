@@ -280,7 +280,14 @@ void main()
                              point.bitangent, point.objectPosition,
                              point.objectNormal, point.objectTangent,
                              point.objectBitangent, point.uv);
-    hdclaude_wavelengths = vec4(450.0, 550.0, 600.0, 650.0);
+    // The path's own hero wavelengths, not a fixed quartet. Nothing reads this
+    // yet, which is exactly why it was able to sit here wrong: a closure that
+    // needs to know which wavelengths it is being asked about -- a dispersive
+    // dielectric is the first that will -- would have been handed the same four
+    // numbers for every path, and the error would have looked like a dispersion
+    // model that does not work rather than like an input that was never
+    // connected.
+    hdclaude_wavelengths = lambda;
 
     // --- Emission -----------------------------------------------------------
     ClosureData emissionData = ClosureData(CLOSURE_TYPE_EMISSION, vec3(0.0), V,
