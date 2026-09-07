@@ -881,8 +881,24 @@ vec3 hdclaude_sample_phase(vec3 forward, float g, vec2 u)
     }
     else
     {
+        // Henyey-Greenstein, inverted from the form the literature states it
+        // in. That form gives the cosine against `wo`, the direction pointing
+        // *back* along the ray, because a phase function is conventionally
+        // written between two directions that both point away from the vertex.
+        // This function is handed the direction of propagation and returns
+        // another one, so its cosine is against `forward` and the sign flips.
+        //
+        // Taking the published formula with a basis built around the direction
+        // of travel is a full reversal of the medium: `g` of 1, which OpenPBR
+        // defines as fully forward scattering, scattered every ray exactly
+        // backwards. The playground's bottle authors exactly that value.
+        //
+        // Negating is the whole correction, and it is a correction rather than
+        // a convention: the Henyey-Greenstein density is symmetric under
+        // `(g, cos) -> (-g, -cos)`, so a negated sample of the `wo` form is
+        // exactly a sample of the propagation form with the same `g`.
         float term = (1.0 - g * g) / (1.0 + g - 2.0 * g * u.x);
-        cosTheta = -(1.0 + g * g - term * term) / (2.0 * g);
+        cosTheta = (1.0 + g * g - term * term) / (2.0 * g);
     }
     cosTheta = clamp(cosTheta, -1.0, 1.0);
 

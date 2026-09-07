@@ -1435,6 +1435,87 @@ int main()
             }
         }
 
+        // --- Forward scattering goes forward ----------------------------------
+        //
+        // The sign of the phase function, which no furnace can see: a medium
+        // that scatters forward and one that scatters backward are both
+        // lossless, so a closed slab of either renders one, and the images
+        // differ only in *where* the light ends up.
+        //
+        // It was wrong. The Henyey-Greenstein sampler is stated in the
+        // literature against `wo` -- the direction pointing back along the ray,
+        // because a phase function is conventionally written between two
+        // directions that both point away from the vertex -- and hdClaude built
+        // its basis around the direction of travel. So the cosine's sign was
+        // inverted and `g` of 1, which OpenPBR defines as fully forward, sent
+        // every ray straight back. The OpenPBR Playground's bottle authors
+        // exactly that value.
+        //
+        // The assertion is a beam through a slab. With a light behind it and
+        // blackness everywhere else, a forward-scattering medium barely
+        // deviates what passes through and a backward-scattering one turns it
+        // around, so the first must read far brighter than the second. Both
+        // directions are measured rather than one against a remembered number,
+        // because it is their *ratio* that carries the sign.
+        {
+            const float emitted = 6.0f;
+            struct Case { float g; const char* name; };
+            const Case cases[] = {{0.9f, "forward"}, {-0.9f, "backward"}};
+            double measured[2] = {0.0, 0.0};
+
+            for (int which = 0; which < 2; ++which) {
+                const CompiledMaterial medium = MakeScatteringMedium(
+                    libraries, compiler, tracer.ShadeKernelSource(),
+                    mx::Vector3(0.0f, 0.0f, 0.0f), mx::Vector3(6.0f, 6.0f, 6.0f),
+                    cases[which].g, cases[which].name);
+                CHECK(!medium.spirv.empty());
+                if (medium.spirv.empty()) {
+                    continue;
+                }
+
+                Scene scene;
+                scene.prototypes.push_back(MakeQuad());
+                scene.prototypes.push_back(MakeQuadFacingBack());
+                Transform3x4 back;
+                back.m[11] = -0.25f;
+                scene.instances.push_back({0, Transform3x4{}, 0, true});
+                scene.instances.push_back({1, back, 0, true});
+
+                // Behind the slab, wide enough that the unscattered beam lands
+                // on it whichever way the medium bends what passes through.
+                Light rect;
+                rect.type = static_cast<std::uint32_t>(LightType::Rect);
+                rect.position[2] = -3.0f;
+                rect.direction[2] = 1.0f;
+                rect.uAxis[0] = 3.0f;
+                rect.vAxis[1] = 3.0f;
+                rect.area = 6.0f * 6.0f;
+                for (int i = 0; i < 3; ++i) {
+                    rect.radiance[i] = emitted;
+                }
+                scene.lights.push_back(rect);
+                tracer.SetScene(scene, {medium});
+
+                RenderSettings beam;
+                beam.samplesPerPixel = 512;
+                beam.maxBounces = 12;
+                for (int i = 0; i < 3; ++i) {
+                    beam.environmentColor[i] = 0.0f;
+                    beam.sunRadiance[i] = 0.0f;
+                }
+                const std::vector<float> image =
+                    tracer.Render(kWidth, kHeight, LookDownZ(3.0f), beam);
+                measured[which] = Window(image, 0.5f, 0.5f, 8).g;
+            }
+
+            std::printf("  phase: forward %.4f, backward %.4f (ratio %.2f)\n",
+                        measured[0], measured[1],
+                        measured[1] > 0.0 ? measured[0] / measured[1] : 0.0);
+            // A factor rather than a value. What is being asserted is which way
+            // round the two are, and by enough that noise cannot swap them.
+            CHECK(measured[0] > measured[1] * 1.5);
+        }
+
         // --- And what it transmits is estimated too ---------------------------
         //
         // The other half of a refracting surface, and until 2026-09-07 the half

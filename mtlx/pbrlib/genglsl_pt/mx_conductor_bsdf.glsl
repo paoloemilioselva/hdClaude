@@ -61,10 +61,10 @@ void mx_conductor_bsdf(ClosureData closureData, float weight, vec3 ior_n, vec3 i
 
         bsdf.sampledL = reflect(-V, H);
         // A perfectly smooth conductor is a delta lobe: next-event estimation
-        // must be skipped and its MIS weight is one. The threshold is the same
-        // alpha clamp the evaluation uses, so both branches agree about which
-        // surfaces are specular.
-        bsdf.isDelta = avgAlpha <= M_FLOAT_EPS ? 1.0 : 0.0;
+        // must be skipped and its MIS weight is one. So is one whose alpha is
+        // degenerate in *either* axis, which the geometric mean of the clamped
+        // pair hides -- see the note in mx_dielectric_bsdf.
+        bsdf.isDelta = min(roughness.x, roughness.y) <= M_FLOAT_EPS ? 1.0 : 0.0;
         return;
     }
 
@@ -95,7 +95,7 @@ void mx_conductor_bsdf(ClosureData closureData, float weight, vec3 ior_n, vec3 i
         bsdf.pdf = dot(N, L) > 0.0
                        ? mx_ggx_VNDF_reflection_PDF(Ht, safeAlpha, G1V, NdotV)
                        : 0.0;
-        bsdf.isDelta = avgAlpha <= M_FLOAT_EPS ? 1.0 : 0.0;
+        bsdf.isDelta = min(roughness.x, roughness.y) <= M_FLOAT_EPS ? 1.0 : 0.0;
 
         // The closure reports its own albedo. No surface-model name is
         // consulted, which is what lets reconstruction guides work for an

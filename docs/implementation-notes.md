@@ -3982,3 +3982,68 @@ many materials, and rendering it with the bottle's material substituted, or with
 the lights removed one at a time, localises the term far faster than reading the
 transport does. That is the approach that worked for the medium furnace and the
 one that failed, twice, when it was skipped.
+
+
+---
+
+## 2026-09-08 -- The phase function pointed backwards, and the Playground's cause
+
+Chasing the Playground's magnitudes turned up an unrelated defect on the way,
+and localised the magnitudes themselves without yet explaining them.
+
+**The Henyey-Greenstein sampler had its sign inverted.** The formula the
+literature states -- and the one hdClaude carried verbatim -- gives the cosine
+against `wo`, the direction pointing *back* along the ray, because a phase
+function is conventionally written between two directions that both point away
+from the vertex. `hdclaude_sample_phase` is handed the direction of *travel* and
+returns another one, and built its basis around that, so every sample came out
+reversed. A `g` of 0.8 scattered backwards; a `g` of 1, which OpenPBR defines as
+fully forward, sent every ray exactly back the way it came.
+
+Negating is the whole correction and it is a correction rather than a
+convention: the Henyey-Greenstein density is symmetric under
+`(g, cos) -> (-g, -cos)`, so a negated sample of the `wo` form is exactly a
+sample of the propagation form with the same `g`.
+
+It is gated by a test that fails on the old code. A slab of purely scattering
+medium with a light behind it and blackness elsewhere reads 4.5005 forward
+against 2.0637 backward; with the sign inverted it reads 2.0759 and 4.4874 --
+the same two numbers, swapped. A furnace could never have caught this, since
+both media are lossless and differ only in *where* the light goes, which is
+exactly the kind of error the direction has to be asserted for separately.
+
+No gallery image moves, because nothing in it authors an anisotropic medium that
+reaches the walk. The Playground's bottle authors
+`transmission_scatter_anisotropy` of 1 but no `transmission_scatter` at all, so
+its medium never scatters and the phase function is never called for it.
+
+**A second change, principled and inert.** A microfacet lobe is a delta whenever
+*either* alpha is degenerate, not only when their average is.
+`mx_average_alpha` is the geometric mean of the **clamped** pair, so a zero alpha
+in one axis arrives as the epsilon and the mean lands well above it. OpenPBR's
+own anisotropy graph produces exactly that -- `alpha_y = (1 - anisotropy) *
+alpha_x`, so an anisotropy of one is a zero alpha by definition -- and such a
+distribution is a delta in that axis, which next-event estimation cannot
+evaluate. The three microfacet closures now test the unclamped minimum. It
+changes no image and no measurement here, and is recorded as reasoning rather
+than as a fix that was shown to do anything.
+
+**And the Playground's cause is `coat_roughness_anisotropy = 1` on the bottle**,
+which is proven by substitution rather than argued: setting it to zero takes the
+scene from a mean of 1.17e19 and a range reaching 2.18e25 to a mean of 0.238 and
+a range of [-3.99, 84.85], with the three non-finite samples gone and nothing at
+all above 1e2. Nothing else about the scene or the renderer changed.
+
+**Why is not yet known, and the obvious explanation is wrong.** The delta fix
+above was written for exactly this and had *no effect*: the render is
+bit-identical with and without it. The reason is that `coat_roughness` defaults
+to zero and the bottle does not author it, so by the anisotropy graph both alphas
+are zero whatever the anisotropy is -- and then the anisotropy cannot matter,
+which the experiment flatly contradicts. So the model of that graph is wrong
+somewhere, and the next step is to read what `open_pbr_surface` actually
+generates for this material rather than what its nodegraph appears to say.
+`HDCLAUDE_DUMP_SHADERS` exists for that, and `coat_roughness` feeds a second
+consumer in the graph besides the anisotropy node, which is the first thing to
+look at.
+
+The scan stays unwired from the gallery gate until this is fixed.

@@ -125,7 +125,21 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
     // Only RT chooses; only T is a base.
     bool choosesLobe = scatter_mode == 2;
     bool layerBase = scatter_mode == 1;
-    bool smoothSurface = avgAlpha <= M_FLOAT_EPS;
+    // A lobe is a delta whenever *either* alpha is degenerate, not only when
+    // their average is.
+    //
+    // `mx_average_alpha` is the geometric mean of the *clamped* pair, so an
+    // alpha of zero in one axis arrives as the epsilon and the mean lands well
+    // above it. That matters because OpenPBR's anisotropy mapping produces
+    // exactly that: `alpha_y = (1 - anisotropy) * alpha_x`, so an anisotropy of
+    // one -- which its own specification permits and the Playground's bottle
+    // authors on its coat -- is alpha_y of zero by definition. Such a
+    // distribution is a delta in that axis; next-event estimation cannot
+    // evaluate a delta at a single direction, and evaluating it anyway gave
+    // that scene radiance of 2.18e25.
+    //
+    // Tested on the unclamped input, since the clamp is what hides it.
+    bool smoothSurface = min(roughness.x, roughness.y) <= M_FLOAT_EPS;
 
     // The tangent frame is built once so sampling and evaluation share it.
     vec3 Xa = normalize(X - dot(X, N) * N);
