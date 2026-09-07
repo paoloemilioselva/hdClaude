@@ -183,6 +183,45 @@ MeshPrototype MakeQuadFacingBack()
     return prototype;
 }
 
+/// `layer(dielectric reflection, dielectric transmission)` by hand.
+///
+/// Exactly what `open_pbr_surface` builds around its specular lobe, and nothing
+/// else. Standing between the bare closure and the whole OpenPBR graph, it says
+/// which of the two owns an energy error the furnace finds.
+CompiledMaterial MakeLayeredDielectric(mx::DocumentPtr libraries,
+                                       const GlslCompiler& compiler,
+                                       const std::string& shadeKernel,
+                                       float ior,
+                                       const std::string& name)
+{
+    mx::DocumentPtr doc = mx::createDocument();
+    doc->importLibrary(libraries);
+
+    mx::NodePtr reflection = AddNode(doc, "dielectric_bsdf", "dr", "BSDF");
+    SetValue(reflection, "weight", 1.0f);
+    SetValue(reflection, "ior", ior);
+    SetValue(reflection, "roughness", mx::Vector2(0.0f, 0.0f));
+    reflection->setInputValue("scatter_mode", std::string("R"), "string");
+
+    mx::NodePtr transmission = AddNode(doc, "dielectric_bsdf", "dt", "BSDF");
+    SetValue(transmission, "weight", 1.0f);
+    SetValue(transmission, "ior", ior);
+    SetValue(transmission, "roughness", mx::Vector2(0.0f, 0.0f));
+    transmission->setInputValue("scatter_mode", std::string("T"), "string");
+
+    mx::NodePtr layered = AddNode(doc, "layer", "ly", "BSDF");
+    Connect(layered, "top", reflection);
+    Connect(layered, "base", transmission);
+
+    mx::NodePtr surface = AddNode(doc, "surface", "s", "surfaceshader");
+    Connect(surface, "bsdf", layered);
+    SetValue(surface, "opacity", 1.0f);
+    mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+    Connect(material, "surfaceshader", surface);
+
+    return CompileMaterial(doc, compiler, shadeKernel, name);
+}
+
 CompiledMaterial MakeAbsorbingMaterial(mx::DocumentPtr libraries,
                                        const GlslCompiler& compiler,
                                        const std::string& shadeKernel,
@@ -1428,6 +1467,12 @@ int main()
             CHECK(!bare.spirv.empty());
             const Pixel bareResult = furnace(bare, "dielectric_bsdf");
 
+            const CompiledMaterial layered = MakeLayeredDielectric(
+                libraries, compiler, tracer.ShadeKernelSource(), 1.5f,
+                "layered dielectric");
+            CHECK(!layered.spirv.empty());
+            const Pixel layeredResult = furnace(layered, "layer(R, T)");
+
             const CompiledMaterial openPbr = MakeAbsorbingMaterial(
                 libraries, compiler, tracer.ShadeKernelSource(), 1.5f,
                 mx::Color3(1.0f, 1.0f, 1.0f), 1.0f, "openpbr",
@@ -1447,6 +1492,7 @@ int main()
             // cent is worth having while the last per cent is chased. The
             // number is written here so widening this tolerance further is a
             // decision someone has to make deliberately.
+            CHECK_NEAR(layeredResult.g, 1.0, 0.03);
             CHECK_NEAR(openPbrResult.r, 1.0, 0.03);
             CHECK_NEAR(openPbrResult.g, 1.0, 0.03);
             CHECK_NEAR(openPbrResult.b, 1.0, 0.03);
