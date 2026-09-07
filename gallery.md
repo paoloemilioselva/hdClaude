@@ -6,8 +6,9 @@ both visible in a diff.
 
 **Status: all ten scenes render.** The renderer is under construction; see
 [docs/roadmap.md](docs/roadmap.md). These images are what hdClaude produces
-today, and every scene below says what its baseline still gets wrong. Parity
-with the hdCodex baselines is phase 8 and has not been reached.
+today, and every scene below says what its baseline still gets wrong. Judging
+those images against the specifications -- USD, MaterialX, the spectral model,
+and the physics of path tracing -- is phase 8, and it is not finished.
 
 Each scene shows its baseline inline. The image is the committed artefact
 itself, not a reduced copy of it: what a reader sees is the same file the
@@ -108,9 +109,19 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 
 ## Against hdCodex
 
-Phase 8 asks for parity with the hdCodex baselines. Mean display brightness of
-the two renderers' images of the same stage, at the same camera and settings,
-is the crudest possible comparison and the one that separates "different" from
+**hdCodex is a second opinion, not the answer.** Phase 8 does not ask for parity
+with it. Correctness comes from the specifications, and some of that renderer's
+images are themselves wrong -- it draws no lights at all, and shades 137 of
+Intel Sponza's materials as flat grey -- so a difference is a question rather
+than a defect. The question is which renderer the specification agrees with, and
+the reading in each row is the answer to that, not a distance still to close.
+Several of these divergences are hdClaude being right.
+
+What the comparison is good for is saying where to look. It is what revealed
+that the Kitchen Set's committed baseline had been wrong from the day it was
+adopted, which no self-comparison could have caught. Mean display brightness of
+the two renderers' images of the same stage, at the same camera and settings, is
+the crudest possible measure and the one that separates "different" from
 "missing":
 
 | Scene | RMS vs hdCodex | mean | reading |
