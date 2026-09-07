@@ -516,6 +516,60 @@ void TestBlackbodyScaleKeepsLuminanceConstant()
     }
 }
 
+/// The dispersion curve has to reproduce the two numbers that defined it.
+///
+/// An Abbe number is not a free parameter of a fit; it *is* a measurement, and
+/// the two-term Cauchy through it is fully determined. So the curve must pass
+/// through the quoted index at the yellow d-line, and the spread it produces
+/// between the blue F-line and the red C-line must come back as
+/// `(nd - 1) / V` exactly. Both are identities rather than approximations, which
+/// is what makes this checkable to a part in ten thousand rather than to a
+/// tolerance somebody chose.
+///
+/// The third case is the one that matters for a renderer: a *smaller* Abbe
+/// number spreads light more. That reads backwards, it is the commonest way to
+/// get dispersion inverted, and it is a sign error no image would obviously
+/// betray -- a prism that fans red the wrong side of blue still looks like a
+/// prism.
+void TestDispersionReproducesItsAbbeNumber()
+{
+    struct Glass { float ior; float abbe; const char* name; };
+    const Glass glasses[] = {
+        {1.5168f, 64.17f, "BK7 crown"},
+        {1.7847f, 25.72f, "SF11 dense flint"},
+        {2.4168f, 55.30f, "diamond"},
+    };
+
+    for (const Glass& glass : glasses) {
+        const float atD = DispersedIor(glass.ior, glass.abbe, kFraunhoferD);
+        const float atF = DispersedIor(glass.ior, glass.abbe, kFraunhoferF);
+        const float atC = DispersedIor(glass.ior, glass.abbe, kFraunhoferC);
+        const double spread = double(atF) - double(atC);
+        const double wanted = (double(glass.ior) - 1.0) / double(glass.abbe);
+
+        std::printf("  %-18s n_d %.5f (quoted %.5f), n_F - n_C %.6f "
+                    "(V implies %.6f)\n",
+                    glass.name, atD, glass.ior, spread, wanted);
+
+        CHECK_NEAR(atD, glass.ior, 1.0e-4);
+        CHECK_NEAR(spread, wanted, 1.0e-4);
+        // Blue is bent more than red by every ordinary transparent material.
+        CHECK(atF > atC);
+    }
+
+    // A smaller Abbe number is a more dispersive glass, which is the direction
+    // the name works against.
+    const double flint =
+        DispersedIor(1.6f, 25.0f, kFraunhoferF) - DispersedIor(1.6f, 25.0f, kFraunhoferC);
+    const double crown =
+        DispersedIor(1.6f, 64.0f, kFraunhoferF) - DispersedIor(1.6f, 64.0f, kFraunhoferC);
+    CHECK(flint > crown * 2.0);
+
+    // And zero means no dispersion at all, not a division by zero.
+    CHECK_NEAR(DispersedIor(1.5f, 0.0f, 400.0f), 1.5, 1.0e-6);
+    CHECK_NEAR(DispersedIor(1.5f, 0.0f, 700.0f), 1.5, 1.0e-6);
+}
+
 void TestBlackbodyPeakMatchesWien()
 {
     // Wien's displacement law is an independent check on Planck's law: the
@@ -607,6 +661,7 @@ int main()
     TestChromaTableMatchesTheFit();
     TestHeroPacketIntegratesUnbiased();
     TestBlackbodyLandsOnThePlanckianLocus();
+    TestDispersionReproducesItsAbbeNumber();
     TestBlackbodyScaleKeepsLuminanceConstant();
     TestDisplayTransformLeavesTheDiffuseRangeAlone();
     TestDisplayTransformCompressesRatherThanClips();

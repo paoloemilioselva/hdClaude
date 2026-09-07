@@ -121,6 +121,29 @@ Vec3 XyzToChromaticity(const Vec3& xyz);
 /// colour matching integration are both right rather than wrong together.
 Vec3 BlackbodyXyz(float kelvin);
 
+/// Index of refraction at `lambda`, from a nominal index and an Abbe number.
+///
+/// The Abbe number is how optical glass is actually catalogued: `V = (nd - 1) /
+/// (nF - nC)`, the ratio of refractivity at the yellow d-line to the spread
+/// between the blue F-line and the red C-line. A low V means a glass that
+/// spreads light strongly, so a *smaller* Abbe number is more dispersive, which
+/// is the opposite of what the name suggests to anyone meeting it for the first
+/// time.
+///
+/// Two-term Cauchy, `n = A + B / lambda^2`, whose two coefficients are exactly
+/// determined by the two numbers a material authors. That is why this form and
+/// not a Sellmeier fit: Sellmeier is more accurate over a wider band and needs
+/// six coefficients no asset supplies.
+///
+/// `abbe` at or below zero means no dispersion, and the nominal index is
+/// returned unchanged.
+float DispersedIor(float ior, float abbe, float lambda);
+
+/// The three Fraunhofer lines the Abbe number is defined against, in nanometres.
+constexpr float kFraunhoferF = 486.13f;   // blue
+constexpr float kFraunhoferD = 587.56f;   // yellow, where `ior` is quoted
+constexpr float kFraunhoferC = 656.27f;   // red
+
 /// CIE illuminant E (equal energy).
 inline float IlluminantE(float /*lambda*/) { return 1.0f; }
 

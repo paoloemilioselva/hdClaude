@@ -163,6 +163,25 @@ Vec3 BlackbodyXyz(float kelvin)
     return xyz.y > 0.0f ? xyz * (1.0f / xyz.y) : Vec3{};
 }
 
+float DispersedIor(float ior, float abbe, float lambda)
+{
+    if (!(abbe > 0.0f)) {
+        return ior;
+    }
+
+    // n = A + B / lambda^2, with B fixed by the Abbe number's definition and A
+    // by the requirement that the curve pass through `ior` at the d-line.
+    const double inverseF = 1.0 / (double(kFraunhoferF) * kFraunhoferF);
+    const double inverseC = 1.0 / (double(kFraunhoferC) * kFraunhoferC);
+    const double inverseD = 1.0 / (double(kFraunhoferD) * kFraunhoferD);
+
+    const double b = (double(ior) - 1.0) / (double(abbe) * (inverseF - inverseC));
+    const double a = double(ior) - b * inverseD;
+
+    const double safe = std::max(1.0, double(lambda));
+    return static_cast<float>(a + b / (safe * safe));
+}
+
 float SampleVisibleWavelength(float u)
 {
     return kWavelengthCenter -
