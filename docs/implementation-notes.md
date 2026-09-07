@@ -3383,3 +3383,120 @@ recorded here unexplained rather than given an explanation that sounds right,
 because an explanation is not a measurement. It matters in practice for any asset
 whose transmissive geometry is an open shell, which is common, and it should be
 chased before a medium feature is built on top of it.
+
+
+---
+
+## 2026-09-07 -- The sphere was inside out, and what it was hiding
+
+The entry above claims the volumetric walk conserves energy, on the evidence of
+a sphere furnace reading 1.0001 isotropic and 1.0023 chromatic. **That claim is
+withdrawn.** The sphere it was measured on was wound inside out, and the walk
+gains forty per cent.
+
+**The instrument's own defect.** `MakeSphere` emitted its triangles as
+`(a, b, a+1)`, which for a UV sphere parameterised as
+`(sin t cos p, cos t, sin t sin p)` gives a *inward* facing geometric normal.
+The authored normals were the outward positions, so nothing looked wrong: every
+closure reads the shading normal and shades a perfectly convincing glass ball.
+But which side of an interface a transmission crosses is decided from the
+**geometric** normal, and inverting it inverts that test. A path *leaving* the
+sphere was recorded as *entering* the medium, and a path entering it was
+recorded as leaving. Roughly half of all interior walks then ran outside the
+sphere, in an unbounded medium with no boundary ahead of them -- 52 per cent at
+the coefficients tested, measured by probing `hitGeometry` at the point the walk
+ends.
+
+The old walk handed each of those paths `exp(-sigma_a * 1e30)`, which for a
+medium that absorbs nothing is `exp(-0)` and therefore one, and the path then
+took the environment in full. In a furnace, a path that escapes early and
+collects a uniform environment is indistinguishable from a path that did the
+right thing. **So the furnace read one for the wrong reason, and a uniform
+environment is structurally blind to this class of error.** That is worth
+keeping in mind about every furnace here: it can only catch energy that is
+created or destroyed, never light that is collected too early.
+
+**What the corrected sphere shows.** With the winding fixed so paths are
+genuinely inside the medium:
+
+| interior | reads |
+| --- | --- |
+| vacuum, n = 1.5 | 1.0003 |
+| isotropic, n = 1.5 | **1.4214** |
+| isotropic, n = 1.2 | 0.9442 |
+| forward g = 0.8, n = 1.5 | 1.5680 |
+| dense, n = 1.5 | 1.3694 |
+| isotropic, no reflection lobe on top | 0.6104 |
+
+against the same closures with no medium at all, which read 1.0065 and 0.9900
+across the disc for a bare `dielectric_bsdf` and 1.0003 and 0.9894 for
+`layer(R, T)`. All of it reproduces on the walk exactly as committed, so none of
+it belongs to the spectral work below.
+
+The dependence is on the *interface*, not on the number of scattering events:
+the dense medium scatters four times as often as the isotropic one and gains
+less, while dropping the index from 1.5 to 1.2 turns a forty per cent gain into
+a six per cent loss and taking the reflection lobe off the top turns it into a
+thirty-nine per cent loss. What changes with the index is how much of the
+interior directions lie beyond the critical angle.
+
+That is a regime nothing here could previously reach. A solid glass sphere's
+internal rays cannot exceed the critical angle -- refraction at the entry maps
+the whole outside hemisphere into a cone of exactly that half-angle -- so a
+sphere of glass never totally internally reflects, and two flat quads never
+produce oblique internal directions at all. A scattering interior produces them
+in every direction, and it is the first thing in this renderer that does.
+
+So the defect is in how `layer(R, layer_vdf(T, vdf))` accounts for its lobes
+when a path is inside and past the critical angle. That much is measurement. The
+mechanism is not: the reading that fits is that the base lobe's sampler falls
+back to `reflect(-V, H)` when `mx_pt_refract` fails, producing a direction the
+*top* lobe then evaluates, so the response comes from one lobe and the density
+from the probability of having chosen the other. It is written down as the thing
+to check first and not as the answer.
+
+**The gate is not committed.** A furnace committed at a tolerance that passes
+1.42 would record the defect as correct, and the rule here is that the furnace
+goes in with the fix. `MakeScatteringMedium`, the sphere and the vacuum control
+are committed so that it can, and the vacuum control is asserted: the OpenPBR
+structure enclosing nothing must read what the layered dielectric reads, which
+puts any future failure inside the volume rather than around it.
+
+**Spectral MIS across the lanes is written and not shipped.** The walk it
+replaces samples one flight from a fixed control coefficient, which is why the
+scattering coefficient had to be collapsed to its mean: any other lane then
+carries `exp((control - sigma_lane) * flight)`, which compounds over a walk
+until it overflows. The replacement chooses the proposing lane *at random* among
+the four and divides by the balance heuristic's average of all four densities,
+which makes every weight a ratio of one density to the mean of four and
+therefore bounded by the lane count, however far apart the coefficients are. It
+reduces exactly to the current walk when the medium is achromatic -- verified on
+the GPU by probing the throughput after one weighted collision, which reads
+exactly one -- so the achromatic walk becomes the chromatic one's special case
+rather than a second path to keep in agreement.
+
+The weights, so it need not be reconstructed by guesswork. With `t` the
+sampled flight, `sB` the distance to the boundary, and both coefficients per
+lane:
+
+```
+proposer  ~ uniform over the four lanes
+t         ~ Exp(sigma_s[proposer])
+collision : w[j] = sigma_s[j] exp(-sigma_s[j] t)  / mean_k(sigma_s[k] exp(-sigma_s[k] t))
+                   * exp(-sigma_a[j] t)
+boundary  : w[j] = exp(-sigma_s[j] sB) / mean_k(exp(-sigma_s[k] sB))
+                   * exp(-sigma_a[j] sB)
+```
+
+Absorption stays outside the ratio and therefore stays analytic, which is the
+property the current walk was built around: sampling a collision and weighting
+by the single-scattering albedo is the textbook form, but in a medium that only
+absorbs it turns a closed-form attenuation into a coin flip that kills the path,
+and honey and coloured glass are exactly that medium.
+
+It is not committed because it cannot be gated. Its purpose is that a lossless
+chromatic medium renders one and neutral, and no medium renders one at all until
+the layering defect above is fixed. Shipping it would change the honey ball with
+nothing able to say whether the change was an improvement, which is the same
+mistake the reverted subsurface attempt made. It goes in behind the fix, with
+the furnace.
