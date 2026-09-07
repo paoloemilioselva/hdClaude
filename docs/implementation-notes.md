@@ -2395,3 +2395,55 @@ The asset is not edited over this. It is a third-party reference asset and its
 values are its own; if a borosilicate match is ever wanted, the gallery
 entrypoint sublayers the asset and can override the two inputs there, which is
 where hdClaude puts corrections to assets it does not own.
+
+
+---
+
+## 2026-09-07 -- Where the glass highlight went
+
+A better report than the last one: before the lights became hittable, the area
+light was *just* visible on both the gold ball and the glass ball. Afterwards it
+is crisp on the gold and appears gone on the glass, which also reads more
+transparent. That is the shape of a regression, and it deserved more than "glass
+is only four per cent reflective".
+
+**Two closed forms say the estimator is right.** The first is Fresnel at normal
+incidence, which the previous entry covers. The second is the one that matters
+here, because it targets the exact configuration a near-mirror lobe creates:
+
+A sharp lobe puts nearly all its density in a tiny cone, so at a direction
+toward a light the closure's density dwarfs the light's, and the balance
+heuristic gives next-event estimation almost nothing. Everything then rests on
+the other strategy -- the scattered ray hitting the light. If that half were
+missing the highlight would not merely get noisier, it would *vanish*, and every
+furnace test would still pass, because a furnace has no light in it to lose.
+
+So: a rect light wide enough to swallow the whole lobe, mirrored straight back
+at the camera, must read `R(0) * L` whether the surface is a delta mirror -- which
+takes the light entirely by hitting it -- or a narrow gloss, which splits it
+between the two strategies. Rendered: delta 0.0800, gloss 0.0800, closed form
+0.0800. The split conserves the total exactly.
+
+**And the highlight is still on the ball.** Rendering the glass at two bounces
+instead of eight is the diagnostic: two is not enough for a ray to enter the ball
+and leave it, so transmission drops out and only the reflection survives. The
+ball goes nearly black and the area light's diamond sits plainly on the upper
+left of the dome, in the same place it sits on the gold ball. Nothing was lost.
+
+**What actually changed is the background it sits against.** The glass transmits
+about ninety-five per cent and reflects about four and a half. Making the lights
+hittable therefore adds far more light *through* the ball than *off* it -- a lamp
+seen through a window, which is the larger term by more than twenty to one. The
+ball's mean display brightness rises from 0.677 to 0.713, and a four-per-cent
+reflection that used to sit against a darker refracted backdrop now sits against
+a brighter one. That is why it reads as washed out rather than absent, and why
+the same change made the gold ball, which reflects nearly everything and
+transmits nothing, look strictly better.
+
+**The old highlight was noise, and that is the other half of the story.** Look at
+the earlier images: the highlight on both balls is speckled. That is next-event
+estimation on a near-mirror lobe -- a few samples landing where the closure's
+response is enormous and the light's density small, which is unbiased and very
+loud. Weighting it correctly hands the work to the strategy that does it quietly.
+The gold ball shows what that is worth; the glass ball spends the same
+improvement on a term that is a twentieth the size.

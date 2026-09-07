@@ -176,7 +176,8 @@ CompiledMaterial MakeDielectricMaterial(mx::DocumentPtr libraries,
                                         const GlslCompiler& compiler,
                                         const std::string& shadeKernel,
                                         float ior,
-                                        const std::string& name)
+                                        const std::string& name,
+                                        float roughness = 0.0f)
 {
     mx::DocumentPtr doc = mx::createDocument();
     doc->importLibrary(libraries);
@@ -184,7 +185,7 @@ CompiledMaterial MakeDielectricMaterial(mx::DocumentPtr libraries,
     mx::NodePtr bsdf = AddNode(doc, "dielectric_bsdf", "di", "BSDF");
     SetValue(bsdf, "weight", 1.0f);
     SetValue(bsdf, "ior", ior);
-    SetValue(bsdf, "roughness", mx::Vector2(0.0f, 0.0f));
+    SetValue(bsdf, "roughness", mx::Vector2(roughness, roughness));
 
     mx::NodePtr surface = AddNode(doc, "surface", "s", "surfaceshader");
     Connect(surface, "bsdf", bsdf);
@@ -1027,6 +1028,89 @@ int main()
                             probe.name, centre.g, expected);
                 CHECK_NEAR(centre.g, expected, expected * 0.08);
             }
+        }
+
+        // --- A sharp gloss under a light must not lose what MIS splits --------
+        //
+        // The case the shader ball's glass actually is, and the one an MIS
+        // weight is easiest to get wrong on. A near-mirror lobe puts almost all
+        // of its density in a tiny cone, so at a direction toward the light the
+        // closure's density dwarfs the light's and the balance heuristic gives
+        // next-event estimation almost nothing. Everything then depends on the
+        // *other* strategy -- the scattered ray hitting the light -- and if that
+        // half is missing, the highlight does not become noisier, it disappears,
+        // while every furnace test still passes because a furnace has no light
+        // in it to lose.
+        //
+        // So the assertion is that the answer does not depend on the split. A
+        // rect light large enough to swallow the whole specular lobe, mirrored
+        // straight back at the camera, must read `R(0) * L` whether the surface
+        // is a delta mirror -- which takes it entirely by hitting the light --
+        // or a narrow gloss, which splits it between the two strategies.
+        {
+            const float ior = 1.5f;
+            const float emitted = 2.0f;
+            const double reflectance =
+                ((ior - 1.0) / (ior + 1.0)) * ((ior - 1.0) / (ior + 1.0));
+
+            const struct { float roughness; const char* name; } lobes[] = {
+                {0.0f, "delta"},
+                {0.02f, "gloss 0.02"},
+            };
+
+            double measured[2] = {0.0, 0.0};
+            for (int which = 0; which < 2; ++which) {
+                const CompiledMaterial mirror = MakeDielectricMaterial(
+                    libraries, compiler, tracer.ShadeKernelSource(), ior,
+                    lobes[which].name, lobes[which].roughness);
+                CHECK(!mirror.spirv.empty());
+                if (mirror.spirv.empty()) {
+                    continue;
+                }
+
+                Scene scene;
+                scene.prototypes.push_back(MakeQuad());
+                scene.instances.push_back({0, Transform3x4{}, 0, true});
+
+                // Wide and close, so the mirrored lobe lands entirely on it.
+                Light rect;
+                rect.type = static_cast<std::uint32_t>(LightType::Rect);
+                rect.position[0] = 0.0f;
+                rect.position[1] = 0.0f;
+                rect.position[2] = 2.0f;
+                rect.direction[0] = 0.0f;
+                rect.direction[1] = 0.0f;
+                rect.direction[2] = -1.0f;
+                rect.uAxis[0] = 4.0f; rect.uAxis[1] = 0.0f; rect.uAxis[2] = 0.0f;
+                rect.vAxis[0] = 0.0f; rect.vAxis[1] = 4.0f; rect.vAxis[2] = 0.0f;
+                rect.area = 8.0f * 8.0f;
+                rect.radiance[0] = emitted;
+                rect.radiance[1] = emitted;
+                rect.radiance[2] = emitted;
+                scene.lights.push_back(rect);
+                tracer.SetScene(scene, {mirror});
+
+                RenderSettings glossy;
+                glossy.samplesPerPixel = 512;
+                glossy.maxBounces = 2;
+                for (int i = 0; i < 3; ++i) {
+                    glossy.environmentColor[i] = 0.0f;
+                    glossy.sunRadiance[i] = 0.0f;
+                }
+
+                // Close in, so the centre is viewed near normal incidence and
+                // its mirror direction points into the light.
+                const std::vector<float> image =
+                    tracer.Render(kWidth, kHeight, LookDownZ(1.0f), glossy);
+                measured[which] = Window(image, 0.5f, 0.5f, 4).g;
+            }
+
+            const double expected = reflectance * emitted;
+            std::printf("  specular under a light: delta %.4f, gloss %.4f "
+                        "(closed form %.4f)\n",
+                        measured[0], measured[1], expected);
+            CHECK_NEAR(measured[0], expected, expected * 0.10);
+            CHECK_NEAR(measured[1], expected, expected * 0.10);
         }
 
         // --- A rect light is an emitter a ray can hit, and MIS splits it ------
