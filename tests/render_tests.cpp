@@ -222,6 +222,38 @@ CompiledMaterial MakeLayeredDielectric(mx::DocumentPtr libraries,
     return CompileMaterial(doc, compiler, shadeKernel, name);
 }
 
+/// A subsurface material, for the conservation gate the transport will need.
+///
+/// `subsurface_bsdf` with unit albedo absorbs nothing whatever it does with the
+/// light -- reflect it as a Lambertian, or carry it through a random walk and
+/// out somewhere else -- so a closed slab of it in a uniform environment must
+/// render one either way. That is what makes this gate worth having *before*
+/// the transport exists: it passes today, and it will fail the moment a walk
+/// starts losing or inventing energy.
+CompiledMaterial MakeSubsurfaceMaterial(mx::DocumentPtr libraries,
+                                        const GlslCompiler& compiler,
+                                        const std::string& shadeKernel,
+                                        const mx::Color3& radius,
+                                        const std::string& name)
+{
+    mx::DocumentPtr doc = mx::createDocument();
+    doc->importLibrary(libraries);
+
+    mx::NodePtr bsdf = AddNode(doc, "subsurface_bsdf", "ss", "BSDF");
+    SetValue(bsdf, "weight", 1.0f);
+    SetValue(bsdf, "color", mx::Color3(1.0f, 1.0f, 1.0f));
+    SetValue(bsdf, "radius", radius);   // color3 in the nodedef, not vector3
+    SetValue(bsdf, "anisotropy", 0.0f);
+
+    mx::NodePtr surface = AddNode(doc, "surface", "s", "surfaceshader");
+    Connect(surface, "bsdf", bsdf);
+    SetValue(surface, "opacity", 1.0f);
+    mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+    Connect(material, "surfaceshader", surface);
+
+    return CompileMaterial(doc, compiler, shadeKernel, name);
+}
+
 CompiledMaterial MakeAbsorbingMaterial(mx::DocumentPtr libraries,
                                        const GlslCompiler& compiler,
                                        const std::string& shadeKernel,
@@ -1502,6 +1534,21 @@ int main()
             // are within three per cent of each other, which is exactly why the
             // earlier and looser tolerance would have passed the second one
             // indefinitely.
+            // A subsurface material of unit albedo, whose radius has a zero
+            // component -- which is what the bubblegum asset authors, and the
+            // case that breaks a `1 / radius` extinction through an epsilon
+            // clamp. It conserves energy today because subsurface is not yet
+            // transported and behaves as a Lambertian; the gate is here so that
+            // it still has to when it is.
+            const CompiledMaterial sss = MakeSubsurfaceMaterial(
+                libraries, compiler, tracer.ShadeKernelSource(),
+                mx::Color3(1.0f, 0.0f, 0.068f), "subsurface");
+            CHECK(!sss.spirv.empty());
+            const Pixel sssResult = furnace(sss, "subsurface_bsdf");
+            CHECK_NEAR(sssResult.r, 1.0, 0.02);
+            CHECK_NEAR(sssResult.g, 1.0, 0.02);
+            CHECK_NEAR(sssResult.b, 1.0, 0.02);
+
             CHECK_NEAR(layeredResult.r, 1.0, 0.02);
             CHECK_NEAR(layeredResult.g, 1.0, 0.02);
             CHECK_NEAR(layeredResult.b, 1.0, 0.02);
