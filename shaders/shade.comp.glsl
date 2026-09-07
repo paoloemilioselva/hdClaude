@@ -528,8 +528,27 @@ void main()
     if (scatterClosure == CLOSURE_TYPE_TRANSMISSION)
     {
         bool goingIn = dot(point.geometricNormal, V) > 0.0;
-        pathMedium.values[path] =
-            goingIn ? vec4(hdclaude_medium_absorption, 0.0) : vec4(0.0);
+        // Subsurface publishes the same thing under a different name: a random
+        // walk beneath a surface and one inside a volume are the same walk, so
+        // a subsurface closure is carried as the medium it describes rather
+        // than as a second mechanism. Its radius is a mean free path, which is
+        // the reciprocal of extinction.
+        vec3 absorption = hdclaude_medium_absorption;
+        vec3 scattering = hdclaude_medium_scattering;
+        float anisotropy = hdclaude_medium_anisotropy;
+        if (hdclaude_subsurface_present > 0.5 && hdclaude_medium_present < 0.5)
+        {
+            vec3 extinction = 1.0 / max(hdclaude_subsurface_radius, vec3(1.0e-4));
+            scattering = extinction * clamp(hdclaude_subsurface_albedo,
+                                            vec3(0.0), vec3(1.0));
+            absorption = max(extinction - scattering, vec3(0.0));
+            anisotropy = hdclaude_subsurface_anisotropy;
+        }
+
+        pathMedium.values[2u * path + 0u] =
+            goingIn ? vec4(absorption, anisotropy) : vec4(0.0);
+        pathMedium.values[2u * path + 1u] =
+            goingIn ? vec4(scattering, 1.0) : vec4(0.0);
     }
 
     // What the environment kernel weighs against, if this ray misses. A delta

@@ -54,7 +54,8 @@ void main()
     // full rather than a weighted share of it.
     pathScatterPdf.values[index] = 0.0;
     // A camera ray starts in vacuum.
-    pathMedium.values[index] = vec4(0.0);
+    pathMedium.values[2u * index + 0u] = vec4(0.0);
+    pathMedium.values[2u * index + 1u] = vec4(0.0);
     activeQueue.values[index] = index;
 
     if (index == 0u)

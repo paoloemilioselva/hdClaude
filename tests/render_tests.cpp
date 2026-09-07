@@ -178,7 +178,10 @@ CompiledMaterial MakeAbsorbingMaterial(mx::DocumentPtr libraries,
                                        float ior,
                                        const mx::Color3& transmissionColour,
                                        float depth,
-                                       const std::string& name)
+                                       const std::string& name,
+                                       const mx::Color3& scatter =
+                                           mx::Color3(0.0f, 0.0f, 0.0f),
+                                       float anisotropy = 0.0f)
 {
     mx::DocumentPtr doc = mx::createDocument();
     doc->importLibrary(libraries);
@@ -195,7 +198,8 @@ CompiledMaterial MakeAbsorbingMaterial(mx::DocumentPtr libraries,
     SetValue(surface, "transmission_weight", 1.0f);
     SetValue(surface, "transmission_color", transmissionColour);
     SetValue(surface, "transmission_depth", depth);
-    SetValue(surface, "transmission_scatter", mx::Color3(0.0f, 0.0f, 0.0f));
+    SetValue(surface, "transmission_scatter", scatter);
+    SetValue(surface, "transmission_scatter_anisotropy", anisotropy);
     SetValue(surface, "subsurface_weight", 0.0f);
     SetValue(surface, "coat_weight", 0.0f);
     SetValue(surface, "fuzz_weight", 0.0f);

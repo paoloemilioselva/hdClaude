@@ -83,7 +83,11 @@ layout(set = 0, binding = 21, scalar) buffer PathScatterPdf { float values[]; } 
 // evaluated where the path enters, and the light it removes is removed over the
 // flight that follows. Carrying it on the path is what lets `extend` apply
 // Beer-Lambert over the distance it just measured.
+//   values[2*path + 0] = absorption rgb, anisotropy in w
+//   values[2*path + 1] = scattering rgb, 1 in w when a medium is present
 layout(set = 0, binding = 25, scalar) buffer PathMedium { vec4 values[]; } pathMedium;
+
+
 
 // Hit record written by `extend` and read by `shade`.
 //
@@ -834,6 +838,45 @@ void hdclaude_light_basis(vec3 n, out vec3 t, out vec3 b)
     float c = n.x * n.y * a;
     t = vec3(1.0 + sign * n.x * n.x * a, sign * c, -sign * n.x);
     b = vec3(c, sign + n.y * n.y * a, -n.y);
+}
+
+/// Henyey-Greenstein phase function sampling, about `forward`.
+///
+/// `g` is the asymmetry: 0 is isotropic, positive is forward-scattering. The
+/// inversion is the standard one, and the g = 0 branch is written separately
+/// because the general form divides by g.
+vec3 hdclaude_sample_phase(vec3 forward, float g, vec2 u)
+{
+    float cosTheta;
+    if (abs(g) < 1.0e-3)
+    {
+        cosTheta = 1.0 - 2.0 * u.x;
+    }
+    else
+    {
+        float term = (1.0 - g * g) / (1.0 + g - 2.0 * g * u.x);
+        cosTheta = -(1.0 + g * g - term * term) / (2.0 * g);
+    }
+    cosTheta = clamp(cosTheta, -1.0, 1.0);
+
+    float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+    float phi = 6.28318530718 * u.y;
+    vec3 t, b;
+    hdclaude_light_basis(forward, t, b);
+    return normalize(t * (sinTheta * cos(phi)) + b * (sinTheta * sin(phi)) +
+                     forward * cosTheta);
+}
+
+/// Per-lane extinction from an RGB coefficient, exactly.
+///
+/// `exp(-sigma * d)` is `(exp(-sigma))^d`, so upsampling the *unit*
+/// transmittance -- which is bounded in (0, 1] and so is what the reflectance
+/// fit is built for -- and taking its logarithm recovers the coefficient on the
+/// hero wavelengths without ever asking the fit about an unbounded quantity.
+vec4 hdclaude_lane_extinction(vec3 sigma, vec4 lambda)
+{
+    vec4 unit = hdclaude_upsample(exp(-max(sigma, vec3(0.0))), lambda);
+    return -log(max(unit, vec4(1.0e-8)));
 }
 
 /// UsdLuxShapingAPI falloff for a direction leaving the light.

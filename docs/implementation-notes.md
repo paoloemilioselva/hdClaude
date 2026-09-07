@@ -2663,3 +2663,63 @@ published and not transported. The medium absorbs and does not scatter, so the
 ball is a clear amber rather than the cloudy material honey actually is. That is
 a random walk with a phase function, not a multiply, and it is recorded as
 remaining rather than approximated.
+
+
+---
+
+## 2026-09-07 -- A walk through a medium, and the closure that never enters one
+
+Scattering now happens. `extend` samples a free flight, and if it lands short of
+the boundary the path scatters there: a Henyey-Greenstein direction, and round
+again. Honey goes from a clear amber to the cloudy material it actually is, mean
+display brightness 0.402 to 0.635.
+
+**Why the walk lives in the traversal kernel.** A scattering event is not a
+shading event. It has no material, so the per-material sort has no bin for it,
+and a path that scatters needs another *traversal* rather than another shade.
+Walking to completion inside one invocation keeps the wavefront's shape -- a path
+still leaves `extend` with exactly one surface hit -- at the cost of a loop
+bounded by its own roulette instead of by the bounce count.
+
+**Absorption is deterministic; only scattering is sampled.** The textbook form
+samples a collision against the combined extinction and weights by the
+single-scattering albedo. It is unbiased, and in a medium that only absorbs it
+replaces a closed-form attenuation with a coin flip that kills the path -- right
+in the mean, far noisier for nothing, and honey and coloured glass are exactly
+that medium. Splitting them means a non-scattering medium takes the boundary
+branch every time with no randomness at all.
+
+**Scattering had to be made achromatic, and that is a real limitation.** A
+chromatic scattering coefficient sampled against one control wavelength leaves
+every other lane carrying `exp((control - sigma_lane) * flight)`. That grows with
+the flight and compounds over a walk. It did not merely add variance: a strongly
+forward-scattering slab rendered **NaN**. The honest fix is multiple importance
+sampling across the four lanes' densities, which is a piece of work in itself;
+taking the mean makes every lane share one density, so the scattering weight is
+exactly one and only absorption carries colour. That is where a medium's colour
+comes from in nearly every real material, but it is an approximation and is
+recorded as one.
+
+**The test that could not be posed here.** A closed form for a random walk in a
+slab is the integral nobody can write down -- which is why it is sampled -- so the
+assertion has to be a limit the walk reproduces. Forward-scattering at g near one
+with unit albedo should be a no-op. It measured a fifth of the clear result, and
+the walk is not at fault: a single quad bounds no volume, so entering the medium
+puts the path in an *unbounded* one, where a beam diffuses over four mean free
+paths and never re-collimates. The test was removed rather than loosened until it
+passed. Asserting on a scattering medium needs a closed slab, and that is
+recorded rather than faked.
+
+**And subsurface is still not transported.** It is wired: a subsurface closure's
+albedo and radius are converted to the scattering and absorption of a medium and
+handed to the same walk, since a random walk beneath a surface and one inside a
+volume are the same walk. The hand-off is simply never reached.
+`mx_subsurface_bsdf` evaluates `CLOSURE_TYPE_REFLECTION` and samples a direction
+in the hemisphere above the surface; it never produces a transmission, and the
+medium is only entered on a transmission. So the bubblegum ball re-renders
+byte-identically, which is the honest signal that nothing changed for it.
+
+Making it work means giving the subsurface closure an entering direction, which
+is a change to the closure rather than to the integrator. Worth stating plainly
+because the machinery *looks* finished from the integrator's side, and a walk
+that is never entered is indistinguishable from one that does not exist.

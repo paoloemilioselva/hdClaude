@@ -809,7 +809,7 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
     // MIS weight the environment kernel applies.
     VulkanBuffer scatterPdf = MakeStorage(_allocator, paths * 4, "path.scatterPdf");
     // The interior medium a path is inside, as an absorption coefficient.
-    VulkanBuffer medium = MakeStorage(_allocator, paths * 16, "path.medium");
+    VulkanBuffer medium = MakeStorage(_allocator, paths * 32, "path.medium");
     VulkanBuffer hits = MakeStorage(_allocator, paths * 16, "path.hits");
     VulkanBuffer counters = MakeStorage(_allocator, 16, "counters");
     VulkanBuffer activeQueue = MakeStorage(_allocator, paths * 4, "queue.active");
