@@ -3659,3 +3659,61 @@ exactly what the achromatic walk gives -- because being right in the mean is not
 the same as being usable. The previous attempt at this was reverted for having
 no test at all; this one is reverted by a test, with the per-event arithmetic
 validated, the failure localised to compounding, and the fix specified.
+
+
+---
+
+## 2026-09-08 -- Three loose ends, one of them a new defect
+
+Claims made earlier in this work, checked.
+
+**The unclosed medium's gain is answered, and it was the dielectric.** The open
+slab with a lossless medium in it read 1.2494 against 0.9953 with a vacuum, and
+that was written up as an open question because nothing in the transport
+accounted for it. With the relative-index fix in place the same slab reads
+**1.0007** against 0.9978. The escape through the open edge was never the
+problem: a path that leaves an unclosed medium sideways and collects a uniform
+environment is contributing exactly what a furnace expects, so it was always
+harmless there. The gain came from the same wrong Fresnel curve as everything
+else, reaching the slab's own faces through the oblique internal directions only
+a scattering interior produces. The open question is closed and the numbers that
+recorded it are superseded by these.
+
+That is worth noting as a pattern rather than only as a result. Two separate
+symptoms -- a sphere gaining forty per cent and a slab gaining twenty-five --
+were one defect, and the slab's version was written up as unexplained for a day
+because the instrument that could localise it did not exist yet.
+
+**The glass ball's darkening is the bounce limit, as claimed.** Rendered at 512
+pixels and 256 samples with everything else held, the mean over the frame is
+0.6859 at 8 bounces, 0.7364 at 16, 0.7508 at 32 and 0.7547 at 64. It converges,
+and the converged value is ten per cent above what the gallery shows. Correct
+total internal reflection traps light inside the ball for many more crossings,
+and at the gallery's eight bounces a large share of those paths run out before
+they can leave. The closure is not losing the energy -- the furnaces say so
+directly, and the layered slab *improved* to 0.9978 with the same change -- the
+path length is.
+
+The gallery contract stays at eight bounces. It is a comparison standard rather
+than a beauty pass, every scene has been measured at it, and changing it would
+invalidate every baseline to make one asset prettier. Recorded here so nobody
+re-derives it from the image.
+
+**New: the renderer produces non-finite samples above eight bounces.** The same
+series turned up 208, 115 and 78 non-finite samples in the 16, 32 and 64 bounce
+renders of the glass ball, and none at 8. It is **not** the dielectric fix:
+rebuilding the closure as it stood before that commit and rendering at 16
+bounces gives 103 of them. It has presumably always been there, and the gallery
+has never seen it because the contract renders at eight.
+
+That matters more than it looks. `hdClaudeImageDiff` treats a non-finite sample
+as a gate failure, so the gate is capable of catching this and has simply never
+been pointed at a long enough path. Anything that raises the bounce count --
+the interactive contract, and every temporal phase after it -- will walk into
+it. The worst-pixel figure climbs with the same series, 2.13 at 16 bounces to
+11.39 at 64, so whatever produces the non-finite values is likely the tail of
+the same distribution rather than a separate fault.
+
+It is recorded rather than chased here, with the reproduction written down: 512
+pixels, 256 samples, `HDCLAUDE_MAX_BOUNCES` at 16 or above, the glass shader
+ball, and `hdClaudeImageDiff` against the 8-bounce render to count them.
