@@ -364,15 +364,28 @@ void main()
             lightSample = hdclaude_sample_light(emitter, point.position, lightU);
         }
 
-        if (lightSample.pdf > 0.0 &&
-            dot(lightSample.direction, point.frontGeometricNormal) > 0.0)
+        // Which side of the surface the light lies on decides which closure
+        // can carry it, exactly as it does for a scattered direction. A light
+        // in front is a reflection; a light behind is a *transmission*, and
+        // asking the reflection closure about it -- or refusing to ask at all,
+        // which is what this used to do -- leaves a refracting surface with no
+        // estimate of the light it is looking straight through. Glass then has
+        // one strategy where every opaque surface has two, and is
+        // correspondingly loud.
+        bool lightInFront =
+            dot(lightSample.direction, point.frontGeometricNormal) > 0.0;
+        vec3 shadowNormal = lightInFront ? point.frontGeometricNormal
+                                         : -point.frontGeometricNormal;
+
+        if (lightSample.pdf > 0.0)
         {
             hdclaude_sample_u = vec3(hdclaude_random(rng), hdclaude_random(rng),
                                      hdclaude_random(rng));
-            ClosureData lightData = ClosureData(CLOSURE_TYPE_REFLECTION,
-                                                lightSample.direction, V,
-                                                point.shadingNormal,
-                                                point.position, 1.0);
+            ClosureData lightData = ClosureData(
+                lightInFront ? CLOSURE_TYPE_REFLECTION
+                             : CLOSURE_TYPE_TRANSMISSION,
+                lightSample.direction, V, point.shadingNormal, point.position,
+                1.0);
             hdclaude_material_shade(lightData);
 
             // A delta closure has no finite response at any single direction,
@@ -426,8 +439,12 @@ void main()
                         if (index < frame.pathCount)
                         {
                             ShadowRay ray;
-                            ray.origin = hdclaude_offset_ray(
-                                point.position, point.frontGeometricNormal);
+                            // Offset along the side the ray leaves on, or a
+                            // transmitted shadow ray starts on the wrong side
+                            // of the surface it just passed through and is
+                            // occluded by it immediately.
+                            ray.origin =
+                                hdclaude_offset_ray(point.position, shadowNormal);
                             ray.direction = lightSample.direction;
                             ray.contribution = contribution;
                             // Stop just short of the light so the light's own

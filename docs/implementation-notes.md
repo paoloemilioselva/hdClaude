@@ -2545,3 +2545,51 @@ closure toward a light as well, and weigh it by the same heuristic. It is
 recorded in phase 6 as the largest remaining source of noise in the gallery
 rather than folded in here, because it is a change to the estimator and wants its
 own furnace.
+
+
+---
+
+## 2026-09-07 -- Transmission gets a next-event estimate, and it does not help the ball
+
+Asked for a good-looking glass, so the missing strategy from the previous entry
+is now implemented: next-event estimation picks the closure by which side the
+light is on, exactly as a scattered direction already did. A light in front is a
+reflection; a light behind is a transmission. The shadow ray is offset along the
+side it leaves on, or a transmitted one starts on the wrong face and is occluded
+by the surface it just passed through.
+
+**It is correct.** The mirror image of the reflection assertion: a smooth
+dielectric transmits `1 - R(0)` of what is directly behind it, so with a rect
+light behind the quad and a black environment the pixel must read
+`(1 - R(0)) * L` whether the surface is delta -- no next-event estimate, the
+light found by hitting it -- or glossy, which now splits it. Rendered 1.9242 and
+1.9240 against a closed form of 1.9200. A transmission response missing its
+cosine, or weighed against the wrong density, moves that number; no reflection
+test can, because none of them looks through anything.
+
+**And it does nothing for the Standard Shader Ball.** Measured rather than
+assumed: the glass at 64 samples against its own converged image scores an RMS of
+0.107209 before the change and 0.107240 after. That is not an improvement, it is
+the same number.
+
+The reason is the same one that made the reflection highlight move strategies
+earlier. That glass is near-specular -- 0.01625 roughness -- so on *both*
+branches the closure's density dwarfs the light's and the balance heuristic
+correctly hands next-event estimation almost nothing. Adding a second estimate
+that is then weighted to nearly zero buys nothing. It pays where transmission is
+*rough*: frosted glass, thick liquids, anything whose lobe is broad enough for a
+light sample to compete.
+
+So the gap was real and is now closed, and it is not what makes this asset quiet.
+Worth recording plainly, because the tempting write-up -- implement the missing
+strategy, show the closed form, declare the glass fixed -- would have been true in
+every sentence and wrong in its conclusion. The remaining noise on a near-mirror
+transmissive lobe is not a missing strategy; it is a lobe chosen on about one
+sample in twenty-two whose light is small, and the honest fixes for that are more
+samples, a broader lobe, or a bigger light.
+
+**Cost.** The estimate now runs for lights on both sides, so a closure evaluation
+happens where the old code returned early. Kitchen Set goes from 164 to 167
+seconds and the playground from 108 to 113, about three to five per cent. Every
+scene's image moved slightly because the random sequence shifted, while the means
+did not -- Sponza 0.018298 to 0.018306, Kitchen Set 0.225991 to 0.225977.
