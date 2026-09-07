@@ -3595,3 +3595,67 @@ OpenPBR playground by 0.073, the chess set by 0.0035. The playground's dark
 bottle stops clipping to white and reads as glass, and its bright-pixel count
 falls slightly rather than rising, so the extra internal reflection did not cost
 noise.
+
+
+---
+
+## 2026-09-08 -- Spectral MIS, measured and still not shipped
+
+With the dielectric fixed, the chromatic gate finally had something to measure
+against, so the spectral walk went in and the gate refused it. This time the
+reason is measured rather than guessed, and the remedy is named.
+
+**What was implemented.** Both coefficients per lane; the lane that proposes the
+free flight chosen uniformly at random per step; and the density a sample is
+divided by taken as the balance heuristic's average over all four lanes that
+could have proposed it. Written as ratios of exponentials with the largest
+factored out, so a dense medium over a long segment cannot underflow both halves
+to zero.
+
+**Two things it got right.** With achromatic coefficients every lane's density
+is the same and every weight is exactly one: the sphere furnace read 1.0119
+against the achromatic walk's 1.0110, which is the same number. And with a
+*thin* chromatic medium -- coefficients 0.4, 0.2, 0.1 across a sphere of radius
+one, so a path scatters about once -- it reads **1.0004, 0.9907, 0.9889** and is
+converged. The per-event weights are right.
+
+**What it got wrong.** A dense chromatic medium, 4 to 2 to 1, reads 1.0226,
+1.0562, 1.0061, and eight times the samples does not tighten it: at 256 samples
+the same case read 1.0336, 0.9902, 1.0104. The channels wander instead of
+converging, which is a heavy tail rather than noise.
+
+The thin case is what identifies it. Each step's weight is one lane's density
+over the mean of four and so is bounded by the lane count -- but a walk
+*multiplies* steps, and a product of terms each bounded by four is bounded by
+four to the power of the step count. Bounding the step does not bound the path.
+That is the same failure the fixed-control form had, arrived at more slowly: the
+old version overflowed to NaN in tens of steps, this one merely refuses to
+converge.
+
+**The remedy, named rather than attempted.** The balance heuristic has to be
+applied to the *whole walk's* density rather than to each step's. That means
+choosing the proposing lane once per walk instead of once per step, accumulating
+each lane's un-normalised path density along the walk -- in logarithms, which
+removes the underflow question entirely -- and forming the weight once at the
+end, where it is again a ratio of one density to the mean of four and is
+therefore bounded by the lane count over the whole walk. This is what a spectral
+path tracer carries as rescaled path probabilities, restricted here to a single
+segment between surfaces.
+
+It needs one structural change beyond the arithmetic: Russian roulette inside
+the walk currently reads the throughput after every step, and there is no
+per-step throughput to read once the weight is only formed at the end. Roulette
+has to move to a quantity that is available per step -- the absorption term, or
+the proposing lane's own survival -- or out of the walk entirely.
+
+It also leaves compounding *across* surface crossings, since a walk is one
+segment and a path in glass crosses many. That is a far smaller number than the
+scattering events within a segment, and whether it matters is a question for the
+same gate.
+
+**So the gate did its job twice.** It refused an estimator that is unbiased and
+whose mean is right -- the three channels of the dense case average 1.011,
+exactly what the achromatic walk gives -- because being right in the mean is not
+the same as being usable. The previous attempt at this was reverted for having
+no test at all; this one is reverted by a test, with the per-event arithmetic
+validated, the failure localised to compounding, and the fix specified.
