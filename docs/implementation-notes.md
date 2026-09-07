@@ -2723,3 +2723,47 @@ Making it work means giving the subsurface closure an entering direction, which
 is a change to the closure rather than to the integrator. Worth stating plainly
 because the machinery *looks* finished from the integrator's side, and a walk
 that is never entered is indistinguishable from one that does not exist.
+
+
+---
+
+## 2026-09-07 -- The furnace that would not light, and what it caught
+
+A random walk in a slab has no closed form -- that is why it is sampled -- so the
+only exact assertion available about one is *conservation*. A closed object that
+absorbs nothing, sitting in a uniform environment of unit radiance, must render
+exactly one, whatever it does to the light inside it: every direction sees the
+same radiance, so redirecting a path cannot change what it finds. That is the
+volumetric white furnace, and it needed the one piece of geometry the test file
+did not have, a second quad wound the other way, because one quad bounds no
+volume and a path entering it is inside an unbounded medium for ever.
+
+It renders **1.4124**.
+
+**And the walk is not what is wrong.** Running the same slab twice, once empty
+and once filled with a conservative medium, splits the blame in a way the
+combined figure cannot:
+
+| slab | rendered | expected |
+|---|---|---|
+| surface only, nothing inside | 1.1505 | 1.0 |
+| with a medium of unit albedo | 1.4124 | 1.0 |
+
+An empty dielectric slab gains fifteen per cent. The medium only compounds it, by
+crossing the surface more often. So `open_pbr_surface`'s transmission is not
+energy conserving, and this is the third time that number has appeared: the
+absorbing-medium test measured about twelve per cent above `(1 - R(0))` and was
+rewritten as a ratio specifically so the excess would cancel, which was the right
+way to test a medium and the wrong moment to stop asking why.
+
+**The test is withheld rather than committed.** Two ways to have shipped it were
+available and both are worse. Committing it failing breaks the suite for everyone
+until the surface is fixed. Committing it at a tolerance wide enough to pass --
+six per cent would not do it, but sixteen would -- records the defect as correct,
+which is precisely the failure this project has now found in three separate
+baselines. A gate that is loosened until it passes has stopped being a gate.
+
+So the furnace waits for the fix it is diagnosing, and the fix is the next piece
+of work: whatever `open_pbr_surface` does to transmitted energy, it adds fifteen
+per cent per crossing, and every transmissive material in the gallery is
+carrying it.
