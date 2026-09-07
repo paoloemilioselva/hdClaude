@@ -2493,3 +2493,55 @@ transmitted light flattens whatever structure sits on top of it. The same frame
 display-transformed at minus two stops shows the shell's gradients and
 reflections perfectly well. Worth checking the exposure before reading a glass
 render.
+
+
+---
+
+## 2026-09-07 -- Glass is unbiased and loud, and the reason is a missing strategy
+
+The glass ball isolated -- inner sphere removed, one area light -- and rotated
+frame by frame: the reflection hardens and softens unevenly, and there is less of
+the light on the shell than one light in an otherwise empty scene ought to give.
+
+**The estimator is not what is wrong.** The specular-under-a-light rig now runs
+all four combinations of lobe and scatter mode, and the fourth is the shader
+ball's glass exactly -- glossy *and* transmissive -- which is also the one place
+the two densities could have disagreed. A closure picks a lobe before it picks a
+direction; if next-event estimation were weighed against a reflection density
+that had not been multiplied by the chance of choosing reflection -- about one in
+twenty-two for glass at normal incidence -- while the scattered ray reported one
+that had, the balance heuristic would be handed two different quantities and the
+shortfall would land precisely on glossy transmissive surfaces. It does not:
+
+| lobe | scatter mode | rendered |
+|---|---|---|
+| delta | R | 0.0800 |
+| gloss 0.02 | R | 0.0800 |
+| delta | RT | 0.0808 |
+| gloss 0.02 | RT | 0.0810 |
+
+against a closed form of 0.0800.
+
+**What is wrong is that glass has only one strategy.** Next-event estimation
+evaluates `CLOSURE_TYPE_REFLECTION` and nothing else. There is no transmission
+estimate at all, and the guard that precedes it -- the light must lie on the
+same side as the viewer -- makes that explicit. So a light reached *through* a
+refracting surface is found by nothing except a scattered ray that happens to
+point at it.
+
+That leaves glass in a worse position than it looks. Its reflection is correctly
+weighed down by MIS, because on a near-mirror lobe the closure's density dwarfs
+the light's and next-event estimation genuinely has little to add there; and its
+transmission has no next-event estimate to be weighed at all. Both terms
+therefore rest on BSDF sampling, and the reflection branch is chosen on about one
+sample in twenty-two. The estimate is unbiased -- the table above says so -- and
+about twenty times louder than the same light on an opaque surface. At the sample
+counts an interactive viewport reaches, that reads exactly as reported: a
+highlight that firms up and softens as the object turns, and less light than a
+single lamp seems to owe.
+
+So the fix is not a correction, it is a missing feature: sample the transmission
+closure toward a light as well, and weigh it by the same heuristic. It is
+recorded in phase 6 as the largest remaining source of noise in the gallery
+rather than folded in here, because it is a change to the estimator and wants its
+own furnace.

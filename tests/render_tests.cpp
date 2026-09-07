@@ -1070,10 +1070,21 @@ int main()
                 {0.0f, "R", "delta"},
                 {0.02f, "R", "gloss 0.02"},
                 {0.0f, "RT", "delta, transmissive"},
+                // Glossy *and* transmissive, which is what the shader ball's
+                // glass is and the one combination the three above do not
+                // reach. It is also where the two densities have to agree about
+                // a convention: the closure picks a lobe before it picks a
+                // direction, and if next-event estimation is weighed against a
+                // reflection density that has not been multiplied by the chance
+                // of choosing reflection -- about one in twenty-two for glass at
+                // normal incidence -- while the scattered ray reports one that
+                // has, the balance heuristic is being handed two different
+                // quantities and the shortfall lands exactly here.
+                {0.02f, "RT", "gloss, transmissive"},
             };
-            constexpr int kLobes = 3;
+            constexpr int kLobes = 4;
 
-            double measured[kLobes] = {0.0, 0.0, 0.0};
+            double measured[kLobes] = {0.0, 0.0, 0.0, 0.0};
             for (int which = 0; which < kLobes; ++which) {
                 const CompiledMaterial mirror = MakeDielectricMaterial(
                     libraries, compiler, tracer.ShadeKernelSource(), ior,
@@ -1123,8 +1134,9 @@ int main()
 
             const double expected = reflectance * emitted;
             std::printf("  specular under a light: delta %.4f, gloss %.4f, "
-                        "transmissive %.4f (closed form %.4f)\n",
-                        measured[0], measured[1], measured[2], expected);
+                        "delta+T %.4f, gloss+T %.4f (closed form %.4f)\n",
+                        measured[0], measured[1], measured[2], measured[3],
+                        expected);
             for (int which = 0; which < kLobes; ++which) {
                 CHECK_NEAR(measured[which], expected, expected * 0.10);
             }
