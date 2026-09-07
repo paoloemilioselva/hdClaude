@@ -61,7 +61,8 @@ int Usage()
 {
     std::cerr << "Usage: hdClaudeImageDiff <baseline> <candidate> "
                  "[--rms <value>] [--worst <value>] "
-                 "[--failed-fraction <value>] [--per-pixel <value>]\n";
+                 "[--failed-fraction <value>] [--per-pixel <value>]\n"
+                 "       hdClaudeImageDiff --scan <image>\n";
     return 2;
 }
 
@@ -141,10 +142,103 @@ bool Read(const char* path, Image* result)
     return true;
 }
 
+/// Absolute properties of one render, with no baseline to compare against.
+///
+/// These must be measured on the *linear* image, which is the actual rendered
+/// data. Everything downstream of it is a lossy view: the display transform
+/// sanitises non-finite values and clamps negatives on the way through, so a
+/// check placed after it cannot see either. The gallery gate compares display
+/// JPEGs, which is the right thing for a visual baseline and blind to this, so
+/// the scan runs separately and earlier, on the EXR.
+int Scan(const char* path)
+{
+    Image image;
+    if (!Read(path, &image)) {
+        return 1;
+    }
+
+    const auto count = static_cast<std::size_t>(image.width) * image.height;
+    std::size_t nonFinite = 0;
+    std::size_t negative = 0;
+    double sum = 0.0;
+    float smallest = 0.0f;
+    float largest = 0.0f;
+    std::vector<std::size_t> firstNonFinite;
+    std::vector<std::size_t> firstNegative;
+
+    for (std::size_t pixel = 0; pixel < count; ++pixel) {
+        for (int channel = 0; channel < 3; ++channel) {
+            const float value =
+                image.pixels[pixel * 4 + static_cast<std::size_t>(channel)];
+            if (!std::isfinite(value)) {
+                ++nonFinite;
+                if (firstNonFinite.size() < 6 &&
+                    (firstNonFinite.empty() || firstNonFinite.back() != pixel)) {
+                    firstNonFinite.push_back(pixel);
+                }
+                continue;
+            }
+            // Counted and reported, but *not* a failure. A spectral renderer
+            // resolving to scene-linear sRGB produces negative components for
+            // any colour outside that gamut, because the XYZ-to-sRGB matrix has
+            // negative coefficients and a saturated spectrum lands outside the
+            // primaries. That is the gamut being honest, not the transport
+            // being wrong, and the display transform clamps it at the point
+            // where clamping is meaningful.
+            //
+            // Worth reporting all the same: it is what turns into a NaN the
+            // moment anything raises it to a fractional power, which is exactly
+            // what happens if a render is written through a transfer function
+            // instead of staying linear.
+            if (value < 0.0f) {
+                ++negative;
+                if (firstNegative.size() < 6 &&
+                    (firstNegative.empty() || firstNegative.back() != pixel)) {
+                    firstNegative.push_back(pixel);
+                }
+            }
+            sum += value;
+            smallest = std::min(smallest, value);
+            largest = std::max(largest, value);
+        }
+    }
+
+    const double mean = sum / static_cast<double>(count * 3);
+    std::cout << "  scan: mean " << mean << ", range [" << smallest << ", "
+              << largest << "], " << nonFinite << " non-finite, " << negative
+              << " negative\n";
+
+    bool pass = true;
+    const auto report = [](const char* what,
+                           const std::vector<std::size_t>& pixels, int width) {
+        std::cerr << "  " << what << " at";
+        for (const std::size_t pixel : pixels) {
+            std::cerr << " (" << pixel % static_cast<std::size_t>(width) << ", "
+                      << pixel / static_cast<std::size_t>(width) << ")";
+        }
+        std::cerr << '\n';
+    };
+    if (nonFinite > 0) {
+        report("non-finite", firstNonFinite, image.width);
+        pass = false;
+    }
+    if (negative > 0) {
+        report("negative", firstNegative, image.width);
+    }
+    if (mean <= 1.0e-6) {
+        std::cerr << "  image is uniformly black\n";
+        pass = false;
+    }
+    return pass ? 0 : 1;
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
 try {
+    if (argc == 3 && std::string(argv[1]) == "--scan") {
+        return Scan(argv[2]);
+    }
     if (argc < 3) {
         return Usage();
     }

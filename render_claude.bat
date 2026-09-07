@@ -4,6 +4,15 @@ SETLOCAL
 REM Render with the hdClaude delegate. Accepts normal usdrecord arguments.
 REM Camera lighting is always disabled so authored or fallback lighting is what
 REM gets tested -- a default headlight would mask every lighting defect.
+REM
+REM Colour correction is always disabled for the same class of reason. The
+REM delegate's AOV is scene-linear and the output must stay that way: the sRGB
+REM transform belongs to the EXR-to-JPEG conversion, which is what
+REM hdClaudeDisplayTransform does, and nowhere else. Letting usdrecord encode
+REM the AOV instead applies a transfer function to unclamped linear radiance,
+REM and raising a negative sample to a fractional power produces a NaN -- which
+REM is exactly how a clean render came to look like a renderer emitting
+REM thousands of non-finite pixels.
 
 CALL "%~dp0setup_usd_env.bat"
 IF ERRORLEVEL 1 EXIT /B %ERRORLEVEL%
@@ -24,5 +33,5 @@ IF "%~1"=="" (
   EXIT /B 2
 )
 
-CALL usdrecord --renderer "Claude GPU Path Tracer" --disableCameraLight %*
+CALL usdrecord --renderer "Claude GPU Path Tracer" --disableCameraLight --colorCorrectionMode disabled %*
 EXIT /B %ERRORLEVEL%

@@ -223,10 +223,11 @@ foreach ($item in $selected) {
         throw "Gallery stage is missing: $scenePath"
     }
 
-    # --colorCorrectionMode disabled: the renderer's AOV is scene-linear and the
-    # EXR must stay that way. The display transform below is the only place a
-    # transfer function is applied.
-    $arguments = @('--imageWidth', [string]$imageWidth, '--colorCorrectionMode', 'disabled')
+    # The EXR stays scene-linear and the display transform below is the only
+    # place a transfer function is applied. render_claude.bat enforces that by
+    # passing --colorCorrectionMode disabled itself, so every caller gets it
+    # rather than only this one.
+    $arguments = @('--imageWidth', [string]$imageWidth)
     if ($item.Purposes) { $arguments += @('--purposes', $item.Purposes) }
     $arguments += @('--camera', $item.Camera, $scenePath, $linearPath)
 
@@ -243,6 +244,17 @@ foreach ($item in $selected) {
     if (!(Test-Path -LiteralPath $linearPath)) {
         throw "Render produced no image for $($item.Key): $linearPath"
     }
+
+    # The linear render is the actual rendered data, and `hdClaudeImageDiff
+    # --scan` is what looks at it: non-finite values, negatives, and the true
+    # range, none of which survive the display transform below. It is
+    # deliberately *not* wired into this gate yet, because the OpenPBR
+    # Playground fails it -- 3 non-finite samples and values reaching 2.18e25 in
+    # a scene whose mean should be under one. A gate committed while a scene
+    # fails it either blocks the gallery or has to be loosened until it passes,
+    # and this project's rule is that a gate goes in with its fix. Run it by
+    # hand in the meantime:
+    #     hdClaudeImageDiff --scan build\gallery-linear\<scene>.exr
 
     & $displayTransform $linearPath $candidatePath --exposure $env:HDCLAUDE_GALLERY_EXPOSURE
     if ($LASTEXITCODE -ne 0) {

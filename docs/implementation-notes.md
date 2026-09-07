@@ -3863,3 +3863,74 @@ that face away from the camera. The overlay says concave-and-edge-on, and the
 closure sweep says the closure is fine when driven there directly -- so the next
 place to look is what the *integrator* hands a closure at such a point, and
 whether some part of the geometric reconstruction degenerates there.
+
+
+---
+
+## 2026-09-08 -- The non-finite samples were mine, and the scan found the real one
+
+The two entries above claim the renderer produces thousands of non-finite
+samples. **It does not.** The renders that contained them were produced by the
+wrong command, and every one of the gallery's own linear EXRs is free of them.
+
+`render_claude.bat` forwards its arguments to `usdrecord`, and the gallery
+script passed `--colorCorrectionMode disabled` while the probes written to chase
+this did not. Without it, usdrecord applies an sRGB transfer function to a
+scene-linear AOV on the way out -- and raising a *negative* linear sample to a
+fractional power is a NaN. Every non-finite pixel counted in those entries was
+made after the renderer had finished, by a transform that should never have run.
+Rendering the same scenes with the flag gives zero.
+
+That is embarrassing in a specific and useful way. The investigation was careful
+about everything downstream of the measurement -- the closure sweep, the failed
+reproduction, the overlay -- and never questioned the *command* that produced
+the image being measured. Three separate guards were added inside the film
+kernel to find where the value became non-finite, and all three were no-ops that
+left the output bit-identical, which was the signal that the renderer was not
+where the defect lived. That signal was there two builds before it was read.
+
+The flag is now in `render_claude.bat` rather than in each caller, next to the
+`--disableCameraLight` that is there for the same class of reason. The sRGB
+transform belongs to the EXR-to-JPEG conversion, which is what
+`hdClaudeDisplayTransform` does, and nowhere else. The gallery script no longer
+passes it and every gallery image re-renders byte-identical.
+
+**What survives from those entries**, and it is the part that matters: the
+gallery gate compares *display-transformed JPEGs*, so it cannot see anything the
+display transform normalises -- non-finite values, negatives, or any magnitude
+above one. The EXR is the actual rendered data and nothing had ever looked at
+it. Also standing: the closure grazing sweep, which found no non-finite value at
+any angle and did find a real 1.0219 albedo at exactly edge-on from inside; and
+the deep-path render test, which is a reproduction that legitimately finds
+nothing.
+
+**So `hdClaudeImageDiff` gained a `--scan` mode**: one image, no baseline, and
+it reports the true range, the mean, the non-finite count and the negative
+count. Pointed at the gallery's own linear renders it immediately says two
+things the old gate could not.
+
+*Negatives are everywhere and are not a defect.* Ten of the eleven scenes have
+them -- 24637 in the subdivision matrix, 11362 in the gold ball, 5 in bubblegum.
+A spectral renderer resolving to scene-linear sRGB produces a negative component
+for any colour outside that gamut, because the XYZ-to-sRGB matrix has negative
+coefficients and a saturated spectrum lands outside the primaries. That is the
+gamut being honest. The scan reports them and does not fail on them, and the
+display transform clamps them where clamping means something.
+
+*And the OpenPBR Playground is genuinely broken.* Its linear render has a mean
+of **1.17e19**, a range of **[-1.31e24, 2.18e25]**, and three non-finite samples
+-- in a scene whose displayed mean is 0.38. A handful of pixels carry values
+twenty-five orders of magnitude too large, the display transform clamps them to
+white, and the gate has been passing the scene for as long as it has existed.
+The first non-finite sample is at (484, 456).
+
+That is not diagnosed. Two candidates were checked and rejected: the balance
+heuristic *is* applied to every analytic light's next-event estimate, and the
+stand-in sun -- which is a delta emitter and deliberately carries no MIS weight
+-- is not present here at all, since `hdclaude_has_stand_in_sun` requires a stage
+with no lights and no dome and the playground has both.
+
+The scan is deliberately **not** wired into the gallery gate yet, because that
+scene fails it. A gate committed while a scene fails it either blocks the
+gallery or gets loosened until it passes, and the rule here is that a gate goes
+in with its fix. It goes in when the playground's magnitudes are understood.
