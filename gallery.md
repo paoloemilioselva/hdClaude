@@ -93,17 +93,17 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 <!-- gallery-timings:start -->
 | Scene | Measured | Wall time | SHA-256 | Device | Settings |
 |---|---:|---:|---|---|---|
-| Intel Sponza | 2026-09-07 | 66.707 s (1m 6.707s) | `893c2c02c0394d6c1ec3802c5ff683ff076ba856074113d88aec424cf37fa18c` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| OpenChessSet | 2026-09-07 | 30.379 s (0m 30.379s) | `fa91765e565cb9ffa05759f8eb13af2de237bea183258eef852486b23d217039` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall Gold | 2026-09-07 | 39.411 s (0m 39.411s) | `cdad3d648da83d8f93d66d32952066be5c62fe2f897e8c9d0a993aefdaadbbe9` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall Glass | 2026-09-07 | 32.441 s (0m 32.441s) | `0982b73fe087287c62b0c0ebc30553403ebf4441472cb3f24d6e69fc9ad892cd` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall BubbleGum | 2026-09-07 | 29.583 s (0m 29.583s) | `f0e062ac065871e195252bfa69904f3d20f5e37eff0a4fd3b25b1d9030f8b745` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall Honey | 2026-09-07 | 35.966 s (0m 35.966s) | `f982d516dbd3229802ae0088471eca2a5fddfccc8726d7f60a375538e5f176de` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Pixar's KitchenSet | 2026-09-07 | 148.133 s (2m 28.133s) | `00b231edeea1963a6330dc4334268fcf15aa2c1ef9d7d0b7105969923d2d0508` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Collective Project 001 | 2026-09-07 | 24.334 s (0m 24.334s) | `c3f3bfa6cc66318b88d27bf16008ef5d750c9bd7c9e6cfd5c71f37f52e6bccfb` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| OpenPBR Playground | 2026-09-07 | 116.867 s (1m 56.867s) | `48116dde2697f31cb14ae7bd9f688e2e9d52c20ab87b482b71d968b958fb3f94` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Subdivision Feature Matrix | 2026-09-07 | 14.289 s (0m 14.289s) | `d7ea0a89e68908790ab111b55072da57e472c23ab062a6d64af154529fc8a99c` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| New Zealand Height Map | 2026-09-07 | 8.863 s (0m 8.863s) | `f8cedeacde7deaf6acb8a08e2542d2a8872ad6b3acfd0a6ca01edd5884da4253` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 6 |
+| Intel Sponza | 2026-09-07 | 49.534 s (0m 49.534s) | `f2c21040af068210d36779037575f0cae77297c51c6dbc706cb65f20d2c869de` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| OpenChessSet | 2026-09-07 | 23.345 s (0m 23.345s) | `6073766db217e03e4fefde3c45d85911785e83976cdc1e1d8a297eb1880aa3f0` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall Gold | 2026-09-07 | 27.729 s (0m 27.729s) | `cdad3d648da83d8f93d66d32952066be5c62fe2f897e8c9d0a993aefdaadbbe9` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall Glass | 2026-09-07 | 33.011 s (0m 33.011s) | `0982b73fe087287c62b0c0ebc30553403ebf4441472cb3f24d6e69fc9ad892cd` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall BubbleGum | 2026-09-07 | 29.751 s (0m 29.751s) | `f0e062ac065871e195252bfa69904f3d20f5e37eff0a4fd3b25b1d9030f8b745` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall Honey | 2026-09-07 | 33.862 s (0m 33.862s) | `f982d516dbd3229802ae0088471eca2a5fddfccc8726d7f60a375538e5f176de` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Pixar's KitchenSet | 2026-09-07 | 148.638 s (2m 28.638s) | `00b231edeea1963a6330dc4334268fcf15aa2c1ef9d7d0b7105969923d2d0508` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Collective Project 001 | 2026-09-07 | 17.395 s (0m 17.395s) | `e3afed4f025723ca25b9194d71392b56618392ede26c9dfb6fa95b02ffc780a5` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| OpenPBR Playground | 2026-09-07 | 71.808 s (1m 11.808s) | `48116dde2697f31cb14ae7bd9f688e2e9d52c20ab87b482b71d968b958fb3f94` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Subdivision Feature Matrix | 2026-09-07 | 11.107 s (0m 11.107s) | `d7ea0a89e68908790ab111b55072da57e472c23ab062a6d64af154529fc8a99c` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| New Zealand Height Map | 2026-09-07 | 8.967 s (0m 8.967s) | `f8cedeacde7deaf6acb8a08e2542d2a8872ad6b3acfd0a6ca01edd5884da4253` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 6 |
 <!-- gallery-timings:end -->
 
 ## Against hdCodex

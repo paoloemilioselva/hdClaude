@@ -2860,3 +2860,54 @@ in the test beside the tolerance so that widening it further has to be somebody'
 deliberate decision. Chasing the last per cent means auditing the other
 combinators the same way -- `mx_mix_bsdf` and the thin-film mixes are the
 untested ones -- and the furnace now exists to do it with.
+
+
+---
+
+## 2026-09-07 -- Subsurface: an attempt that was reverted, and what it found
+
+Making the subsurface closure enter the surface was tried and taken back out. The
+tree is unchanged; this is what the attempt learned, so the next one starts
+further along.
+
+**The diagnosis was right.** `mx_subsurface_bsdf` documents itself as providing
+"the cosine-weighted distribution by which a path enters the surface", and then
+samples `mx_pt_sample_cosine_hemisphere` about the *forward-facing* normal and
+evaluates only `CLOSURE_TYPE_REFLECTION`. Both of those are the hemisphere
+**above** the surface. The integrator enters a medium only when a scattered
+direction crosses to the other side, so the parameters this closure publishes on
+every evaluation are entered on none of them. It is a Lambertian reflector
+wearing a random walk's name, and the bubblegum ball rendering byte-identically
+after the medium machinery landed is what that looks like.
+
+Sampling about `-N` and evaluating `CLOSURE_TYPE_TRANSMISSION` does route it into
+the walk. Three things then went wrong, in increasing order of how much they
+matter.
+
+**The entry must be colourless, and proving it is not the same as guessing it.**
+`color` is the medium's single-scattering albedo, published for the walk and
+applied at every scattering event inside it. Applying it at the boundary as well
+tints the entry and then tints it again on the way through -- the classic way a
+random-walk BSSRDF ends up too dark to match its own albedo. Removing it is
+right, and the ball then rendered *white*, which says the walk was contributing
+no colour of its own and the entry had been carrying all of it.
+
+**The hand-off is gated on a condition that is not the right one.** The
+integrator took the subsurface parameters only when no volume was also published
+(`hdclaude_medium_present < 0.5`). Dropping that gate gave a plausible pale, waxy
+pink -- but it also moved the glass ball by an RMS of 0.188 and the honey ball by
+0.107, neither of which has any subsurface at all, and it failed six render
+checks. So the interaction between the volume node and the subsurface node is not
+understood, and a change that improves one material by breaking two others is not
+an improvement.
+
+**And the radius mapping needs care.** Extinction is taken as `1 / radius`, and
+the bubblegum material authors `subsurface_radius = (1, 0, 0.068)` -- a zero
+component. Clamping that to `1e-4` gives an extinction of ten thousand and a mean
+free path far below the walk's step budget, so green is either absorbed
+immediately or the walk exhausts its cap. A zero radius means "no transport in
+this channel", and the mapping has to say so rather than divide by an epsilon.
+
+The next attempt should start from the third point and work back: get the
+parameter mapping right first, then find out why glass and honey see a subsurface
+publication at all, and only then change the closure's entry direction.
