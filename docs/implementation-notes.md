@@ -5005,13 +5005,12 @@ for the process rather than the sum of what this allocator asked for: somebody
 sizing a machine cares what the card is holding, which includes the driver's own
 overhead.
 
-**Camera rays are exact and the rest are absent.** Pixels times samples needs no
-counter. What those rays go on to spawn -- one per surviving bounce, plus a
-shadow ray per shading event -- is written on the device and is *not* reported,
-because getting it honestly needs an accumulator in the counters buffer and one
-readback after the frame. It is named rather than estimated: a plausible
-multiplier would be a guess wearing a number's clothes, and a table exists to be
-trusted.
+**Camera rays are exact and the rest were absent.** Pixels times samples needs no
+counter. What those rays go on to spawn was written on the device and not
+reported, because getting it honestly needed an accumulator in the counters
+buffer and one readback after the frame. It was named rather than estimated -- a
+plausible multiplier would be a guess wearing a number's clothes -- and it landed
+the same day; see the entry below.
 
 **Two routes out.** Everything appears in `GetRenderStats()`, which is where a
 Hydra host asks. The gallery script needs the same numbers out of a subprocess,
@@ -5061,3 +5060,64 @@ takes on trust.
 
 The environment variable is `HDCLAUDE_STATS_REPORT`, renamed from
 `HDCLAUDE_MEMORY_REPORT` when it stopped being only about memory.
+
+---
+
+## 2026-09-09 -- The rays are counted, and they explain the timings
+
+The stats recorded camera rays, which are the pixels times the samples and need
+no counting, and said nothing about what those rays go on to spawn. They are
+counted now, on the device, and they turn out to be the number that explains the
+gallery's timing table.
+
+    scene                      camera        traced   per camera      shadow
+    Intel Sponza          603,979,776 1,811,192,973        3.00  845,070,836
+    OpenChessSet          640,679,936   993,842,904        1.55  192,307,466
+    ShaderBall Gold     1,073,741,824 3,601,513,782        3.35 2,225,695,355
+    ShaderBall Glass    1,073,741,824 4,469,181,327        4.16 2,662,072,418
+    ShaderBall Honey    1,073,741,824 4,375,783,543        4.08 2,543,350,891
+    ShaderBall BubbleGum 1,073,741,824 4,125,784,676       3.84 2,592,877,252
+    Pixar's KitchenSet    640,679,936 1,770,415,731        2.76  754,840,623
+    Collective Project    715,128,832 2,183,311,940        3.05  938,675,395
+    OpenPBR Playground    805,306,368 2,750,706,918        3.42  578,152,125
+    Subdivision Matrix  1,073,741,824 1,227,764,153        1.14  113,255,138
+    New Zealand Height    455,081,984   620,923,611        1.36   41,452,854
+
+The glass ball traces **4.16 rays per camera ray** and the subdivision matrix
+1.14. Both render 1024 samples at eight bounces; the settings are identical and
+the work differs by a factor of four. That is a property of the scene -- how far
+a path gets before it is absorbed, terminated or leaves -- and it cannot be
+predicted from the bounce limit, which is why it was worth counting rather than
+deriving.
+
+It also confirms what the closure notes have been saying about glass. The three
+transmissive or subsurface balls are the top three: refraction and total internal
+reflection keep paths alive, and the glass ball's own note records its mean
+converging upward from 0.6859 at eight bounces to 0.7547 at sixty-four. The
+4.16 is the same fact from the other side.
+
+Shadow rays are a separate question and behave differently: the gold ball asks
+for 2.07 per camera ray and the Playground 0.72, on a scene with far more
+geometry. Next-event estimation fires where a lobe is rough enough for it to be
+worth anything, so a scene of mirrors and glass asks less often than a scene of
+diffuse surfaces under the same lights.
+
+**How they are counted.** `prepare_dispatch` already reads `activeCount` and
+`shadowCount` once per bounce to size the indirect dispatches, so it adds them
+into two accumulators in the same buffer while it has them in hand -- one
+invocation, no atomics needed for correctness, and nothing that was not already
+being read. The accumulators live past byte 16 of the counters buffer because
+the inter-bounce reset fills bytes 4 to 16 and would otherwise clear them every
+bounce.
+
+They are read back **once per call**, in the same submit that copies the film,
+after every dispatch they describe has finished. That is the only point a ray
+count can be taken without putting a stall in the middle of the frame producing
+it, and it is the same allowance `MaterialCounts` already has: a diagnostic
+after the fact, never a readback during a frame.
+
+The counts are cleared at the start of each call rather than by `raygen`, which
+runs once per *sample* and would have reset them thirty-two times a frame.
+
+Every gallery image re-renders byte identical except the four the known
+cross-process nondeterminism moved, which were restored rather than adopted.

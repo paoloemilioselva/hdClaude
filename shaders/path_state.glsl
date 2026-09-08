@@ -155,6 +155,19 @@ layout(set = 0, binding = 8, scalar) buffer Counters {
     uint nextActiveCount;
     uint shadowCount;
     uint pad;
+
+    // How many rays this call has traced, accumulated on the device.
+    //
+    // Not read during a frame -- that is the stall this whole design exists to
+    // avoid -- and read exactly once after it, which is what `MaterialCounts`
+    // already does. A path tracer's cost is its rays, and until these existed
+    // the only ray count anybody could state was the camera's, which is the one
+    // number that needs no counting.
+    //
+    // They live past byte 16 on purpose: the inter-bounce reset fills bytes 4
+    // to 16 and would otherwise clear them every bounce.
+    uint tracedRays;
+    uint shadowRays;
 } counters;
 
 layout(set = 0, binding = 9,  scalar) buffer ActiveQueue     { uint values[]; } activeQueue;

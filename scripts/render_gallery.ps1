@@ -136,7 +136,8 @@ function Write-SceneStats($item, $stages, $seconds, $device, $settings) {
     foreach ($key in @('instances', 'triangles', 'meshesRefined',
                        'subdivideInputPoints', 'subdivideOutputPoints',
                        'materialsCompiled', 'texturesLoaded', 'textureBytes',
-                       'cameraRays', 'deviceBytesPeak')) {
+                       'cameraRays', 'tracedRays', 'shadowRays',
+                       'deviceBytesPeak')) {
         if ($stages.ContainsKey($key)) {
             $out.Add(('{0,-22}{1}' -f $key, [uint64]$stages[$key]))
         }
@@ -370,8 +371,10 @@ foreach ($item in $selected) {
             $stages['materialMs'], [uint64]$stages['materialsCompiled'],
             $stages['textureMs'], [uint64]$stages['texturesLoaded'],
             (Format-Bytes ([uint64]$stages['textureBytes'])))
-        Write-Host ("  rays:     {0:N0} from the camera" -f
-                    [uint64]$stages['cameraRays'])
+        Write-Host (("  rays:     {0:N0} from the camera, {1:N0} traced, " +
+                     "{2:N0} shadow") -f
+                    [uint64]$stages['cameraRays'], [uint64]$stages['tracedRays'],
+                    [uint64]$stages['shadowRays'])
         if ($null -ne $devicePeak) {
             Write-Host ("  memory:   {0} on the device at the peak, {1} free" -f
                         (Format-Bytes $devicePeak),

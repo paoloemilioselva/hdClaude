@@ -67,6 +67,13 @@ struct HdClaudeStageStats {
     /// than estimated. An estimate here would be a guess wearing a number's
     /// clothes.
     std::atomic<std::uint64_t> cameraRays{0};
+    /// One per active path per bounce, and one per shadow ray shading asked
+    /// for, counted on the device and read back once per call. The ratio of
+    /// these to the camera rays is how far paths actually get before they are
+    /// absorbed, terminated or leave -- which is a property of the scene, not
+    /// of the settings, and cannot be predicted from the bounce limit.
+    std::atomic<std::uint64_t> tracedRays{0};
+    std::atomic<std::uint64_t> shadowRays{0};
 
     // --- Materials ---------------------------------------------------------
     /// Generation and SPIR-V compilation together: they are one cost from the
@@ -92,6 +99,8 @@ struct HdClaudeStageStats {
         instances.store(0, std::memory_order_relaxed);
         triangles.store(0, std::memory_order_relaxed);
         cameraRays.store(0, std::memory_order_relaxed);
+        tracedRays.store(0, std::memory_order_relaxed);
+        shadowRays.store(0, std::memory_order_relaxed);
         materialMilliseconds.store(0.0, std::memory_order_relaxed);
         materialsCompiled.store(0, std::memory_order_relaxed);
         textureMilliseconds.store(0.0, std::memory_order_relaxed);

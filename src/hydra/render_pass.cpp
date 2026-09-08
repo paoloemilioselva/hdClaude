@@ -425,6 +425,15 @@ void HdClaudeRenderPass::_Execute(
     }
 
     colorBuffer->Write(image);
+    // Taken from the tracer rather than accumulated here: it counts them on
+    // the device and reads them back once, and a total kept on this side would
+    // be a second answer to the same question.
+    {
+        HdClaudeStageStats& stages = _renderDelegate->StageStats();
+        stages.tracedRays.store(tracer->TracedRays(), std::memory_order_relaxed);
+        stages.shadowRays.store(tracer->ShadowRays(), std::memory_order_relaxed);
+    }
+
     _renderDelegate->RecordFrameTiming(milliseconds, _samplesCompleted);
 
     markConverged(_samplesCompleted >= _targetSamples);

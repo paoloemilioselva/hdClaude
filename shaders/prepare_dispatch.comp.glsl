@@ -37,6 +37,13 @@ void main()
         dispatchArgs.values[HDCLAUDE_DISPATCH_ACTIVE] =
             hdclaude_dispatch_groups(counters.activeCount);
 
+        // Every active path is about to be given a ray, so this is where they
+        // are counted: once per bounce, by the one invocation that already has
+        // the number in hand. A path tracer's cost is its rays, and until this
+        // existed the only ray count anybody could state was the camera's --
+        // the one number that needs no counting.
+        counters.tracedRays += counters.activeCount;
+
         for (uint m = 0u; m < frame.materialCount; ++m)
         {
             materialTable.values[m] = 0u;
@@ -64,4 +71,9 @@ void main()
 
     dispatchArgs.values[HDCLAUDE_DISPATCH_SHADOW] =
         hdclaude_dispatch_groups(counters.shadowCount);
+
+    // And the shadow rays shading produced, counted where their dispatch is
+    // sized. Kept apart from the traced count because they are a different
+    // question: one is how far paths got, the other how much light was sampled.
+    counters.shadowRays += counters.shadowCount;
 }

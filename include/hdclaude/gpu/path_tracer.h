@@ -252,6 +252,16 @@ class PathTracer {
     /// during a frame would be exactly the readback the design forbids.
     std::vector<std::uint32_t> MaterialCounts() const;
 
+    /// Rays traced since construction, counted on the device.
+    ///
+    /// One per active path per bounce, and one per shadow ray shading asked
+    /// for. Accumulated by the kernel that already reads those counts to size
+    /// its dispatches, and read back once per call after every dispatch it
+    /// describes has finished -- never during a frame, which is the stall this
+    /// design exists to avoid.
+    std::uint64_t TracedRays() const { return _tracedRayCount; }
+    std::uint64_t ShadowRays() const { return _shadowRayCount; }
+
   private:
     /// The invalidation decision, made once and in one place.
     ///
@@ -347,6 +357,10 @@ class PathTracer {
     std::vector<ComputePipeline> _shade;
 
     // Path state, sized to the current resolution.
+    VulkanBuffer _rayReadback;
+    std::uint64_t _tracedRayCount = 0;
+    std::uint64_t _shadowRayCount = 0;
+
     std::uint32_t _width = 0;
     std::uint32_t _height = 0;
 

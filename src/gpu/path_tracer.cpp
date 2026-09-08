@@ -840,7 +840,21 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
     // its hero wavelength.
     VulkanBuffer heroOnly = MakeStorage(_allocator, paths * 4, "path.heroOnly");
     VulkanBuffer hits = MakeStorage(_allocator, paths * 16, "path.hits");
-    VulkanBuffer counters = MakeStorage(_allocator, 16, "counters");
+    // Six uints: activeCount, nextActiveCount, shadowCount, a pad, and the
+    // two ray accumulators the prepare kernel adds into. The accumulators sit
+    // past byte 16 because the inter-bounce reset fills bytes 4 to 16 and would
+    // otherwise clear them every bounce.
+    VulkanBuffer counters = MakeStorage(_allocator, 24, "counters");
+
+    // A host-visible landing place for the two ray accumulators. Allocated with
+    // the rest of the resolution-dependent state so it is created once rather
+    // than per frame, though it does not depend on the resolution at all.
+    BufferDescription rayReadbackDescription;
+    rayReadbackDescription.size = 8;
+    rayReadbackDescription.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    rayReadbackDescription.domain = BufferDomain::HostReadback;
+    rayReadbackDescription.debugName = "counters.rayReadback";
+    VulkanBuffer rayReadback(_allocator, rayReadbackDescription);
     VulkanBuffer activeQueue = MakeStorage(_allocator, paths * 4, "queue.active");
     VulkanBuffer nextQueue = MakeStorage(_allocator, paths * 4, "queue.nextActive");
     VulkanBuffer shadowRays = MakeStorage(_allocator, paths * 64, "queue.shadow");
@@ -875,6 +889,7 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
     _heroOnly = std::move(heroOnly);
     _hits = std::move(hits);
     _counters = std::move(counters);
+    _rayReadback = std::move(rayReadback);
     _activeQueue = std::move(activeQueue);
     _nextActiveQueue = std::move(nextQueue);
     _shadowRays = std::move(shadowRays);
@@ -1184,6 +1199,13 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
         _context.SubmitImmediate([&](VkCommandBuffer command) {
             {
                 if (bounce == 0) {
+                    if (sample == 0) {
+                        // The accumulators measure this call, so they start it
+                        // at zero. Cleared here rather than by raygen because
+                        // raygen runs once per *sample* and this must not.
+                        vkCmdFillBuffer(command, _counters.Handle(), 16, 8, 0);
+                        Barrier(command);
+                    }
                     _raygen.Dispatch(command, raygenSet, pixelGroupsX, pixelGroupsY);
                     Barrier(command);
                 } else {
@@ -1292,7 +1314,21 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
         region.size = static_cast<VkDeviceSize>(paths) * 16;
         vkCmdCopyBuffer(command, _accumulation.Handle(), _readback.Handle(), 1,
                         &region);
+        // The ray accumulators, copied in the same submit as the film. One
+        // readback for a whole call, after every dispatch it describes has
+        // finished, which is the only point a count of rays can be taken
+        // without stalling the frame that is producing it.
+        VkBufferCopy rays{};
+        rays.srcOffset = 16;
+        rays.size = 8;
+        vkCmdCopyBuffer(command, _counters.Handle(), _rayReadback.Handle(), 1,
+                        &rays);
     });
+
+    std::uint32_t rayCounts[2] = {0, 0};
+    std::memcpy(rayCounts, _rayReadback.MappedData(), sizeof(rayCounts));
+    _tracedRayCount += rayCounts[0];
+    _shadowRayCount += rayCounts[1];
 
     std::vector<float> image(static_cast<std::size_t>(paths) * 4);
     std::memcpy(image.data(), _readback.MappedData(), image.size() * sizeof(float));

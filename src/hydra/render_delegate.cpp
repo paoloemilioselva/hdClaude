@@ -148,6 +148,10 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
                 << stages.triangles.load(std::memory_order_relaxed) << '\n'
                 << "cameraRays "
                 << stages.cameraRays.load(std::memory_order_relaxed) << '\n'
+                << "tracedRays "
+                << stages.tracedRays.load(std::memory_order_relaxed) << '\n'
+                << "shadowRays "
+                << stages.shadowRays.load(std::memory_order_relaxed) << '\n'
                 << "subdivideMs "
                 << stages.subdivideMilliseconds.load(std::memory_order_relaxed)
                 << '\n'
@@ -522,6 +526,10 @@ VtDictionary HdClaudeRenderDelegate::GetRenderStats() const
         VtValue(double(_stageStats.triangles.load(std::memory_order_relaxed)));
     stats["cameraRays"] =
         VtValue(double(_stageStats.cameraRays.load(std::memory_order_relaxed)));
+    stats["tracedRays"] =
+        VtValue(double(_stageStats.tracedRays.load(std::memory_order_relaxed)));
+    stats["shadowRays"] =
+        VtValue(double(_stageStats.shadowRays.load(std::memory_order_relaxed)));
     stats["subdivideMs"] =
         VtValue(_stageStats.subdivideMilliseconds.load(std::memory_order_relaxed));
     stats["meshesRefined"] =
