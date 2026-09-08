@@ -5434,3 +5434,162 @@ inside the quiet window where the cross-process comparison is also clean. Its
 value is entirely prospective: when the fault returns, this is the test that
 separates a per-process cause from a transient one, and it can be run in a
 minute instead of built from scratch under suspicion.
+
+---
+
+## 2026-09-09 -- Two ways a hash stopped being a hash
+
+Arming the standing watch found two places where the value being written was
+not the value being measured. Both are the same mistake in different languages,
+and both would have made the watch useless in exactly the case it exists for.
+
+**The stats dictionary rounded it.** `GetRenderStats()` returns a
+`VtDictionary`, and every entry in it was `VtValue(double(...))`, which is right
+for the counts -- a triangle count or a ray count is far below the 2^53 a double
+carries exactly -- and wrong for a hash. `6942637114454757797` comes back from a
+double as `6942637114454757376`: everything below the low eleven bits is gone,
+so two runs that genuinely disagreed could report the same figure. Both hashes
+now go through as text. A count is a quantity and a hash is an identity, and the
+only thing anyone does with an identity is compare it.
+
+**Then the gallery script rounded it again.** `render_gallery.ps1` read the
+renderer's report with `$stages[$key] = [double]$parts[1]`, one cast covering
+every field, so the exact integer written to the report file became a double on
+the way into the committed `.stats`. This one was caught by reading the file the
+first gallery run had just written and noticing its hash ended `...757376` where
+the renderer had printed `...757797` -- the same eleven bits, lost a second
+time, three layers further out.
+
+The parser now keeps the text as it came and each use site says what it wants:
+`[uint64]` for a count or a hash, `[double]` where a fraction is meant. That is
+the arrangement that should have been there anyway, since the dictionary is
+described in its own comment as keeping "every key the renderer wrote, kept as
+it came".
+
+**And the stats are now compared, not merely written.** The scene group -- what
+a scene *is*, as opposed to what it cost -- is checked against the committed
+file before being replaced, and any key that moved is reported with its old and
+new values. Reported rather than thrown: the image gate already fails a render
+that moved, and a deliberate change that legitimately alters ray counts should
+not have to fight the suite to land.
+
+It exists because the counts were already carrying a defect nobody saw. The
+committed `chess_board.stats` recorded a `tracedRays` of 993842904 -- a value
+produced by a run that had the intermittent nondeterminism, a fourth distinct
+figure alongside the three the hunt turned up -- and it sat there unremarked,
+because writing a number down is not the same as reading it.
+
+---
+
+## 2026-09-09 -- A reliable reproducer, found by the watch on its first outing
+
+**Retracted: the fault is not "intermittent at the scale of hours".** That
+reading was drawn from twelve consecutive clean processes, and every one of them
+rendered the **Open Chess Set**. It was the only scene the hunt ever used. The
+conclusion generalised from one scene to the renderer, and the generalisation is
+wrong.
+
+Arming the committed `.stats` with both hashes found the reproducer the whole
+investigation had been missing. Pixar's Kitchen Set gives a **different hit hash
+every single time**:
+
+    18048153105721151987
+     9348002138563568471
+    10304544561685832220
+    13107609297471498173
+
+Four consecutive renders, four values. And in every one of them `tracedRays`,
+`shadowRays` and `rayHash` do not move at all. **The rays are bit-identical and
+the hits are not** -- the same signature the one-bounce experiment produced on
+the chess set before that scene went quiet, now on a second scene and on demand
+rather than by luck.
+
+The image gate never sees it. All four renders compare to the committed baseline
+at rms 0, because that comparison is against the **JPEG**, and a radiance
+difference below 8-bit quantisation vanishes into it. That is worth stating
+plainly: an image gate reading exactly zero is not evidence that a render
+reproduced. The hashes are, and they are measured on the linear film's causes
+rather than on a display-transformed copy of its effects.
+
+So the watch justified itself immediately. It was built to make a recurrence
+show up as a diff on a tracked file instead of a bespoke hunt, and the first
+time it ran it turned a phenomenon that had to be stalked into one that can be
+asked for.
+
+Why this scene and not the other is not yet answered, but the shape of the
+guess is obvious: a kitchen is full of coincident and near-coincident surfaces
+-- a cabinet door against its frame, a worktop against a splashback, objects
+resting exactly on shelves -- and Vulkan is explicit that a candidate at
+`t = tmax` *"may be set as the current closest hit or dropped"* and that
+watertightness at a shared edge is a **should**. Chess pieces on a board have
+far fewer such ties.
+
+With a reproducer, the experiment that has been out of reach all along is
+finally possible: render the Kitchen Set several times **in one process**. Same
+acceleration structure, same shader compilation, same device context. If the hit
+hash differs there too, the structure is exonerated and the cause is transient;
+if it is stable within a process and differs between them, it is the build.
+
+The answer came back immediately. Three renders of the Kitchen Set **inside one
+process**:
+
+    tracedRays 1770415731  shadowRays 754840623
+    hitHash 16515537762802266486  rayHash 7474697996910621400   (three times)
+
+Identical, every field. Across processes the same scene gives a different hit
+hash every time. **Stable within a process, different between them.**
+
+That settles it. A transient fault -- a memory soft error on a consumer card
+with no ECC, which was a live hypothesis -- would strike within a process as
+readily as between two, and it does not. What differs between two processes and
+not within one is the state built once at startup, and of that the acceleration
+structure is the only part that decides which triangle a ray hits. The rays are
+bit-identical; the structure they are traced against is not the same structure.
+
+Vulkan permits this. Its acceleration-structure chapter says nothing at all
+about a build being reproducible from identical inputs -- silent, rather than
+permissive -- and its traversal chapter is explicit at the margin: a candidate
+at `t = tmax` *"may be set as the current closest hit or dropped"*, the
+intersection test *"is performed in an implementation specific manner, and
+**may** be performed with floating-point operations"* with *"inaccuracies …
+expected"*, and not double-hitting or missing at a shared edge is a **should**.
+Two differently-built trees are therefore entitled to disagree about a tie, and
+a kitchen is full of ties in a way a chessboard is not.
+
+So this is not a defect to fix in hdClaude's own code, and the honest response
+is to stop treating cross-process bit-equality as a property the renderer can
+have. What it *can* have, and now demonstrably does, is **in-process**
+reproducibility -- which is the property phase 9's remaining steps actually need,
+since each rests on the argument that a change did not move the image, and that
+argument is made by rendering twice in one process rather than twice in two.
+
+**One defect in the diagnostic, found by using it.** The repeat run wrote a
+`cameraRays` of 1922039808 into the committed stats -- exactly three times the
+truth. Camera rays are counted by the render pass rather than by the tracer, so
+`PathTracer::ResetCounters` did not touch them and they summed across the
+repeats. A diagnostic that quietly corrupts the file it is measured beside is
+worse than no diagnostic, and the pass now clears that counter with the others.
+
+**Which scenes actually reproduce, measured rather than assumed.** Regenerating
+the gallery with the hashes in place answers a question nobody had asked
+directly. Nine of the eleven scenes give byte-identical images and unchanged
+counts. Two do not:
+
+* **Pixar's Kitchen Set** -- a different hit hash on every render, with the rays
+  and every count identical, and an image that still compares at rms 0 because
+  the difference is below what an 8-bit JPEG can hold.
+* **The OpenPBR Playground** -- the same, except that here it *does* reach the
+  picture: rms 1.19e-4 against its committed baseline, well inside the gate's
+  1e-2 limit but not zero.
+
+The Playground's baseline is deliberately **not** replaced. A committed baseline
+should change when someone means it to, and this difference has a cause that is
+neither the asset nor the renderer's code; adopting the new render would only
+swap one arbitrary member of a family of near-identical images for another and
+lose the fact that they differ. Its `.stats` is updated, which is where the
+evidence belongs.
+
+The consequence to expect: those two scenes will report a moved hit hash on
+every gallery run, forever, until the cause changes. That is signal and not
+noise -- they genuinely do not reproduce across processes -- and it is the
+reason the comparison reports rather than throws.

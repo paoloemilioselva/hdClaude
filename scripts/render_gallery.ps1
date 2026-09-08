@@ -118,6 +118,47 @@ function Write-SceneStats($item, $stages, $seconds, $device, $settings) {
     # moves a little every run. A reviewer reading a diff wants to know which of
     # those they are looking at without counting lines.
     $path = Join-Path $galleryRoot ($item.Key + '.stats')
+
+    # What the scene *is*, checked against what it was.
+    #
+    # These keys do not move unless the asset changed or the renderer's
+    # handling of it did, so a change is either the point of the commit or a
+    # defect -- and the two are told apart by a person, not here. Reported
+    # rather than thrown: the image gate already fails a render that moved,
+    # and a deliberate change that legitimately alters ray counts should not
+    # have to fight the suite to land.
+    #
+    # It exists because the counts were already carrying a defect nobody saw.
+    # The committed chess_board.stats recorded a tracedRays written by a run
+    # that had the intermittent nondeterminism, and it sat in the file
+    # unremarked because writing a number is not the same as reading it.
+    if (Test-Path -LiteralPath $path) {
+        $previous = @{}
+        foreach ($line in (Get-Content -LiteralPath $path)) {
+            if ($line -match '^([A-Za-z][A-Za-z0-9]*)\s+(\d+)$') {
+                $previous[$matches[1]] = $matches[2]
+            }
+        }
+        $moved = [Collections.Generic.List[string]]::new()
+        foreach ($key in @('instances', 'triangles', 'meshesRefined',
+                           'subdivideInputPoints', 'subdivideOutputPoints',
+                           'materialsCompiled', 'texturesLoaded',
+                           'textureBytes', 'cameraRays', 'tracedRays',
+                           'shadowRays', 'rayHash', 'hitHash')) {
+            if (-not $previous.ContainsKey($key)) { continue }
+            if (-not $stages.ContainsKey($key)) { continue }
+            $now = ([uint64]$stages[$key]).ToString()
+            if ($now -ne $previous[$key]) {
+                $moved.Add(('{0}: {1} -> {2}' -f $key, $previous[$key], $now))
+            }
+        }
+        if ($moved.Count -gt 0) {
+            Write-Warning (("$($item.Title): the scene group moved since the " +
+                            'committed stats. Either this commit means it to, ' +
+                            'or the renderer did not reproduce itself.'))
+            foreach ($line in $moved) { Write-Warning "    $line" }
+        }
+    }
     $out = [Collections.Generic.List[string]]::new()
     $out.Add("# hdClaude render stats -- $($item.Key).usda")
     $out.Add('#')
@@ -150,7 +191,7 @@ function Write-SceneStats($item, $stages, $seconds, $device, $settings) {
     foreach ($key in @('ingestMs', 'publishMs', 'subdivideMs', 'materialMs',
                        'textureMs')) {
         if ($stages.ContainsKey($key)) {
-            $out.Add(('{0,-22}{1:F0}' -f $key, $stages[$key]))
+            $out.Add(('{0,-22}{1:F0}' -f $key, [double]$stages[$key]))
         }
     }
     # Written without a byte-order mark. `Set-Content -Encoding utf8` on
@@ -347,7 +388,13 @@ foreach ($item in $selected) {
         foreach ($line in Get-Content -LiteralPath $reportPath) {
             $parts = $line -split '\s+', 2
             if ($parts.Count -eq 2) {
-                $stages[$parts[0]] = [double]$parts[1]
+                # Kept as text, not as a double. A 64-bit hash does not
+                # survive one: hitHash 6942637114454757797 comes back as
+                # ...757376, and two runs that genuinely disagreed could be
+                # written to the committed stats as the same number. Every
+                # use site says what it wants -- [uint64] for a count or a
+                # hash, [double] where a fraction is meant.
+                $stages[$parts[0]] = $parts[1].Trim()
             }
         }
     }
@@ -359,17 +406,17 @@ foreach ($item in $selected) {
         Write-Host ((
             "  ingest:   {0:F0} ms snapshot, {1:F0} ms publish " +
             "({2:N0} instances, {3:N0} triangles)") -f
-            $stages['ingestMs'], $stages['publishMs'],
+            [double]$stages['ingestMs'], [double]$stages['publishMs'],
             [uint64]$stages['instances'], [uint64]$stages['triangles'])
         Write-Host ("  subdiv:   {0:F0} ms over {1} meshes, {2:N0} -> {3:N0} points" -f
-                    $stages['subdivideMs'], [uint64]$stages['meshesRefined'],
+                    [double]$stages['subdivideMs'], [uint64]$stages['meshesRefined'],
                     [uint64]$stages['subdivideInputPoints'],
                     [uint64]$stages['subdivideOutputPoints'])
         Write-Host ((
             "  shading:  {0:F0} ms over {1} materials, " +
             "{2:F0} ms over {3} textures ({4})") -f
-            $stages['materialMs'], [uint64]$stages['materialsCompiled'],
-            $stages['textureMs'], [uint64]$stages['texturesLoaded'],
+            [double]$stages['materialMs'], [uint64]$stages['materialsCompiled'],
+            [double]$stages['textureMs'], [uint64]$stages['texturesLoaded'],
             (Format-Bytes ([uint64]$stages['textureBytes'])))
         Write-Host (("  rays:     {0:N0} from the camera, {1:N0} traced, " +
                      "{2:N0} shadow") -f

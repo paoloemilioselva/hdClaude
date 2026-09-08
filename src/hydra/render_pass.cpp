@@ -479,6 +479,14 @@ void HdClaudeRenderPass::_Execute(
                 --_repeatsRemaining;
                 _samplesCompleted = 0;
                 tracer->ResetCounters();
+                // Camera rays are counted on this side rather than by the
+                // tracer, so resetting the tracer alone leaves them
+                // summing across the repeats: three renders wrote a
+                // cameraRays of exactly three times the truth into a
+                // committed .stats. A diagnostic that quietly corrupts the
+                // file it is measured beside is worse than no diagnostic.
+                _renderDelegate->StageStats().cameraRays.store(
+                    0, std::memory_order_relaxed);
                 markConverged(false);
                 return;
             }
