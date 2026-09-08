@@ -119,14 +119,14 @@ HdClaudeRenderDelegate::HdClaudeRenderDelegate(
 
 HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
 {
-    // The memory report, before anything is released.
+    // The stats report, before anything is released.
     //
     // Written to a file rather than to stdout because the caller that wants it
     // is a script, and a number it has to find in a renderer's console output
     // is a number that breaks the first time anything else prints. Absent the
     // environment variable this costs nothing and says nothing, which is what
     // an ordinary render should get.
-    if (const std::string path = TfGetenv("HDCLAUDE_MEMORY_REPORT");
+    if (const std::string path = TfGetenv("HDCLAUDE_STATS_REPORT");
         !path.empty()) {
         const std::uint64_t peak =
             _peakDeviceBytes.load(std::memory_order_relaxed);
@@ -173,7 +173,7 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
                 << "textureBytes "
                 << stages.textureBytes.load(std::memory_order_relaxed) << '\n';
         } else {
-            TF_WARN("hdClaude: could not write the memory report to '%s'",
+            TF_WARN("hdClaude: could not write the stats report to '%s'",
                     path.c_str());
         }
     }

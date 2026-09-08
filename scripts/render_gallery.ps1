@@ -107,6 +107,58 @@ function Format-Bytes([uint64]$bytes) {
     return ("$bytes B")
 }
 
+function Write-SceneStats($item, $stages, $seconds, $device, $settings) {
+    # A versioned record of what a scene costs, beside the scene itself.
+    #
+    # Named for the .usda it describes, so the two travel together and a diff
+    # says what changed about a scene rather than what changed about a table.
+    # Two groups, because they answer different questions: the first is what the
+    # scene *is* and changes only when the asset or the renderer's handling of
+    # it does, and the second is what it cost on one machine on one day and
+    # moves a little every run. A reviewer reading a diff wants to know which of
+    # those they are looking at without counting lines.
+    $path = Join-Path $galleryRoot ($item.Key + '.stats')
+    $out = [Collections.Generic.List[string]]::new()
+    $out.Add("# hdClaude render stats -- $($item.Key).usda")
+    $out.Add('#')
+    $out.Add('# Reported by the renderer through GetRenderStats(), not measured')
+    $out.Add('# from outside: only it knows what it is holding, and only it knows')
+    $out.Add('# the moment a frame holds all of it at once.')
+    $out.Add('#')
+    $out.Add('# Times are total work summed across Hydra''s worker threads, so a')
+    $out.Add('# stage can exceed the frame''s wall time -- that is threads working')
+    $out.Add('# at once, not an error.')
+    $out.Add('#')
+    $out.Add("# Regenerate with: render_gallery.bat -Scene $($item.Key)")
+    $out.Add('')
+    $out.Add('[scene]')
+    $out.Add(('{0,-22}{1}' -f 'settings', $settings))
+    foreach ($key in @('instances', 'triangles', 'meshesRefined',
+                       'subdivideInputPoints', 'subdivideOutputPoints',
+                       'materialsCompiled', 'texturesLoaded', 'textureBytes',
+                       'cameraRays', 'deviceBytesPeak')) {
+        if ($stages.ContainsKey($key)) {
+            $out.Add(('{0,-22}{1}' -f $key, [uint64]$stages[$key]))
+        }
+    }
+    $out.Add('')
+    $out.Add('[cost]')
+    $out.Add(('{0,-22}{1}' -f 'device', $device))
+    $out.Add(('{0,-22}{1}' -f 'measured', (Get-Date -Format 'yyyy-MM-dd')))
+    $out.Add(('{0,-22}{1:F3}' -f 'wallSeconds', $seconds))
+    foreach ($key in @('ingestMs', 'publishMs', 'subdivideMs', 'materialMs',
+                       'textureMs')) {
+        if ($stages.ContainsKey($key)) {
+            $out.Add(('{0,-22}{1:F0}' -f $key, $stages[$key]))
+        }
+    }
+    # Written without a byte-order mark. `Set-Content -Encoding utf8` on
+    # Windows PowerShell writes one, and a committed text file that begins with
+    # three invisible bytes is a file every other tool has to be told about.
+    [System.IO.File]::WriteAllLines(
+        $path, $out, (New-Object System.Text.UTF8Encoding $false))
+}
+
 function Format-Duration([double]$seconds) {
     $duration = [TimeSpan]::FromSeconds($seconds)
     if ($duration.TotalHours -ge 1.0) {
@@ -162,7 +214,8 @@ function Update-GalleryMarkdown($timings) {
             $seconds = [double]$measurement.seconds
             $exact = $seconds.ToString('F3', $invariant)
             $duration = Format-Duration $seconds
-            $settings = "$($measurement.width)x$($measurement.width), " +
+            # Width only; see the note where settingsText is built.
+            $settings = "$($measurement.width) px wide, " +
                 "$($measurement.samples) spp, $($measurement.samplesPerFrame)/update, " +
                 "$($measurement.bounces) bounces, subdiv $($measurement.subdivision)"
             # A dash where the renderer did not say, which is every row measured
@@ -264,17 +317,17 @@ foreach ($item in $selected) {
     # the moment a frame holds all of it -- path state, acceleration structures,
     # textures and film at once. It writes the figures to this file at teardown;
     # without the variable it writes nothing and says nothing.
-    $memoryPath = Join-Path $linearRoot "$($item.Key).memory.txt"
-    if (Test-Path -LiteralPath $memoryPath) {
-        Remove-Item -LiteralPath $memoryPath -Force
+    $reportPath = Join-Path $linearRoot "$($item.Key).stats.txt"
+    if (Test-Path -LiteralPath $reportPath) {
+        Remove-Item -LiteralPath $reportPath -Force
     }
-    $env:HDCLAUDE_MEMORY_REPORT = $memoryPath
+    $env:HDCLAUDE_STATS_REPORT = $reportPath
 
     $stopwatch = [Diagnostics.Stopwatch]::StartNew()
     & $renderScript @arguments
     $renderExit = $LASTEXITCODE
     $stopwatch.Stop()
-    Remove-Item Env:\HDCLAUDE_MEMORY_REPORT -ErrorAction SilentlyContinue
+    Remove-Item Env:\HDCLAUDE_STATS_REPORT -ErrorAction SilentlyContinue
     if ($renderExit -ne 0) {
         throw "Render failed for $($item.Key) with exit code $renderExit"
     }
@@ -289,8 +342,8 @@ foreach ($item in $selected) {
     # dictionary rather than a fixed set of variables means a stage added on the
     # renderer's side appears in the JSON without this script being taught it.
     $stages = @{}
-    if (Test-Path -LiteralPath $memoryPath) {
-        foreach ($line in Get-Content -LiteralPath $memoryPath) {
+    if (Test-Path -LiteralPath $reportPath) {
+        foreach ($line in Get-Content -LiteralPath $reportPath) {
             $parts = $line -split '\s+', 2
             if ($parts.Count -eq 2) {
                 $stages[$parts[0]] = [double]$parts[1]
@@ -370,6 +423,13 @@ foreach ($item in $selected) {
         # of these; the rest are here because the interesting question about a
         # scene is usually not the one the table was built to answer.
         stages = $stages
+        # Width only, because the height is the camera's to decide: these
+        # scenes are framed by their own cameras and most are not square. The
+        # table said "1024x1024" for an image 1024 by 434, which is the sort of
+        # detail a reader takes on trust and should not have to.
+        settingsText = "$imageWidth px wide, $samplesPerPixel spp, " +
+            "$samplesPerFrame/update, $($env:HDCLAUDE_MAX_BOUNCES) bounces, " +
+            "subdiv $($item.Subdivision)"
         date = Get-Date -Format 'yyyy-MM-dd'
         device = $device
         width = $imageWidth
@@ -377,6 +437,11 @@ foreach ($item in $selected) {
         samplesPerFrame = $samplesPerFrame
         bounces = [int]$env:HDCLAUDE_MAX_BOUNCES
         subdivision = $item.Subdivision
+    }
+
+    if ($stages.Count -gt 0) {
+        Write-SceneStats $item $stages $stopwatch.Elapsed.TotalSeconds `
+            $device $timings[$item.Key].settingsText
     }
 
     # Written after every scene rather than at the end, so a run interrupted

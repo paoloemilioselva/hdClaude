@@ -1,0 +1,34 @@
+# hdClaude render stats -- collectiveproject001.usda
+#
+# Reported by the renderer through GetRenderStats(), not measured
+# from outside: only it knows what it is holding, and only it knows
+# the moment a frame holds all of it at once.
+#
+# Times are total work summed across Hydra's worker threads, so a
+# stage can exceed the frame's wall time -- that is threads working
+# at once, not an error.
+#
+# Regenerate with: render_gallery.bat -Scene collectiveproject001
+
+[scene]
+settings              1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2
+instances             4
+triangles             321318
+meshesRefined         1
+subdivideInputPoints  29907
+subdivideOutputPoints 476325
+materialsCompiled     14
+texturesLoaded        4
+textureBytes          536870912
+cameraRays            715128832
+deviceBytesPeak       816447488
+
+[cost]
+device                NVIDIA GeForce RTX 5060 Ti
+measured              2026-09-09
+wallSeconds           17.677
+ingestMs              136
+publishMs             132
+subdivideMs           37
+materialMs            1608
+textureMs             1235

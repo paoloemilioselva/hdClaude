@@ -1,0 +1,34 @@
+# hdClaude render stats -- pixar_kitchen.usda
+#
+# Reported by the renderer through GetRenderStats(), not measured
+# from outside: only it knows what it is holding, and only it knows
+# the moment a frame holds all of it at once.
+#
+# Times are total work summed across Hydra's worker threads, so a
+# stage can exceed the frame's wall time -- that is threads working
+# at once, not an error.
+#
+# Regenerate with: render_gallery.bat -Scene pixar_kitchen
+
+[scene]
+settings              1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2
+instances             1788
+triangles             8706088
+meshesRefined         1462
+subdivideInputPoints  683883
+subdivideOutputPoints 10934865
+materialsCompiled     0
+texturesLoaded        0
+textureBytes          0
+cameraRays            640679936
+deviceBytesPeak       1080229888
+
+[cost]
+device                NVIDIA GeForce RTX 5060 Ti
+measured              2026-09-09
+wallSeconds           165.421
+ingestMs              176
+publishMs             3101
+subdivideMs           663
+materialMs            0
+textureMs             0

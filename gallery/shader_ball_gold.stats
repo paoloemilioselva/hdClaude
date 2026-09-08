@@ -1,0 +1,34 @@
+# hdClaude render stats -- shader_ball_gold.usda
+#
+# Reported by the renderer through GetRenderStats(), not measured
+# from outside: only it knows what it is holding, and only it knows
+# the moment a frame holds all of it at once.
+#
+# Times are total work summed across Hydra's worker threads, so a
+# stage can exceed the frame's wall time -- that is threads working
+# at once, not an error.
+#
+# Regenerate with: render_gallery.bat -Scene shader_ball_gold
+
+[scene]
+settings              1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2
+instances             12
+triangles             255440
+meshesRefined         4
+subdivideInputPoints  24198
+subdivideOutputPoints 383388
+materialsCompiled     17
+texturesLoaded        10
+textureBytes          691715204
+cameraRays            1073741824
+deviceBytesPeak       990232576
+
+[cost]
+device                NVIDIA GeForce RTX 5060 Ti
+measured              2026-09-09
+wallSeconds           51.530
+ingestMs              173
+publishMs             285
+subdivideMs           33
+materialMs            1811
+textureMs             1347

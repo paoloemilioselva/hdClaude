@@ -1,0 +1,34 @@
+# hdClaude render stats -- intel_sponza.usda
+#
+# Reported by the renderer through GetRenderStats(), not measured
+# from outside: only it knows what it is holding, and only it knows
+# the moment a frame holds all of it at once.
+#
+# Times are total work summed across Hydra's worker threads, so a
+# stage can exceed the frame's wall time -- that is threads working
+# at once, not an error.
+#
+# Regenerate with: render_gallery.bat -Scene intel_sponza
+
+[scene]
+settings              1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2
+instances             115
+triangles             3747022
+meshesRefined         0
+subdivideInputPoints  0
+subdivideOutputPoints 0
+materialsCompiled     28
+texturesLoaded        73
+textureBytes          4831838212
+cameraRays            603979776
+deviceBytesPeak       5641338880
+
+[cost]
+device                NVIDIA GeForce RTX 5060 Ti
+measured              2026-09-09
+wallSeconds           78.200
+ingestMs              1703
+publishMs             3343
+subdivideMs           0
+materialMs            3417
+textureMs             15460

@@ -5015,7 +5015,7 @@ trusted.
 
 **Two routes out.** Everything appears in `GetRenderStats()`, which is where a
 Hydra host asks. The gallery script needs the same numbers out of a subprocess,
-so the delegate also writes them to the file named by `HDCLAUDE_MEMORY_REPORT` --
+so the delegate also writes them to the file named by `HDCLAUDE_STATS_REPORT` --
 a file rather than stdout, because a number a script has to find in a renderer's
 console output breaks the first time anything else prints. Without the variable
 it writes nothing and costs nothing.
@@ -5026,3 +5026,38 @@ script being taught about it. The table in gallery.md gains one column, device
 memory, because a table with eleven is not a table; the rest live in the JSON,
 since the interesting question about a scene is usually not the one a table was
 built to answer.
+
+---
+
+## 2026-09-09 -- The stats are versioned beside the scene
+
+The stage figures were being written to a scratch file and thrown away with the
+build tree. They are now a committed artefact per scene, `gallery/<key>.stats`,
+named for the `.usda` it describes so the two travel together and a diff says
+what changed about a *scene* rather than what changed about a table.
+
+The file is in two groups, because they answer different questions and a reader
+should not have to count lines to tell which they are looking at.
+
+`[scene]` is what the scene *is*: instances, triangles, control points in and
+refined points out, materials, textures and their bytes, camera rays, and the
+device memory peak. These change only when the asset changes or when the
+renderer's handling of it does, which makes a diff here worth reading.
+
+`[cost]` is what it cost on one machine on one day: the device, the date, the
+wall time, and the per-stage times. These move a little every run and a diff
+here usually means nothing.
+
+Written without a byte-order mark, which `Set-Content -Encoding utf8` on Windows
+PowerShell adds: a committed text file that begins with three invisible bytes is
+a file every other tool has to be told about.
+
+**And the settings line stopped lying.** Both this file and the timing table
+described every render as `1024x1024`, built from the width twice, when these
+scenes are framed by their own cameras and most are not square -- the height map
+is 1024 by 434. The width is the only figure the script sets, so it is the only
+one either of them claims now. It is a small thing and it is the sort a reader
+takes on trust.
+
+The environment variable is `HDCLAUDE_STATS_REPORT`, renamed from
+`HDCLAUDE_MEMORY_REPORT` when it stopped being only about memory.
