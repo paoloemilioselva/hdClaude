@@ -1191,6 +1191,31 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     // free, so removing it means the explicit ones now carry the whole weight;
     // the synchronisation validation gate is what says they do, and it is part
     // of the GPU suite for exactly this class of change (2026-09-06).
+    // DIAGNOSTIC: poison the path state before the frame touches it.
+    //
+    // A rare, scale-dependent difference that is stable within a process and
+    // varies between them is the shape of a read of uninitialised memory: the
+    // contents are whatever the driver last left in that allocation, which is
+    // fixed for one process and arbitrary across them. Filling every path
+    // buffer with a known pattern makes that content the same everywhere, so if
+    // the renderer becomes reproducible across processes with this on, the
+    // cause is a slot read before it was written.
+    if (std::getenv("HDCLAUDE_POISON_PATH_STATE") != nullptr) {
+        _context.SubmitImmediate([&](VkCommandBuffer command) {
+            for (VulkanBuffer* buffer :
+                 {&_origin, &_direction, &_throughput, &_radiance,
+                  &_wavelengths, &_pixel, &_rng, &_scatterPdf, &_medium,
+                  &_heroOnly, &_hits, &_activeQueue, &_nextActiveQueue,
+                  &_shadowRays, &_materialQueue}) {
+                if (buffer->Valid()) {
+                    vkCmdFillBuffer(command, buffer->Handle(), 0, VK_WHOLE_SIZE,
+                                    0xCDCDCDCDu);
+                }
+            }
+            Barrier(command);
+        });
+    }
+
     for (std::uint32_t sample = 0; sample < settings.samplesPerPixel; ++sample) {
         block.sampleIndex = settings.firstSample + sample;
         _frameUniforms.Write(&block, sizeof(block));

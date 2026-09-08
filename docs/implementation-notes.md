@@ -5121,3 +5121,70 @@ runs once per *sample* and would have reset them thirty-two times a frame.
 
 Every gallery image re-renders byte identical except the four the known
 cross-process nondeterminism moved, which were restored rather than adopted.
+
+---
+
+## 2026-09-09 -- Four more causes eliminated, and a claim withdrawn
+
+The cross-process nondeterminism is characterised much more sharply and still has
+no cause. What follows is what it is not, and one thing said earlier that does
+not survive the extra data.
+
+**Withdrawn: it is not bimodal.** The previous entry read a great deal into the
+height map producing exactly 3.72045e-05 on two occasions under different
+binaries, and concluded the effect was a binary choice made once per process
+rather than a drift. More runs do not support that. Three renders of the chess
+set at gallery settings differ from each other by 1.06e-5, 2.08e-4 and 5.30e-4 --
+a spread of magnitudes, not two stable outcomes. Two runs landing on the same
+figure was a coincidence given weight it could not carry, and "what to look for"
+was named on the strength of it. The correction matters more than the original
+claim did.
+
+**It is driven by sample count, not by resolution.**
+
+    1024 x 1024, 64 spp    (67M camera rays)   identical across three processes
+    1024 x 1024, 1024 spp  (1.07B camera rays) different in every pair
+
+Full resolution at a low sample count is clean, so the number of paths in flight
+is not what matters. Somewhere between 67 million and 1.07 billion camera rays
+the effect appears, which puts it around one ray in a hundred million: rare,
+per-ray, and invisible below the gallery's own settings. That is why every
+in-process gate passes -- they run at 128 x 128.
+
+**It is not the progressive machinery.** The same 1024 samples in one call and in
+thirty-two calls are both irreproducible, at rms 2.08e-4 and 5.30e-4. Descriptor
+pool resets, accumulation continuation and the per-call state are all ruled out
+together.
+
+**It is not uninitialised path state.** Every path buffer -- origin, direction,
+throughput, radiance, wavelengths, pixel, rng, scatter density, medium, hero
+flag, hits, both queues, the shadow queue and the sorted queue -- is now fillable
+with a known pattern before a frame by `HDCLAUDE_POISON_PATH_STATE`. A read of a
+slot before it is written would be stable within a process and arbitrary across
+them, which is exactly this effect's shape, so making that content identical
+everywhere should have made the renderer reproducible. It does not: poisoned,
+three processes still differ, at 1.06e-5 and 5.30e-4. The diagnostic is kept
+because it is the instrument that answered this and will be wanted again.
+
+**It is not the sort's scatter.** Both writes there -- the per-material count and
+the scatter cursor -- are `atomicAdd`. A path claimed twice would be shaded twice
+and its radiance added twice, which is a firefly at low frequency and would have
+fitted; it is not what is happening.
+
+**One earlier bisect was worthless and is retracted.** Rendering at one bounce
+against eight looked like it separated traversal from continuation, and both read
+zero. Both were run at 512 x 512 and 64 samples, which is below the threshold
+above: *everything* is clean there. It measured nothing.
+
+**What is left.** The acceleration structure build is the last obvious candidate:
+it happens once per process, a GPU builder is under no obligation to produce the
+same tree twice, and while a different tree should still give the same closest
+hit, "should" is what this whole investigation keeps disproving. The in-process
+rebuild test found nothing, but it runs on a synthetic scene of two prototypes
+with no coincident surfaces.
+
+The instrument that would settle it is an **id AOV** -- instance and primitive per
+pixel. If two processes agree on what every ray hit and disagree on the image,
+the difference is in shading; if they disagree on the hits, it is traversal or
+the structure. That AOV is already on phase 7's remaining list for other reasons,
+and it is now the cheapest way to answer this.
