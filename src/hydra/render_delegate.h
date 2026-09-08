@@ -8,10 +8,13 @@
 
 #include "hdclaude/gpu/path_tracer.h"
 #include "hdclaude/gpu/vulkan_context.h"
+#include "stage_stats.h"
+
 #include "hdclaude/gpu/vulkan_resources.h"
 
 #include "pxr/imaging/hd/renderDelegate.h"
 
+#include <atomic>
 #include <memory>
 #include <string>
 
@@ -78,7 +81,17 @@ class HDCLAUDE_API HdClaudeRenderDelegate final : public HdRenderDelegate {
     /// this rather than rendering a black frame with no explanation.
     const std::string& InitializationError() const { return _initializationError; }
 
+    /// Record what a frame cost, in time and in device memory.
+    ///
+    /// The memory is sampled here rather than at teardown because that is the
+    /// only moment the renderer is holding everything a frame needs at once --
+    /// path state, acceleration structures, textures and film. By the
+    /// destructor the interesting part has already been released.
     void RecordFrameTiming(double milliseconds, std::uint32_t samples);
+
+    /// Where the render pass records what ingestion and publication cost. The
+    /// adapters reach the same object through the render param.
+    HdClaudeStageStats& StageStats() { return _stageStats; }
 
   private:
     void Initialize(const HdRenderSettingsMap& settingsMap);
@@ -95,6 +108,19 @@ class HDCLAUDE_API HdClaudeRenderDelegate final : public HdRenderDelegate {
     // device memory at vkDestroyDevice once already (docs/implementation-notes.md).
     std::unique_ptr<hdclaude::VulkanContext> _context;
     std::unique_ptr<hdclaude::VulkanAllocator> _allocator;
+
+    /// The high-water mark of device-local memory, across every frame.
+    ///
+    /// A peak rather than a final reading, because a renderer that allocated
+    /// and released is one that could fail on a smaller card, and a number
+    /// taken after the release would not say so. In practice the two are close
+    /// here -- path state and structures are allocated once and kept -- which
+    /// is worth knowing rather than assuming.
+    std::atomic<std::uint64_t> _peakDeviceBytes{0};
+
+    /// What each stage of a render cost. Filled by the adapters through the
+    /// render param, read by GetRenderStats and by the memory report.
+    HdClaudeStageStats _stageStats;
     std::unique_ptr<hdclaude::PathTracer> _pathTracer;
 
     std::string _initializationError;

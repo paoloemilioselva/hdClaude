@@ -8,6 +8,8 @@
 #include "scene_store.h"
 #include "texture_loader.h"
 
+#include "stage_stats.h"
+
 #include "pxr/imaging/hd/renderDelegate.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -19,17 +21,23 @@ class HdClaudeRenderParam final : public HdRenderParam {
     HdClaudeRenderParam(HdClaudeSceneStore* store,
                         HdClaudeMaterialCompiler* materialCompiler,
                         HdClaudeTexturePool* texturePool,
-                        int subdivisionLevel)
+                        int subdivisionLevel,
+                        HdClaudeStageStats* stageStats)
         : _store(store),
           _materialCompiler(materialCompiler),
           _texturePool(texturePool),
-          _subdivisionLevel(subdivisionLevel)
+          _subdivisionLevel(subdivisionLevel),
+          _stageStats(stageStats)
     {
     }
 
     HdClaudeSceneStore* SceneStore() const { return _store; }
     HdClaudeMaterialCompiler* MaterialCompiler() const { return _materialCompiler; }
     HdClaudeTexturePool* TexturePool() const { return _texturePool; }
+
+    /// Where a stage records what it cost. Never null in the delegate's own
+    /// param; a caller must still check, because a test may construct one.
+    HdClaudeStageStats* StageStats() const { return _stageStats; }
 
     /// Uniform refinement depth for meshes whose scheme asks for it. Zero
     /// renders the control cage.
@@ -43,6 +51,7 @@ class HdClaudeRenderParam final : public HdRenderParam {
     HdClaudeSceneStore* _store;
     HdClaudeMaterialCompiler* _materialCompiler;
     HdClaudeTexturePool* _texturePool;
+    HdClaudeStageStats* _stageStats = nullptr;
     int _subdivisionLevel = 0;
 };
 

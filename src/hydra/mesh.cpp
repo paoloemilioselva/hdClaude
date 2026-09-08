@@ -4,6 +4,8 @@
 
 #include "material_compiler.h"
 #include "render_param.h"
+
+#include <chrono>
 #include "scene_store.h"
 #include "subdivision.h"
 #include "trace.h"
@@ -328,8 +330,24 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     const int subdivisionLevel = param->SubdivisionLevel();
     bool subdivided = false;
     if (subdivisionLevel > 0 && HdClaudeWantsSubdivision(topology)) {
+        // Timed here rather than inside the refiner, because what a caller
+        // wants to know is what refinement cost *this prim*, and the refiner is
+        // a free function with no notion of which prim it is serving.
+        const auto refineStart = std::chrono::steady_clock::now();
         const HdClaudeRefinedMesh refined = HdClaudeSubdivide(
             topology, points, subdivisionLevel, coarseUvs, coarseFaceVaryingUvs);
+        const double refineMs =
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - refineStart)
+                .count();
+        if (HdClaudeStageStats* stats = param->StageStats()) {
+            HdClaudeAddMilliseconds(stats->subdivideMilliseconds, refineMs);
+            stats->meshesRefined.fetch_add(1, std::memory_order_relaxed);
+            stats->subdivideInputPoints.fetch_add(points.size(),
+                                                  std::memory_order_relaxed);
+            stats->subdivideOutputPoints.fetch_add(refined.positions.size(),
+                                                   std::memory_order_relaxed);
+        }
         if (refined.Valid()) {
             points = refined.positions;
             indices = refined.indices;

@@ -187,6 +187,12 @@ void HdClaudeRenderPass::_Execute(
 
     // --- Scene upload ----------------------------------------------------------
     if (!_hasUploaded || _uploadedRevision != framing.sceneRevision) {
+        // Ingestion and publication are timed separately because they fail and
+        // scale for different reasons: the first is a traversal on the host and
+        // the second is an upload and an acceleration structure build. A single
+        // figure covering both would say a heavy scene is slow to load without
+        // saying which half.
+        const auto ingestStart = std::chrono::steady_clock::now();
         std::vector<hdclaude::CompiledMaterial> materials;
         hdclaude::Scene scene = store->Snapshot(materials);
 
@@ -208,8 +214,25 @@ void HdClaudeRenderPass::_Execute(
                       scene.hasDomeLight ? " (dome light)" : "");
         std::copy(std::begin(scene.environmentColor),
                   std::end(scene.environmentColor), std::begin(_environmentColor));
+        HdClaudeStageStats& stages = _renderDelegate->StageStats();
+        HdClaudeAddMilliseconds(
+            stages.ingestMilliseconds,
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - ingestStart)
+                .count());
+        stages.instances.store(scene.instances.size(),
+                               std::memory_order_relaxed);
+        stages.triangles.store(scene.TotalTriangles(),
+                               std::memory_order_relaxed);
+
+        const auto publishStart = std::chrono::steady_clock::now();
         try {
             tracer->SetScene(scene, materials);
+            HdClaudeAddMilliseconds(
+                stages.publishMilliseconds,
+                std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - publishStart)
+                    .count());
             HdClaudeTrace("scene published");
             _uploadedRevision = framing.sceneRevision;
             _hasUploaded = true;
@@ -304,6 +327,15 @@ void HdClaudeRenderPass::_Execute(
     description.settings = settings;
     description.sceneRevision = framing.sceneRevision;
     description.mode = hdclaude::RenderMode::Reference;
+
+    // Camera rays are the pixels times the samples and need no counter to
+    // know. What they go on to spawn -- a ray per surviving bounce and a shadow
+    // ray per shading event -- is written on the device and is not counted;
+    // that needs an accumulator in the counters buffer and one readback after
+    // the frame, which is recorded rather than estimated.
+    _renderDelegate->StageStats().cameraRays.fetch_add(
+        static_cast<std::uint64_t>(width) * height * settings.samplesPerPixel,
+        std::memory_order_relaxed);
 
     const auto start = std::chrono::steady_clock::now();
     hdclaude::FrameResult frame;

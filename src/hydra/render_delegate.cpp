@@ -14,6 +14,8 @@
 #include "pxr/base/plug/registry.h"
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/tf/getenv.h"
+
+#include <fstream>
 #include "pxr/base/tf/staticTokens.h"
 #include "pxr/imaging/hd/camera.h"
 #include "pxr/imaging/hd/extComputation.h"
@@ -117,6 +119,65 @@ HdClaudeRenderDelegate::HdClaudeRenderDelegate(
 
 HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
 {
+    // The memory report, before anything is released.
+    //
+    // Written to a file rather than to stdout because the caller that wants it
+    // is a script, and a number it has to find in a renderer's console output
+    // is a number that breaks the first time anything else prints. Absent the
+    // environment variable this costs nothing and says nothing, which is what
+    // an ordinary render should get.
+    if (const std::string path = TfGetenv("HDCLAUDE_MEMORY_REPORT");
+        !path.empty()) {
+        const std::uint64_t peak =
+            _peakDeviceBytes.load(std::memory_order_relaxed);
+        const std::uint64_t available =
+            _allocator ? _allocator->DeviceLocalBytesAvailable() : 0;
+        if (std::ofstream out{path}; out) {
+            const auto& stages = _stageStats;
+            out << "deviceBytesPeak " << peak << '\n'
+                << "deviceBytesAvailable " << available << '\n'
+                << "ingestMs "
+                << stages.ingestMilliseconds.load(std::memory_order_relaxed)
+                << '\n'
+                << "publishMs "
+                << stages.publishMilliseconds.load(std::memory_order_relaxed)
+                << '\n'
+                << "instances "
+                << stages.instances.load(std::memory_order_relaxed) << '\n'
+                << "triangles "
+                << stages.triangles.load(std::memory_order_relaxed) << '\n'
+                << "cameraRays "
+                << stages.cameraRays.load(std::memory_order_relaxed) << '\n'
+                << "subdivideMs "
+                << stages.subdivideMilliseconds.load(std::memory_order_relaxed)
+                << '\n'
+                << "meshesRefined "
+                << stages.meshesRefined.load(std::memory_order_relaxed) << '\n'
+                << "subdivideInputPoints "
+                << stages.subdivideInputPoints.load(std::memory_order_relaxed)
+                << '\n'
+                << "subdivideOutputPoints "
+                << stages.subdivideOutputPoints.load(std::memory_order_relaxed)
+                << '\n'
+                << "materialMs "
+                << stages.materialMilliseconds.load(std::memory_order_relaxed)
+                << '\n'
+                << "materialsCompiled "
+                << stages.materialsCompiled.load(std::memory_order_relaxed)
+                << '\n'
+                << "textureMs "
+                << stages.textureMilliseconds.load(std::memory_order_relaxed)
+                << '\n'
+                << "texturesLoaded "
+                << stages.texturesLoaded.load(std::memory_order_relaxed) << '\n'
+                << "textureBytes "
+                << stages.textureBytes.load(std::memory_order_relaxed) << '\n';
+        } else {
+            TF_WARN("hdClaude: could not write the memory report to '%s'",
+                    path.c_str());
+        }
+    }
+
     // Reverse of construction. The path tracer holds buffers owned by the
     // allocator, which belongs to the device; releasing them out of order
     // leaks device memory that only surfaces as a validation message at
@@ -192,7 +253,7 @@ void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
 
     _renderParam = std::make_unique<HdClaudeRenderParam>(
         _store.get(), _materialCompiler.get(), _texturePool.get(),
-        subdivisionLevel);
+        subdivisionLevel, &_stageStats);
 }
 
 const TfTokenVector& HdClaudeRenderDelegate::GetSupportedRprimTypes() const
@@ -415,6 +476,21 @@ void HdClaudeRenderDelegate::RecordFrameTiming(double milliseconds,
 {
     _lastFrameMilliseconds.store(milliseconds, std::memory_order_relaxed);
     _lastFrameSamples.store(samples, std::memory_order_relaxed);
+
+    // What the frame cost in device memory, kept as a high-water mark.
+    //
+    // The figure is the *heap* usage the driver reports for this process, not
+    // the sum of what this allocator asked for: a caller sizing a machine cares
+    // what the card is holding, which includes the driver's own overhead and
+    // any padding an allocation was rounded up to.
+    if (_allocator) {
+        const std::uint64_t used = _allocator->DeviceLocalBytesUsed();
+        std::uint64_t peak = _peakDeviceBytes.load(std::memory_order_relaxed);
+        while (used > peak &&
+               !_peakDeviceBytes.compare_exchange_weak(
+                   peak, used, std::memory_order_relaxed)) {
+        }
+    }
 }
 
 VtDictionary HdClaudeRenderDelegate::GetRenderStats() const
@@ -429,6 +505,46 @@ VtDictionary HdClaudeRenderDelegate::GetRenderStats() const
     if (_context) {
         stats["device"] = VtValue(_context->Capabilities().deviceName);
         stats["deviceLost"] = VtValue(_context->IsDeviceLost());
+    }
+    stats["deviceBytesPeak"] =
+        VtValue(double(_peakDeviceBytes.load(std::memory_order_relaxed)));
+
+    // The stages, so a slow scene says which part of it is slow. Doubles
+    // throughout: VtValue carries them to any host, and a byte count large
+    // enough to lose precision in one is larger than a card holds.
+    stats["ingestMs"] =
+        VtValue(_stageStats.ingestMilliseconds.load(std::memory_order_relaxed));
+    stats["publishMs"] =
+        VtValue(_stageStats.publishMilliseconds.load(std::memory_order_relaxed));
+    stats["instances"] =
+        VtValue(double(_stageStats.instances.load(std::memory_order_relaxed)));
+    stats["triangles"] =
+        VtValue(double(_stageStats.triangles.load(std::memory_order_relaxed)));
+    stats["cameraRays"] =
+        VtValue(double(_stageStats.cameraRays.load(std::memory_order_relaxed)));
+    stats["subdivideMs"] =
+        VtValue(_stageStats.subdivideMilliseconds.load(std::memory_order_relaxed));
+    stats["meshesRefined"] =
+        VtValue(double(_stageStats.meshesRefined.load(std::memory_order_relaxed)));
+    stats["subdivideInputPoints"] = VtValue(
+        double(_stageStats.subdivideInputPoints.load(std::memory_order_relaxed)));
+    stats["subdivideOutputPoints"] = VtValue(
+        double(_stageStats.subdivideOutputPoints.load(std::memory_order_relaxed)));
+    stats["materialMs"] =
+        VtValue(_stageStats.materialMilliseconds.load(std::memory_order_relaxed));
+    stats["materialsCompiled"] = VtValue(
+        double(_stageStats.materialsCompiled.load(std::memory_order_relaxed)));
+    stats["textureMs"] =
+        VtValue(_stageStats.textureMilliseconds.load(std::memory_order_relaxed));
+    stats["texturesLoaded"] =
+        VtValue(double(_stageStats.texturesLoaded.load(std::memory_order_relaxed)));
+    stats["textureBytes"] =
+        VtValue(double(_stageStats.textureBytes.load(std::memory_order_relaxed)));
+    if (_allocator) {
+        stats["deviceBytesUsed"] =
+            VtValue(double(_allocator->DeviceLocalBytesUsed()));
+        stats["deviceBytesAvailable"] =
+            VtValue(double(_allocator->DeviceLocalBytesAvailable()));
     }
     if (!_initializationError.empty()) {
         stats["error"] = VtValue(_initializationError);

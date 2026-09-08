@@ -4941,3 +4941,88 @@ binary choice made once per process, not a drift. The gallery baselines from thi
 run were therefore not adopted. The seam fix does change generated code and could
 legitimately move a scene by this much, and while the two cannot be told apart
 there is nothing to be gained by writing either of them down.
+
+---
+
+## 2026-09-09 -- What a render costs, stage by stage
+
+The gallery recorded a wall time per scene, which says a scene is slow and
+nothing about where. It now records what each stage cost, and the figures come
+from the renderer rather than from something measuring it from outside: only the
+renderer knows what it is holding, and only it knows the moment a frame holds all
+of it at once.
+
+The Open Chess Set, and what four and a half of its twenty-five seconds are:
+
+    ingest:   342 ms snapshot, 978 ms publish (49 instances, 23,023,360 triangles)
+    subdiv:   4472 ms over 21 meshes, 1,197,990 -> 19,206,066 points
+    shading:  2013 ms over 22 materials, 1445 ms over 42 textures (672.0 MiB)
+    rays:     640,679,936 from the camera
+    memory:   1.7 GiB on the device at the peak, 10.9 GiB free
+
+Nothing said before that refinement was the largest single cost of that scene, or
+that level 2 turns 1.2 million control points into 19.2 million.
+
+**And one scene is 150 MiB from falling over.** The OpenPBR Playground:
+
+    ingest:   4013 ms snapshot, 7911 ms publish (331 instances, 49,028,799 triangles)
+    subdiv:   25147 ms over 339 meshes, 4,558,935 -> 77,636,880 points
+    shading:  6759 ms over 54 materials, 25421 ms over 154 textures (8.3 GiB)
+    memory:   12.4 GiB on the device at the peak, 149.9 MiB free
+
+That is on a card with sixteen gigabytes. The scene reaches 12.4 GiB and leaves
+149.9 MiB of device-local memory unused, so it does not fit on anything smaller
+and is one texture away from not fitting here. It has been the most expensive
+scene in the gallery since it was added and the reason was assumed to be its
+sample count; it is 8.3 GiB of texture and 77.6 million refined points. That is
+worth knowing before the ALab layout scenes arrive, and it is exactly the kind of
+fact a wall time cannot carry.
+
+**Where each figure comes from.** `HdClaudeStageStats` is a struct of atomics
+owned by the delegate and reached by the adapters through the render param.
+Atomics because Hydra syncs prims in parallel: refinement and material
+compilation both happen on worker threads, and a plain `+=` from several of them
+is a race that makes a diagnostic quietly wrong, which is worse than not having
+one. Times accumulate across threads, so a stage's figure is the *total work*
+done in it rather than the wall time it occupied -- a refinement total larger
+than the frame's wall time is threads working at once, not an error, and the
+header says so where somebody reading the number will find it.
+
+Textures are timed around `Acquire` and counted only when the pool actually grew.
+The pool shares an image between every material that names it, so a second ask
+costs a lookup, and counting it as a load would say a scene decoded far more than
+it did.
+
+Ingestion and publication are separate because they fail and scale for different
+reasons: the first is a traversal on the host, the second an upload and an
+acceleration structure build. Sponza spends 2.8 seconds in the second with no
+refinement at all; the Kitchen Set spends 3.3 with 1,788 instances.
+
+**Device memory is a high-water mark**, sampled after each frame rather than at
+teardown, because that is the only moment the renderer holds path state,
+structures, textures and film together. It is the heap usage the driver reports
+for the process rather than the sum of what this allocator asked for: somebody
+sizing a machine cares what the card is holding, which includes the driver's own
+overhead.
+
+**Camera rays are exact and the rest are absent.** Pixels times samples needs no
+counter. What those rays go on to spawn -- one per surviving bounce, plus a
+shadow ray per shading event -- is written on the device and is *not* reported,
+because getting it honestly needs an accumulator in the counters buffer and one
+readback after the frame. It is named rather than estimated: a plausible
+multiplier would be a guess wearing a number's clothes, and a table exists to be
+trusted.
+
+**Two routes out.** Everything appears in `GetRenderStats()`, which is where a
+Hydra host asks. The gallery script needs the same numbers out of a subprocess,
+so the delegate also writes them to the file named by `HDCLAUDE_MEMORY_REPORT` --
+a file rather than stdout, because a number a script has to find in a renderer's
+console output breaks the first time anything else prints. Without the variable
+it writes nothing and costs nothing.
+
+The script reads whatever keys it finds rather than a fixed list, so a stage
+added on the renderer's side reaches `build/gallery-timings.json` without the
+script being taught about it. The table in gallery.md gains one column, device
+memory, because a table with eleven is not a table; the rest live in the JSON,
+since the interesting question about a scene is usually not the one a table was
+built to answer.

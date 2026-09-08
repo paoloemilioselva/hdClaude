@@ -2,6 +2,8 @@
 
 #include "material_compiler.h"
 #include "render_param.h"
+
+#include <chrono>
 #include "scene_store.h"
 #include "texture_loader.h"
 
@@ -46,10 +48,21 @@ void HdClaudeMaterial::Sync(HdSceneDelegate* sceneDelegate,
         // The grey here is only reached when the authored network cannot be
         // used; a mesh's own displayColor fallback is handled by the mesh,
         // which is the prim that knows it.
+        const auto compileStart = std::chrono::steady_clock::now();
         HdClaudeMaterialCompiler::Result compiled =
             param->MaterialCompiler()->Compile(
                 resource.UncheckedGet<HdMaterialNetworkMap>(), id,
                 GfVec3f(0.5f, 0.5f, 0.5f));
+        // Generation and SPIR-V compilation are one cost from out here, and
+        // there is no moment between them worth reporting separately.
+        const double compileMs = std::chrono::duration<double, std::milli>(
+                                     std::chrono::steady_clock::now() -
+                                     compileStart)
+                                     .count();
+        if (HdClaudeStageStats* stats = param->StageStats()) {
+            HdClaudeAddMilliseconds(stats->materialMilliseconds, compileMs);
+            stats->materialsCompiled.fetch_add(1, std::memory_order_relaxed);
+        }
         entry.compiled = std::move(compiled.material);
         entry.fallbackReason = std::move(compiled.fallbackReason);
 
@@ -60,8 +73,32 @@ void HdClaudeMaterial::Sync(HdSceneDelegate* sceneDelegate,
             entry.compiled.textureSlots.reserve(compiled.texturePaths.size());
             for (const HdClaudeMaterialCompiler::TextureRequest& texture :
                  compiled.texturePaths) {
-                entry.compiled.textureSlots.push_back(
-                    pool->Acquire(texture.path, texture.colorSpace));
+                // Timed around Acquire rather than around the decoder, because
+                // the pool shares an image between every material that names
+                // it: the second ask costs a lookup, and counting it as a load
+                // would say a scene decoded far more than it did.
+                const std::size_t before = pool->Images().size();
+                const auto textureStart = std::chrono::steady_clock::now();
+                const std::uint32_t slot =
+                    pool->Acquire(texture.path, texture.colorSpace);
+                const double textureMs =
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - textureStart)
+                        .count();
+                entry.compiled.textureSlots.push_back(slot);
+
+                if (HdClaudeStageStats* stats = param->StageStats()) {
+                    HdClaudeAddMilliseconds(stats->textureMilliseconds, textureMs);
+                    if (pool->Images().size() > before &&
+                        slot < pool->Images().size()) {
+                        const hdclaude::TextureImage& image =
+                            pool->Images()[slot];
+                        stats->texturesLoaded.fetch_add(1,
+                                                        std::memory_order_relaxed);
+                        stats->textureBytes.fetch_add(image.texels.size(),
+                                                      std::memory_order_relaxed);
+                    }
+                }
             }
         }
     } else {

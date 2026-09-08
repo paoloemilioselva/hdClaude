@@ -97,6 +97,16 @@ function Write-Timings($timings) {
     [IO.File]::WriteAllText($timingPath, $json, [Text.UTF8Encoding]::new($false))
 }
 
+function Format-Bytes([uint64]$bytes) {
+    # Binary units, because that is what a card's memory is sold and reported
+    # in, and one decimal, because the interesting comparison between two scenes
+    # is never finer than that.
+    if ($bytes -ge 1GB) { return ('{0:F1} GiB' -f ($bytes / 1GB)) }
+    if ($bytes -ge 1MB) { return ('{0:F1} MiB' -f ($bytes / 1MB)) }
+    if ($bytes -ge 1KB) { return ('{0:F1} KiB' -f ($bytes / 1KB)) }
+    return ("$bytes B")
+}
+
 function Format-Duration([double]$seconds) {
     $duration = [TimeSpan]::FromSeconds($seconds)
     if ($duration.TotalHours -ge 1.0) {
@@ -138,8 +148,8 @@ function Get-SelectedDevice {
 function Update-GalleryMarkdown($timings) {
     $lines = [Collections.Generic.List[string]]::new()
     $lines.Add('<!-- gallery-timings:start -->')
-    $lines.Add('| Scene | Measured | Wall time | SHA-256 | Device | Settings |')
-    $lines.Add('|---|---:|---:|---|---|---|')
+    $lines.Add('| Scene | Measured | Wall time | Device memory | SHA-256 | Device | Settings |')
+    $lines.Add('|---|---:|---:|---:|---|---|---|')
     foreach ($item in $scenes) {
         $baselinePath = Join-Path $galleryRoot ($item.Key + '.jpg')
         $hash = if (Test-Path -LiteralPath $baselinePath) {
@@ -155,9 +165,24 @@ function Update-GalleryMarkdown($timings) {
             $settings = "$($measurement.width)x$($measurement.width), " +
                 "$($measurement.samples) spp, $($measurement.samplesPerFrame)/update, " +
                 "$($measurement.bounces) bounces, subdiv $($measurement.subdivision)"
-            $lines.Add("| $($item.Title) | $($measurement.date) | $exact s ($duration) | ``$hash`` | $($measurement.device) | $settings |")
+            # A dash where the renderer did not say, which is every row measured
+            # before it could. Zero would read as a scene that costs nothing.
+            $peak = $null
+            if ($measurement.stages -and
+                $measurement.stages.PSObject.Properties.Name -contains 'deviceBytesPeak') {
+                $peak = [uint64]$measurement.stages.deviceBytesPeak
+            } elseif ($measurement.stages -is [hashtable] -and
+                      $measurement.stages.ContainsKey('deviceBytesPeak')) {
+                $peak = [uint64]$measurement.stages['deviceBytesPeak']
+            }
+            $memory = if ($null -ne $peak -and $peak -gt 0) {
+                Format-Bytes $peak
+            } else {
+                '-'
+            }
+            $lines.Add("| $($item.Title) | $($measurement.date) | $exact s ($duration) | $memory | ``$hash`` | $($measurement.device) | $settings |")
         } else {
-            $lines.Add("| $($item.Title) | - | Not measured | ``$hash`` | - | - |")
+            $lines.Add("| $($item.Title) | - | Not measured | - | ``$hash`` | - | - |")
         }
     }
     $lines.Add('<!-- gallery-timings:end -->')
@@ -234,15 +259,71 @@ foreach ($item in $selected) {
     Write-Host "Rendering $($item.Title)..."
     if (Test-Path -LiteralPath $linearPath) { Remove-Item -LiteralPath $linearPath -Force }
 
+    # What the render costs in device memory, asked of the renderer rather than
+    # measured from outside. Only it knows what it is holding, and only it knows
+    # the moment a frame holds all of it -- path state, acceleration structures,
+    # textures and film at once. It writes the figures to this file at teardown;
+    # without the variable it writes nothing and says nothing.
+    $memoryPath = Join-Path $linearRoot "$($item.Key).memory.txt"
+    if (Test-Path -LiteralPath $memoryPath) {
+        Remove-Item -LiteralPath $memoryPath -Force
+    }
+    $env:HDCLAUDE_MEMORY_REPORT = $memoryPath
+
     $stopwatch = [Diagnostics.Stopwatch]::StartNew()
     & $renderScript @arguments
     $renderExit = $LASTEXITCODE
     $stopwatch.Stop()
+    Remove-Item Env:\HDCLAUDE_MEMORY_REPORT -ErrorAction SilentlyContinue
     if ($renderExit -ne 0) {
         throw "Render failed for $($item.Key) with exit code $renderExit"
     }
     if (!(Test-Path -LiteralPath $linearPath)) {
         throw "Render produced no image for $($item.Key): $linearPath"
+    }
+
+    # Absent rather than zero when the renderer said nothing. A missing figure
+    # and a figure of nought are different facts, and a table that shows the
+    # second for the first is a table that lies quietly.
+    # Every key the renderer wrote, kept as it came. Reading them into a
+    # dictionary rather than a fixed set of variables means a stage added on the
+    # renderer's side appears in the JSON without this script being taught it.
+    $stages = @{}
+    if (Test-Path -LiteralPath $memoryPath) {
+        foreach ($line in Get-Content -LiteralPath $memoryPath) {
+            $parts = $line -split '\s+', 2
+            if ($parts.Count -eq 2) {
+                $stages[$parts[0]] = [double]$parts[1]
+            }
+        }
+    }
+    $devicePeak = if ($stages.ContainsKey('deviceBytesPeak')) {
+        [uint64]$stages['deviceBytesPeak']
+    } else { $null }
+
+    if ($stages.Count -gt 0) {
+        Write-Host ((
+            "  ingest:   {0:F0} ms snapshot, {1:F0} ms publish " +
+            "({2:N0} instances, {3:N0} triangles)") -f
+            $stages['ingestMs'], $stages['publishMs'],
+            [uint64]$stages['instances'], [uint64]$stages['triangles'])
+        Write-Host ("  subdiv:   {0:F0} ms over {1} meshes, {2:N0} -> {3:N0} points" -f
+                    $stages['subdivideMs'], [uint64]$stages['meshesRefined'],
+                    [uint64]$stages['subdivideInputPoints'],
+                    [uint64]$stages['subdivideOutputPoints'])
+        Write-Host ((
+            "  shading:  {0:F0} ms over {1} materials, " +
+            "{2:F0} ms over {3} textures ({4})") -f
+            $stages['materialMs'], [uint64]$stages['materialsCompiled'],
+            $stages['textureMs'], [uint64]$stages['texturesLoaded'],
+            (Format-Bytes ([uint64]$stages['textureBytes'])))
+        Write-Host ("  rays:     {0:N0} from the camera" -f
+                    [uint64]$stages['cameraRays'])
+        if ($null -ne $devicePeak) {
+            Write-Host ("  memory:   {0} on the device at the peak, {1} free" -f
+                        (Format-Bytes $devicePeak),
+                        (Format-Bytes ([uint64]$stages['deviceBytesAvailable'])))
+        }
     }
 
     # Scan the *linear* render, which is the actual rendered data, before
@@ -285,6 +366,10 @@ foreach ($item in $selected) {
 
     $timings[$item.Key] = [ordered]@{
         seconds = [Math]::Round($stopwatch.Elapsed.TotalSeconds, 3)
+        # Whatever the renderer reported, verbatim. The table below shows one
+        # of these; the rest are here because the interesting question about a
+        # scene is usually not the one the table was built to answer.
+        stages = $stages
         date = Get-Date -Format 'yyyy-MM-dd'
         device = $device
         width = $imageWidth
