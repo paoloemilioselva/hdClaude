@@ -40,7 +40,28 @@ void mx_conductor_bsdf(ClosureData closureData, float weight, vec3 ior_n, vec3 i
 
     FresnelData fd = mx_init_fresnel_conductor(ior_n, ior_k, thinfilm_thickness, thinfilm_ior);
 
-    vec2 safeAlpha = clamp(roughness, M_FLOAT_EPS, 1.0);
+    // The floor is 1e-4, not the 1e-8 epsilon, and the difference is a
+    // representability limit rather than a taste in roughness.
+    //
+    // The GGX density carries `(h.y / alpha_y)^2`, so as alpha_y falls the value
+    // becomes arbitrarily sensitive to the last bits of the half vector -- and
+    // the sampler and the evaluator arrive at that vector by different routes,
+    // one from the VNDF and one from `normalize(L + V)`. At 1e-8 they disagree
+    // by many orders of magnitude, `f / pdf` stops cancelling, and the estimator
+    // returns whatever the rounding happened to be. The OpenPBR Playground's
+    // bottle reached 2.18e25 that way: its coat authors `roughness 0.33` with
+    // `anisotropy 1`, and OpenPBR's own mapping is `alpha_y = (1 - anisotropy) *
+    // alpha_x`, so alpha_y is exactly zero by specification.
+    //
+    // 1e-4 is chosen from float32 rather than from appearance: `h.y` carries an
+    // absolute error near 1e-7, so the ratio stays of order one for any alpha
+    // above about 1e-6, and this leaves two decades of margin. A lobe that
+    // narrow is far below what any sampling here resolves -- alpha 1e-4 is a
+    // perceptual roughness of 0.01 -- and below it the ratio cannot be evaluated
+    // at all, which is the honest reason for a floor. Whether the lobe counts as
+    // a delta is decided separately, from the *unclamped* input, so this does not
+    // make a mirror stop being one.
+    vec2 safeAlpha = clamp(roughness, kHdclaudeMinAlpha, 1.0);
     float avgAlpha = mx_average_alpha(safeAlpha);
 
     // The tangent frame is built once, outside the branches, because the

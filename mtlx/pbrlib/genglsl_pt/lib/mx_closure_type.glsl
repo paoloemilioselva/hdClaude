@@ -56,6 +56,10 @@ struct ClosureData {
 // hdclaude::kSpectralLanes in include/hdclaude/core/spectrum.h.
 #define HDCLAUDE_SPECTRAL_LANES 4
 
+// Smallest GGX alpha the estimator can evaluate, as opposed to the smallest a
+// material may author. See the note at the clamp in mx_dielectric_bsdf.
+const float kHdclaudeMinAlpha = 1.0e-4;
+
 // Per-invocation state the closures read.
 //
 // Globals rather than extra ClosureData fields, deliberately. ClosureData is

@@ -245,16 +245,21 @@ foreach ($item in $selected) {
         throw "Render produced no image for $($item.Key): $linearPath"
     }
 
-    # The linear render is the actual rendered data, and `hdClaudeImageDiff
-    # --scan` is what looks at it: non-finite values, negatives, and the true
-    # range, none of which survive the display transform below. It is
-    # deliberately *not* wired into this gate yet, because the OpenPBR
-    # Playground fails it -- 3 non-finite samples and values reaching 2.18e25 in
-    # a scene whose mean should be under one. A gate committed while a scene
-    # fails it either blocks the gallery or has to be loosened until it passes,
-    # and this project's rule is that a gate goes in with its fix. Run it by
-    # hand in the meantime:
-    #     hdClaudeImageDiff --scan build\gallery-linear\<scene>.exr
+    # Scan the *linear* render, which is the actual rendered data, before
+    # anything transforms it. The display transform below sanitises non-finite
+    # values and clamps everything outside [0, 1], so the comparison that
+    # follows -- which is a comparison of display images, and right to be -- can
+    # see none of that. This is the only part of the gate that looks at what the
+    # renderer actually produced.
+    #
+    # It was blind for as long as it existed. The OpenPBR Playground carried
+    # values reaching 2.18e25 and three non-finite samples in its linear render,
+    # clamped to white in the JPEG, and passed every time.
+    & $imageDiff --scan $linearPath
+    if ($LASTEXITCODE -ne 0 -and !$Accept) {
+        throw ("$($item.Title) produced a linear render that fails its scan. " +
+               "The image is at $linearPath.")
+    }
 
     & $displayTransform $linearPath $candidatePath --exposure $env:HDCLAUDE_GALLERY_EXPOSURE
     if ($LASTEXITCODE -ne 0) {

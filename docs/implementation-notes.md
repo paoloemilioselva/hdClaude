@@ -4047,3 +4047,69 @@ consumer in the graph besides the anisotropy node, which is the first thing to
 look at.
 
 The scan stays unwired from the gallery gate until this is fixed.
+
+
+---
+
+## 2026-09-08 -- An alpha the estimator can actually evaluate
+
+The Playground's magnitudes are fixed, and the cause is a floor that was set for
+the wrong reason.
+
+**The mechanism.** The bottle's coat authors `coat_roughness 0.33` with
+`coat_roughness_anisotropy 1`, and OpenPBR's own mapping is
+`alpha_y = (1 - anisotropy) * alpha_x`, so its alpha pair is exactly
+`(0.154, 0)` -- rough in one axis and a delta in the other, by specification.
+That value is legal and the asset is not at fault.
+
+hdClaude clamped such an alpha to `M_FLOAT_EPS`, which is 1e-8. The GGX density
+carries `(h.y / alpha_y)^2`, so at that width its value is set almost entirely by
+the last bits of the half vector -- and the sampler and the evaluator reach that
+vector by different routes, one through the VNDF and one through
+`normalize(L + V)`. They disagree by orders of magnitude, `f / pdf` stops
+cancelling, and the estimator returns whatever the rounding happened to be. That
+is where 2.18e25 came from.
+
+The floor is now 1e-4, and the number comes from float32 rather than from taste:
+`h.y` carries an absolute error near 1e-7, so the ratio stays of order one for
+any alpha above about 1e-6, and 1e-4 leaves two decades of margin. A lobe that
+narrow -- alpha 1e-4 is a perceptual roughness of 0.01 -- is far below anything
+this renderer's sampling resolves, and below it the ratio cannot be evaluated at
+all. That is a representability limit, not an approximation of the physics, and
+it is the honest reason to have a floor at all. Whether a lobe counts as a delta
+is decided separately and from the *unclamped* input, so a mirror is still a
+mirror.
+
+**Confirmed two ways, which is why it is believed.** Substituting the asset's
+anisotropy to zero and raising the floor are entirely unrelated interventions,
+and they land on the same numbers: mean 0.2378 against 0.2376, range
+[-3.99, 84.848] against [-3.99094, 84.848]. Neither is a tolerance being met;
+they agree to the digits noise allows.
+
+The Playground goes from a mean of 1.17e19 and a range reaching 2.18e25 to a
+mean of 0.2376 and a range of 84.85, with its three non-finite samples gone.
+Every gallery scene now scans clean: **no non-finite samples anywhere**. The
+largest remaining value in the gallery is 506 on the chess board, which is a
+specular highlight under a bright dome and has nothing over 1e4 behind it.
+
+**So the scan is wired into the gate**, which is what it was waiting for. It
+runs on the linear EXR before the display transform, because that is the actual
+rendered data and the transform sanitises exactly what the scan is looking for.
+The comparison against the committed JPEG stays where it is and stays a
+comparison of display images, which is the right thing for a visual baseline;
+the two checks answer different questions and now both are asked.
+
+**What moved.** The Playground by an RMS of 0.053, which is the fix. Everything
+else moves by 5e-4 or less, or not at all -- Sponza, the chess set, all four
+shader balls -- which is paths rerouting on a changed alpha rather than shading
+changing, and honey by 0.0046. The Kitchen Set, Collective Project, the
+subdivision matrix and the height map are byte identical.
+
+A note on the negatives the scan reports, since they are large and are not
+failures: 24637 in the subdivision matrix, 11362 in the gold ball. A spectral
+renderer resolving to scene-linear sRGB gives a negative component to any colour
+outside that gamut, because the XYZ-to-sRGB matrix has negative coefficients and
+a saturated spectrum lands outside the primaries. They are reported because they
+are worth knowing about -- they are what becomes a NaN if anything ever raises
+them to a fractional power -- and not gated on, because they are the gamut being
+honest.
