@@ -14,8 +14,6 @@
 #include "pxr/base/plug/registry.h"
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/tf/getenv.h"
-
-#include <fstream>
 #include "pxr/base/tf/staticTokens.h"
 #include "pxr/imaging/hd/camera.h"
 #include "pxr/imaging/hd/extComputation.h"
@@ -25,6 +23,8 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -152,6 +152,8 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
                 << stages.tracedRays.load(std::memory_order_relaxed) << '\n'
                 << "shadowRays "
                 << stages.shadowRays.load(std::memory_order_relaxed) << '\n'
+                << "hitHash "
+                << stages.hitHash.load(std::memory_order_relaxed) << '\n'
                 << "subdivideMs "
                 << stages.subdivideMilliseconds.load(std::memory_order_relaxed)
                 << '\n'
@@ -530,6 +532,16 @@ VtDictionary HdClaudeRenderDelegate::GetRenderStats() const
         VtValue(double(_stageStats.tracedRays.load(std::memory_order_relaxed)));
     stats["shadowRays"] =
         VtValue(double(_stageStats.shadowRays.load(std::memory_order_relaxed)));
+    // As text, because a 64-bit hash does not survive a double: everything
+    // below the low eleven bits would be rounded away, and two runs that
+    // disagreed could report the same figure. The other entries here are
+    // counts, which a double carries exactly at these magnitudes; this one is
+    // an identity, and the only useful thing to do with it is compare it.
+    {
+        std::ostringstream hash;
+        hash << _stageStats.hitHash.load(std::memory_order_relaxed);
+        stats["hitHash"] = VtValue(hash.str());
+    }
     stats["subdivideMs"] =
         VtValue(_stageStats.subdivideMilliseconds.load(std::memory_order_relaxed));
     stats["meshesRefined"] =

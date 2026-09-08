@@ -262,6 +262,14 @@ class PathTracer {
     std::uint64_t TracedRays() const { return _tracedRayCount; }
     std::uint64_t ShadowRays() const { return _shadowRayCount; }
 
+    /// A hash over every hit this tracer has resolved.
+    ///
+    /// Two runs that agree here resolved the same geometry for the same rays,
+    /// whatever order they got to it in. It exists to answer one question that
+    /// nothing else can: when two renders of one scene differ, is it what the
+    /// rays *hit* or what was done with the hits.
+    std::uint64_t HitHash() const { return _hitHash; }
+
   private:
     /// The invalidation decision, made once and in one place.
     ///
@@ -360,6 +368,7 @@ class PathTracer {
     VulkanBuffer _rayReadback;
     std::uint64_t _tracedRayCount = 0;
     std::uint64_t _shadowRayCount = 0;
+    std::uint64_t _hitHash = 0;
 
     std::uint32_t _width = 0;
     std::uint32_t _height = 0;

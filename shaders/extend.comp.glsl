@@ -343,4 +343,17 @@ void main()
         pathOrigin.values[path] = origin + direction * tGeometry;
     }
     hits.values[path] = record;
+
+    // The hit, folded into the call's hash. Keyed on the path as well as the
+    // geometry, so two rays swapping which triangle they found is a change and
+    // not a cancellation.
+    if (hitGeometry)
+    {
+        // Through a local, because `hdclaude_pcg` advances the state it is
+        // given and so takes it `inout`.
+        uint hitSeed = uint(record.x) * 2654435761u ^
+                       uint(record.y) * 2246822519u ^
+                       path * 3266489917u;
+        atomicAdd(counters.hitHash, hdclaude_pcg(hitSeed));
+    }
 }

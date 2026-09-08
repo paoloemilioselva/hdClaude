@@ -168,6 +168,22 @@ layout(set = 0, binding = 8, scalar) buffer Counters {
     // to 16 and would otherwise clear them every bounce.
     uint tracedRays;
     uint shadowRays;
+
+    /// A hash over every hit this call resolved: which instance, which
+    /// triangle, and which path found it.
+    ///
+    /// Accumulated with `atomicAdd`, so it does not depend on the order paths
+    /// take through the queues -- which varies run to run and is not the thing
+    /// under test. What it *is* under test is whether two runs resolve the same
+    /// geometry for the same rays. If the hash agrees and the image does not,
+    /// the difference is in shading; if the hash disagrees, it is traversal or
+    /// the structure being traversed.
+    ///
+    /// A sum can collide. It is summing a hash of some hundreds of millions of
+    /// hits and being asked a yes-or-no question, and a collision would have to
+    /// be contrived rather than merely unlucky.
+    uint hitHash;
+    uint hitHashPad;
 } counters;
 
 layout(set = 0, binding = 9,  scalar) buffer ActiveQueue     { uint values[]; } activeQueue;

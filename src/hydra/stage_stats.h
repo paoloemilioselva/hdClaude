@@ -74,6 +74,9 @@ struct HdClaudeStageStats {
     /// of the settings, and cannot be predicted from the bounce limit.
     std::atomic<std::uint64_t> tracedRays{0};
     std::atomic<std::uint64_t> shadowRays{0};
+    /// A hash over every hit resolved. Two runs that agree here found the same
+    /// geometry for the same rays; see PathTracer::HitHash.
+    std::atomic<std::uint64_t> hitHash{0};
 
     // --- Materials ---------------------------------------------------------
     /// Generation and SPIR-V compilation together: they are one cost from the
@@ -101,6 +104,7 @@ struct HdClaudeStageStats {
         cameraRays.store(0, std::memory_order_relaxed);
         tracedRays.store(0, std::memory_order_relaxed);
         shadowRays.store(0, std::memory_order_relaxed);
+        hitHash.store(0, std::memory_order_relaxed);
         materialMilliseconds.store(0.0, std::memory_order_relaxed);
         materialsCompiled.store(0, std::memory_order_relaxed);
         textureMilliseconds.store(0.0, std::memory_order_relaxed);

@@ -5188,3 +5188,80 @@ pixel. If two processes agree on what every ray hit and disagree on the image,
 the difference is in shading; if they disagree on the hits, it is traversal or
 the structure. That AOV is already on phase 7's remaining list for other reasons,
 and it is now the cheapest way to answer this.
+
+---
+
+## 2026-09-09 -- The rays are identical and the hits are not
+
+The cross-process nondeterminism now has a location. It is not in shading.
+
+The instrument is a **hit hash**: a running `atomicAdd` over every hit the call
+resolves, seeded on the instance, the primitive and the path that found it. It
+lives in the counters buffer alongside the ray counts, is cleared once per call
+by the same fill that clears them, is read back with them in one copy, and is
+folded into a 64-bit value on the host so that the order the calls arrive in is
+part of the answer. It reaches the report file and the `.stats` group exactly,
+as text -- a hash does not survive a `double`, which would round away everything
+below its low eleven bits and let two runs that disagreed print the same figure.
+
+A per-pixel id AOV was the plan and would have been the wrong instrument: at one
+sample it tests about a million primary hits against an effect that shows up
+around one ray in a hundred million, so it would have read clean and proved
+nothing. A hash over *every* hit in the render tests all of them.
+
+The first run of it, on the Open Chess Set at gallery settings across three
+processes, said something the image comparisons could not:
+
+    tracedRays   993843050    993842838    993843257
+    shadowRays   192307739    192307658    192307711
+
+**The three processes do not agree on how many rays they traced.** That is not
+noise on a fixed set of hits: paths are surviving to different depths. The count
+is trustworthy -- `prepare_dispatch` runs one invocation with `local_size_x = 1`,
+so the accumulation is not a race -- but it does not localise anything on its
+own, because a single hit resolved differently at bounce zero changes every
+bounce after it.
+
+So the same test at **one bounce**, where the rays are identical across processes
+by construction: they come from the camera and a fixed sampler, and raygen
+assigns path ids as `activeQueue.values[index] = index`, so ray *n* is the same
+ray with the same identity in every process. Three runs:
+
+    cameraRays   640679936    640679936    640679936
+    tracedRays   640679936    640679936    640679936
+    hitHash      10263936795610863036
+                 17012422686764329764
+                 17564936163537684517
+
+Identical rays, to the unit. Different geometry. The hash is keyed on
+`record.x` and `record.y` -- the instance and the primitive -- and deliberately
+not on `record.z/w`, which carry the barycentrics, so it cannot move on
+floating-point drift in *where* on a triangle a ray landed. It moved because a
+ray was told it hit a different triangle.
+
+**This exonerates shading.** Every difference in the eight-bounce images is
+downstream of a first-bounce hit that already differed.
+
+Three candidates die with it. There are no subgroup operations and no shared
+memory anywhere in the kernels, so nothing computes a result that depends on
+which lanes happened to be resident. The ray query initialises with
+`gl_RayFlagsOpaqueEXT`, which forces every geometry opaque regardless of the
+per-geometry `VK_GEOMETRY_OPAQUE_BIT_KHR`, so there are no candidate
+intersections and no shader-side commit policy whose order could matter. And the
+sort's scatter was already ruled out; it now cannot be reached before the
+divergence has happened.
+
+What remains is genuinely two things, not one, and the ray counts cannot tell
+them apart:
+
+* the **acceleration structure**, built once per process by the driver under no
+  obligation to produce the same tree twice, breaking a tie between adjacent or
+  coincident triangles differently; or
+* the **rays themselves**, if the driver's compilation of raygen differs between
+  processes and a last-ulp difference in a direction changes a grazing hit.
+
+The second is not far-fetched: identical ray *counts* say nothing about identical
+ray *values*. The next instrument separates them by hashing the origin and
+direction bits of every primary ray. If the rays are bit-identical and the hits
+still differ, it is the structure; if the rays differ, it is upstream of
+traversal entirely and the structure is innocent.

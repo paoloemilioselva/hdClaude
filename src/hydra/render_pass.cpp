@@ -432,6 +432,7 @@ void HdClaudeRenderPass::_Execute(
         HdClaudeStageStats& stages = _renderDelegate->StageStats();
         stages.tracedRays.store(tracer->TracedRays(), std::memory_order_relaxed);
         stages.shadowRays.store(tracer->ShadowRays(), std::memory_order_relaxed);
+        stages.hitHash.store(tracer->HitHash(), std::memory_order_relaxed);
     }
 
     _renderDelegate->RecordFrameTiming(milliseconds, _samplesCompleted);
