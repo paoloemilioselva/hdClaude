@@ -4503,3 +4503,59 @@ Everything else is byte identical.
 ALab is not in the gallery: this asset is one of many in a layout that will be
 added later, and it was rendered here to find the defect rather than to record
 it.
+
+---
+
+## 2026-09-08 -- The DLSS build had never been run, and did not work
+
+`HDCLAUDE_ENABLE_DLSS` has been OFF since it was written on 2026-09-05, and
+`compile.bat dev-dlss` had never been invoked. The first invocation found two
+defects in `cmake/NvidiaDLSS.cmake`, neither of which could have been found any
+other way, and the second of which the first was hiding.
+
+**The SDK was fetched and then declared unobtainable.** The clone succeeds --
+`HEAD is now at a8ed84e DLSS Super Resolution and Ray Reconstruction SDK
+310.3.0` -- and the very next message is
+
+    CMake Warning: hdClaude: the NVIDIA DLSS SDK could not be obtained.
+
+`FetchContent_Populate` sets `dlss_SOURCE_DIR` in its *calling* scope, and the
+call was wrapped in a `block()`, which is a new variable scope. So the variable
+was empty everywhere below it and the check asked whether
+`/include/nvsdk_ngx_vk.h` existed, which it never does. The comment called the
+wrapper "an error guard so an unavailable or declined SDK turns the feature off
+rather than stopping the configure"; `block()` scopes variables and catches
+nothing, so it was not a guard, and the only thing it did was break the check.
+
+The downgrade path is the right behaviour -- DLSS must never be a requirement of
+the default build -- which is exactly why it was able to hide this. A feature
+that turns itself off quietly cannot tell you it turned itself off for the wrong
+reason.
+
+**And the library path named a directory the SDK has never had.** With the
+variable fixed, the link would have gone to
+`lib/Windows_x86_64/x86_64/nvsdk_ngx_s.lib`. What the SDK ships is
+
+    lib/Windows_x86_64/  dev  khr  rel  uwp  vs2010  vs2012  vs2013  x64
+
+so the modern MSVC import library is in `x64`, and the `vsNNNN` directories stop
+at vs2013. The `_dbg` variants are built against the debug CRT, so the choice now
+follows the configuration rather than being fixed at the release one.
+
+A missing library is now a **fatal error** rather than a downgrade. The two cases
+are different and were being treated the same: an SDK that cannot be obtained is
+a fact about the machine and turning the feature off is right, while an SDK that
+is present with headers and no library is a fact about this file being wrong
+about its layout, and quietly turning the feature off there is how the first
+defect survived four days.
+
+`HDCLAUDE_DLSS_RUNTIME_DIR` now points at `lib/Windows_x86_64/rel`, where
+`nvngx_dlss.dll` and `nvngx_dlssd.dll` live. Nothing is copied out of the fetched
+tree: redistribution of those is governed by NVIDIA's licence and hdClaude ships
+none of them. `dev` holds the variants that write an overlay and a log, which is
+what to point NGX at when a feature refuses to initialise.
+
+`compile.bat dev-dlss` now reports `NVIDIA DLSS ........ ON` and completes. That
+is the configure and the fetch proven, and no more than that: nothing links
+`hdClaudeNgx` yet, so the link itself is still unexercised. The support query of
+phase 12 is what will exercise it.

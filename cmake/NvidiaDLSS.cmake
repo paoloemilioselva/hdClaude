@@ -27,22 +27,66 @@ FetchContent_Declare(dlss
     GIT_SHALLOW    TRUE
     GIT_PROGRESS   TRUE)
 
-FetchContent_GetProperties(dlss)
-if(NOT dlss_POPULATED)
-  # Populate under an error guard so an unavailable or declined SDK turns the
-  # feature off rather than stopping the configure.
-  block()
-    set(_dlss_ok TRUE)
-    FetchContent_Populate(dlss)
-  endblock()
+# Populated directly rather than through FetchContent_MakeAvailable, because
+# the SDK is a binary drop with no CMakeLists.txt of its own: MakeAvailable
+# would find nothing to add_subdirectory and the policy warning it raises here
+# is about a call this one deliberately makes. CMP0169 is set OLD for this
+# file's scope so the deprecation does not turn into an error on a newer CMake.
+if(POLICY CMP0169)
+  cmake_policy(SET CMP0169 OLD)
 endif()
 
+FetchContent_GetProperties(dlss)
+if(NOT dlss_POPULATED)
+  FetchContent_Populate(dlss)
+endif()
+
+# Not inside a block().
+#
+# FetchContent_Populate sets dlss_SOURCE_DIR in its *calling* scope, and
+# block() is a new variable scope, so wrapping the call made the variable
+# empty everywhere below it. The check then asked whether
+# "/include/nvsdk_ngx_vk.h" existed, which it never does, and the SDK was
+# reported unobtainable immediately after being cloned successfully. The block
+# was there as "an error guard", which it never was: block() scopes variables
+# and catches nothing.
 if(EXISTS "${dlss_SOURCE_DIR}/include/nvsdk_ngx_vk.h")
+  # The static NGX library, at the path this SDK actually uses.
+  #
+  # `lib/Windows_x86_64/` holds `x64`, `dev`, `rel`, `khr`, `uwp` and a set of
+  # `vsNNNN` directories that stop at vs2013; the modern MSVC import library is
+  # in `x64`. An earlier `x86_64` here named a directory that has never
+  # existed in this SDK, which the misscoped variable above kept anyone from
+  # discovering.
+  #
+  # The `_dbg` variant is built against the debug CRT, so the choice follows
+  # the configuration rather than being fixed.
+  set(_ngx_lib_dir "${dlss_SOURCE_DIR}/lib/Windows_x86_64/x64")
+  if(NOT EXISTS "${_ngx_lib_dir}/nvsdk_ngx_s.lib")
+    message(FATAL_ERROR
+        "hdClaude: the DLSS SDK at ${dlss_SOURCE_DIR} has its headers but not "
+        "${_ngx_lib_dir}/nvsdk_ngx_s.lib. The SDK's layout has changed; "
+        "cmake/NvidiaDLSS.cmake names the path and has to be corrected rather "
+        "than the feature quietly turned off.")
+  endif()
+
   add_library(hdClaudeNgx INTERFACE)
   target_include_directories(hdClaudeNgx INTERFACE "${dlss_SOURCE_DIR}/include")
   target_link_libraries(hdClaudeNgx INTERFACE
-      "${dlss_SOURCE_DIR}/lib/Windows_x86_64/x86_64/nvsdk_ngx_s.lib")
+      "$<IF:$<CONFIG:Debug>,${_ngx_lib_dir}/nvsdk_ngx_s_dbg.lib,${_ngx_lib_dir}/nvsdk_ngx_s.lib>")
   target_compile_definitions(hdClaudeNgx INTERFACE HDCLAUDE_HAS_DLSS=1)
+
+  # Where the runtime models live, for the support query and for NGX's own
+  # loader. hdClaude ships none of these -- redistribution is governed by
+  # NVIDIA's licence -- so this points at the fetched tree rather than copying
+  # anything out of it. `rel` is the shipping build; `dev` is the one that
+  # writes an overlay and a log, and is what a developer points NGX at when a
+  # feature refuses to initialise.
+  set(HDCLAUDE_DLSS_RUNTIME_DIR "${dlss_SOURCE_DIR}/lib/Windows_x86_64/rel"
+      CACHE PATH "Directory holding nvngx_dlss.dll and nvngx_dlssd.dll")
+  target_compile_definitions(hdClaudeNgx INTERFACE
+      HDCLAUDE_DLSS_RUNTIME_DIR="${HDCLAUDE_DLSS_RUNTIME_DIR}")
+
   set(HDCLAUDE_DLSS_AVAILABLE TRUE CACHE INTERNAL "")
   message(STATUS "hdClaude: NVIDIA DLSS SDK ${HDCLAUDE_DLSS_TAG} at ${dlss_SOURCE_DIR}")
 else()
