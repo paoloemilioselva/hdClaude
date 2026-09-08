@@ -5265,3 +5265,63 @@ ray *values*. The next instrument separates them by hashing the origin and
 direction bits of every primary ray. If the rays are bit-identical and the hits
 still differ, it is the structure; if the rays differ, it is upstream of
 traversal entirely and the structure is innocent.
+
+---
+
+## 2026-09-09 -- The rays are bit-identical, and the fault is intermittent
+
+The companion instrument is a **ray hash**: the same `atomicAdd` construction
+over `floatBitsToUint` of every origin and direction the call traces, in the
+counters word that had been a pad. It answers the half the counts could not.
+Identical ray *counts* say nothing about identical ray *values*, so a
+last-ulp difference in a direction -- from the driver compiling raygen
+differently between processes -- would have produced different hits with every
+count matching, and would have exonerated the acceleration structure.
+
+It does not. Across processes the ray hash is **equal**, to the bit:
+
+    cameraRays   640679936            640679936            640679936
+    rayHash      3050392357624304916  (all three)
+    hitHash      10263936795610863036 (all three)
+
+Which is the second surprise. In the batch before the ray hash existed, the same
+one-bounce configuration gave three processes one canonical hit hash and two
+deviants, with images differing by an RMS of 2.2e-5. Since the ray hash was
+added, **six consecutive processes across two batches agree exactly** -- rms 0,
+worst 0 -- and on the same value that batch's *first* process produced. The
+canonical answer has not moved; the deviations have stopped.
+
+So the fault is **intermittent, and perturbable by the instrument measuring
+it**. A global `atomicAdd` from every one of 640 million invocations is a heavy
+serialisation point, and adding a second one plainly changed something that was
+not the arithmetic: the hashes prove the arithmetic is identical.
+
+That is not the signature of a wrong code path. A wrong code path does not stop
+being wrong because a counter was added beside it. It is the signature of a
+timing- or hardware-sensitive fault, and two facts sharpen that reading. The
+device is a GeForce RTX 5060 Ti, which has **no ECC**, so a memory soft error is
+neither corrected nor reported. And the effect's rate -- around one ray in a
+hundred million, invisible below a billion camera rays -- is the rate at which
+such things are usually noticed.
+
+The specifications are worth stating here, because they decide whether a
+difference of this kind is a defect at all. Vulkan's acceleration structure
+chapter says **nothing** about a build being reproducible from identical
+inputs; it is silent, not permissive. Ray traversal is explicitly not
+deterministic at the margin: *"If t = tmax, the candidate **may** be set as the
+current closest hit or dropped"*, the intersection test *"is performed in an
+implementation specific manner, and **may** be performed with floating-point
+operations"* with *"inaccuracies … expected"*, and not double-hitting or missing
+at a shared edge is a **should**, not a **must**. So two processes disagreeing
+about a grazing triangle is *permitted*; two processes disagreeing about a
+triangle nowhere near an edge is not explained by any of it.
+
+What has not been tested, in the whole of this investigation, is the thing that
+separates those readings: **two full renders inside one process** at the sample
+count where the effect appears. Every in-process check so far ran at 128 x 128,
+where nothing differs at all. Two renders in one process share an acceleration
+structure, a shader compilation and a device context, so a difference between
+them cannot be any of the three, and would place the fault outside the
+renderer's control entirely. The seed is `hdclaude_seed(index, sampleIndex, 0)`
+and carries no time code, so a static stage rendered at four frames must produce
+four identical films; that is the test, and it is now the one that matters.

@@ -270,6 +270,13 @@ class PathTracer {
     /// rays *hit* or what was done with the hits.
     std::uint64_t HitHash() const { return _hitHash; }
 
+    /// The same over the rays themselves, which is the other half of that
+    /// question: two processes can trace the same *number* of rays without
+    /// tracing the same rays. Read together, an agreeing ray hash and a
+    /// disagreeing hit hash put the cause in the acceleration structure, and a
+    /// disagreeing ray hash puts it upstream of traversal.
+    std::uint64_t RayHash() const { return _rayHash; }
+
   private:
     /// The invalidation decision, made once and in one place.
     ///
@@ -369,6 +376,7 @@ class PathTracer {
     std::uint64_t _tracedRayCount = 0;
     std::uint64_t _shadowRayCount = 0;
     std::uint64_t _hitHash = 0;
+    std::uint64_t _rayHash = 0;
 
     std::uint32_t _width = 0;
     std::uint32_t _height = 0;

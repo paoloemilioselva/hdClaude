@@ -136,7 +136,7 @@ function Write-SceneStats($item, $stages, $seconds, $device, $settings) {
     foreach ($key in @('instances', 'triangles', 'meshesRefined',
                        'subdivideInputPoints', 'subdivideOutputPoints',
                        'materialsCompiled', 'texturesLoaded', 'textureBytes',
-                       'cameraRays', 'tracedRays', 'shadowRays', 'hitHash',
+                       'cameraRays', 'tracedRays', 'shadowRays', 'rayHash', 'hitHash',
                        'deviceBytesPeak')) {
         if ($stages.ContainsKey($key)) {
             $out.Add(('{0,-22}{1}' -f $key, [uint64]$stages[$key]))

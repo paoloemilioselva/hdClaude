@@ -49,6 +49,20 @@ void main()
 
     vec4 throughput = pathThroughput.values[path];
 
+    // The ray, folded into the call's hash before anything is traced with it.
+    // Every bit of both vectors, because the question is whether two processes
+    // build the same ray and not whether they build a similar one.
+    {
+        uint raySeed = path * 2654435761u;
+        raySeed ^= floatBitsToUint(origin.x) * 2246822519u;
+        raySeed ^= floatBitsToUint(origin.y) * 3266489917u;
+        raySeed ^= floatBitsToUint(origin.z) * 668265263u;
+        raySeed ^= floatBitsToUint(direction.x) * 374761393u;
+        raySeed ^= floatBitsToUint(direction.y) * 2654435761u;
+        raySeed ^= floatBitsToUint(direction.z) * 2246822519u;
+        atomicAdd(counters.rayHash, hdclaude_pcg(raySeed));
+    }
+
     bool hitGeometry = false;
     float tGeometry = 1.0e30;
     int light = -1;

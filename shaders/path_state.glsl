@@ -183,7 +183,17 @@ layout(set = 0, binding = 8, scalar) buffer Counters {
     /// hits and being asked a yes-or-no question, and a collision would have to
     /// be contrived rather than merely unlucky.
     uint hitHash;
-    uint hitHashPad;
+
+    /// The same, over the rays rather than over what they found: a hash of the
+    /// origin and direction bits of every ray this call traced.
+    ///
+    /// The two together separate the last pair of candidates for the
+    /// cross-process nondeterminism. Identical ray counts say nothing about
+    /// identical ray values, so if this agrees between two processes and the
+    /// hit hash does not, the same ray was told it hit different geometry and
+    /// the acceleration structure is the cause; if this disagrees, the
+    /// divergence is upstream of traversal and the structure is innocent.
+    uint rayHash;
 } counters;
 
 layout(set = 0, binding = 9,  scalar) buffer ActiveQueue     { uint values[]; } activeQueue;

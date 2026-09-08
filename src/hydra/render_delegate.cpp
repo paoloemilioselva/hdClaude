@@ -154,6 +154,8 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
                 << stages.shadowRays.load(std::memory_order_relaxed) << '\n'
                 << "hitHash "
                 << stages.hitHash.load(std::memory_order_relaxed) << '\n'
+                << "rayHash "
+                << stages.rayHash.load(std::memory_order_relaxed) << '\n'
                 << "subdivideMs "
                 << stages.subdivideMilliseconds.load(std::memory_order_relaxed)
                 << '\n'
@@ -541,6 +543,11 @@ VtDictionary HdClaudeRenderDelegate::GetRenderStats() const
         std::ostringstream hash;
         hash << _stageStats.hitHash.load(std::memory_order_relaxed);
         stats["hitHash"] = VtValue(hash.str());
+    }
+    {
+        std::ostringstream hash;
+        hash << _stageStats.rayHash.load(std::memory_order_relaxed);
+        stats["rayHash"] = VtValue(hash.str());
     }
     stats["subdivideMs"] =
         VtValue(_stageStats.subdivideMilliseconds.load(std::memory_order_relaxed));

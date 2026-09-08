@@ -78,6 +78,11 @@ struct HdClaudeStageStats {
     /// geometry for the same rays; see PathTracer::HitHash.
     std::atomic<std::uint64_t> hitHash{0};
 
+    /// The companion hash over the rays themselves; see PathTracer::RayHash.
+    /// Two processes can trace the same number of rays without tracing the
+    /// same rays, and only the pair of hashes together says which.
+    std::atomic<std::uint64_t> rayHash{0};
+
     // --- Materials ---------------------------------------------------------
     /// Generation and SPIR-V compilation together: they are one cost from the
     /// outside and there is no moment between them worth reporting.
@@ -105,6 +110,7 @@ struct HdClaudeStageStats {
         tracedRays.store(0, std::memory_order_relaxed);
         shadowRays.store(0, std::memory_order_relaxed);
         hitHash.store(0, std::memory_order_relaxed);
+        rayHash.store(0, std::memory_order_relaxed);
         materialMilliseconds.store(0.0, std::memory_order_relaxed);
         materialsCompiled.store(0, std::memory_order_relaxed);
         textureMilliseconds.store(0.0, std::memory_order_relaxed);
