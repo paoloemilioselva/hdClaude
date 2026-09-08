@@ -93,8 +93,24 @@ layout(set = 0, binding = 21, scalar) buffer PathScatterPdf { float values[]; } 
 // evaluated where the path enters, and the light it removes is removed over the
 // flight that follows. Carrying it on the path is what lets `extend` apply
 // Beer-Lambert over the distance it just measured.
-//   values[2*path + 0] = absorption rgb, anisotropy in w
-//   values[2*path + 1] = scattering rgb, 1 in w when a medium is present
+// Held as an extinction and a bounded colour, rather than as the absorption and
+// scattering coefficients a closure authors, because a coefficient pair does not
+// survive being resolved to wavelengths: each half goes through its own fit and
+// the ratio between them -- which is the whole colour of a subsurface material
+// -- comes back changed. What the colour *means* travels with it in `w`, since
+// the two closures that publish an interior describe it differently.
+//   values[2*path + 0] = extinction rgb, anisotropy in w
+//   values[2*path + 1] = colour rgb, and in w:
+//                          0  the path is outside
+//                          1  inside, with no interior to transport through
+//                          2  inside; the colour is a single-scattering albedo
+//                          3  inside; the colour is the reflectance that comes
+//                             back out, to be inverted per wavelength
+//
+// One is not a degenerate case of two. A clear dielectric encloses nothing and
+// still has an inside, which is the side a closure reads its relative index
+// from; a medium that scatters is a separate claim on top of that.
+#define HDCLAUDE_INSIDE 1.0
 layout(set = 0, binding = 25, scalar) buffer PathMedium { vec4 values[]; } pathMedium;
 
 // Whether this path has already been collapsed onto its hero wavelength.
@@ -524,6 +540,42 @@ vec4 hdclaude_upsample(vec3 rgb, vec4 lambda)
     return scale * hdclaude_reflectance_sigmoid((c.x * t + c.y) * t + c.z);
 }
 
+/// Van de Hulst's inversion: the single-scattering albedo a walk must be given
+/// so that a semi-infinite half-space of it reflects `reflectance`.
+///
+/// Quoted from OpenPBR, which states it in closed form:
+///
+///     a = (1 - s^2) / (1 - g s^2)
+///     s = 4.09712 + 4.20863 C - sqrt(9.59217 + 41.6808 C + 17.7126 C^2)
+///
+/// Applied here, per wavelength, and not on the host or in the closure. The
+/// relation is steeply nonlinear -- a reflectance of 0.6 needs collisions that
+/// survive 95 per cent of the time -- so inverting an RGB triple and upsampling
+/// the result gives a walk whose returned spectrum projects to some colour
+/// other than the authored one. Upsampling the reflectance and inverting each
+/// lane makes the walk's reflectance at every wavelength exactly the authored
+/// spectrum, whose projection is exactly the authored colour.
+///
+/// Mirrors hdclaude::SubsurfaceSingleScatteringAlbedo, which is checked against
+/// the forward relation it inverts.
+vec4 hdclaude_subsurface_albedo(vec4 reflectance, float g)
+{
+    vec4 c = clamp(reflectance, vec4(0.0), vec4(1.0));
+    float anisotropy = clamp(g, -0.99, 0.99);
+
+    // The fit overshoots by about a thousandth at each end, so `s` is clamped:
+    // at C = 1 it reaches -0.00087, which would return an albedo above one and
+    // make a lossless medium gain light at every collision.
+    vec4 s = clamp(4.09712 + 4.20863 * c -
+                       sqrt(9.59217 + 41.6808 * c + 17.7126 * c * c),
+                   vec4(0.0), vec4(1.0));
+
+    vec4 sSquared = s * s;
+    return clamp((vec4(1.0) - sSquared) /
+                     max(vec4(1.0) - anisotropy * sSquared, vec4(1.0e-6)),
+                 vec4(0.0), vec4(1.0));
+}
+
 /// Planck's law, normalised to a peak of one.
 ///
 /// Matching `NormalizedBlackbody` on the host, with the peak found by Wien's
@@ -918,8 +970,32 @@ vec3 hdclaude_sample_phase(vec3 forward, float g, vec2 u)
 /// hero wavelengths without ever asking the fit about an unbounded quantity.
 vec4 hdclaude_lane_extinction(vec3 sigma, vec4 lambda)
 {
-    vec4 unit = hdclaude_upsample(exp(-max(sigma, vec3(0.0))), lambda);
-    return -log(max(unit, vec4(1.0e-8)));
+    vec3 rgb = max(sigma, vec3(0.0));
+    float peak = max(rgb.r, max(rgb.g, rgb.b));
+    if (!(peak > 0.0))
+    {
+        return vec4(0.0);
+    }
+
+    // Over the medium's *own* mean free path, not over one scene unit.
+    //
+    // The transmittance is what gets upsampled, because `exp(-sigma d)` is
+    // bounded in (0, 1] whatever the coefficient is and that is the range the
+    // reflectance fit is built for. But the distance it is evaluated at decides
+    // whether the fit is being asked a well-conditioned question. At a fixed
+    // unit distance a coefficient of 30 arrives as a transmittance of 1e-13,
+    // which the clamp below turns into 18.4 -- so every medium denser than
+    // about 18 per unit used to map to the same one, and a subsurface material,
+    // whose mean free paths are millimetres, is nothing but such media.
+    //
+    // Referring it to `1 / peak` puts the densest channel at `exp(-1)` and every
+    // other between that and one, which is the best-conditioned band the fit
+    // has, and it does so at any scene scale: the returned coefficients are
+    // unchanged when the whole medium is made denser and the scene smaller in
+    // the same proportion, which a fixed unit distance could not manage.
+    float reference = 1.0 / peak;
+    vec4 transmittance = hdclaude_upsample(exp(-rgb * reference), lambda);
+    return -log(max(transmittance, vec4(1.0e-8))) * peak;
 }
 
 /// UsdLuxShapingAPI falloff for a direction leaving the light.

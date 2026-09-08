@@ -63,7 +63,8 @@ PathTracerSyntax::PathTracerSyntax(TypeSystemPtr typeSystem) : VkSyntax(typeSyst
     // mtlx/pbrlib/genglsl_pt/lib/mx_closure_type.glsl, and the two files must
     // be changed together.
     static const string kBsdfDefault =
-        "BSDF(vec3(0.0),vec3(1.0),vec4(0.0),vec3(0.0),0.0,0.0,vec3(0.0),0.0)";
+        "BSDF(vec3(0.0),vec3(1.0),vec4(0.0),vec3(0.0),0.0,0.0,vec3(0.0),0.0,"
+        "vec3(0.0),vec3(0.0),0.0,0.0)";
     static const string kBsdfDefinition =
         "struct BSDF {\n"
         "    vec3  response;\n"
@@ -74,6 +75,10 @@ PathTracerSyntax::PathTracerSyntax(TypeSystemPtr typeSystem) : VkSyntax(typeSyst
         "    float isDelta;\n"
         "    vec3  guideAlbedo;\n"
         "    float guideRoughness;\n"
+        "    vec3  mediumExtinction;\n"
+        "    vec3  mediumAlbedo    ;\n"
+        "    float mediumAnisotropy;\n"
+        "    float mediumKind   ;\n"
         "};";
 
     registerTypeSyntax(Type::BSDF,

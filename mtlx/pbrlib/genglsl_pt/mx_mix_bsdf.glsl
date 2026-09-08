@@ -16,6 +16,13 @@
 // inspecting an image. Because both children were evaluated at the same
 // direction before this function runs, the correct mixture is just `mix` --
 // exactly as it is for the response.
+//
+// An interior medium is not mixed but *selected*, with the same draw as the
+// direction. A path enters one interior or the other, never a blend of the two,
+// and this is the combinator that decides which: `open_pbr_surface` mixes a
+// subsurface lobe against its diffuse base on `subsurface_weight`, so a
+// material that authors no subsurface selects the base every time and never
+// carries the medium `subsurface_bsdf` published for it.
 
 #include "lib/mx_closure_type.glsl"
 #include "lib/mx_pt_sampling.glsl"
@@ -49,11 +56,13 @@ void mx_mix_bsdf(ClosureData closureData, BSDF fg, BSDF bg, float mixValue, out 
         {
             result.sampledL = fg.sampledL;
             result.isDelta = fg.isDelta;
+            hdclaude_carry_medium(result, fg);
         }
         else
         {
             result.sampledL = bg.sampledL;
             result.isDelta = bg.isDelta;
+            hdclaude_carry_medium(result, bg);
         }
     }
     else
@@ -61,5 +70,6 @@ void mx_mix_bsdf(ClosureData closureData, BSDF fg, BSDF bg, float mixValue, out 
         // Under evaluation, "delta" describes the closure as a whole: it is a
         // delta closure only if every constituent lobe is one.
         result.isDelta = min(fg.isDelta, bg.isDelta);
+        hdclaude_clear_medium(result);
     }
 }

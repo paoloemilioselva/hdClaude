@@ -43,9 +43,9 @@ void main()
     vec4 lambda = pathWavelengths.values[path];
     uint rng = pathRng.values[path];
 
-    vec4 mediumAbsorption = pathMedium.values[2u * path + 0u];
-    vec4 mediumScattering = pathMedium.values[2u * path + 1u];
-    bool inMedium = mediumScattering.w > 0.5;
+    vec4 mediumExtinction = pathMedium.values[2u * path + 0u];
+    vec4 mediumColour = pathMedium.values[2u * path + 1u];
+    bool inMedium = mediumColour.w > 0.5;
 
     vec4 throughput = pathThroughput.values[path];
 
@@ -70,26 +70,59 @@ void main()
     // Honey and coloured glass are exactly that medium. So the distance is
     // proposed from the *scattering* coefficient alone.
     //
-    // Whether the medium scatters at all is read from the *authored*
-    // coefficient rather than from the upsampled one. Upsampling a zero
-    // coefficient goes through a chroma table and comes back a hair under one
-    // before the logarithm, so `sigma_s` is a millionth rather than nothing --
-    // enough to make a clear glass look like a scattering medium to a test on
-    // the resolved value, and to cost it a random draw it does not need.
-    vec3 authoredScattering = max(mediumScattering.xyz, vec3(0.0));
-    bool scatters = inMedium && max(max(authoredScattering.x,
-                                        authoredScattering.y),
-                                    authoredScattering.z) > 0.0;
+    // The medium arrives as an extinction and a single-scattering albedo, not
+    // as the two coefficients the closure authored, and the split happens on
+    // the way in rather than here. The reason is that the two are resolved to
+    // wavelengths by *different* fits and their ratio does not survive being
+    // taken twice: a subsurface material whose colour is entirely a per-channel
+    // albedo lost a tenth of its red that way, while the two channels either
+    // side of it moved the other way. Whatever else it is, that is not the
+    // colour the material was authored with.
+    //
+    // Split as they are here, each half is resolved in the domain its fit was
+    // built for. The albedo is a reflectance -- bounded in [0, 1], which is the
+    // sigmoid's own range -- and is upsampled as one, so the per-lane albedo is
+    // exactly the authored albedo's spectrum. The extinction is a coefficient
+    // and is unbounded, so it goes through its transmittance as before. The
+    // two limits are untouched by the change: a medium that only absorbs has an
+    // albedo of exactly zero and a lossless one exactly one, and the fit
+    // reproduces both exactly.
+    vec3 authoredColour = clamp(mediumColour.xyz, vec3(0.0), vec3(1.0));
+    bool hasInterior = mediumColour.w > 1.5;
+    bool reflectance = mediumColour.w > 2.5;
+    bool scatters = hasInterior && max(max(authoredColour.x, authoredColour.y),
+                                       authoredColour.z) > 0.0;
 
+    vec4 sigmaT = vec4(0.0);
     vec4 sigmaA = vec4(0.0);
     vec4 sigmaS = vec4(0.0);
-    if (inMedium)
+    if (hasInterior)
     {
-        sigmaA = hdclaude_lane_extinction(mediumAbsorption.xyz, lambda);
+        sigmaT = hdclaude_lane_extinction(mediumExtinction.xyz, lambda);
+        sigmaA = sigmaT;
     }
     if (scatters)
     {
-        sigmaS = hdclaude_lane_extinction(mediumScattering.xyz, lambda);
+        // The colour becomes a spectrum first, and the nonlinear relation is
+        // applied to that spectrum rather than to the three numbers it came
+        // from. Both orders are defensible-looking and only one of them returns
+        // the authored colour, because van de Hulst's relation is steep where
+        // subsurface materials live: inverting the RGB first left a magenta
+        // material a seventh short in red while the channels either side of it
+        // moved the other way, which is what a nonlinearity applied before a
+        // projection always does.
+        //
+        // Clamped because the sigmoid's range is open at one and an albedo a
+        // hair over it would make a lossless medium gain light at every
+        // collision.
+        vec4 colour = clamp(hdclaude_upsample(authoredColour, lambda),
+                            vec4(0.0), vec4(1.0));
+        vec4 albedo = reflectance
+                          ? hdclaude_subsurface_albedo(colour,
+                                                       mediumExtinction.w)
+                          : colour;
+        sigmaS = albedo * sigmaT;
+        sigmaA = sigmaT - sigmaS;
     }
 
     // The lane that proposes every free flight in this walk, chosen uniformly
@@ -134,8 +167,10 @@ void main()
     // It also keeps every scene whose medium does not scatter chromatically
     // rendering the sequence it already rendered, which is what makes a change
     // to this kernel attributable to the media it actually affects.
-    bool achromatic = authoredScattering.x == authoredScattering.y &&
-                      authoredScattering.y == authoredScattering.z;
+    bool achromatic = authoredColour.x == authoredColour.y &&
+                      authoredColour.y == authoredColour.z &&
+                      mediumExtinction.x == mediumExtinction.y &&
+                      mediumExtinction.y == mediumExtinction.z;
     float control = 0.0;
     if (scatters)
     {
@@ -256,7 +291,7 @@ void main()
 
         origin = origin + direction * flight;
         direction = hdclaude_sample_phase(
-            direction, mediumAbsorption.w,
+            direction, mediumExtinction.w,
             vec2(hdclaude_random(rng), hdclaude_random(rng)));
 
         // Roulette on the walk itself. A dense, dark medium would otherwise

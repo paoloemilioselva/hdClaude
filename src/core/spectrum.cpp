@@ -182,6 +182,43 @@ float DispersedIor(float ior, float abbe, float lambda)
     return static_cast<float>(a + b / (safe * safe));
 }
 
+float VanDeHulstDiffuseAlbedo(float albedo, float g)
+{
+    const double a = std::min(std::max(double(albedo), 0.0), 1.0);
+    const double anisotropy = std::min(std::max(double(g), -0.99), 0.99);
+
+    const double denominator = 1.0 - a * anisotropy;
+    if (!(denominator > 0.0)) {
+        return 1.0f;
+    }
+    const double s = std::sqrt(std::max(0.0, (1.0 - a) / denominator));
+    return static_cast<float>((1.0 - s) * (1.0 - 0.139 * s) / (1.0 + 1.17 * s));
+}
+
+float SubsurfaceSingleScatteringAlbedo(float reflectance, float g)
+{
+    const double c = std::min(std::max(double(reflectance), 0.0), 1.0);
+    const double anisotropy = std::min(std::max(double(g), -0.99), 0.99);
+
+    // OpenPBR's inversion, quoted. The square root's argument is a positive
+    // quadratic in C over [0, 1], so it needs no guard of its own; `s` is
+    // clamped because the fit overshoots by about a thousandth at each end and
+    // an `s` of -0.00087 at C = 1 would return an albedo above one.
+    const double s = std::min(
+        std::max(4.09712 + 4.20863 * c -
+                     std::sqrt(9.59217 + 41.6808 * c + 17.7126 * c * c),
+                 0.0),
+        1.0);
+
+    const double sSquared = s * s;
+    const double denominator = 1.0 - anisotropy * sSquared;
+    if (!(denominator > 0.0)) {
+        return 1.0f;
+    }
+    return static_cast<float>(
+        std::min(std::max((1.0 - sSquared) / denominator, 0.0), 1.0));
+}
+
 float SampleVisibleWavelength(float u)
 {
     return kWavelengthCenter -

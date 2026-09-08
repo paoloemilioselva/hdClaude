@@ -41,15 +41,18 @@ void mx_add_bsdf(ClosureData closureData, BSDF in1, BSDF in2, out BSDF result)
         {
             result.sampledL = in1.sampledL;
             result.isDelta = in1.isDelta;
+            hdclaude_carry_medium(result, in1);
         }
         else
         {
             result.sampledL = in2.sampledL;
             result.isDelta = in2.isDelta;
+            hdclaude_carry_medium(result, in2);
         }
     }
     else
     {
         result.isDelta = min(in1.isDelta, in2.isDelta);
+        hdclaude_clear_medium(result);
     }
 }

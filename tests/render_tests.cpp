@@ -326,28 +326,32 @@ CompiledMaterial MakeScatteringMedium(mx::DocumentPtr libraries,
     return CompileMaterial(doc, compiler, shadeKernel, name);
 }
 
-/// A subsurface material, for the conservation gate the transport will need.
+/// A subsurface material, for the conservation and colour gates the transport
+/// needs.
 ///
 /// `subsurface_bsdf` with unit albedo absorbs nothing whatever it does with the
 /// light -- reflect it as a Lambertian, or carry it through a random walk and
-/// out somewhere else -- so a closed slab of it in a uniform environment must
-/// render one either way. That is what makes this gate worth having *before*
-/// the transport exists: it passes today, and it will fail the moment a walk
-/// starts losing or inventing energy.
+/// out somewhere else -- so a closed body of it in a uniform environment must
+/// render one either way. With an albedo below one the same furnace measures
+/// something else entirely: the colour that comes back out, which is the
+/// quantity van de Hulst's inversion exists to make equal to the authored one.
 CompiledMaterial MakeSubsurfaceMaterial(mx::DocumentPtr libraries,
                                         const GlslCompiler& compiler,
                                         const std::string& shadeKernel,
                                         const mx::Color3& radius,
-                                        const std::string& name)
+                                        const std::string& name,
+                                        const mx::Color3& colour =
+                                            mx::Color3(1.0f, 1.0f, 1.0f),
+                                        float anisotropy = 0.0f)
 {
     mx::DocumentPtr doc = mx::createDocument();
     doc->importLibrary(libraries);
 
     mx::NodePtr bsdf = AddNode(doc, "subsurface_bsdf", "ss", "BSDF");
     SetValue(bsdf, "weight", 1.0f);
-    SetValue(bsdf, "color", mx::Color3(1.0f, 1.0f, 1.0f));
+    SetValue(bsdf, "color", colour);
     SetValue(bsdf, "radius", radius);   // color3 in the nodedef, not vector3
-    SetValue(bsdf, "anisotropy", 0.0f);
+    SetValue(bsdf, "anisotropy", anisotropy);
 
     mx::NodePtr surface = AddNode(doc, "surface", "s", "surfaceshader");
     Connect(surface, "bsdf", bsdf);
@@ -369,7 +373,14 @@ CompiledMaterial MakeAbsorbingMaterial(mx::DocumentPtr libraries,
                                            mx::Color3(0.0f, 0.0f, 0.0f),
                                        float anisotropy = 0.0f,
                                        float dispersionScale = 0.0f,
-                                       float abbeNumber = 20.0f)
+                                       float abbeNumber = 20.0f,
+                                       // Dense and strongly coloured, and
+                                       // never selected: see the note at the
+                                       // call to SetValue below.
+                                       const mx::Color3& subsurfaceRadius =
+                                           mx::Color3(0.02f, 0.005f, 0.01f),
+                                       const mx::Color3& subsurfaceColour =
+                                           mx::Color3(0.9f, 0.1f, 0.4f))
 {
     mx::DocumentPtr doc = mx::createDocument();
     doc->importLibrary(libraries);
@@ -393,7 +404,17 @@ CompiledMaterial MakeAbsorbingMaterial(mx::DocumentPtr libraries,
     // have to be read back off the document instead.
     SetValue(surface, "transmission_dispersion_scale", dispersionScale);
     SetValue(surface, "transmission_dispersion_abbe_number", abbeNumber);
+    // Zero weight, and a subsurface that would be visible if the weight were
+    // ever ignored. `open_pbr_surface` instantiates `subsurface_bsdf`
+    // unconditionally and gates it with a `mix` on this weight, so these two
+    // inputs reach a closure that publishes a medium for every OpenPBR material
+    // in the scene. They are authored here, rather than left at their defaults,
+    // so that the furnaces below fail if a transmissive surface ever enters the
+    // subsurface interior instead of its own.
     SetValue(surface, "subsurface_weight", 0.0f);
+    SetValue(surface, "subsurface_color", subsurfaceColour);
+    SetValue(surface, "subsurface_radius", 1.0f);
+    SetValue(surface, "subsurface_radius_scale", subsurfaceRadius);
     SetValue(surface, "coat_weight", 0.0f);
     SetValue(surface, "fuzz_weight", 0.0f);
 
@@ -1815,10 +1836,22 @@ int main()
             // indefinitely.
             // A subsurface material of unit albedo, whose radius has a zero
             // component -- which is what the bubblegum asset authors, and the
-            // case that breaks a `1 / radius` extinction through an epsilon
-            // clamp. It conserves energy today because subsurface is not yet
-            // transported and behaves as a Lambertian; the gate is here so that
-            // it still has to when it is.
+            // case OpenPBR's own text says has to be regularized: "this may
+            // need to be regularized in the limit r -> 0 to avoid numerical
+            // issues". A unit albedo absorbs nothing whatever the walk does
+            // with the light, so this still has to read one now that a walk is
+            // carrying it and not only when it was a Lambertian.
+            //
+            // Measured on the *slab* rather than on the sphere below, and for
+            // the reason the zero component creates. The regularization floors
+            // that channel at a mean free path 18.42 times shorter than the
+            // longest, which here is 0.054 units; crossing a sphere of radius
+            // one at that density is some thirteen hundred collisions and the
+            // walk is capped at 256, so the sphere would be measuring the cap.
+            // The slab is 0.2 thick, which the same channel crosses in about
+            // fourteen collisions. Its open sides cost nothing at that density:
+            // the walk wanders about 0.2 from where it entered, against a half
+            // width of one.
             const CompiledMaterial sss = MakeSubsurfaceMaterial(
                 libraries, compiler, tracer.ShadeKernelSource(),
                 mx::Color3(1.0f, 0.0f, 0.068f), "subsurface");
@@ -1834,6 +1867,22 @@ int main()
             CHECK_NEAR(openPbrResult.r, 1.0, 0.02);
             CHECK_NEAR(openPbrResult.g, 1.0, 0.02);
             CHECK_NEAR(openPbrResult.b, 1.0, 0.02);
+
+            // And the OpenPBR slab reads what the bare layered pair reads.
+            //
+            // This is the gate on *which* interior a path enters.
+            // `open_pbr_surface` instantiates `subsurface_bsdf` and
+            // `anisotropic_vdf` whether or not the material uses either, so
+            // this surface -- which transmits and has no subsurface at all --
+            // describes two interiors, and the material above authors the
+            // subsurface one dense and strongly coloured on purpose. A path
+            // that entered it instead of the transmissive one would leave this
+            // slab opaque and pink. The two readings agreeing is what says the
+            // medium follows the lobe the mixture selected rather than
+            // whichever closure ran last.
+            CHECK_NEAR(openPbrResult.r, layeredResult.r, 0.01);
+            CHECK_NEAR(openPbrResult.g, layeredResult.g, 0.01);
+            CHECK_NEAR(openPbrResult.b, layeredResult.b, 0.01);
 
             // Dispersion moves light between wavelengths; it does not create or
             // destroy any. So the same slab, authored dispersive, must still
@@ -1980,6 +2029,104 @@ int main()
                     // chromatic defect.
                     CHECK(std::abs(patch.r - patch.b) < 0.025);
                     CHECK(std::abs(patch.r - patch.g) < 0.025);
+                }
+            }
+
+            // --- Subsurface, on a closed body and against its own colour -----
+            //
+            // Two claims, and they need different instruments.
+            //
+            // The first is conservation, and it is the sphere's to make. A
+            // subsurface material of unit albedo absorbs nothing, so a closed
+            // one in a uniform environment must read one however far the walk
+            // wanders and whatever angle it leaves at. The slab furnace above
+            // makes the same claim at one incidence; this one makes it at every
+            // incidence at once, which is what caught the interface index being
+            // wrong when the same pair of tests was written for glass.
+            {
+                const CompiledMaterial lossless = MakeSubsurfaceMaterial(
+                    libraries, compiler, tracer.ShadeKernelSource(),
+                    mx::Color3(0.25f, 0.25f, 0.25f), "sss lossless");
+                CHECK(!lossless.spirv.empty());
+                const Pixel patch =
+                    sphereFurnace(lossless, "sss lossless", 0.5f, 512);
+                CHECK_NEAR(patch.r, 1.0, 0.02);
+                CHECK_NEAR(patch.g, 1.0, 0.02);
+                CHECK_NEAR(patch.b, 1.0, 0.02);
+            }
+
+            // The second is the one conservation cannot see, and it is the
+            // reason the mapping from `color` to a scattering albedo is not the
+            // identity.
+            //
+            // MaterialX documents `color` as the diffuse reflectivity and
+            // OpenPBR as "the observed reflection color", so a body of it thick
+            // enough to be opaque, under a uniform sky of radiance one, must
+            // render that colour -- the same closed form as the Lambertian
+            // furnace far above, and the same reason: a surface under uniform
+            // illumination returns its own albedo.
+            //
+            // This is what says van de Hulst's inversion is being applied and
+            // applied the right way round. Handing `color` to the walk as its
+            // single-scattering albedo instead -- which is what the mapping
+            // looks like if nobody checks -- makes a 0.6 material read about
+            // 0.19, because a walk whose collisions each survive with
+            // probability 0.6 loses light at every one of them. That is a
+            // factor of three, and it is invisible to every furnace above.
+            //
+            // A mean free path of 0.02 in a sphere of radius one puts the
+            // diffusion length at about 0.05, so nothing crosses and the
+            // measurement is of a half-space, which is what the relation is
+            // written for.
+            //
+            // Measured achromatic first and chromatic second, which separates
+            // the relation from the spectral mapping of the coefficients it
+            // produces. An achromatic colour makes both coefficients neutral,
+            // so the upsampling is exact and only van de Hulst and the walk are
+            // under test. A chromatic one adds a scattering and an absorption
+            // coefficient that are fitted to spectra independently and whose
+            // *ratio* is the albedo the relation was solved for.
+            {
+                const mx::Color3 colours[] = {
+                    mx::Color3(0.6f, 0.6f, 0.6f),
+                    mx::Color3(0.2f, 0.2f, 0.2f),
+                    mx::Color3(0.6f, 0.2f, 0.4f),
+                };
+                for (const mx::Color3& authored : colours) {
+                    const CompiledMaterial coloured = MakeSubsurfaceMaterial(
+                        libraries, compiler, tracer.ShadeKernelSource(),
+                        mx::Color3(0.02f, 0.02f, 0.02f), "sss colour", authored);
+                    CHECK(!coloured.spirv.empty());
+                    if (coloured.spirv.empty()) {
+                        continue;
+                    }
+                    const Pixel patch =
+                        sphereFurnace(coloured, "sss colour", 0.5f, 512);
+                    std::printf("  subsurface colour: %.4f %.4f %.4f "
+                                "(authored %.2f %.2f %.2f)\n",
+                                patch.r, patch.g, patch.b, authored[0], authored[1],
+                                authored[2]);
+                    // Three hundredths, and it discriminates between the
+                    // three things it has to. The identity mistake -- handing
+                    // `color` to the walk as its scattering albedo -- takes 0.6
+                    // to 0.19. An undeviated entry, which is the other
+                    // defensible boundary and the one an index-matched
+                    // interface physically has, takes it to 0.5577. The cosine
+                    // boundary reads 0.6173, and the 0.017 above the authored
+                    // value is where van de Hulst's approximation and that
+                    // boundary land together.
+                    CHECK_NEAR(patch.r, authored[0], 0.03);
+                    CHECK_NEAR(patch.g, authored[1], 0.03);
+                    CHECK_NEAR(patch.b, authored[2], 0.03);
+                    // Neutral where it was authored neutral, asserted
+                    // separately: a relation applied to three channels before
+                    // they became a spectrum came back 0.5178, 0.1971, 0.4158
+                    // for an authored 0.6, 0.2, 0.4 -- a seventh short in red
+                    // with the other two moving the other way, which no check
+                    // against a single channel would have called a colour
+                    // error.
+                    CHECK(std::abs((patch.r - authored[0]) -
+                                   (patch.b - authored[2])) < 0.02);
                 }
             }
         }

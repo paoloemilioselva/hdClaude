@@ -39,8 +39,9 @@ wavelengths drawn at random, so a grey surface is neutral only in the mean and
 every image is speckled with colour where an RGB renderer's would be smooth. It
 also costs time -- between fifteen and forty per cent across these ten scenes.
 What is not yet spectral: a MaterialX graph's own colour arithmetic, since the
-upsampling happens where a closure hands back its response; and dispersion,
-which needs the wavelength MIS of phase 6.
+upsampling happens where a closure hands back its response. Dispersion is
+transported, and a path meeting a dispersive interface keeps its hero lane and
+terminates the other three, which costs four times the noise on those paths.
 
 There is no displacement — that is phase 16, so the height map's quad is refined
 and flat.
@@ -94,17 +95,17 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 <!-- gallery-timings:start -->
 | Scene | Measured | Wall time | SHA-256 | Device | Settings |
 |---|---:|---:|---|---|---|
-| Intel Sponza | 2026-09-08 | 51.878 s (0m 51.878s) | `c8ea9d7983453b4531e1ac3fc996db994e06f7757bece73ed940c6bb5cfb4747` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| OpenChessSet | 2026-09-08 | 23.215 s (0m 23.215s) | `4e940fb75f63914c061702bb0ee14a2e02fb04580f7c3eed46b0e1d8b0354f0b` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall Gold | 2026-09-08 | 28.037 s (0m 28.037s) | `3950619920a949c5f02c1773fa6b42188d5385ce36b6c81d605a4aa0037d13f9` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall Glass | 2026-09-08 | 32.662 s (0m 32.662s) | `00c8eedaba853f1149d65e4a0c9d6b8591ec5ac1d25ab384fd3f50f86c70f4bd` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall BubbleGum | 2026-09-08 | 30.350 s (0m 30.350s) | `3c38b4a977b8a43f9cfd2371c0a461c2a94a9839c111660e8a869c14f0c43dde` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall Honey | 2026-09-08 | 103.648 s (1m 43.648s) | `291b6da2583686fc715286386ea72b803e1b4f6862fe00451c49a73482b04d42` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Pixar's KitchenSet | 2026-09-08 | 477.469 s (7m 57.469s) | `00b231edeea1963a6330dc4334268fcf15aa2c1ef9d7d0b7105969923d2d0508` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Collective Project 001 | 2026-09-08 | 17.717 s (0m 17.717s) | `f3ccf0d1ee6243926bfc59d923c1463142cedfa5eb1897984d5a89401a1325bb` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| OpenPBR Playground | 2026-09-08 | 68.381 s (1m 8.381s) | `e61f5e4fc8fc2bcfcb06a15d7dc7ad1c110056ee706b23a65c54d864848a04e9` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Subdivision Feature Matrix | 2026-09-08 | 11.203 s (0m 11.203s) | `d7ea0a89e68908790ab111b55072da57e472c23ab062a6d64af154529fc8a99c` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| New Zealand Height Map | 2026-09-08 | 8.916 s (0m 8.916s) | `f8cedeacde7deaf6acb8a08e2542d2a8872ad6b3acfd0a6ca01edd5884da4253` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 6 |
+| Intel Sponza | 2026-09-08 | 49.521 s (0m 49.521s) | `c8ea9d7983453b4531e1ac3fc996db994e06f7757bece73ed940c6bb5cfb4747` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| OpenChessSet | 2026-09-08 | 24.805 s (0m 24.805s) | `4e64ca03594c4bf31d3dc49c4c7c8e19d8a45a9071830c7b83428254690bd0b3` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall Gold | 2026-09-08 | 43.344 s (0m 43.344s) | `3950619920a949c5f02c1773fa6b42188d5385ce36b6c81d605a4aa0037d13f9` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall Glass | 2026-09-08 | 32.440 s (0m 32.440s) | `00c8eedaba853f1149d65e4a0c9d6b8591ec5ac1d25ab384fd3f50f86c70f4bd` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall BubbleGum | 2026-09-08 | 72.893 s (1m 12.893s) | `e1124c5aea060b61c715098145cebe41bc088cc8c5f69b728dab655da720e185` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall Honey | 2026-09-08 | 36.165 s (0m 36.165s) | `6e7b68a9fd49e796f45a9557c55057da9a831089f7f0732416f14205b599511f` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Pixar's KitchenSet | 2026-09-08 | 178.856 s (2m 58.856s) | `00b231edeea1963a6330dc4334268fcf15aa2c1ef9d7d0b7105969923d2d0508` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Collective Project 001 | 2026-09-08 | 25.950 s (0m 25.950s) | `e095732d5451ebc17edbb272363d2c9613d3275786176e9dd84883cac97d9b65` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| OpenPBR Playground | 2026-09-08 | 138.529 s (2m 18.529s) | `aa1b0a44bca14bcd34588b0681fc80e51f4adfd209aa5d4ed408fc5bac7a74fb` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Subdivision Feature Matrix | 2026-09-08 | 15.251 s (0m 15.251s) | `d7ea0a89e68908790ab111b55072da57e472c23ab062a6d64af154529fc8a99c` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| New Zealand Height Map | 2026-09-08 | 8.905 s (0m 8.905s) | `f8cedeacde7deaf6acb8a08e2542d2a8872ad6b3acfd0a6ca01edd5884da4253` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 6 |
 <!-- gallery-timings:end -->
 
 ## Against hdCodex
@@ -213,6 +214,9 @@ instances hdClaude was not placing, and the dome was sampled half a turn out of
 USD's orientation, so the scene was lit and backed by the wall behind the
 camera.
 
+The stone pieces author subsurface, and since 2026-09-08 they transport it: the
+marble bleeds instead of reading as painted plaster.
+
 The pieces were faceted and the board carried a fine herringbone until two
 defects in how a normal map is read were fixed together: the tangent frame was
 taken from a triangle edge rather than solved from the texture coordinates, so
@@ -280,8 +284,25 @@ Subsurface transport and image textures.
 render_claude.bat --imageWidth 1024 --colorCorrectionMode disabled --camera camera gallery\shader_ball_bubblegum.usda build\gallery-linear\shader_ball_bubblegum.exr
 ```
 
-**Current state.** Renders. Subsurface is a published closure parameter and not
-yet transported, so the material reads as a diffuse surface.
+**Current state.** Subsurface is transported. The asset authors
+`subsurface_color (1, 0.22, 0.493)` with a radius of `(1, 0, 0.068)` at a scale
+of 0.0325, so red has a mean free path of 0.0325 where green has none at all and
+blue has 0.0022: red travels through the thin parts of the ball and the other
+two do not, which is why the pink deepens and the thin handle lights from
+within. It read as a flat diffuse surface until 2026-09-08, because
+`subsurface_bsdf` published a medium and never sampled a direction into it.
+
+The colour is OpenPBR's `subsurface_color`, which is documented as the light
+that comes back *out* and is not the fraction of a collision that survives; van
+de Hulst's inversion between them is what makes the ball render the colour it
+was authored with rather than about a third of it. The green channel's zero
+radius is the case that has to be regularized, and OpenPBR's own text says so.
+
+What is missing: there is no next-event estimation at a scattering vertex, so
+the interior is lit only by what its walk runs into on the way out, and the
+walk's collision cap is reached rather than avoided where the mean free path is
+small against the object -- which biases where the light leaves, not how much of
+it there is.
 
 ### StandardShaderBall Honey
 
@@ -303,12 +324,14 @@ render_claude.bat --imageWidth 1024 --colorCorrectionMode disabled --camera came
 **Current state.** Renders, with Beer-Lambert absorption over the distance each
 path travels inside the shell and a random walk for the scattering the asset
 authors at 0.9, which is what makes it cloudy rather than a clear amber.
-Absorption is spectral and exact; scattering is achromatic, so the colour comes
-from absorption alone -- a chromatic scattering coefficient sampled against one
-control wavelength overflows over a long walk, and the fix for that is spectral
-MIS across the lanes. There is also no next-event estimation at a scattering
-vertex, so the medium is lit by what enters it and the estimate is noisier than
-an opaque surface's.
+Both coefficients are spectral, and the walk weighs the four lanes' densities
+against each other by the balance heuristic once per walk. Its albedo is
+(1.0, 0.552, 0.229) -- red scatters losslessly and blue is absorbed -- and that
+ratio survives being resolved to wavelengths only because the medium is carried
+as an extinction and an albedo rather than as two coefficients fitted to spectra
+separately, which is what deepened the amber on 2026-09-08. There is still no
+next-event estimation at a scattering vertex, so the medium is lit by what
+enters it and the estimate is noisier than an opaque surface's.
 
 ### Pixar's KitchenSet
 
@@ -360,6 +383,14 @@ this renderer does not carry, so it takes that geomprop's zero and shades
 white. It needed `UsdPrimvarReader` rewritten into the `geompropvalue` it
 wraps, which MaterialX cannot read through a nodegraph interface.
 
+The eye is a lens. Until 2026-09-08 it was frosted glass, and nothing in the
+asset asked for that: its face is a `standard_surface` with `transmission 1` and
+a clear interior, but `standard_surface` instantiates `subsurface_bsdf`
+unconditionally and has no volume node at all, so hdClaude's hand-off filled
+every transmissive material of that kind with the default subsurface medium --
+a dense scattering interior nobody authored. The concentric rings behind the
+lens are what the fix looks like.
+
 ### OpenPBR Playground
 
 ![A child's craft table under a desk lamp, crowded with toys, jars and paper, with the scene's remaining sampling noise visible](gallery/openpbr_playground.jpg)
@@ -378,7 +409,10 @@ Recorded here so the first hdClaude run of it is treated as evidence.
 render_claude.bat --imageWidth 1024 --colorCorrectionMode disabled --purposes render --camera renderCam_mainCU gallery\openpbr_playground.usda build\gallery-linear\openpbr_playground.exr
 ```
 
-**Current state.** Renders, after three unrelated refusals were resolved:
+**Current state.** Its green jar and the purple toy on the shelf transport
+subsurface as of 2026-09-08; both read as opaque diffuse before that.
+
+It renders after three unrelated refusals were resolved:
 `mx_aastep`'s `dFdx`, an `open_pbr_surface` input this MaterialX does not
 declare, and eighty-five UDIM textures whose `<UDIM>` token opened nothing. All
 100 of its textures load: the ones that did not were a UDIM set authored on

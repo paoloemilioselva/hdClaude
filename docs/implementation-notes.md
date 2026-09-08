@@ -4113,3 +4113,192 @@ a saturated spectrum lands outside the primaries. They are reported because they
 are worth knowing about -- they are what becomes a NaN if anything ever raises
 them to a fractional power -- and not gated on, because they are the gamut being
 honest.
+
+---
+
+## 2026-09-08 -- Subsurface transports, and the glass eye nobody filled
+
+Subsurface is transported. The three pieces the roadmap named -- the extinction
+mapping, the publication question, and the entry direction -- all had to move
+together, and a fourth turned up in the middle of them.
+
+**The mapping, and both halves of it.** OpenPBR states the relation between what
+an asset authors and what a random walk needs, and hdClaude had neither half.
+
+The first half is the colour. MaterialX documents `subsurface_bsdf`'s `color` as
+the diffuse reflectivity and OpenPBR as "the observed reflection color of the
+subsurface scattering medium" -- the light that comes back *out*. A walk is
+parameterised by the fraction of each *collision* that survives, and those are
+not the same number or anywhere near it: van de Hulst's relation, which OpenPBR
+quotes in closed form, says a medium whose collisions each survive with
+probability 0.6 returns about 0.19 of what enters it. Handing `color` to the
+walk directly is the mistake that stays invisible until something measures it,
+because it makes every subsurface material darker in a way that reads as a
+lighting problem. The inversion now lives in
+`hdclaude::SubsurfaceSingleScatteringAlbedo`, and it is checked against the
+forward relation it inverts rather than against remembered numbers: the round
+trip is exact to 4.7e-5 over the whole range at four anisotropies.
+
+The second half is the mean free path, `mu_t = 1/r`, with OpenPBR's own note
+that "this may need to be regularized in the limit r -> 0". The bubblegum asset
+authors `subsurface_radius (1, 0, 0.068)`, so that limit is not hypothetical.
+The regularization is a floor on the *ratio* between channels rather than an
+epsilon on the value, and the constant is not a matter of taste: a channel a
+factor R denser than the least dense one reaches `hdclaude_lane_extinction` as a
+transmittance of `exp(-R)`, and that function clamps at 1e-8, so R = 18.42 is
+the largest ratio the spectral mapping can carry at all. Below it nothing
+changes, because a medium that dense is in the diffusive regime, where van de
+Hulst's reflectance does not depend on the mean free path. An epsilon on the
+value would instead have tied the floor to the scene's unit of length.
+
+A radius of zero in *every* channel is not regularized but solved. The light
+leaves where it entered, so the closure is exactly a Lambertian of reflectance
+`color`, which is the limit rather than a fallback.
+
+**The publication question had a worse answer than expected.** Both
+`standard_surface` and `open_pbr_surface` instantiate `subsurface_bsdf`
+unconditionally, with `weight` hardwired to one, and gate it downstream with a
+`mix` on the authored weight. So every one of those materials ran the closure
+and published a medium. The guard in `shade` --
+`subsurface_present && !medium_present` -- was meant to stop that, and
+`standard_surface` **has no `anisotropic_vdf` anywhere in its graph**, so
+`medium_present` was zero for all of them and the guard was true every time.
+
+Every transmissive `standard_surface` in the gallery was therefore filled with
+the default subsurface medium: mean free path one, single-scattering albedo one,
+a dense lossless scattering interior nobody authored. The Collective Project's
+robot has a glass eye face -- `transmission 1`, `transmission_depth 5`,
+roughness 0.01 -- and it was rendering as frosted glass. It is a lens now, and
+the concentric rings behind it resolve. That defect was found by fixing the
+publication rather than by looking for it.
+
+**So the medium travels on the BSDF struct.** A global cannot answer the
+question the integrator asks, because the question is not "what did this
+material publish" but "what interior does the lobe that carried the path
+enclose", and only the combinator that chose that lobe knows. The medium is now
+propagated by the same selection that propagates `sampledL` and `isDelta`,
+through `mix`, `layer` and `add`, and read from the *sampling* pass -- the
+evaluation pass selects nothing and would leave it saying whatever ran last.
+`layer_vdf` is the one place it travels the other way: that node is how MaterialX
+says a surface encloses an interior, so the interior is the base, and taking the
+top wholesale dropped the only thing the base was there to contribute.
+
+The gate for it is that an `open_pbr_surface` slab now authors a dense, strongly
+coloured subsurface it never selects, and has to keep reading what the bare
+`layer(R, T)` pair reads. A path entering the wrong interior would leave it
+opaque and pink.
+
+**The entry direction is a decision, and it is recorded as one.** An
+index-matched interface does not deviate a ray, and van de Hulst's relation
+assumes an index-matched boundary, so the physically literal entry is straight
+through. It was implemented and measured, and it is not what ships. Two reasons.
+
+A straight-through entry is a delta, and a delta has no solid-angle density to
+report. Every surface model puts this node inside a `mix`, and a combinator must
+report the mixture's density; handing it a one where its sibling reports a real
+density is not a mixture of anything. The alternative is a narrow lobe of some
+invented width, which is the kind of constant this renderer does not have.
+
+And the cosine entry is the arrangement in which the authored colour is the
+colour seen from every direction. Van de Hulst's relation has no angular
+argument -- it relates an albedo to the fraction of entering light that returns,
+which is what OpenPBR's own energy constraint uses it as -- and a walk entered
+along the incident direction returns that fraction only when averaged over the
+hemisphere. Measured on a sphere of a 0.6 material in a unit furnace, the
+undeviated entry reads **0.5577** and the cosine entry **0.6173**; at 0.2 they
+read 0.1684 and 0.2093. Both conserve energy exactly, at 1.0021 and 1.0018, so
+this is about where the light goes rather than how much of it there is. What the
+cosine boundary costs is the angular structure of subsurface reflection, which
+for a medium diffusive enough to look like subsurface scattering is slight, and
+the two to four per cent it sits above the authored value.
+
+**The fourth thing, which the colour gate found.** With the mapping and the
+publication both right, a magenta material authored (0.6, 0.2, 0.4) rendered
+0.5178, 0.1971, 0.4158 -- a seventh short in red with the channels either side
+of it moving the other way. Not an energy error; every furnace still read one.
+
+Van de Hulst's relation is steeply nonlinear where subsurface materials live,
+and it was being applied to three numbers *before* they became a spectrum. A
+nonlinearity applied before a projection does not commute with it, so the walk
+was returning a spectrum whose projection was some colour other than the
+authored one. The reflectance is now published unconverted and inverted per
+wavelength, which makes the walk's reflectance at every wavelength exactly the
+authored spectrum, whose projection is exactly the authored colour. The same
+material now reads 0.6139, 0.2052, 0.4072 -- matching the achromatic probes at
+0.6173 and 0.2093 to within the noise, which is what says the remaining offset
+belongs to the boundary and the fit rather than to colour.
+
+Carrying it required the medium to travel as an extinction and a *bounded*
+colour rather than as the two coefficients a closure authors. Two coefficients
+resolved to wavelengths separately do not keep the ratio between them, and that
+ratio is the whole colour of a subsurface material. What the colour means
+travels with it, because the two closures that publish an interior describe it
+differently: `anisotropic_vdf` by a coefficient pair, `subsurface_bsdf` by the
+light that comes back out.
+
+**One conflation had to be undone on the way.** The path state marked a
+transmission as being inside a medium with a hardcoded one, so "which side of
+the interface am I on" and "is there an interior to transport through" were the
+same bit. They are different questions, and a clear dielectric answers them
+differently: it encloses nothing and still has an inside, which is the side a
+closure reads its relative index from. Separating them is what kept the layered
+dielectric furnaces at the numbers they were committed with; conflating them the
+other way took `layer(R, T)` from 0.9978 to 0.9955 by quietly undoing the
+relative-index fix.
+
+**And the reference distance for a coefficient's spectrum was wrong for
+anything dense.** `hdclaude_lane_extinction` upsampled the transmittance over
+one *scene unit*, so a coefficient of 30 arrived as a transmittance of 1e-13 and
+the clamp turned it into 18.4. Every medium denser than about 18 per unit mapped
+to the same one, and a subsurface material, whose mean free paths are
+millimetres, is nothing but such media. It is now referred to the medium's own
+mean free path, which puts the densest channel at `exp(-1)` and every other
+between that and one -- the best-conditioned band the fit has, and at any scene
+scale rather than at one privileged unit of length.
+
+**What the gates say.** A closed sphere of unit-albedo subsurface reads 1.0018,
+0.9984, 0.9983, which is conservation at every angle at once; the slab with the
+bubblegum asset's own zero-radius component reads 1.0109, 1.0157, 1.0139. The
+colour gate reads 0.6173 for 0.6, 0.2093 for 0.2, and 0.6139, 0.2052, 0.4072 for
+(0.6, 0.2, 0.4). Its three-hundredths tolerance discriminates between everything
+it has to: the identity mistake takes 0.6 to 0.19 and the undeviated entry to
+0.5577.
+
+The sphere is the body for conservation because it is closed and presents every
+angle; the slab is the body for the zero-radius case because the regularized
+channel has a mean free path of 0.054, which crosses 0.2 of slab in about
+fourteen collisions and a sphere of radius one in some thirteen hundred, against
+a walk capped at 256. Its open sides cost nothing at that density.
+
+**What moved in the gallery**, and every one of the five is explicable:
+
+- **Collective Project 001**, RMS 0.0328. The glass eye stops being frosted.
+  This is the unauthored medium above, and it is a defect fixed rather than a
+  change of look.
+- **BubbleGum**, RMS 0.0727 over 57 per cent of its pixels. Subsurface is
+  transported for the first time. Red has a mean free path of 0.0325 against a
+  green of zero and a blue of 0.0022, so red travels through the thin parts and
+  the other two do not, which is why the ball deepens in colour and the thin
+  handle lights from within.
+- **OpenChessSet**, RMS 0.0148. The stone pieces carry subsurface and now bleed
+  like marble.
+- **OpenPBR Playground**, RMS 0.0191. The green jar and the purple toy on the
+  shelf transport instead of reading as opaque diffuse.
+- **Honey**, RMS 0.0351. Its albedo is (1.0, 0.552, 0.229) -- red scatters
+  losslessly and blue is absorbed -- and that ratio now survives being resolved
+  to wavelengths, so the amber is deeper and less milky.
+
+Sponza, the gold and glass shader balls, the Kitchen Set, the subdivision matrix
+and the height map are byte identical, which is the attribution: nothing without
+an interior moved. Every scene still scans clean, with no non-finite samples
+anywhere.
+
+**What is still not done.** Absorption is not carried on shadow rays. There is
+no next-event estimation at a scattering vertex, so a subsurface material is lit
+only by what its walk runs into on the way out. A path inside a *clear* interior
+that reaches no boundary is still killed as an unclosed medium, which was right
+when every transmission was a medium and is now merely conservative -- that is a
+separate finding, left alone here so this change stays attributable. And the
+walk's 256-collision cap is reached rather than avoided by a material whose mean
+free path is small against the object, which biases the exit point and not the
+energy.

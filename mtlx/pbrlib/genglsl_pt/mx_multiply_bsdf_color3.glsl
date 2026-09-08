@@ -20,4 +20,8 @@ void mx_multiply_bsdf_color3(ClosureData closureData, BSDF in1, vec3 in2, out BS
     result.spectrum = in1.spectrum * vec4(tint, 1.0);
     result.guideAlbedo = in1.guideAlbedo * tint;
     result.guideRoughness = in1.guideRoughness;
+
+    // A tint scales what comes back; it does not change which interior a
+    // path enters, so the medium passes through with the direction.
+    hdclaude_carry_medium(result, in1);
 }

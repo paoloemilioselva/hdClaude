@@ -570,6 +570,62 @@ void TestDispersionReproducesItsAbbeNumber()
     CHECK_NEAR(DispersedIor(1.5f, 0.0f, 700.0f), 1.5, 1.0e-6);
 }
 
+/// The subsurface albedo inversion returns the colour it was given.
+///
+/// A random walk is parameterised by how much of each *collision* survives, and
+/// a subsurface material is authored by how much of the *light* comes back out.
+/// Those are different numbers and they are far apart: van de Hulst's relation
+/// says a medium whose collisions each survive with probability 0.6 returns
+/// about a fifth of what enters it. OpenPBR states both directions in closed
+/// form, so the inversion can be checked against the forward relation rather
+/// than against remembered values -- an identity, to the accuracy of the fit
+/// OpenPBR quotes, and not a tolerance anyone chose.
+///
+/// The ends are what a fit gets wrong, and both matter here. A perfectly white
+/// subsurface material must be lossless or a furnace cannot gate it, and a
+/// perfectly black one must not scatter at all.
+void TestSubsurfaceAlbedoInversionRoundTrips()
+{
+    for (const float g : {-0.5f, 0.0f, 0.5f, 0.9f}) {
+        double worst = 0.0;
+        for (int i = 0; i <= 100; ++i) {
+            const auto reflectance = static_cast<float>(i) / 100.0f;
+            const float albedo = SubsurfaceSingleScatteringAlbedo(reflectance, g);
+            const float back = VanDeHulstDiffuseAlbedo(albedo, g);
+            worst = std::max(worst, std::abs(double(back) - double(reflectance)));
+        }
+        std::printf("  subsurface inversion, g = %+.1f: worst round trip %.2e\n",
+                    g, worst);
+        CHECK(worst < 2.0e-3);
+    }
+
+    // White is lossless and black does not scatter, at every anisotropy.
+    for (const float g : {-0.5f, 0.0f, 0.5f, 0.9f}) {
+        CHECK_NEAR(SubsurfaceSingleScatteringAlbedo(1.0f, g), 1.0, 1.0e-3);
+        CHECK_NEAR(SubsurfaceSingleScatteringAlbedo(0.0f, g), 0.0, 1.0e-3);
+    }
+
+    // The inversion is the *opposite* of the identity, and by a wide margin:
+    // this is the whole reason it exists. A material authored at 0.6 needs
+    // collisions that survive 95 per cent of the time, and a walk given 0.6
+    // directly would return about 0.19.
+    const float albedo = SubsurfaceSingleScatteringAlbedo(0.6f, 0.0f);
+    std::printf("  subsurface: colour 0.6 needs albedo %.4f; albedo 0.6 "
+                "returns %.4f\n",
+                albedo, VanDeHulstDiffuseAlbedo(0.6f, 0.0f));
+    CHECK(albedo > 0.94f);
+    CHECK(VanDeHulstDiffuseAlbedo(0.6f, 0.0f) < 0.22f);
+
+    // Monotonic, which a fit evaluated outside its range need not be.
+    float previous = -1.0f;
+    for (int i = 0; i <= 50; ++i) {
+        const float value =
+            SubsurfaceSingleScatteringAlbedo(static_cast<float>(i) / 50.0f, 0.0f);
+        CHECK(value >= previous);
+        previous = value;
+    }
+}
+
 void TestBlackbodyPeakMatchesWien()
 {
     // Wien's displacement law is an independent check on Planck's law: the
@@ -662,6 +718,7 @@ int main()
     TestHeroPacketIntegratesUnbiased();
     TestBlackbodyLandsOnThePlanckianLocus();
     TestDispersionReproducesItsAbbeNumber();
+    TestSubsurfaceAlbedoInversionRoundTrips();
     TestBlackbodyScaleKeepsLuminanceConstant();
     TestDisplayTransformLeavesTheDiffuseRangeAlone();
     TestDisplayTransformCompressesRatherThanClips();

@@ -64,15 +64,18 @@ void mx_layer_bsdf(ClosureData closureData, BSDF top, BSDF base, out BSDF result
         {
             result.sampledL = top.sampledL;
             result.isDelta = top.isDelta;
+            hdclaude_carry_medium(result, top);
         }
         else
         {
             result.sampledL = base.sampledL;
             result.isDelta = base.isDelta;
+            hdclaude_carry_medium(result, base);
         }
     }
     else
     {
         result.isDelta = min(top.isDelta, base.isDelta);
+        hdclaude_clear_medium(result);
     }
 }

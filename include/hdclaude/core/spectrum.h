@@ -139,6 +139,41 @@ Vec3 BlackbodyXyz(float kelvin);
 /// returned unchanged.
 float DispersedIor(float ior, float abbe, float lambda);
 
+/// Semi-infinite diffuse reflectance of a scattering medium, from van de Hulst.
+///
+/// The closed form OpenPBR's subsurface parameterisation is written against: a
+/// medium of single-scattering albedo `albedo` and Henyey-Greenstein anisotropy
+/// `g`, filling a half-space with an index-matched boundary, reflects
+///
+///     C = (1 - s)(1 - 0.139 s) / (1 + 1.17 s),   s = sqrt((1 - a) / (1 - a g))
+///
+/// of the light that enters it. It is the *observed* colour of a subsurface
+/// material, which is what both `subsurface_bsdf`'s `color` and OpenPBR's
+/// `subsurface_color` are documented to be, and it does not depend on the mean
+/// free path at all -- only on how much of each collision survives.
+///
+/// Exposed so the inversion below can be checked against it rather than against
+/// a table of remembered numbers.
+float VanDeHulstDiffuseAlbedo(float albedo, float g);
+
+/// The inverse: the single-scattering albedo a random walk must be given so that
+/// it reflects `reflectance` out of a semi-infinite half-space.
+///
+/// OpenPBR states this inversion in closed form, and it is quoted here as
+/// written:
+///
+///     a = (1 - s^2) / (1 - g s^2)
+///     s = 4.09712 + 4.20863 C - sqrt(9.59217 + 41.6808 C + 17.7126 C^2)
+///
+/// This is why an authored subsurface colour is not handed to the walk as its
+/// scattering albedo directly. A walk whose collisions each survive with
+/// probability C loses light at every one of them, so a medium given C = 0.5
+/// returns far less than half of what enters it; the inversion is what makes
+/// the material render the colour it was authored with. The relation assumes an
+/// index-matched boundary, which is the boundary `subsurface_bsdf` describes --
+/// the node has no index of refraction to describe any other.
+float SubsurfaceSingleScatteringAlbedo(float reflectance, float g);
+
 /// The three Fraunhofer lines the Abbe number is defined against, in nanometres.
 constexpr float kFraunhoferF = 486.13f;   // blue
 constexpr float kFraunhoferD = 587.56f;   // yellow, where `ior` is quoted

@@ -14,6 +14,13 @@
 // applies Beer-Lambert absorption and Henyey-Greenstein scattering over the
 // segment. The closure records; the integrator transports.
 //
+// They are recorded *on the result* rather than in a global, because
+// `open_pbr_surface` instantiates this node whether or not the material
+// transmits anything: a global would say every OpenPBR surface in the scene
+// encloses a volume. The medium belongs to the lobe that carries a path
+// through the interface, and the combinators are what know which lobe that was.
+// See mtlx/pbrlib/genglsl_pt/lib/mx_closure_type.glsl.
+//
 // Scope: homogeneous interior media only. Heterogeneous volumes (UsdVol) are
 // not scheduled -- docs/roadmap.md, open question 4.
 
@@ -21,11 +28,6 @@
 
 void mx_anisotropic_vdf(ClosureData closureData, vec3 absorption, vec3 scattering, float anisotropy, inout BSDF bsdf)
 {
-    hdclaude_medium_absorption = absorption;
-    hdclaude_medium_scattering = scattering;
-    hdclaude_medium_anisotropy = anisotropy;
-    hdclaude_medium_present = 1.0;
-
     // The volume contributes nothing *at* the surface -- there is no distance to
     // integrate over at a point -- and it is zeroed rather than left alone
     // because the parameter is `inout`. An untouched `inout` carries whatever
@@ -40,4 +42,6 @@ void mx_anisotropic_vdf(ClosureData closureData, vec3 absorption, vec3 scatterin
     bsdf.isDelta = 0.0;
     bsdf.guideAlbedo = vec3(0.0);
     bsdf.guideRoughness = 0.0;
+
+    hdclaude_publish_medium(bsdf, absorption, scattering, anisotropy);
 }

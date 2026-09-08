@@ -537,6 +537,21 @@ void main()
     hdclaude_material_shade(sampleData);
     vec3 L = hdclaude_bsdf.sampledL;
 
+    // The interior the selected lobe encloses, read here and not later.
+    //
+    // It has to be read from the *sampling* pass, because that is the pass in
+    // which a combinator chose a lobe, and the medium belongs to the lobe that
+    // carries the path through the interface rather than to the material. Both
+    // `standard_surface` and `open_pbr_surface` instantiate `subsurface_bsdf`
+    // and `anisotropic_vdf` unconditionally and gate them downstream with a
+    // `mix`, so every one of these materials describes two interiors and enters
+    // at most one. The evaluation pass below does not select, and would leave
+    // this saying whatever ran last.
+    vec3 mediumExtinction = hdclaude_bsdf.mediumExtinction;
+    vec3 mediumAlbedo = hdclaude_bsdf.mediumAlbedo;
+    float mediumAnisotropy = hdclaude_bsdf.mediumAnisotropy;
+    float mediumKind = hdclaude_bsdf.mediumKind;
+
     if (!(dot(L, L) > 0.5))
     {
         pathThroughput.values[path] = vec4(0.0);
@@ -588,27 +603,30 @@ void main()
     if (scatterClosure == CLOSURE_TYPE_TRANSMISSION)
     {
         bool goingIn = dot(point.geometricNormal, V) > 0.0;
-        // Subsurface publishes the same thing under a different name: a random
-        // walk beneath a surface and one inside a volume are the same walk, so
-        // a subsurface closure is carried as the medium it describes rather
-        // than as a second mechanism. Its radius is a mean free path, which is
-        // the reciprocal of extinction.
-        vec3 absorption = hdclaude_medium_absorption;
-        vec3 scattering = hdclaude_medium_scattering;
-        float anisotropy = hdclaude_medium_anisotropy;
-        if (hdclaude_subsurface_present > 0.5 && hdclaude_medium_present < 0.5)
-        {
-            vec3 extinction = 1.0 / max(hdclaude_subsurface_radius, vec3(1.0e-4));
-            scattering = extinction * clamp(hdclaude_subsurface_albedo,
-                                            vec3(0.0), vec3(1.0));
-            absorption = max(extinction - scattering, vec3(0.0));
-            anisotropy = hdclaude_subsurface_anisotropy;
-        }
-
+        // Subsurface arrives here under the same name as a volume, because a
+        // random walk beneath a surface and one inside a volume are the same
+        // walk. `subsurface_bsdf` publishes an interior in the same terms
+        // `anisotropic_vdf` does, so there is one mechanism and no priority to
+        // decide between them: the lobe that was selected brought its own.
+        //
+        // Carried in the terms the closure published it in, including which
+        // terms those are. The two closures describe an interior differently --
+        // `anisotropic_vdf` by a pair of coefficients, `subsurface_bsdf` by the
+        // colour that comes back out -- and only one of them needs a nonlinear
+        // relation applied per wavelength, so the traversal kernel has to be
+        // told which it is holding. See shaders/extend.comp.glsl.
+        // `w` says two things at once, and they are genuinely different
+        // questions: whether the path is *inside* -- which a clear dielectric
+        // answers yes to, and which decides the relative index a closure reads
+        // -- and whether there is an interior to transport through, which it
+        // answers no to. Conflating them would either stop glass seeing the
+        // index it is looking through, or make every refraction enter a medium
+        // that is not there and be killed the moment it reached open geometry.
         pathMedium.values[2u * path + 0u] =
-            goingIn ? vec4(absorption, anisotropy) : vec4(0.0);
+            goingIn ? vec4(mediumExtinction, mediumAnisotropy) : vec4(0.0);
         pathMedium.values[2u * path + 1u] =
-            goingIn ? vec4(scattering, 1.0) : vec4(0.0);
+            goingIn ? vec4(mediumAlbedo, HDCLAUDE_INSIDE + mediumKind)
+                    : vec4(0.0);
     }
 
     // What the environment kernel weighs against, if this ray misses. A delta

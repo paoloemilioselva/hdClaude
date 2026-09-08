@@ -108,26 +108,105 @@ bool hdclaude_entering(vec3 shadingNormal, vec3 V)
     return dot(side, V) > 0.0;
 }
 
-// Interior medium, published by anisotropic_vdf and read by the integrator.
+// Interior media are published on the BSDF struct, not in a global.
 //
 // Volumetric absorption and scattering are integrated *along a ray inside the
-// medium*, not evaluated at a surface, so the closure's job is to record the
-// parameters and the integrator's job is to transport with them. The kernel
-// reads these when a transmission event carries a path through the surface.
-vec3  hdclaude_medium_absorption = vec3(0.0);
-vec3  hdclaude_medium_scattering = vec3(0.0);
-float hdclaude_medium_anisotropy = 0.0;
-float hdclaude_medium_present = 0.0;
+// medium*, not evaluated at a surface, so a closure's job is to record the
+// parameters and the integrator's job is to transport with them. Two closures
+// record them: `anisotropic_vdf`, for the interior a transmissive surface
+// encloses, and `subsurface_bsdf`, because a random walk beneath a surface and
+// one inside a volume are the same walk.
+//
+// They travel on the struct rather than in a global because a global cannot
+// answer the question the integrator actually asks. Both `standard_surface` and
+// `open_pbr_surface` instantiate `subsurface_bsdf` *and* `anisotropic_vdf`
+// unconditionally, gated downstream by a `mix` on the authored weight, so a
+// material with no subsurface and no transmission still runs both closures and
+// still publishes both media. A global records whichever ran last. The path
+// enters the medium belonging to the lobe that carried it through the
+// interface, and the combinator that chose that lobe is the only thing that
+// knows which one it was -- so the medium is propagated by the same selection
+// that propagates `sampledL`, and read from the sampling pass.
+//
+// The fields are meaningful under CLOSURE_TYPE_PT_SAMPLE, where that selection
+// happens, and are left cleared by the evaluation types.
 
-// Subsurface, published by subsurface_bsdf on the same principle: the closure
-// supplies the boundary condition and the medium parameters, and the integrator
-// performs the bounded spectral random walk. This mirrors MaterialX's own OSL
-// target, which emits a subsurface_bssrdf closure and leaves transport to the
-// renderer, rather than the genglsl target's screen-space approximation.
-vec3  hdclaude_subsurface_albedo = vec3(0.0);
-vec3  hdclaude_subsurface_radius = vec3(0.0);   // per-channel mean free path
-float hdclaude_subsurface_anisotropy = 0.0;     // Henyey-Greenstein g
-float hdclaude_subsurface_present = 0.0;
+// How the second vector of a medium is to be read. The two closures that
+// publish an interior describe it in different terms, and which terms decides
+// what the traversal kernel does with it -- so the parameterisation travels
+// with the medium rather than being assumed.
+#define HDCLAUDE_MEDIUM_NONE 0.0
+#define HDCLAUDE_MEDIUM_ALBEDO 1.0
+#define HDCLAUDE_MEDIUM_REFLECTANCE 2.0
+
+/// Record an interior medium whose colour is a pair of coefficients.
+///
+/// What `anisotropic_vdf` authors, and what OpenPBR derives from
+/// `transmission_color` and `transmission_depth`. The two are stored as an
+/// extinction and the ratio between them, because that ratio -- the
+/// single-scattering albedo -- is bounded in [0, 1] and survives being resolved
+/// to wavelengths, where two coefficients resolved separately do not keep the
+/// ratio between them at all.
+void hdclaude_publish_medium(inout BSDF bsdf, vec3 absorption, vec3 scattering,
+                             float anisotropy)
+{
+    vec3 a = max(absorption, vec3(0.0));
+    vec3 s = max(scattering, vec3(0.0));
+    vec3 extinction = a + s;
+    bsdf.mediumExtinction = extinction;
+    bsdf.mediumAlbedo = vec3(extinction.x > 0.0 ? s.x / extinction.x : 0.0,
+                             extinction.y > 0.0 ? s.y / extinction.y : 0.0,
+                             extinction.z > 0.0 ? s.z / extinction.z : 0.0);
+    bsdf.mediumAnisotropy = clamp(anisotropy, -0.99, 0.99);
+    bsdf.mediumKind = HDCLAUDE_MEDIUM_ALBEDO;
+}
+
+/// Record an interior medium whose colour is the light that comes back out.
+///
+/// What `subsurface_bsdf` authors. MaterialX documents its `color` as the
+/// diffuse reflectivity and OpenPBR as "the observed reflection color", so it
+/// is a reflectance and not a coefficient ratio, and the relation between the
+/// two -- van de Hulst's, which OpenPBR states in closed form -- is steeply
+/// nonlinear: a reflectance of 0.6 needs collisions that survive 95 per cent of
+/// the time.
+///
+/// The reflectance is passed through *unconverted*, and the integrator inverts
+/// it per wavelength. Inverting here, per RGB channel, would be the same error
+/// as any other nonlinearity applied before a spectrum is resolved: the walk
+/// would return a spectrum whose projection is not the authored colour, and a
+/// magenta subsurface material measured a seventh short in red for exactly that
+/// reason. A reflectance is also the one thing the upsampling fit is built for,
+/// so this is the form that survives the journey.
+void hdclaude_publish_subsurface(inout BSDF bsdf, vec3 extinction,
+                                 vec3 reflectance, float anisotropy)
+{
+    bsdf.mediumExtinction = max(extinction, vec3(0.0));
+    bsdf.mediumAlbedo = clamp(reflectance, vec3(0.0), vec3(1.0));
+    bsdf.mediumAnisotropy = clamp(anisotropy, -0.99, 0.99);
+    bsdf.mediumKind = HDCLAUDE_MEDIUM_REFLECTANCE;
+}
+
+/// Copy an interior medium from the lobe a combinator selected.
+void hdclaude_carry_medium(inout BSDF result, BSDF selected)
+{
+    result.mediumExtinction = selected.mediumExtinction;
+    result.mediumAlbedo = selected.mediumAlbedo;
+    result.mediumAnisotropy = selected.mediumAnisotropy;
+    result.mediumKind = selected.mediumKind;
+}
+
+/// No interior. Written by the evaluation types, where nothing has been
+/// selected and so no medium is meaningful, rather than left alone: a
+/// combinator's `out BSDF` starts uninitialised, and leaving these fields as
+/// whatever the generated code declared is how
+/// `layer(dielectric_bsdf, anisotropic_vdf)` once rendered black.
+void hdclaude_clear_medium(inout BSDF result)
+{
+    result.mediumExtinction = vec3(0.0);
+    result.mediumAlbedo = vec3(0.0);
+    result.mediumAnisotropy = 0.0;
+    result.mediumKind = HDCLAUDE_MEDIUM_NONE;
+}
 
 // Dispersion, written by the integrator rather than published by a closure.
 //
@@ -189,6 +268,10 @@ float hdclaude_dispersed_ior(float ior, float abbe, float lambda)
 //       float isDelta;         // specular: skip NEE, MIS weight is one
 //       vec3  guideAlbedo;     // demodulation albedo for reconstruction
 //       float guideRoughness;  // representative roughness for reconstruction
+//       vec3  mediumExtinction;  // interior sigma_t, of the selected lobe
+//       vec3  mediumAlbedo;      // its albedo, read per mediumKind
+//       float mediumAnisotropy;  // interior Henyey-Greenstein g
+//       float mediumKind;        // none, single-scattering albedo, reflectance
 //   };
 //
 // The struct definition and its default-value expression come from the same
