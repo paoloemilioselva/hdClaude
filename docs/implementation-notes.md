@@ -4302,3 +4302,93 @@ separate finding, left alone here so this change stays attributable. And the
 walk's 256-collision cap is reached rather than avoided by a material whose mean
 free path is small against the object, which biases the exit point and not the
 energy.
+
+---
+
+## 2026-09-08 -- The plinth had a label, and one connection was missing
+
+The StandardShaderBall's base and its internal sphere rendered as flat untextured
+grey. They should carry lettering -- "Material Preview - 4 cm Grid" -- and the
+asset's own `thumbnails/standard_shader_ball_scene.png` shows it.
+
+**Nothing was falling back.** Both prims are bound, resolved off the composed
+stage rather than read out of the variant-laden layers:
+
+    .../shader_ball/neutral_objects/base  -> /materials/neutral
+    .../shader_ball/neutral_objects/core  -> /materials/neutral
+
+and no input was pruned, no texture failed to load, and no warning was raised on
+any of the four shader-ball renders. hdClaude shaded exactly what was wired.
+
+**What was wired.** `neutral`'s `outputs:mtlx:surface` points at a *NodeGraph*
+rather than at a shader, and that nodegraph holds two surface shaders. Which one
+its `outputs:out` reaches is chosen by a `material_model` variantSet on the
+enclosing `materials` Scope -- `standard_surface` or `OpenPBRSurface` -- which
+the asset defaults to `OpenPBRSurface`.
+
+The two variants of the same material are not equivalent. Under
+`OpenPBRSurface` the whole reachable network is
+
+    emission_color     <- mtlxconvert1 <- mtlximage2   (ND_image_vector3, no file)
+    emission_luminance <- mtlxextract1 <- mtlximage2
+    specular_weight     = 0.0
+    specular_roughness  = 0.0
+
+with no `base_color` connection at all, so `mtlximage1` -- which holds
+`@../maps/neutral.ACEScg.exr@` -- is never reached. Under `standard_surface`,
+`mtlxstandard_surface1` has `inputs:base_color.connect -> mtlximage1` and the
+map arrives.
+
+**Checked rather than argued.** Flipping `material_model` to `standard_surface`
+on the unmodified asset, with no override of any kind, reaches `mtlximage1` and
+the EXR; everything else about the network is the same, down to the emission
+wiring and the zero specular. That is what says the OpenPBR variant is short
+exactly one connection rather than the material being intended flat, and it is
+also what says the override below reproduces the asset's own intent instead of
+inventing a look.
+
+The sibling materials say it from the other side: `sss_bars` and `uvgrid` wire
+`base_color -> mtlximage1` on *both* of their surface shaders, so both of their
+variants are complete. Only `neutral`'s OpenPBR one is not. And a third
+representation, `outputs:surface -> usdpreview/usdpreviewsurface1`, reads the map
+into `diffuseColor`, so the `mtlx` context under the asset's default selection is
+the only one that loses the lettering.
+
+**Fixed by override, not by editing, and not by flipping the variant.** The four
+`gallery/shader_ball_*.usda` entrypoints already sublayer the asset, so each now
+authors the one missing connection as a local `over` on
+`materials/neutral/mtlx/open_pbr_surface1`. The vendored asset is untouched and
+removing the four overrides reproduces it as published.
+
+Selecting `standard_surface` would also produce the lettering and is the wrong
+lever. That variantSet sits on the `materials` Scope, so it would move `neutral`,
+`sss_bars` and `uvgrid` to a different surface model while the example material,
+the box and the walls stayed on OpenPBR -- there are three separate
+`material_model` variantSets in this asset and all three default to
+`OpenPBRSurface`. These scenes exist to render the asset in the configuration it
+publishes. The override keeps that configuration and repairs the connection;
+flipping the variant would route around the defect and hide it.
+
+Raised with the asset's authors; the finding is written up in gallery.md beside
+the images so it travels with them.
+
+**What it changes.** All four shader balls, by an RMS of 0.17 to 0.20 over a
+quarter to two fifths of their pixels, which is a base and an inner sphere going
+from white to the map's neutral grey and gaining their lettering. The glass ball
+is the one that gains the most: the refracted image through the shell was a blank
+grey and is now the legible plinth and the "SUB-SURFACE BAR" text, which is
+most of what a glass test image is for. The bubblegum ball stops being lit by a
+white plinth bouncing pink light back into it.
+
+**What was checked and left alone.** `mtlximage2` still has no `inputs:file` and
+is still wired to both emission inputs. hdClaude reads such a node's default
+rather than the magenta placeholder -- a node with no file is an ordinary
+authored value and not a broken asset reference, which is the decision of
+2026-09-06 -- so it contributes nothing and warns about nothing. That is the
+asset's business to finish, and it is recorded rather than patched.
+
+The map is named `.ACEScg.exr` and the asset declares no `colorSpace` on the
+attribute, so it is read as scene-linear like every other EXR in this gallery,
+including `ground.ACEScg.exr` and `sss_bars.ACEScg.exr` which were already in
+use. Honouring ACEScg primaries would need colour management this renderer does
+not have, and this change neither introduces that gap nor widens it.

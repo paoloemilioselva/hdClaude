@@ -19,8 +19,41 @@
 
 over "standard_shader_ball_scene"
 {
+    # hdClaude: reconnect the plinth texture the asset's MaterialX network drops.
+    #
+    # `materials/neutral` is bound to the base and to the internal sphere, and it
+    # ships `maps/neutral.ACEScg.exr` -- the "Material Preview - 4 cm Grid"
+    # lettering the asset's own thumbnail shows around the plinth.
+    #
+    # `neutral` publishes a NodeGraph rather than a shader, and a `material_model`
+    # variantSet on the enclosing `materials` Scope chooses which of the graph's
+    # two surface shaders its output reaches. The asset defaults that to
+    # `OpenPBRSurface`, and the two variants are not equivalent:
+    # `mtlxstandard_surface1` has `base_color` connected to `mtlximage1` and
+    # `open_pbr_surface1` has no `base_color` connection at all, so under the
+    # asset's own default the map is never reached. Flipping the variant to
+    # `standard_surface` on the unmodified asset does reach it, which is what says
+    # the OpenPBR variant is short exactly one connection; `sss_bars` and `uvgrid`
+    # have both of their variants wired.
+    #
+    # Corrected here rather than in the vendored asset, and rather than by
+    # selecting the other variant -- that variantSet also covers `sss_bars` and
+    # `uvgrid`, and these scenes are meant to render the asset in the
+    # configuration it publishes. To be raised with its authors. See gallery.md
+    # and docs/implementation-notes.md.
     over "materials"
     {
+        over "neutral"
+        {
+            over "mtlx"
+            {
+                over "open_pbr_surface1"
+                {
+                    color3f inputs:base_color.connect = </standard_shader_ball_scene/materials/neutral/mtlx/mtlximage1.outputs:out>
+                }
+            }
+        }
+
         over "examples"
         {
             over "mtlx" (

@@ -97,10 +97,10 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 |---|---:|---:|---|---|---|
 | Intel Sponza | 2026-09-08 | 49.521 s (0m 49.521s) | `c8ea9d7983453b4531e1ac3fc996db994e06f7757bece73ed940c6bb5cfb4747` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | OpenChessSet | 2026-09-08 | 24.805 s (0m 24.805s) | `4e64ca03594c4bf31d3dc49c4c7c8e19d8a45a9071830c7b83428254690bd0b3` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall Gold | 2026-09-08 | 43.344 s (0m 43.344s) | `3950619920a949c5f02c1773fa6b42188d5385ce36b6c81d605a4aa0037d13f9` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall Glass | 2026-09-08 | 32.440 s (0m 32.440s) | `00c8eedaba853f1149d65e4a0c9d6b8591ec5ac1d25ab384fd3f50f86c70f4bd` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall BubbleGum | 2026-09-08 | 72.893 s (1m 12.893s) | `e1124c5aea060b61c715098145cebe41bc088cc8c5f69b728dab655da720e185` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall Honey | 2026-09-08 | 36.165 s (0m 36.165s) | `6e7b68a9fd49e796f45a9557c55057da9a831089f7f0732416f14205b599511f` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall Gold | 2026-09-08 | 26.789 s (0m 26.789s) | `5260d440c066c90ca172f98b065394123fe012f6b08231d172e23dc6ea6c67e1` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall Glass | 2026-09-08 | 30.442 s (0m 30.442s) | `74bd8465cfc86759e6eb0ec99d3a61542b367f868afcb9b9a3732d4385319602` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall BubbleGum | 2026-09-08 | 66.585 s (1m 6.585s) | `e2ed540454cd2a807b88cc82df4aec11a129531cd42889bde350ddc71a4588f3` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall Honey | 2026-09-08 | 32.592 s (0m 32.592s) | `9083ced3e7c075912c8d2f8074eaecb0b305061a1e25f34e4c98bc2f51837e6c` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | Pixar's KitchenSet | 2026-09-08 | 178.856 s (2m 58.856s) | `00b231edeea1963a6330dc4334268fcf15aa2c1ef9d7d0b7105969923d2d0508` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | Collective Project 001 | 2026-09-08 | 25.950 s (0m 25.950s) | `e095732d5451ebc17edbb272363d2c9613d3275786176e9dd84883cac97d9b65` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | OpenPBR Playground | 2026-09-08 | 138.529 s (2m 18.529s) | `aa1b0a44bca14bcd34588b0681fc80e51f4adfd209aa5d4ed408fc5bac7a74fb` | NVIDIA GeForce RTX 5060 Ti | 1024x1024, 1024 spp, 32/update, 8 bounces, subdiv 2 |
@@ -254,6 +254,66 @@ every texture was uploaded upside down, and the ground and all five walls
 author their UVs face-varying, which hdClaude used to reject and shade from
 barycentrics instead.
 
+> **Asset note, shared by all four shader balls — for the asset's authors.**
+>
+> `materials/neutral`, which the StandardShaderBall binds to the **base** and to
+> the **internal sphere**, ships `maps/neutral.ACEScg.exr` — the
+> "Material Preview - 4 cm Grid" lettering the asset's own
+> `thumbnails/standard_shader_ball_scene.png` shows around the plinth. Its
+> MaterialX surface never reads it.
+>
+> `neutral`'s `outputs:mtlx:surface` points at a **NodeGraph**, not at a shader,
+> and that nodegraph holds *two* surface shaders. Which one its `outputs:out`
+> reaches is chosen by a `material_model` variantSet on the enclosing
+> `materials` Scope, whose values are `standard_surface` and `OpenPBRSurface`.
+> The asset defaults it to `OpenPBRSurface`.
+>
+> The two variants of `neutral` are not equivalent, and they are meant to be:
+>
+> - `standard_surface` selects `mtlxstandard_surface1`, which has
+>   `inputs:base_color.connect -> mtlximage1`, the correct EXR. The plinth is
+>   lettered.
+> - `OpenPBRSurface` selects `open_pbr_surface1`, which has **no `base_color`
+>   connection at all**. The whole of its reachable network is `emission_color`
+>   and `emission_luminance`, both fed from `mtlximage2` — an `ND_image_vector3`
+>   with no `inputs:file` authored — plus `specular_weight = 0`. `mtlximage1` is
+>   not reached, and the plinth is blank.
+>
+> Checked, rather than argued: flipping `material_model` to `standard_surface` on
+> the unmodified asset reaches `mtlximage1` and the map, with no override of any
+> kind. The two variants are otherwise identical — same emission wiring, same
+> zero specular — so the OpenPBR one is short exactly one connection.
+>
+> The sibling materials say the same thing from the other side. `sss_bars` and
+> `uvgrid` wire `base_color -> mtlximage1` on **both** of their surface shaders,
+> so both of their variants are complete; only `neutral`'s OpenPBR one is not.
+> And `neutral`'s third representation, `outputs:surface` ->
+> `usdpreview/usdpreviewsurface1`, reads the map into `diffuseColor`. So a
+> renderer taking the `mtlx` context under the asset's own default selection is
+> the only one that loses the lettering, which is what hdClaude did until
+> 2026-09-08.
+>
+> A second, smaller thing in the same material: `mtlximage2` has no `inputs:file`
+> and is wired to both emission inputs. hdClaude reads such a node's *default*
+> rather than the magenta missing-texture placeholder — a node with no file is an
+> ordinary authored value, not a broken asset reference — so it contributes
+> nothing and nothing warns about it.
+>
+> **What this repository does about it.** The four `gallery/shader_ball_*.usda`
+> entrypoints sublayer the asset and author the one missing connection as a local
+> `over` on `neutral/mtlx/open_pbr_surface1`. The vendored asset is not edited,
+> and removing those four overrides reproduces it as published.
+>
+> Selecting the `standard_surface` variant instead would also produce the
+> lettering, and is not what this gallery does. That variantSet is on the
+> `materials` Scope, so it would switch `neutral`, `sss_bars` and `uvgrid` to a
+> different surface model while the example material, the box and the walls stay
+> on `OpenPBRSurface` — three separate `material_model` variantSets, all of which
+> the asset defaults to OpenPBR. These scenes are meant to render the asset in
+> the configuration it publishes; the override keeps that and repairs the single
+> connection, where flipping the variant would work around it and hide it.
+
+
 ### StandardShaderBall Glass
 
 ![The StandardShaderBall in clear glass, with the printed backdrop visible through and reflected in it](gallery/shader_ball_glass.jpg)
@@ -267,10 +327,15 @@ The scene where four hero wavelengths earn their cost.
 render_claude.bat --imageWidth 1024 --colorCorrectionMode disabled --camera camera gallery\shader_ball_glass.usda build\gallery-linear\shader_ball_glass.exr
 ```
 
-**Current state.** Transmits. It rendered opaque black until the integrator
-stopped evaluating refractions with the reflection closure, which is the defect
-this scene exists to catch. Dispersion is still absent -- transport is RGB
-until phase 6 -- so the glass is colourless where it should split.
+**Current state.** Transmits, and since the plinth carries its authored
+lettering the refracted image through the ball is legible rather than a blank
+grey -- which is most of what this scene is for. It rendered opaque black until
+the integrator stopped evaluating refractions with the reflection closure, which
+is the defect this scene exists to catch.
+
+The plinth and the internal sphere are shaded through a local override; see the
+asset note under [StandardShaderBall Gold](#standardshaderball-gold).
+
 
 ### StandardShaderBall BubbleGum
 
@@ -304,6 +369,10 @@ walk's collision cap is reached rather than avoided where the mean free path is
 small against the object -- which biases where the light leaves, not how much of
 it there is.
 
+The plinth and the internal sphere are shaded through a local override; see the
+asset note under [StandardShaderBall Gold](#standardshaderball-gold).
+
+
 ### StandardShaderBall Honey
 
 ![The StandardShaderBall in amber honey on the same printed backdrop, golden where the shell is thin and deepening to red where the light passes through the most material](gallery/shader_ball_honey.jpg)
@@ -332,6 +401,10 @@ as an extinction and an albedo rather than as two coefficients fitted to spectra
 separately, which is what deepened the amber on 2026-09-08. There is still no
 next-event estimation at a scattering vertex, so the medium is lit by what
 enters it and the estimate is noisier than an opaque surface's.
+
+The plinth and the internal sphere are shaded through a local override; see the
+asset note under [StandardShaderBall Gold](#standardshaderball-gold).
+
 
 ### Pixar's KitchenSet
 
