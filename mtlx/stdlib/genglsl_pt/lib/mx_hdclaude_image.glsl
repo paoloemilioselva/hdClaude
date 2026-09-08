@@ -54,6 +54,27 @@ vec4 hdclaude_sample_image(HdclaudeTexture handle, vec2 uv, vec4 fallback)
         // Into the tile's own unit square. Not `fract`, which folds a negative
         // coordinate the wrong way; the tile was chosen from the same floor.
         uv -= tileUv;
+
+        // And held half a texel inside it, because a tile is a whole image and
+        // the sampler wraps.
+        //
+        // hdClaude binds one sampler for every texture and it addresses
+        // `REPEAT`, which is right for an ordinary map and wrong at every seam
+        // of a UDIM set: a bilinear fetch at u = 0.999 reaches past the right
+        // edge and comes back with the *left* edge of the same tile, so a
+        // one-texel band of the wrong image runs down every boundary where two
+        // tiles meet. Clamping to the texel centres nearest the edge is what
+        // the sampler would do with CLAMP_TO_EDGE, without needing a second
+        // sampler bound over the same images.
+        //
+        // What this does not do is filter *across* tiles. A tile is an
+        // independent image and its neighbour's texels are not in it, so a set
+        // whose tiles are meant to be continuous still shows a texel-scale
+        // discontinuity at the join. Removing that needs border texels
+        // replicated from the neighbouring tile at load time, which is a
+        // different piece of work and is recorded rather than guessed at.
+        vec2 texels = vec2(textureSize(hdclaude_textures[slot], 0));
+        uv = clamp(uv, 0.5 / texels, 1.0 - 0.5 / texels);
     }
 
     return texture(hdclaude_textures[slot], uv);

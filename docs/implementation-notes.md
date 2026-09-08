@@ -4865,3 +4865,79 @@ is two orders below the gallery gate's limit, so nothing has ever failed on it
 and nothing will; what it does instead is make a real change of that size
 indistinguishable from no change at all. Phase 9's remaining steps are exactly
 such changes, which is why this comes first.
+
+---
+
+## 2026-09-08 -- The seam UDIM selection introduced
+
+Choosing a tile per sample left a defect behind, and it was one the change itself
+created: hdClaude binds a single sampler for every texture and it addresses
+`REPEAT`.
+
+That is right for an ordinary map and wrong for a tile. A tile is a whole image,
+and a bilinear fetch just inside its right edge reaches past that edge and comes
+back with the *left* edge of the same tile -- so a one-texel band of the wrong
+thing runs down every boundary where two tiles meet. Before tile selection
+existed the question could not arise, because every tile sampled the same image
+at whatever coordinate it was given.
+
+The fix is to hold the coordinate half a texel inside the tile, which is what
+`CLAMP_TO_EDGE` would do, taken from the texture's own size rather than needing a
+second sampler bound over the same images:
+
+    vec2 texels = vec2(textureSize(hdclaude_textures[slot], 0));
+    uv = clamp(uv, 0.5 / texels, 1.0 - 0.5 / texels);
+
+It costs a `textureSize` on the UDIM path and nothing anywhere else.
+
+**What it does not do is filter across tiles.** A tile's neighbour's texels are
+not in it, so a set whose tiles are meant to be continuous still shows a
+texel-scale discontinuity at the join. Removing that needs border texels
+replicated from the neighbour at load time, which is a different piece of work
+and is recorded rather than guessed at.
+
+**The gate took three attempts, and the first two are the interesting part.**
+
+The first asserted a three-pixel window near the seam against the tile's middle,
+and failed with the fix in place. It was measuring the wrong thing: the quad puts
+about twenty pixels across a tile, so a window wide enough to average noise is
+also wide enough to reach into the *next* tile -- an effect that has nothing to
+do with wrapping and would fail whether the seam were fixed or not.
+
+The second used single pixels and compared the seam against the tile's middle. It
+discriminated, but by 0.89 to a threshold of 0.90. A gate whose failing and
+passing cases are a hundredth apart is a coin toss, and the reason was
+illumination: the quad is lit, so two points two thirds of a tile apart differ by
+more than the artefact does.
+
+The third compares two points *one texel apart* -- 0.875, the last texel's
+centre, against 0.96, past it -- which a clamp resolves to the same texel and a
+wrap does not, and between which the falloff is negligible. It reads 0.546
+against 0.528 with the fix and 0.352 against 0.525 without: a ratio of 1.03
+against 0.67, either side of a 0.85 threshold.
+
+The tiles are four texels across, deliberately coarse. The band a wrap corrupts
+is one texel wide, so at this frame's resolution an eight-texel tile puts the
+whole artefact inside two pixels and a finer one hides it completely.
+
+And it was run with the fix reverted, twice, because a gate nobody has seen fail
+is not a gate -- which is the rule that exists here because hdCodex's validation
+gate passed vacuously for want of a layer.
+
+**And one clue for the determinism hunt, from the gallery run that followed.**
+The New Zealand height map moved against its committed baseline by an RMS of
+**3.72045e-05** -- the same figure, to every digit it prints, that it produced in
+the run which started that investigation, under a different build. Two different
+binaries do not agree to six digits by chance.
+
+So the effect is not a spread of random outcomes. It looks bimodal: the renderer
+produces one of two results for that scene, and the other one differs from the
+baseline by exactly that. A race with two stable outcomes -- an ordering that
+resolves one way or the other -- fits, where accumulated floating-point noise
+does not.
+
+That is worth more than another elimination, because it says what to look for: a
+binary choice made once per process, not a drift. The gallery baselines from this
+run were therefore not adopted. The seam fix does change generated code and could
+legitimately move a scene by this much, and while the two cannot be told apart
+there is nothing to be gained by writing either of them down.

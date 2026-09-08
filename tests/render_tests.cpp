@@ -671,20 +671,34 @@ CompiledMaterial MakeUdimMaterial(mx::DocumentPtr libraries,
     return compiled;
 }
 
-/// A solid image of one colour, for a UDIM tile.
-TextureImage MakeSolidTexture(std::uint8_t r, std::uint8_t g, std::uint8_t b,
-                              const char* name)
+/// One colour, with its first texel column black.
+///
+/// Solid would be the obvious thing and would test nothing at a seam: a filter
+/// that wraps off the right edge of a solid tile comes back with the same
+/// colour it left. The dark column is what makes a wrap visible -- a fetch near
+/// the *right* edge that reaches past it returns a blend with this column
+/// instead of the tile's colour, and the difference is half the brightness.
+TextureImage MakeTileTexture(std::uint8_t r, std::uint8_t g, std::uint8_t b,
+                             const char* name)
 {
-    constexpr std::uint32_t kSize = 8;
+    // Four texels across, deliberately coarse. The band a wrap corrupts is one
+    // texel wide, and at this frame's resolution a tile is about twenty pixels,
+    // so an eight-texel tile puts the whole artefact inside two pixels and a
+    // finer one hides it completely. Four texels makes it measurable.
+    constexpr std::uint32_t kSize = 4;
     TextureImage image;
     image.width = kSize;
     image.height = kSize;
     image.debugName = name;
     image.texels.assign(static_cast<std::size_t>(kSize) * kSize * 4, 255);
-    for (std::size_t i = 0; i < image.texels.size(); i += 4) {
-        image.texels[i + 0] = r;
-        image.texels[i + 1] = g;
-        image.texels[i + 2] = b;
+    for (std::uint32_t y = 0; y < kSize; ++y) {
+        for (std::uint32_t x = 0; x < kSize; ++x) {
+            const std::size_t i = (static_cast<std::size_t>(y) * kSize + x) * 4;
+            const bool dark = (x == 0);
+            image.texels[i + 0] = dark ? 0 : r;
+            image.texels[i + 1] = dark ? 0 : g;
+            image.texels[i + 2] = dark ? 0 : b;
+        }
     }
     return image;
 }
@@ -2880,9 +2894,9 @@ int main()
             Scene scene;
             scene.prototypes.push_back(quad);
             scene.instances.push_back({0, Transform3x4{}, 0, true});
-            scene.textures.push_back(MakeSolidTexture(255, 0, 0, "tile.1001"));
-            scene.textures.push_back(MakeSolidTexture(0, 255, 0, "tile.1002"));
-            scene.textures.push_back(MakeSolidTexture(0, 0, 255, "tile.1012"));
+            scene.textures.push_back(MakeTileTexture(255, 0, 0, "tile.1001"));
+            scene.textures.push_back(MakeTileTexture(0, 255, 0, "tile.1002"));
+            scene.textures.push_back(MakeTileTexture(0, 0, 255, "tile.1012"));
             tracer.SetScene(scene, {udimMaterial});
 
             const std::vector<float> image =
@@ -2911,6 +2925,50 @@ int main()
             std::printf("  udim absent tiles: 1003 %.3f, 1011 %.3f, 1013 %.3f "
                         "(expected 0)\n",
                         Luminance(t1003), Luminance(t1011), Luminance(t1013));
+
+            // --- The seam ----------------------------------------------
+            //
+            // A tile is a whole image and the shared sampler addresses REPEAT,
+            // so a bilinear fetch just inside a tile's right edge reaches past
+            // it and comes back with the tile's *left* edge -- a one-texel band
+            // of the wrong thing down every boundary where two tiles meet. It
+            // is invisible on a solid tile, which is why these tiles have a
+            // dark first column, and invisible at a tile's centre, which is why
+            // every assertion above would have passed with it there.
+            //
+            // Sampled at 0.97 of the way across tile 1001, between the last
+            // texel's centre at 0.9375 and the edge, which is where a wrap
+            // blends and a clamp does not. Correct is the tile's full colour;
+            // wrapped is that blended with the dark column, about half of it.
+            // Single pixels, not a window. The quad puts about twenty pixels
+            // across a tile, so any window wide enough to average noise is also
+            // wide enough to reach into the next tile -- which is a different
+            // effect, and one that would fail this whether the seam were fixed
+            // or not.
+            const auto pixelAtU = [&](float u) {
+                return At(image, 0.25f + 0.5f * (u / 3.0f), 0.5f);
+            };
+            // Two points a texel apart, which a clamp resolves to the same
+            // texel and a wrap does not: 0.875 is the last texel's centre,
+            // and 0.96 is past it, in the only band where the two differ.
+            //
+            // Compared against each other rather than against the tile's
+            // middle, because they are close enough that the quad's own
+            // illumination falloff between them is negligible where between
+            // here and the middle it is not. Against the middle the failing
+            // margin was 0.89 to a 0.9 threshold, which is a coin toss
+            // rather than a gate.
+            const Pixel seam = pixelAtU(0.96f);
+            const Pixel edge = pixelAtU(0.875f);
+            const Pixel middle = pixelAtU(0.5f);
+            std::printf("  udim seam: %.3f past the last texel against %.3f "
+                        "at it (%.3f at the tile's middle)\n",
+                        seam.r, edge.r, middle.r);
+            CHECK(edge.r > 0.05f);
+            // Wrapping blends the dark first column into the outer sample
+            // and costs about a third of it; clamping to the edge texel
+            // costs nothing, so the two read the same.
+            CHECK(seam.r > edge.r * 0.85f);
 
             // Each tile that exists shows its own colour, and no other.
             CHECK(t1001.r > t1001.g && t1001.r > t1001.b);
