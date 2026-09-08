@@ -54,6 +54,20 @@ class HDCLAUDE_API HdClaudeRenderPass final : public HdRenderPass {
     std::uint32_t _targetSamples = 0;
     bool _converged = false;
 
+    /// Diagnostic: how many more times to render the finished image over
+    /// again, and what the finished ones hashed to. Set from
+    /// HDCLAUDE_REPEAT_RENDERS; zero, and none of this runs.
+    ///
+    /// It exists because in-process reproducibility could not otherwise be
+    /// tested at the sample count where it matters. A static stage rendered at
+    /// several time codes does not test it: nothing has changed, so the
+    /// accumulation is correctly not reset and the later frames re-emit the
+    /// film the first one produced, fifty milliseconds apart. Only an explicit
+    /// instruction to render it again renders it again.
+    std::uint32_t _repeatsRemaining = 0;
+    bool _repeatsStarted = false;
+    bool _repeatsAsked = false;
+
     /// The scene revision actually uploaded to the path tracer. Advanced only
     /// after a successful upload, so a failed one is retried.
     std::uint64_t _uploadedRevision = 0;

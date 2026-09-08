@@ -277,6 +277,17 @@ class PathTracer {
     /// disagreeing ray hash puts it upstream of traversal.
     std::uint64_t RayHash() const { return _rayHash; }
 
+    /// Start the counters and both hashes over. Called between two renders of
+    /// the same image in one process, so each is described by its own numbers
+    /// rather than by the sum of itself and everything before it.
+    void ResetCounters()
+    {
+        _tracedRayCount = 0;
+        _shadowRayCount = 0;
+        _hitHash = 0;
+        _rayHash = 0;
+    }
+
   private:
     /// The invalidation decision, made once and in one place.
     ///

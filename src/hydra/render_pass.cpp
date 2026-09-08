@@ -7,10 +7,12 @@
 #include "trace.h"
 
 #include "pxr/base/tf/diagnostic.h"
+#include "pxr/base/tf/getenv.h"
 #include "pxr/imaging/hd/renderPassState.h"
 #include "pxr/imaging/hd/tokens.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -438,7 +440,52 @@ void HdClaudeRenderPass::_Execute(
 
     _renderDelegate->RecordFrameTiming(milliseconds, _samplesCompleted);
 
-    markConverged(_samplesCompleted >= _targetSamples);
+    // The repeat diagnostic, decided here because this is where the image is
+    // declared finished. It cannot live on the early return above: a host
+    // stops calling Execute the moment IsConverged answers true, so a hook
+    // that waits to be called again after convergence is never reached.
+    //
+    // What it buys is the only honest test of in-process reproducibility at
+    // the sample count where it matters. Rendering a static stage at several
+    // time codes does not test it -- nothing changes, so the accumulation is
+    // correctly not reset and the later frames re-emit the first film
+    // milliseconds apart -- and every other route to a second render also
+    // rebuilds the acceleration structure, recompiles the shaders, or starts
+    // another process.
+    const bool finished = _samplesCompleted >= _targetSamples;
+    if (finished) {
+        if (!_repeatsStarted) {
+            _repeatsStarted = true;
+            const int repeats = TfGetenvInt("HDCLAUDE_REPEAT_RENDERS", 0);
+            _repeatsAsked = repeats > 0;
+            _repeatsRemaining =
+                _repeatsAsked ? static_cast<std::uint32_t>(repeats) : 0u;
+        }
+        if (_repeatsAsked) {
+            // Every render is reported, the last one included: reporting
+            // only those with a repeat still to come would leave the final
+            // render out of the comparison this exists for. To stderr rather
+            // than through Tf, because a status message is silent unless
+            // something installs a delegate to print it.
+            std::fprintf(
+                stderr,
+                "hdClaude repeat: tracedRays %llu shadowRays %llu hitHash "
+                "%llu rayHash %llu\n",
+                static_cast<unsigned long long>(tracer->TracedRays()),
+                static_cast<unsigned long long>(tracer->ShadowRays()),
+                static_cast<unsigned long long>(tracer->HitHash()),
+                static_cast<unsigned long long>(tracer->RayHash()));
+            if (_repeatsRemaining > 0) {
+                --_repeatsRemaining;
+                _samplesCompleted = 0;
+                tracer->ResetCounters();
+                markConverged(false);
+                return;
+            }
+        }
+    }
+
+    markConverged(finished);
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

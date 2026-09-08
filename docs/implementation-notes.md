@@ -5325,3 +5325,112 @@ them cannot be any of the three, and would place the fault outside the
 renderer's control entirely. The seed is `hdclaude_seed(index, sampleIndex, 0)`
 and carries no time code, so a static stage rendered at four frames must produce
 four identical films; that is the test, and it is now the one that matters.
+
+---
+
+## 2026-09-09 -- A vacuous test, retracted, and the effect stops reproducing
+
+**Retracted: the in-process test at gallery settings measured nothing.** The
+plan was sound -- four renders of a static stage in one process, sharing an
+acceleration structure, a shader compilation and a device context, so a
+difference between them could not be any of the three. `usdrecord --frames 1:4`
+duly reported four time codes and four identical films at rms 0, and that was
+read as four billion rays with no deviation and as evidence against a transient
+hardware fault.
+
+The four files were written **fifty-four milliseconds apart**. A thousand-sample
+render of that scene takes minutes. Frames two, three and four were never
+rendered: nothing about the stage, the camera or the settings changed, so
+`InvalidateFor` correctly declined to reset the accumulation and the pass
+re-emitted the film it already had. The test measured the invalidation logic
+working exactly as designed, and the reported counters -- `tracedRays`
+993843050, identical to a single render -- said so plainly enough to have been
+noticed before the conclusion was drawn.
+
+Nothing has yet been established about in-process behaviour at the sample count
+where the effect appears, and the transient reading is not ruled out. Making
+that test real needs the render forced to repeat, which is a diagnostic hook
+beside `HDCLAUDE_POISON_PATH_STATE` rather than a scene trick: any change to the
+stage that would invalidate the accumulation also changes the image.
+
+**And the effect has stopped reproducing.** The eight-bounce cross-process test
+that this morning gave three different films with three different ray counts now
+gives three identical ones -- rms 0, `tracedRays` 993843050 in all three, and
+both hashes equal. Counting the one-bounce batches, **nine consecutive processes
+are clean** since the ray hash was added, having been dirty in every batch
+before it.
+
+Two readings fit and watching cannot separate them. Either the instrument masks
+what it measures -- a global `atomicAdd` from every ray is a serialisation point
+and could easily move whatever timing this depends on -- or the fault is simply
+intermittent and this is a quiet window. The A/B that decides it is removing the
+per-ray atomic while keeping the arithmetic that feeds it, and running the same
+three processes again: if they go dirty, the instrument was masking; if they
+stay clean, the phenomenon is intermittent at the scale of hours and every
+earlier "eliminated cause" was tested against something that may not have been
+present at the time.
+
+That second possibility is the uncomfortable one, and it is worth saying
+plainly: a long list of causes has been eliminated by running a test once and
+seeing it come out clean. If the effect can be absent for nine consecutive
+processes, a single clean run never eliminated anything.
+
+---
+
+## 2026-09-09 -- The A/B says the instrument was innocent, and a real repeat test
+
+The A/B settles the first of the two readings and rules it out. With the per-ray
+`atomicAdd` removed and the arithmetic that feeds it kept, three more processes
+render the Open Chess Set **identically** -- rms 0, `tracedRays` 993843050 and
+the same hit hash in all three. The instrument was not masking anything.
+
+So the second reading stands: **the effect is intermittent at the scale of
+hours.** It reproduced in every batch this morning, across two binaries, and has
+now been absent for twelve consecutive processes across two more. Nothing in the
+code distinguishes the quiet period from the noisy one; the A/B was run
+specifically to find such a thing and found none.
+
+That is the uncomfortable conclusion, and it is worth stating without softening:
+**a long list of causes was eliminated by running a test once and seeing it come
+out clean.** The scene store's ordering, the generated MaterialX, the sort's
+scatter, the progressive machinery, uninitialised path state -- each was struck
+off on a single clean run. If the effect can be absent for twelve processes in a
+row, a single clean run never eliminated anything. Those causes are not
+reinstated, but they are no longer *closed*, and the poison test in particular
+proved only that poisoning did not make the renderer irreproducible on the day
+it was run.
+
+What can be trusted from here is what a **committed** measurement catches. Both
+hashes now reach the `.stats` file that each gallery scene carries beside its
+baseline, so the next occurrence shows up as a diff on a tracked file rather
+than as a bespoke hunt started from a suspicion. That is the durable outcome of
+the day: the committed `chess_board.stats` reads `tracedRays 993842904`, which is
+a *fourth* distinct value and was written by a run that had the fault, and
+nothing at the time noticed.
+
+**A real in-process repeat test now exists.** `HDCLAUDE_REPEAT_RENDERS=n`
+renders the finished image n more times inside one process, reporting each
+render's ray counts and both hashes to stderr. The hook sits where convergence
+is declared, which is the only place it can: the natural-looking home is the
+early return that fires when a call finds the image already complete, and a host
+stops calling `Execute` the moment `IsConverged` answers true, so that hook is
+never reached. The first attempt put it there and printed nothing.
+
+It is the only honest way to ask the question. Every other route to a second
+render of the same image also rebuilds the acceleration structure, recompiles
+the shaders, or starts another process -- which is precisely what the test is
+trying to hold fixed.
+
+At gallery settings the Open Chess Set rendered four times in one process gives
+four identical results:
+
+    tracedRays 993843050  shadowRays 192307739
+    hitHash 6942637114454757797  rayHash 10775195811620185525   (four times)
+
+Each of those is a real render -- the counters are reset between them and
+re-accumulate to the same figure, which is what distinguishes this from the
+retracted test. What it does **not** do is discriminate, because it was run
+inside the quiet window where the cross-process comparison is also clean. Its
+value is entirely prospective: when the fault returns, this is the test that
+separates a per-process cause from a transient one, and it can be run in a
+minute instead of built from scratch under suspicion.
