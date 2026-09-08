@@ -81,11 +81,18 @@ void Connect(mx::NodePtr node, const std::string& input, mx::NodePtr source)
 }
 
 /// Generate and compile the one renderable element of `doc`.
-CompiledMaterial CompileMaterial(mx::DocumentPtr doc, const GlslCompiler& compiler,
-                                 const std::string& shadeKernel,
-                                 const std::string& name)
+CompiledMaterial CompileMaterial(
+    mx::DocumentPtr doc, const GlslCompiler& compiler,
+    const std::string& shadeKernel, const std::string& name,
+    const std::map<std::string, std::vector<int>>& udimTiles = {})
 {
     mx::ShaderGeneratorPtr generator = PathTracerShaderGenerator::create();
+    // Which tiles a UDIM set has is the caller's to know -- in the delegate it
+    // comes from the asset resolver -- and it has to be told before generation,
+    // because it decides how many array slots the set takes.
+    if (auto* pt = dynamic_cast<PathTracerShaderGenerator*>(generator.get())) {
+        pt->SetUdimTiles(udimTiles);
+    }
     mx::GenContext genContext(generator);
     genContext.registerSourceCodeSearchPath(DefaultMaterialXSourceSearchPath());
     genContext.getOptions().shaderInterfaceType = mx::SHADER_INTERFACE_REDUCED;
@@ -611,6 +618,75 @@ CompiledMaterial MakeImageMaterial(mx::DocumentPtr libraries,
     // One image, at pool slot 0.
     compiled.textureSlots = {0};
     return compiled;
+}
+
+/// A material whose one image is a UDIM set of three tiles.
+///
+/// The tiles are 1001, 1002 and 1012: right of the first and above it, with
+/// 1011 deliberately absent so the set is neither contiguous nor a full
+/// rectangle. Real sets are not: ALab's turntable ships 1001 to 1007 and then
+/// 1013, and a lookup that assumed `first + offset` would pass on a contiguous
+/// set and fail on that one.
+CompiledMaterial MakeUdimMaterial(mx::DocumentPtr libraries,
+                                  const GlslCompiler& compiler,
+                                  const std::string& shadeKernel,
+                                  const std::string& name)
+{
+    mx::DocumentPtr doc = mx::createDocument();
+    doc->importLibrary(libraries);
+
+    mx::NodePtr uv = AddNode(doc, "texcoord", "uv", "vector2");
+
+    mx::NodePtr image = doc->addNode("image", "tiles", "color3");
+    image->setNodeDefString("ND_image_color3");
+    if (mx::InputPtr file = image->addInput("file", "filename")) {
+        file->setValueString("tiles.<UDIM>.png");
+    }
+    if (mx::InputPtr texcoord = image->addInput("texcoord", "vector2")) {
+        texcoord->setConnectedNode(uv);
+    }
+    // The value a sample outside the set reads. Distinct from every tile, so
+    // the test can tell "no tile there" from "the wrong tile".
+    if (mx::InputPtr fallback = image->addInput("default", "color3")) {
+        fallback->setValueString("0.0, 0.0, 0.0");
+    }
+
+    mx::NodePtr bsdf = AddNode(doc, "oren_nayar_diffuse_bsdf", "d", "BSDF");
+    SetValue(bsdf, "weight", 1.0f);
+    SetValue(bsdf, "roughness", 0.0f);
+    Connect(bsdf, "color", image);
+
+    mx::NodePtr surface = AddNode(doc, "surface", "s", "surfaceshader");
+    Connect(surface, "bsdf", bsdf);
+    SetValue(surface, "opacity", 1.0f);
+    mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+    Connect(material, "surfaceshader", surface);
+
+    CompiledMaterial compiled = CompileMaterial(
+        doc, compiler, shadeKernel, name,
+        {{"tiles_file", std::vector<int>{1001, 1002, 1012}}});
+    // Three tiles, at pool slots 0, 1 and 2, in ascending tile order -- which
+    // is the order the generator assigned them.
+    compiled.textureSlots = {0, 1, 2};
+    return compiled;
+}
+
+/// A solid image of one colour, for a UDIM tile.
+TextureImage MakeSolidTexture(std::uint8_t r, std::uint8_t g, std::uint8_t b,
+                              const char* name)
+{
+    constexpr std::uint32_t kSize = 8;
+    TextureImage image;
+    image.width = kSize;
+    image.height = kSize;
+    image.debugName = name;
+    image.texels.assign(static_cast<std::size_t>(kSize) * kSize * 4, 255);
+    for (std::size_t i = 0; i < image.texels.size(); i += 4) {
+        image.texels[i + 0] = r;
+        image.texels[i + 1] = g;
+        image.texels[i + 2] = b;
+    }
+    return image;
 }
 
 /// An image in four solid quadrants, in the renderer's own row order: row 0 is
@@ -2768,6 +2844,85 @@ int main()
             CHECK(topLeft.b > topLeft.r && topLeft.b > topLeft.g);
             // White at the fourth corner: no channel dominates.
             CHECK_NEAR(topRight.r / std::max(topRight.g, 1.0e-6f), 1.0, 0.2);
+        }
+
+        // --- A UDIM set is one image per tile, chosen per sample --------------
+        //
+        // `<UDIM>` names a 10x10 grid of images over UV space, tile
+        // `1001 + floor(u) + 10 * floor(v)`. Until 2026-09-08 hdClaude expanded
+        // the token to the set's first existing tile and shaded every tile with
+        // it, which is right for the many assets that ship one tile and wrong
+        // for every asset that does not: ALab's `electronics_turntable01` has
+        // nineteen of its twenty-two meshes on a tile other than 1001, so 53.5
+        // per cent of its surface carried the wrong image.
+        //
+        // One quad, three units wide in u and two in v, so it spans tiles 1001,
+        // 1002 and 1003 along the bottom and 1011, 1012 and 1013 along the top.
+        // The set ships only 1001, 1002 and 1012 -- deliberately neither
+        // contiguous nor a rectangle, because a lookup that assumed
+        // `first + offset` would pass on a contiguous set and fail on ALab's,
+        // which jumps from 1007 to 1013.
+        //
+        // Each tile is a solid primary, so the assertion is which colour lands
+        // where and needs no filtering argument. The three squares the set does
+        // not ship must read the image node's `default`, which is black here:
+        // an absent tile has no image, and reading a neighbour's would be the
+        // same class of mistake as reading tile 1001 for everything.
+        {
+            const CompiledMaterial udimMaterial = MakeUdimMaterial(
+                libraries, compiler, tracer.ShadeKernelSource(), "udim");
+            CHECK(!udimMaterial.spirv.empty());
+
+            MeshPrototype quad = MakeQuad();
+            // The quad is 2x2 in object space; three tiles across and two up.
+            quad.uvs = {0, 0, 3, 0, 3, 2, 0, 2};
+
+            Scene scene;
+            scene.prototypes.push_back(quad);
+            scene.instances.push_back({0, Transform3x4{}, 0, true});
+            scene.textures.push_back(MakeSolidTexture(255, 0, 0, "tile.1001"));
+            scene.textures.push_back(MakeSolidTexture(0, 255, 0, "tile.1002"));
+            scene.textures.push_back(MakeSolidTexture(0, 0, 255, "tile.1012"));
+            tracer.SetScene(scene, {udimMaterial});
+
+            const std::vector<float> image =
+                tracer.Render(kWidth, kHeight, LookDownZ(4.0f), settings);
+            SavePpm(image, "texture-udim");
+
+            // The quad covers the middle half of the frame in both axes, so a
+            // point at (fu, fv) in UV space is at 0.25 + 0.5 * f of the image.
+            // Sampled at the middle of each tile.
+            const auto atTile = [&](float u, float v) {
+                return Window(image, 0.25f + 0.5f * ((u + 0.5f) / 3.0f),
+                              0.25f + 0.5f * ((v + 0.5f) / 2.0f), 5);
+            };
+
+            const Pixel t1001 = atTile(0.0f, 0.0f);
+            const Pixel t1002 = atTile(1.0f, 0.0f);
+            const Pixel t1003 = atTile(2.0f, 0.0f);
+            const Pixel t1011 = atTile(0.0f, 1.0f);
+            const Pixel t1012 = atTile(1.0f, 1.0f);
+            const Pixel t1013 = atTile(2.0f, 1.0f);
+
+            std::printf("  udim 1001 %.2f %.2f %.2f, 1002 %.2f %.2f %.2f, "
+                        "1012 %.2f %.2f %.2f\n",
+                        t1001.r, t1001.g, t1001.b, t1002.r, t1002.g, t1002.b,
+                        t1012.r, t1012.g, t1012.b);
+            std::printf("  udim absent tiles: 1003 %.3f, 1011 %.3f, 1013 %.3f "
+                        "(expected 0)\n",
+                        Luminance(t1003), Luminance(t1011), Luminance(t1013));
+
+            // Each tile that exists shows its own colour, and no other.
+            CHECK(t1001.r > t1001.g && t1001.r > t1001.b);
+            CHECK(t1002.g > t1002.r && t1002.g > t1002.b);
+            CHECK(t1012.b > t1012.r && t1012.b > t1012.g);
+
+            // The three the set does not ship read the node's default. This is
+            // the half of the claim that the old behaviour would fail loudest:
+            // with every tile collapsed to 1001 these would be red.
+            CHECK(Luminance(t1003) < 0.02f);
+            CHECK(Luminance(t1011) < 0.02f);
+            CHECK(Luminance(t1013) < 0.02f);
         }
 
         // --- An instance transform is the same as baking it ------------------

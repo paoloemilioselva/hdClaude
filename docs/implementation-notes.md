@@ -4392,3 +4392,114 @@ attribute, so it is read as scene-linear like every other EXR in this gallery,
 including `ground.ACEScg.exr` and `sss_bars.ACEScg.exr` which were already in
 use. Honouring ACEScg primaries would need colour management this renderer does
 not have, and this change neither introduces that gap nor widens it.
+
+---
+
+## 2026-09-08 -- UDIM, and the tile everything was being shaded with
+
+`<UDIM>` is a token USD leaves in a texture path for the renderer to expand into
+one image per tile, chosen by which unit square of UV space a sample lands in:
+tile `1001 + floor(u) + 10 * floor(v)`. hdClaude expanded it to the set's first
+*existing* tile and shaded every tile with that one image.
+
+For the many assets that ship a single tile that is right, and it stayed right
+for the whole gallery, which is why it survived. ALab's `electronics_turntable01`
+is the case it is wrong for, and it is wrong on a scale worth writing down:
+
+    mainBody_M_geo        [1001]      2 of 22 meshes are on tile 1001
+    tunrtableTop_M_geo    [1002]
+    screwsBody_M_geo      [1003]      ... and 19 are not
+    interiorMech_M_geo    [1004]
+    turntableIcon_M_geo   [1005]
+    rubberFeet_M_geo      [1006]
+    disc_M_geo            [1007]
+    discPin_M_geo         [1002, 1013]
+
+    UV samples: 1001 46.5%, 1003 33.1%, 1007 9.8%, 1002 6.7%, rest 4%
+    -> 53.5 per cent of the asset was shaded with tile 1001's image
+
+Its wooden body looked right and everything above it -- platter, tonearm,
+controls, disc -- was smeared with pieces of the body's wood-and-label map.
+
+**Selection has to be per sample.** `discPin_M_geo` straddles tiles 1002 and 1013
+by itself, so choosing a tile per mesh, or per material, would still be wrong on
+that one prim. The tile comes from the texture coordinate of the sample being
+shaded and from nothing else.
+
+**Which meant a filename could no longer be a sampler.** MaterialX's GLSL syntax
+makes `filename` a `sampler2D`, and hdClaude's generator turned each one into an
+index in a shared array with `#define <name> hdclaude_textures[i]`, which let the
+stock `mx_image_*` bodies work unchanged -- `texture(name, uv)` still expanded to
+a sampler expression. A sampler carries one image and cannot express a choice
+among many, so `filename` is now a small struct instead:
+
+    struct HdclaudeTexture {
+        int slot;        // first index into hdclaude_textures
+        int tileOffset;  // into hdclaude_udim_tiles
+        int tileCount;   // 1 when the image is not a UDIM set
+    };
+
+A set takes one array slot per tile, contiguously and in ascending tile order,
+and the material declares a flat `hdclaude_udim_tiles` table that the handle
+indexes into. One table for the whole material rather than one per image,
+because a handle can carry an offset and cannot carry an array.
+
+It is registered as a **scalar** type syntax and not an aggregate one, which is
+not a detail. An aggregate type is one MaterialX will *construct*: it emitted
+`HdclaudeTexture(orientation_file)` where the stock sampler type emits
+`orientation_file`, and a one-argument constructor for a three-field struct does
+not compile. A filename is passed along, never built.
+
+**The six `image` nodes are overridden**, in a new `mtlx/stdlib/genglsl_pt`
+beside the pbrlib set, for the body alone. Unlike the pbrlib overrides this set
+is not all-or-nothing -- no stdlib GLSL file includes a header hdClaude replaces
+-- but it is complete anyway, because a `HdclaudeTexture` handed to a `sampler2D`
+parameter does not compile, which is the right way to find out.
+
+`HwImageNode` had to be registered under the genglsl_pt implementation names,
+and that is not a formality either. It *adds* the `uv_scale` and `uv_offset`
+inputs that the `image` nodedef does not declare and the GLSL body takes, so the
+plain source-code node MaterialX falls back to emits an eleven-argument call
+against a thirteen-parameter function. The symptom is a compile error naming
+neither.
+
+**The tiles are asked for, not assumed.** The material compiler resolves the set
+before generation -- the tile count decides how many slots the set takes, so it
+has to be known first -- by asking the asset resolver for each of the hundred
+grid positions. A set is not required to be contiguous or to start at 1001: the
+turntable jumps from 1007 to 1013, and the OpenPBR playground's tools start at
+1003, which is what made hard-coding 1001 look like a missing TIFF decoder back
+in June.
+
+**A sample on a tile the set does not ship reads the node's `default`.** Not the
+nearest tile, not the first one. There is no image there, and substituting one is
+the same class of mistake as the behaviour being replaced.
+
+**The loader now refuses an unexpanded token** rather than collapsing it. Tile
+selection lives in the compiler and the shader, so a `<UDIM>` reaching the loader
+means the expansion did not happen, and guessing would hide it. A set of one tile
+is substituted too, so no legitimate path leaves a token behind.
+
+**The gate is a quad that spans six tiles and a set that ships three.** Tiles
+1001, 1002 and 1012 are solid red, green and blue; 1003, 1011 and 1013 are
+absent. It reads
+
+    udim 1001 0.58 -0.00 0.00, 1002 -0.04 0.62 0.01, 1012 -0.00 -0.00 0.71
+    udim absent tiles: 1003 0.000, 1011 0.000, 1013 0.000 (expected 0)
+
+Under the old behaviour all six squares would have been red. The set is
+deliberately neither contiguous nor a rectangle, because a lookup that assumed
+`first + offset` would pass on a contiguous set and fail on ALab's.
+
+**What moved.** The OpenPBR Playground by an RMS of 0.0322 over 32 per cent of
+its pixels, which is 85 UDIM textures each finding the tile it belongs to: the
+rolled mat on the shelf goes from grey to teal, the toy beside it gains its
+colour, the jar gains its label, the books on the shelf separate. The chess set
+moved by an RMS of 0.00034 with a worst pixel of 0.34 over eight pixels in a
+million, and Collective Project 001 by 0.00022 -- neither has a UDIM set, and
+both are a firefly landing differently because the generated code changed shape.
+Everything else is byte identical.
+
+ALab is not in the gallery: this asset is one of many in a layout that will be
+added later, and it was rendered here to find the defect rather than to record
+it.

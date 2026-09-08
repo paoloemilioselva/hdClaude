@@ -12,6 +12,7 @@
 #include <MaterialXFormat/XmlIo.h>
 
 #include "pxr/base/gf/vec3f.h"
+#include "pxr/usd/ar/resolver.h"
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/tf/getenv.h"
 #include "pxr/imaging/hd/tokens.h"
@@ -150,6 +151,49 @@ HdClaudeTextureColorSpace ImageColorSpace(const mx::NodePtr& node,
         return HdClaudeTextureColorSpace::Auto;
     }
     return HdClaudeTextureColorSpace::Raw;
+}
+
+/// The UDIM tiles a `<UDIM>` path actually has, in ascending order.
+///
+/// Asked of the asset resolver rather than assumed, over the 10x10 grid UDIM
+/// defines. A set is not required to be contiguous or to start at 1001 -- ALab's
+/// turntable ships 1001 to 1007 and then 1013, and the OpenPBR playground's
+/// tools start at 1003 -- so the only way to know is to ask for each of the
+/// hundred.
+///
+/// Returns empty for a path with no `<UDIM>` token, which is every ordinary
+/// texture, and for a set whose every tile is missing; the caller then treats
+/// the path as a single image and the loader reports it if it cannot be read.
+std::vector<int> ResolveUdimTiles(const std::string& assetPath)
+{
+    static const std::string kToken = "<UDIM>";
+    const std::size_t token = assetPath.find(kToken);
+    if (token == std::string::npos) {
+        return {};
+    }
+
+    std::vector<int> tiles;
+    for (int tile = 1001; tile <= 1100; ++tile) {
+        std::string candidate = assetPath;
+        candidate.replace(token, kToken.size(), std::to_string(tile));
+        if (ArGetResolver().Resolve(candidate)) {
+            tiles.push_back(tile);
+        }
+    }
+    return tiles;
+}
+
+/// One entry of `path` with `<UDIM>` replaced by `tile`.
+std::string SubstituteUdimTile(const std::string& path, int tile)
+{
+    static const std::string kToken = "<UDIM>";
+    const std::size_t token = path.find(kToken);
+    if (token == std::string::npos || tile <= 0) {
+        return path;
+    }
+    std::string substituted = path;
+    substituted.replace(token, kToken.size(), std::to_string(tile));
+    return substituted;
 }
 
 HdClaudeMaterialCompiler::TextureRequest ResolveTexturePath(
@@ -432,6 +476,62 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
         // Recorded in docs/roadmap.md rather than guessed at.
         context.getOptions().shaderInterfaceType = mx::SHADER_INTERFACE_REDUCED;
 
+        // Tiles per uniform, kept for the expansion below as well as for the
+        // generator: a set of one tile does not change the generated code but
+        // still has to have its token expanded before the loader sees it.
+        std::map<std::string, std::vector<int>> udimSubstitution;
+
+        // The tiles have to be known *before* generation, because a UDIM set
+        // takes one array slot per tile and the generated handle carries how
+        // many. Keyed by the uniform name MaterialX will build from the node
+        // and input names -- the same join `ResolveTexturePath` matches on, so
+        // the two cannot disagree about which image is which.
+        if (auto* ptGenerator =
+                dynamic_cast<hdclaude::PathTracerShaderGenerator*>(
+                    generator.get())) {
+            std::map<std::string, std::vector<int>> udim;
+            for (const mx::ElementPtr& element : document->traverseTree()) {
+                mx::NodePtr node = element ? element->asA<mx::Node>() : nullptr;
+                if (!node) {
+                    continue;
+                }
+                for (const mx::InputPtr& input : node->getInputs()) {
+                    if (input->getType() != "filename") {
+                        continue;
+                    }
+                    const std::string uniform =
+                        mx::createValidName(node->getName() + "_" +
+                                            input->getName());
+                    std::string path = input->getResolvedValueString();
+                    if (resolvedTextures) {
+                        const auto found = resolvedTextures->find(uniform);
+                        if (found != resolvedTextures->end() &&
+                            !found->second.empty()) {
+                            path = found->second;
+                        }
+                    }
+                    std::vector<int> tiles = ResolveUdimTiles(path);
+                    if (tiles.empty()) {
+                        continue;
+                    }
+                    HdClaudeTrace(
+                        "material %s: '%s' is a UDIM set of %zu tiles "
+                        "(%d..%d)",
+                        name.c_str(), uniform.c_str(), tiles.size(),
+                        tiles.front(), tiles.back());
+                    // A set of one tile is not a UDIM set to the shader -- it
+                    // is an ordinary image at one slot -- but its path still
+                    // carries the token and still has to be expanded, or the
+                    // loader would be left to guess which tile was meant.
+                    udimSubstitution[uniform] = tiles;
+                    if (tiles.size() >= 2) {
+                        udim[uniform] = std::move(tiles);
+                    }
+                }
+            }
+            ptGenerator->SetUdimTiles(std::move(udim));
+        }
+
         const std::vector<mx::TypedElementPtr> renderable =
             mx::findRenderableElements(document);
         if (renderable.empty()) {
@@ -482,7 +582,8 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
             if (auto* ptGenerator =
                     dynamic_cast<hdclaude::PathTracerShaderGenerator*>(
                         generator.get())) {
-                for (const std::string& uniform : ptGenerator->TextureOrder()) {
+                for (const auto& slot : ptGenerator->TextureOrder()) {
+                    const std::string& uniform = slot.uniform;
                     // The colour space always comes from the document --
                     // it is a property of the <image> node, which the network
                     // does not carry -- while the path prefers the network's
@@ -496,6 +597,18 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
                             request.path = found->second;
                         }
                     }
+                    // One slot per tile, in the order the generator assigned
+                    // them, which is ascending tile number. A set of one tile
+                    // has no tile on its slot and is substituted from the scan.
+                    int tile = slot.tile;
+                    if (tile == 0) {
+                        const auto single = udimSubstitution.find(uniform);
+                        if (single != udimSubstitution.end() &&
+                            single->second.size() == 1) {
+                            tile = single->second.front();
+                        }
+                    }
+                    request.path = SubstituteUdimTile(request.path, tile);
                     if (request.path.empty()) {
                         // An image node with no file at all. That is legal and
                         // common -- an asset authors the node and leaves the

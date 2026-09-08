@@ -253,40 +253,31 @@ bool HdClaudeLoadTexture(const std::string& assetPath,
         return false;
     }
 
-    // A UDIM set, reduced to its first *existing* tile.
+    // An unexpanded UDIM token is a defect, not something to guess at.
     //
     // `<UDIM>` is a token USD leaves in the path for the renderer to expand
     // into one texture per tile, selected by which unit square of UV space a
-    // sample lands in. hdClaude has no tile selection yet, so it shades every
-    // tile with one of them -- wrong for a multi-tile asset, right for the
-    // many that ship one, and far better than the alternative: an unexpanded
-    // token opens nothing at all.
+    // sample lands in. That selection lives in the material compiler and the
+    // generated shader now (docs/implementation-notes.md, 2026-09-08), which
+    // resolve the set's tiles before generation and hand this loader one
+    // concrete path per tile. So a token reaching here means the expansion did
+    // not happen, and the honest answer is to say so.
     //
-    // Which tile is found by asking, not assumed. 1001 is the first index of
-    // the grid and not necessarily the first index an asset uses: the OpenPBR
-    // playground's tools are authored on tile 1003, and hard-coding 1001 left
-    // twenty-one of its textures unopened while looking exactly like a missing
-    // TIFF decoder.
-    std::string path = assetPath;
-    const std::string udim = "<UDIM>";
-    const std::size_t token = path.find(udim);
-    if (token != std::string::npos) {
-        // The 10x10 grid UDIM defines, in order.
-        for (int tile = 1001; tile <= 1100; ++tile) {
-            std::string candidate = path;
-            candidate.replace(token, udim.size(), std::to_string(tile));
-            if (ArGetResolver().Resolve(candidate)) {
-                path = candidate;
-                break;
-            }
+    // It used to collapse the set to its first existing tile and shade every
+    // tile with it -- right for the many assets that ship one, and wrong for
+    // every asset that does not. ALab's `electronics_turntable01` has nineteen
+    // of its twenty-two meshes on a tile other than 1001, so better than half
+    // its surface carried the wrong image, and nothing said a word.
+    if (assetPath.find("<UDIM>") != std::string::npos) {
+        if (error) {
+            *error = "'" + assetPath +
+                     "' still carries an unexpanded <UDIM> token; its tiles "
+                     "should have been resolved before the image was loaded";
         }
-        if (path.find(udim) != std::string::npos) {
-            if (error) {
-                *error = "no tile of the UDIM set '" + assetPath + "' exists";
-            }
-            return false;
-        }
+        return false;
     }
+
+    std::string path = assetPath;
 
     // Resolve through Ar so a path relative to a layer, or inside a package,
     // is found the same way every other USD consumer finds it.

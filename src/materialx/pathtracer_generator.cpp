@@ -2,6 +2,7 @@
 
 #include <MaterialXFormat/Util.h>
 #include <MaterialXGenShader/Shader.h>
+#include <MaterialXGenShader/Nodes/HwImageNode.h>
 #include <MaterialXGenShader/ShaderGraph.h>
 #include <MaterialXGenShader/ShaderStage.h>
 
@@ -85,6 +86,40 @@ PathTracerSyntax::PathTracerSyntax(TypeSystemPtr typeSystem) : VkSyntax(typeSyst
                        std::make_shared<AggregateTypeSyntax>(
                            this, "BSDF", kBsdfDefault, EMPTY_STRING,
                            EMPTY_STRING, kBsdfDefinition));
+
+    // A filename is a handle, not a sampler.
+    //
+    // MaterialX's GLSL syntax makes `filename` a `sampler2D`, which can carry
+    // exactly one image. A UDIM set is many images behind one `<image>` node,
+    // and which of them a sample reads is decided from that sample's own
+    // texture coordinate -- so the node needs the whole set, and a sampler
+    // cannot express it. The handle carries the set's first index into the
+    // shared texture array and where its tile numbers live in the table the
+    // material declares; `tileCount` is one for an ordinary image, and the
+    // hdClaude `mx_image_*` overrides read it.
+    //
+    // Registered here rather than worked around at the call site because the
+    // type has to be consistent everywhere MaterialX might emit it -- a
+    // nodegraph that exposes a filename on its interface declares a parameter
+    // of this type, and a `sampler2D` there would not match.
+    static const string kTextureDefault = "HdclaudeTexture(0,0,1)";
+    static const string kTextureDefinition =
+        "struct HdclaudeTexture {" "\n"
+        "    int slot;        // first index into hdclaude_textures" "\n"
+        "    int tileOffset;  // into hdclaude_udim_tiles" "\n"
+        "    int tileCount;   // 1 when the image is not a UDIM set" "\n"
+        "};";
+    // A scalar syntax, not an aggregate one, and the distinction matters. An
+    // aggregate type is one MaterialX will *construct*: it emits
+    // `HdclaudeTexture(foo_file)` where the stock sampler type emits
+    // `foo_file`, and a one-argument constructor for a three-field struct does
+    // not compile. A filename is passed along, never built, which is exactly
+    // what the stock `sampler2D` registration is -- so this differs from it
+    // only in the name and in carrying a type definition.
+    registerTypeSyntax(Type::FILENAME,
+                       std::make_shared<ScalarTypeSyntax>(
+                           this, "HdclaudeTexture", kTextureDefault,
+                           EMPTY_STRING, EMPTY_STRING, kTextureDefinition));
 
     // VDF must be re-registered too, and it is easy to miss.
     //
@@ -229,6 +264,22 @@ PathTracerShaderGenerator::PathTracerShaderGenerator(TypeSystemPtr typeSystem)
     // implementation declaration in hdclaude_pbrlib_impl.mtlx names it.
     registerImplementation("IM_surface_" + TARGET, PathTracerSurfaceNode::create);
 
+    // The image nodes keep MaterialX's own node implementation and change only
+    // their GLSL body.
+    //
+    // `HwImageNode` is not a formality. It *adds* the `uv_scale` and
+    // `uv_offset` inputs that the `image` nodedef does not declare and the
+    // stock GLSL body takes, so a source-code node registered in its place
+    // emits an eleven-argument call against a thirteen-parameter function and
+    // fails to compile. Registering it under the genglsl_pt implementation
+    // names is what keeps the override to the body alone.
+    for (const std::string& type : {"float", "color3", "color4", "vector2",
+                                    "vector3", "vector4"})
+    {
+        registerImplementation("IM_image_" + type + "_" + TARGET,
+                               mx::HwImageNode::create);
+    }
+
     // ClosureData is deliberately left byte-compatible with upstream. MaterialX
     // 1.39.3 constructs it inline with a fixed six-argument list and offers no
     // substitution token, so adding fields would break every construction site
@@ -306,11 +357,62 @@ void PathTracerShaderGenerator::emitUniforms(GenContext& context,
         }
     }
 
+    // The UDIM tile numbers, flattened across every set this material samples.
+    //
+    // One array for the whole material rather than one per image, because a
+    // handle can carry an offset into a shared table and cannot carry an array.
+    // Built before the handles are emitted so the offsets are known.
+    std::vector<int> udimTable;
+    std::map<std::string, std::pair<size_t, size_t>> udimRanges;
+    for (const auto& entry : stage.getUniformBlocks())
+    {
+        const VariableBlock& uniforms = *entry.second;
+        if (uniforms.getName() == HW::LIGHT_DATA)
+        {
+            continue;
+        }
+        for (ShaderPort* uniform : uniforms.getVariableOrder())
+        {
+            if (uniform->getType() != Type::FILENAME)
+            {
+                continue;
+            }
+            const auto found = _udimTiles.find(uniform->getVariable());
+            if (found == _udimTiles.end() || found->second.size() < 2)
+            {
+                continue;
+            }
+            udimRanges[uniform->getVariable()] = {udimTable.size(),
+                                                  found->second.size()};
+            udimTable.insert(udimTable.end(), found->second.begin(),
+                             found->second.end());
+        }
+    }
+
     if (textureCount > 0)
     {
         emitComment("Shared texture array; see shaders/path_state.glsl", stage);
         emitLine("layout(set = 0, binding = 16) uniform sampler2D "
                  "hdclaude_textures[" + std::to_string(kTextureCapacity) + "]",
+                 stage);
+
+        // Always declared, even when nothing here is a UDIM set: the image
+        // implementations reference it unconditionally, and a GLSL array
+        // cannot have zero elements. One dead entry costs nothing.
+        std::string tiles;
+        for (const int tile : udimTable)
+        {
+            tiles += (tiles.empty() ? "" : ", ") + std::to_string(tile);
+        }
+        if (udimTable.empty())
+        {
+            tiles = "0";
+        }
+        emitComment("UDIM tile numbers, indexed by a texture handle's "
+                    "tileOffset", stage);
+        emitLine("const int hdclaude_udim_tiles[" +
+                     std::to_string(udimTable.empty() ? 1 : udimTable.size()) +
+                     "] = int[](" + tiles + ")",
                  stage);
         emitLineBreak(stage);
     }
@@ -331,14 +433,33 @@ void PathTracerShaderGenerator::emitUniforms(GenContext& context,
         {
             if (uniform->getType() == Type::FILENAME)
             {
-                // An index into the shared array, not a descriptor of its own.
-                // `texture(name, uv)` in the stock mx_image_* implementations
-                // then expands to a lookup in the array with no change to
-                // those files.
+                // A handle into the shared array, not a descriptor of its own.
+                // A UDIM set takes one slot per tile, contiguously and in
+                // ascending tile order, and the handle names the first of them
+                // together with the range of the tile table that says which
+                // tile each slot holds.
                 const size_t index = _textureOrder.size();
-                _textureOrder.push_back(uniform->getVariable());
+                const auto range = udimRanges.find(uniform->getVariable());
+                if (range == udimRanges.end())
+                {
+                    _textureOrder.push_back({uniform->getVariable(), 0});
+                    emitLine("#define " + uniform->getVariable() +
+                                 " HdclaudeTexture(" + std::to_string(index) +
+                                 ", 0, 1)",
+                             stage, false);
+                    continue;
+                }
+
+                const std::vector<int>& tiles =
+                    _udimTiles.at(uniform->getVariable());
+                for (const int tile : tiles)
+                {
+                    _textureOrder.push_back({uniform->getVariable(), tile});
+                }
                 emitLine("#define " + uniform->getVariable() +
-                             " hdclaude_textures[" + std::to_string(index) + "]",
+                             " HdclaudeTexture(" + std::to_string(index) + ", " +
+                             std::to_string(range->second.first) + ", " +
+                             std::to_string(range->second.second) + ")",
                          stage, false);
                 continue;
             }
@@ -357,10 +478,12 @@ void PathTracerShaderGenerator::emitUniforms(GenContext& context,
     if (_textureOrder.size() > kTextureCapacity)
     {
         throw mx::ExceptionShaderGenError(
-            "This material declares " + std::to_string(_textureOrder.size()) +
-            " textures; hdClaude's shared array holds " +
+            "This material needs " + std::to_string(_textureOrder.size()) +
+            " texture slots; hdClaude's shared array holds " +
             std::to_string(kTextureCapacity) +
-            ". Raise kTextureCapacity in pathtracer_generator.h and "
+            ". A UDIM set takes one slot per tile, so a material with several "
+            "sets of many tiles reaches this long before it has that many "
+            "images. Raise kTextureCapacity in pathtracer_generator.h and "
             "kHdClaudeTextureCapacity in shaders/path_state.glsl together.");
     }
 }
@@ -642,6 +765,10 @@ mx::FileSearchPath MaterialXSourceSearchPath(const mx::FilePath& stdlibDir,
     // hdClaude one, never the stock one, or the generated shader declares
     // ClosureData without the path-tracing protocol.
     search.append(hdclaudeDir / mx::FilePath("pbrlib/genglsl_pt"));
+    // The stdlib overrides, for the same reason: their `lib/mx_hdclaude_image`
+    // must resolve here, and their own `lib/$fileTransformUv` must still reach
+    // the stock one below.
+    search.append(hdclaudeDir / mx::FilePath("stdlib/genglsl_pt"));
     search.append(hdclaudeDir);
     search.append(hdclaudeDir.getParentPath());
 

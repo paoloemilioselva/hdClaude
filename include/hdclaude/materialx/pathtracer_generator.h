@@ -32,6 +32,7 @@
 
 #include <cstdint>
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -158,9 +159,15 @@ class PathTracerShaderGenerator : public mx::VkShaderGenerator {
     /// the path state, which owns set 0. Two things follow.
     ///
     /// Sampler uniforms become indices into one shared texture array rather
-    /// than separate descriptors: `#define <name> hdclaude_textures[i]`. One
+    /// than separate descriptors: `#define <name> HdclaudeTexture(i, ...)`. One
     /// array is bound for the whole scene, so adding a texture never changes a
     /// pipeline layout, and the index is baked into the material that uses it.
+    ///
+    /// A filename is a *handle* rather than a sampler because a UDIM set is
+    /// many images behind one `<image>` node, and which of them a sample reads
+    /// is decided from that sample's own texture coordinate. A `sampler2D`
+    /// parameter can carry one image and cannot express the choice; the handle
+    /// carries the set's first slot and where its tile numbers live.
     ///
     /// Value uniforms become plain globals initialised to their defaults.
     /// SHADER_INTERFACE_REDUCED has already baked every value a node reads, so
@@ -168,12 +175,36 @@ class PathTracerShaderGenerator : public mx::VkShaderGenerator {
     void emitUniforms(mx::GenContext& context, mx::ShaderStage& stage) const override;
 
   public:
-    /// Texture uniform names, in the order their array indices were assigned.
+    /// One image the material samples: which uniform declares it, and which
+    /// UDIM tile it is, if it is one of a set.
+    struct TextureSlot {
+        std::string uniform;
+        /// The UDIM tile number, or 0 for an image that is not part of a set.
+        /// A set contributes one of these per tile, in ascending tile order.
+        int tile = 0;
+    };
+
+    /// The images this material samples, in the order their array indices were
+    /// assigned.
     ///
     /// The caller needs this to know which image belongs at which index, and
     /// taking it from the generator rather than re-deriving it from the shader
-    /// means the two orderings cannot drift apart.
-    const std::vector<std::string>& TextureOrder() const { return _textureOrder; }
+    /// means the two orderings cannot drift apart. A UDIM set occupies a
+    /// contiguous run of indices, one per tile that exists.
+    const std::vector<TextureSlot>& TextureOrder() const { return _textureOrder; }
+
+    /// The UDIM tiles each filename uniform resolves to, keyed by the uniform
+    /// name MaterialX will give it.
+    ///
+    /// Supplied by the caller because only it can ask the asset resolver which
+    /// tiles a `<UDIM>` path actually has, and it must be supplied *before*
+    /// generation because the tile count decides how many array slots the set
+    /// takes and what the generated table says. A uniform absent from this map,
+    /// or present with fewer than two tiles, is an ordinary single image.
+    void SetUdimTiles(std::map<std::string, std::vector<int>> tiles) const
+    {
+        _udimTiles = std::move(tiles);
+    }
 
   protected:
 
@@ -186,7 +217,10 @@ class PathTracerShaderGenerator : public mx::VkShaderGenerator {
     /// Filled during emitUniforms, which is const because MaterialX's emission
     /// interface is. One generator serves one generate() call, so this is the
     /// texture order of the material just produced.
-    mutable std::vector<std::string> _textureOrder;
+    mutable std::vector<TextureSlot> _textureOrder;
+
+    /// Set by the caller before generation; see SetUdimTiles.
+    mutable std::map<std::string, std::vector<int>> _udimTiles;
 };
 
 

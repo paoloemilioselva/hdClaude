@@ -1,0 +1,52 @@
+<?xml version="1.0"?>
+<materialx version="1.39">
+
+  <!--
+    hdClaude genglsl_pt implementations of the MaterialX stdlib `image` nodes.
+
+    Version of record: MaterialX 1.39.3, the version inside OpenUSD 26.03.
+
+    These six are overridden for one reason: in this target a `filename` is a
+    handle into a shared texture array rather than a `sampler2D`, and one
+    `<image>` node can stand for a whole UDIM set whose tile is chosen from the
+    sample's own texture coordinate. The stock bodies take a sampler and can
+    express neither. Everything else about them is upstream's, including the
+    `mx_transform_uv` call and the `layer`, `framerange` and address-mode
+    inputs that this renderer does not yet honour.
+
+    The set is exactly the nodedefs whose implementation samples a filename.
+    `ND_image_*` is the whole of it in 1.39.3; `ND_tiledimage_*` is a nodegraph
+    built on `image` and needs no override of its own.
+
+    Unlike the pbrlib set, this one is not all-or-nothing: no stdlib GLSL file
+    includes a header hdClaude replaces, so a stock stdlib implementation and an
+    hdClaude one can coexist. It is complete anyway, because a filename that
+    reached a stock implementation would be a `HdclaudeTexture` handed to a
+    `sampler2D` parameter, which does not compile -- loudly, which is the right
+    failure.
+
+    NODEDEF NAMES DO NOT FOLLOW FILE NAMES, and a declaration naming a nodedef
+    that does not exist is ignored SILENTLY. These are taken verbatim from the
+    stock stdlib_genglsl_impl.mtlx and asserted in tests/materialx_tests.cpp.
+  -->
+
+  <implementation name="IM_image_float_genglsl_pt" nodedef="ND_image_float"
+                  file="mx_image_float.glsl" function="mx_image_float"
+                  target="genglsl_pt" />
+  <implementation name="IM_image_color3_genglsl_pt" nodedef="ND_image_color3"
+                  file="mx_image_color3.glsl" function="mx_image_color3"
+                  target="genglsl_pt" />
+  <implementation name="IM_image_color4_genglsl_pt" nodedef="ND_image_color4"
+                  file="mx_image_color4.glsl" function="mx_image_color4"
+                  target="genglsl_pt" />
+  <implementation name="IM_image_vector2_genglsl_pt" nodedef="ND_image_vector2"
+                  file="mx_image_vector2.glsl" function="mx_image_vector2"
+                  target="genglsl_pt" />
+  <implementation name="IM_image_vector3_genglsl_pt" nodedef="ND_image_vector3"
+                  file="mx_image_vector3.glsl" function="mx_image_vector3"
+                  target="genglsl_pt" />
+  <implementation name="IM_image_vector4_genglsl_pt" nodedef="ND_image_vector4"
+                  file="mx_image_vector4.glsl" function="mx_image_vector4"
+                  target="genglsl_pt" />
+
+</materialx>
