@@ -30,6 +30,15 @@ IF "%~1"=="" (
   ECHO   HDCLAUDE_ENVIRONMENT_INTENSITY default 1     stand-in sky, unlit stages
   ECHO   HDCLAUDE_SUN_INTENSITY         default 1     stand-in sun, unlit stages
   ECHO   HDCLAUDE_DEVICE                substring of the GPU to select
+  ECHO.
+  ECHO Diagnostics. Off unless set, and none of them changes an image.
+  ECHO   HDCLAUDE_REPEAT_RENDERS        render the finished image n more
+  ECHO                                  times in the same process, reporting
+  ECHO                                  each render with its ray counts and
+  ECHO                                  its hit and ray hashes
+  ECHO   HDCLAUDE_POISON_PATH_STATE     fill every path buffer with a known
+  ECHO                                  pattern before a frame
+  ECHO   HDCLAUDE_STATS_REPORT          write the render stats to this path
   EXIT /B 2
 )
 
