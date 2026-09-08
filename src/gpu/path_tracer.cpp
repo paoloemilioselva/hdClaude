@@ -95,6 +95,15 @@ std::vector<BindingDescription> KernelBindings()
 struct ShadePush {
     std::uint32_t materialId = 0;
     float dispersionAbbe = 0.0f;
+    /// Which bounce this dispatch is. See shade.comp.glsl: it is a push
+    /// constant rather than a frame-uniform field so that a whole sample can be
+    /// recorded into one command buffer.
+    std::uint32_t bounce = 0;
+};
+
+/// Mirrors EnvironmentParams in environment.comp.glsl.
+struct EnvironmentPush {
+    std::uint32_t bounce = 0;
 };
 
 /// Mirrors the FrameBlock uniform in path_state.glsl, scalar layout.
@@ -109,7 +118,10 @@ struct FrameBlock {
     float tanHalfFov;
     float aspect;
     std::uint32_t pathCount;
-    std::uint32_t bounce;
+    /// Was the bounce index. It is a push constant now, on the two kernels
+    /// that vary with it; the slot stays so every field after it keeps its
+    /// offset. See shaders/path_state.glsl.
+    std::uint32_t unusedWasBounce;
     std::uint32_t lightCount;
     std::uint32_t hasDomeTexture;
     std::uint32_t hasDomeLight;
@@ -331,7 +343,7 @@ PathTracer::PathTracer(const VulkanContext& context, VulkanAllocator& allocator,
     _extend = build("extend.comp.glsl", 0);
     _prepareDispatch = build("prepare_dispatch.comp.glsl", sizeof(std::uint32_t));
     _materialSort = build("material_sort.comp.glsl", sizeof(std::uint32_t));
-    _environment = build("environment.comp.glsl", 0);
+    _environment = build("environment.comp.glsl", sizeof(EnvironmentPush));
     _shadow = build("shadow.comp.glsl", 0);
     _film = build("film.comp.glsl", 0);
 
@@ -1144,14 +1156,33 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     const std::uint32_t pixelGroupsX = (width + 7) / 8;
     const std::uint32_t pixelGroupsY = (height + 7) / 8;
 
+    // One command buffer per sample, holding every bounce and the film.
+    //
+    // It used to be one per bounce plus one for the film, which at the
+    // gallery's 32 samples and 8 bounces is 288 submits per call -- and every
+    // `SubmitImmediate` allocates a command buffer and a fence, submits, and
+    // *waits for the device to go idle* before returning. The GPU therefore
+    // drained 288 times per frame for no reason: nothing between two bounces is
+    // read by the host.
+    //
+    // Nothing was read by the host except the frame uniform, which is written
+    // by it. That is what made the split necessary and what removing it needed:
+    // `bounce` was a field of a host-written uniform, so every dispatch in a
+    // batched buffer would have read whichever value was written last. It is a
+    // push constant now, on the two kernels that vary with it, and the uniform
+    // varies per *sample* -- which is exactly the granularity left here.
+    //
+    // The barriers were always there. A submit boundary is a full barrier for
+    // free, so removing it means the explicit ones now carry the whole weight;
+    // the synchronisation validation gate is what says they do, and it is part
+    // of the GPU suite for exactly this class of change (2026-09-06).
     for (std::uint32_t sample = 0; sample < settings.samplesPerPixel; ++sample) {
         block.sampleIndex = settings.firstSample + sample;
+        _frameUniforms.Write(&block, sizeof(block));
 
         for (std::uint32_t bounce = 0; bounce < settings.maxBounces; ++bounce) {
-            block.bounce = bounce;
-            _frameUniforms.Write(&block, sizeof(block));
-
-            _context.SubmitImmediate([&](VkCommandBuffer command) {
+        _context.SubmitImmediate([&](VkCommandBuffer command) {
+            {
                 if (bounce == 0) {
                     _raygen.Dispatch(command, raygenSet, pixelGroupsX, pixelGroupsY);
                     Barrier(command);
@@ -1219,15 +1250,19 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
 
                 // The misses are still on the active queue; the sort left them
                 // there rather than giving them a group.
+                EnvironmentPush environmentPush;
+                environmentPush.bounce = bounce;
                 _environment.DispatchIndirect(
                     command, environmentSet, _dispatchArgs,
-                    kDispatchSlotActive * kDispatchArgStride);
+                    kDispatchSlotActive * kDispatchArgStride, &environmentPush,
+                    sizeof(environmentPush));
                 Barrier(command);
 
                 for (std::size_t i = 0; i < _shade.size(); ++i) {
                     ShadePush push;
                     push.materialId = static_cast<std::uint32_t>(i);
                     push.dispersionAbbe = _materialDispersion[i];
+                    push.bounce = bounce;
                     _shade[i].DispatchIndirect(
                         command, shadeSets[i], _dispatchArgs,
                         (kDispatchSlotFirstMaterial + push.materialId) *
@@ -1243,10 +1278,9 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
                 _shadow.DispatchIndirect(command, shadowSet, _dispatchArgs,
                                          kDispatchSlotShadow * kDispatchArgStride);
                 Barrier(command);
-            });
+            }
+        });
         }
-
-        _frameUniforms.Write(&block, sizeof(block));
         _context.SubmitImmediate([&](VkCommandBuffer command) {
             _film.Dispatch(command, filmSet, pathGroups);
         });

@@ -10,6 +10,18 @@
 
 layout(local_size_x = 64) in;
 
+layout(push_constant) uniform EnvironmentParams {
+    /// Which bounce this dispatch is, counted from zero.
+    ///
+    /// A push constant rather than a field of the frame uniform, and that is what
+    /// lets a whole sample be recorded into one command buffer. The uniform is
+    /// written by the *host*, so a value that varied per bounce forced a submit
+    /// and a full wait between every pair of bounces -- 288 of them per gallery
+    /// frame -- and every dispatch in a batched buffer would otherwise have read
+    /// whichever value happened to be written last.
+    uint bounce;
+} params;
+
 void main()
 {
     uint slot = gl_GlobalInvocationID.x;
@@ -138,7 +150,7 @@ void main()
     // estimation skips a delta and this test does not know it happened. That
     // is the gap multiple importance sampling closes, and it is why the sun is
     // documented as a fallback rather than a light.
-    if (hdclaude_has_stand_in_sun() && frame.bounce == 0u)
+    if (hdclaude_has_stand_in_sun() && params.bounce == 0u)
     {
         float cosAngle = dot(direction, normalize(frame.sunDirection.xyz));
         if (cosAngle > cos(max(frame.sunDirection.w, 1.0e-4)))

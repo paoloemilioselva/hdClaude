@@ -34,6 +34,16 @@ layout(push_constant) uniform ShadeParams {
     /// program rather than inside it (docs/implementation-notes.md,
     /// 2026-09-07).
     float dispersionAbbe;
+
+    /// Which bounce this dispatch is, counted from zero.
+    ///
+    /// A push constant rather than a field of the frame uniform, and that is what
+    /// lets a whole sample be recorded into one command buffer. The uniform is
+    /// written by the *host*, so a value that varied per bounce forced a submit
+    /// and a full wait between every pair of bounces -- 288 of them per gallery
+    /// frame -- and every dispatch in a batched buffer would otherwise have read
+    /// whichever value happened to be written last.
+    uint bounce;
 } shadeParams;
 
 /// Interpolated geometry at a hit.
@@ -521,7 +531,7 @@ void main()
         }
     }
     // --- Scatter -------------------------------------------------------------
-    if (frame.bounce + 1u >= frame.maxBounces)
+    if (shadeParams.bounce + 1u >= frame.maxBounces)
     {
         pathThroughput.values[path] = vec4(0.0);
         pathRng.values[path] = rng;
@@ -637,7 +647,7 @@ void main()
 
     // Russian roulette after a few bounces, so a long dim path is terminated
     // with a compensating weight rather than traced to the depth limit.
-    if (frame.bounce >= 2u)
+    if (shadeParams.bounce >= 2u)
     {
         float survival = clamp(max(max(throughput.x, throughput.y),
                                    max(throughput.z, throughput.w)),

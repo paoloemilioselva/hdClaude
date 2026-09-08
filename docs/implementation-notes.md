@@ -4714,3 +4714,78 @@ one frame in flight and no overlap to measure. Per-slot resources come next, the
 the submit moves into `BeginFrame` and the wait into `EndFrame`, and only then
 can GPU timestamps show frame N+1's trace overlapping frame N's readback across a
 queue -- which is the claim hdCodex could not make.
+
+---
+
+## 2026-09-08 -- The renderer does not always reproduce its own output
+
+Phase 9's second step was going to be batching a whole sample into one command
+buffer. It is not, and the reason is worth more than the batching would have
+been: **this renderer is intermittently nondeterministic, and the gallery gate
+has been absorbing it.**
+
+**What the frame looks like today.** Every kernel dispatch goes through
+`SubmitImmediate`, which allocates a command buffer and a fence, submits, and
+waits for the device before returning. A frame is one submit per bounce plus one
+for the film -- at the gallery's 32 samples and 8 bounces, **288 full device
+drains per `Render` call**, none of which the host needs, because nothing between
+two bounces is read by it.
+
+One thing stood in the way: `bounce` was a field of the frame uniform, and the
+uniform is written by the *host*, so every dispatch in a batched buffer would
+have read whichever value was written last. It has only four readers -- one in
+`raygen` (which is `sampleIndex`, not `bounce`), one in `environment`, two in
+`shade` -- so it moved to a push constant on those two kernels. That change is
+in, and on its own it is worth having: the value belongs where it varies.
+
+Batching then took the render suite from **243 s to 107 s** with all seven suites
+passing, synchronisation validation clean, and Intel Sponza byte identical. The
+Open Chess Set moved by an RMS of 0.0018, which looked like a missing barrier the
+submit boundaries had been hiding.
+
+**It was not.** Bisecting said so first -- with the push constants kept and the
+per-bounce submit restored, the chess set was byte identical, so the difference
+belonged to the batching. Then the same build, unchanged, rendered a full gallery
+in which four scenes moved by between 3.7e-5 and 9.4e-4: Sponza, the chess set,
+Collective Project 001, and the **New Zealand height map**, which is one textured
+quad. That last one is what gave it away. Nothing about a push constant for
+`bounce` can move a single quad by a ten-thousandth, and nothing about batching
+can either, because that run was not batched.
+
+So the height map was rendered twice more, with the same binary and against its
+committed baseline:
+
+    rms 0 (limit 0.01), worst 0 (limit 0.3), failed 0% (limit 4)
+    rms 0 (limit 0.01), worst 0 (limit 0.3), failed 0% (limit 4)
+
+Identical, twice, to the baseline it had differed from twenty minutes earlier.
+Two back-to-back renders of the same scene also compare bit identical to each
+other. The renderer usually reproduces itself and sometimes does not.
+
+**What that costs.** Every "byte identical" in this record is weaker than it
+reads. The gate's RMS limit is 0.01 and this noise is two orders below it, so it
+has never failed and never will; what it does instead is make a genuine change of
+that size indistinguishable from nothing having happened. The chess set's 0.0018
+under batching is exactly in that band, which is why it cannot be attributed
+either way.
+
+**And it blocks phase 9.** The remaining steps -- per-slot resources, then real
+overlap -- are precisely the changes whose correctness argument is "the image did
+not move". A renderer that cannot reproduce its own output cannot support that
+argument, so determinism has to come first. Batching is reverted rather than
+shipped on an unverifiable claim.
+
+**Where to look.** The film takes no atomics by invariant: paths map one-to-one
+onto pixels, so exactly one invocation writes each entry. What is not
+deterministic is the *order* paths take in the compacted queue --
+`atomicAdd(counters.nextActiveCount, 1u)` -- and therefore their order through
+the material sort. Each path still writes its own pixel, so order alone should
+not change a result, which is why this needs an instrument rather than another
+argument: a test that renders the same scene twice in one process and compares
+the linear films, run enough times to catch something that is usually invisible.
+That is the next task, ahead of anything else in phase 9.
+
+What ships from this session is the push-constant move and the finding. The
+batching is written up here so the next attempt starts from what was measured --
+a 2.3x reduction in the render suite, sync validation clean -- rather than from
+scratch.

@@ -41,7 +41,12 @@ layout(set = 0, binding = 0, scalar) uniform FrameBlock {
     float tanHalfFov;
     float aspect;
     uint  pathCount;
-    uint  bounce;               // current bounce, 0 for camera rays
+    // Which bounce a dispatch is no longer lives here. It is a push constant on
+    // the two kernels that vary with it, because a field of a host-written
+    // uniform cannot vary within one command buffer -- see
+    // shaders/shade.comp.glsl. The slot is kept so the block's scalar layout is
+    // unchanged and every other field keeps its offset.
+    uint  unusedWasBounce;
     uint  lightCount;           // entries in the light table
     uint  hasDomeTexture;       // 1 when hdclaude_dome holds an environment map
     uint  hasDomeLight;         // 1 when a dome light supplied the environment
