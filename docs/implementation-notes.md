@@ -4789,3 +4789,79 @@ What ships from this session is the push-constant move and the finding. The
 batching is written up here so the next attempt starts from what was measured --
 a 2.3x reduction in the render suite, sync validation clean -- rather than from
 scratch.
+
+---
+
+## 2026-09-08 -- The determinism instrument, and what it ruled out
+
+The nondeterminism found earlier now has an instrument, a reproduction, and four
+eliminated causes. It does not yet have a cause.
+
+**The gate that ships.** `tests/render_tests.cpp` renders one scene
+progressively -- four chunks of eight samples, accumulating, which is what the
+gallery does -- and compares the resolved films **exactly**, six times over. Not
+"near": two runs of the same arithmetic on the same inputs have no tolerance to
+be within, and a tolerance here would rebuild the blindness the gate exists to
+remove. It compares films rather than display images for the same reason the
+non-finite scan does: a display transform normalises exactly what the check is
+looking for.
+
+A second phase republishes the scene between renders, which rebuilds the
+acceleration structures. A GPU builder is under no obligation to produce the same
+tree twice, and a different tree should still give the same closest hit -- the
+nearest intersection along a ray is unique whatever order a traversal finds it
+in. This asks whether that holds in practice, and it is the discriminator the
+first phase cannot be.
+
+Both read zero:
+
+    determinism: 0 of 6 repeats differ from the first; worst 0.000e+00
+    determinism across a scene rebuild: 0 of 6 differ; worst 0.000e+00
+
+**The reproduction is across processes, and it is solid.** Three separate
+`usdrecord` runs of the Open Chess Set at gallery settings produce three
+different linear films:
+
+    run A against run B:  rms 0.00131, worst 1.218, 0.0056% of pixels
+    run A against run C:  rms 0.00054, worst 0.314, 0.0075% of pixels
+
+The worst pixels are firefly-scale, which is what a path taking a different route
+looks like, and the affected fraction is small. This is the thing the gallery
+gate cannot see: its RMS limit is 0.01 and its comparison is of display images.
+
+**Four things are ruled out.**
+
+*The scene store's ordering.* `_meshes`, `_materials` and `_lights` are
+`std::map<SdfPath, ...>`, so a snapshot's order is fixed by path and identical in
+every process. This mattered most for lights: next-event estimation selects an
+emitter by index, so a varying light order would change which light a given
+random draw picks, at exactly this magnitude. It does not vary.
+
+*The generated MaterialX.* Two processes were made to dump every generated
+program for the chess set. All sixteen are byte identical, so neither MaterialX's
+own container iteration nor hdClaude's generation contributes.
+
+*Repetition within a process.* Six repeats, exact comparison, zero differences.
+
+*Rebuilding the acceleration structure within a process.* Six rebuilds, zero
+differences.
+
+**And one contrast narrows it further.** The New Zealand height map -- one quad,
+one texture, subdivided at level 6 -- was among the scenes that moved in the
+gallery run that started this. Rendered three times in three processes it is
+**identical every time**, and it matched its committed baseline on two separate
+occasions after differing from it once. So on that scene the effect is rare;
+on the chess set it happens between every pair of runs.
+
+What separates them is what to look at next: the chess set has a `PointInstancer`,
+a dome light with an HDRI and therefore an environment CDF, thirty-two instances
+and many materials; the height map has none of those. The environment
+distribution is the most interesting of them, because it is built per process
+from a texture and sampled by every miss.
+
+**Why this is worth the trouble.** Every "byte identical" in this record is an
+argument about a change, and this is the noise floor those arguments sit on. It
+is two orders below the gallery gate's limit, so nothing has ever failed on it
+and nothing will; what it does instead is make a real change of that size
+indistinguishable from no change at all. Phase 9's remaining steps are exactly
+such changes, which is why this comes first.

@@ -3028,6 +3028,170 @@ int main()
             CHECK(!tracer.EndFrame(hdclaude::FrameHandle{}).Valid());
         }
 
+        // --- The renderer reproduces its own output --------------------------
+        //
+        // Every "byte identical" claim in this project's record rests on this,
+        // and until 2026-09-08 nothing checked it. What prompted the check was
+        // the New Zealand height map -- one textured quad -- moving against its
+        // committed baseline by an RMS of 3.7e-5 in a gallery run, and then
+        // matching that same baseline exactly on the two runs after it, with
+        // the same binary throughout.
+        //
+        // The gate's RMS limit is 0.01 and that noise is two orders below it,
+        // so the gallery has never failed on it and never will. What it costs
+        // is worse than a failure: a genuine change of that size becomes
+        // indistinguishable from nothing having happened, which is exactly the
+        // argument every remaining step of phase 9 depends on.
+        //
+        // Three things this is careful about.
+        //
+        // It compares the *films*, not display images. The gallery's own gate
+        // compares display-transformed JPEGs, and anything the transform
+        // normalises never reaches it -- which is the same blindness that hid
+        // the OpenPBR Playground's 2.18e25 for as long as that image existed.
+        //
+        // It renders *progressively*, in chunks that accumulate, because that
+        // is what the gallery does and what an interactive host will do. A
+        // single one-shot render exercises neither the continuation path nor
+        // the repeated compaction across it.
+        //
+        // And it repeats, because one identical pair proves nothing about
+        // something that is usually identical. The height map compared clean
+        // twice in a row while being demonstrably not reproducible.
+        {
+            Scene scene;
+            scene.prototypes.push_back(MakeSphere());
+            scene.prototypes.push_back(MakeQuad());
+            // Two prototypes on two materials, so the per-material sort has
+            // more than one group to scatter into -- the compaction and the
+            // sort are where the order paths take through a frame stops being
+            // fixed, and a single-material scene would not exercise either.
+            Transform3x4 behind;
+            behind.m[3] = 0.0f;
+            behind.m[7] = 0.0f;
+            behind.m[11] = -1.5f;
+            scene.instances.push_back({0, Transform3x4{}, 0, true});
+            scene.instances.push_back({1, behind, 1, true});
+
+            Light rect;
+            rect.type = static_cast<std::uint32_t>(LightType::Rect);
+            rect.position[0] = 0.0f;
+            rect.position[1] = 2.5f;
+            rect.position[2] = 1.5f;
+            rect.direction[0] = 0.0f;
+            rect.direction[1] = -1.0f;
+            rect.direction[2] = 0.0f;
+            rect.uAxis[0] = 1.0f; rect.uAxis[1] = 0.0f; rect.uAxis[2] = 0.0f;
+            rect.vAxis[0] = 0.0f; rect.vAxis[1] = 0.0f; rect.vAxis[2] = 1.0f;
+            rect.area = 4.0f;
+            rect.radiance[0] = 4.0f;
+            rect.radiance[1] = 4.0f;
+            rect.radiance[2] = 4.0f;
+            // Shadow rays are a second queue filled by an atomic, so a scene
+            // without them would leave half the ordering untested.
+            rect.castsShadows = 1;
+            scene.lights.push_back(rect);
+
+            tracer.SetScene(scene, {materials[0], materials[1]});
+
+            constexpr std::uint32_t kChunks = 4;
+            constexpr std::uint32_t kChunkSamples = 8;
+            constexpr int kRepeats = 6;
+
+            const auto renderProgressively = [&]() {
+                RenderSettings chunk;
+                chunk.maxBounces = 6;
+                chunk.samplesPerPixel = kChunkSamples;
+                std::vector<float> image;
+                for (std::uint32_t c = 0; c < kChunks; ++c) {
+                    chunk.firstSample = c * kChunkSamples;
+                    chunk.resetAccumulation = (c == 0);
+                    image = tracer.Render(kWidth, kHeight, LookDownZ(4.0f), chunk);
+                }
+                return image;
+            };
+
+            const std::vector<float> reference = renderProgressively();
+            CHECK(!reference.empty());
+
+            int differingRuns = 0;
+            double worst = 0.0;
+            std::size_t worstIndex = 0;
+            for (int repeat = 0; repeat < kRepeats; ++repeat) {
+                const std::vector<float> again = renderProgressively();
+                CHECK_EQ(again.size(), reference.size());
+                bool differs = false;
+                for (std::size_t i = 0; i < again.size(); ++i) {
+                    // Exact, not near. Two runs of the same arithmetic on the
+                    // same inputs have no tolerance to be within: any
+                    // difference at all is an ordering that was not fixed, and
+                    // a tolerance here would re-create the blindness this
+                    // exists to remove.
+                    const double delta =
+                        std::abs(double(again[i]) - double(reference[i]));
+                    if (delta > 0.0) {
+                        differs = true;
+                        if (delta > worst) {
+                            worst = delta;
+                            worstIndex = i;
+                        }
+                    }
+                }
+                if (differs) {
+                    ++differingRuns;
+                }
+            }
+
+            std::printf("  determinism: %d of %d repeats differ from the first"
+                        "; worst %.3e at component %zu\n",
+                        differingRuns, kRepeats, worst, worstIndex);
+
+            CHECK_EQ(differingRuns, 0);
+
+            // The same again, with the scene *republished* between renders.
+            //
+            // Publishing rebuilds the acceleration structures, and a GPU
+            // builder is under no obligation to produce the same tree
+            // twice. A different tree should still give the same closest
+            // hit -- the nearest intersection along a ray is unique,
+            // whatever order a traversal finds it in -- so this asks
+            // whether that holds in practice.
+            //
+            // It is the discriminator the loop above cannot be: that one
+            // never rebuilds anything, so it cannot tell "the renderer is
+            // not reproducible" from "the structure it traverses is not".
+            // Across processes a real scene *is* irreproducible -- three
+            // runs of the chess set give three different films, worst
+            // pixel 1.22 -- and the scene store's ordering and the
+            // generated MaterialX are both already ruled out, so what is
+            // rebuilt per process is what is left to suspect.
+            int rebuildDiffering = 0;
+            double rebuildWorst = 0.0;
+            for (int repeat = 0; repeat < kRepeats; ++repeat) {
+                tracer.SetScene(scene, {materials[0], materials[1]});
+                const std::vector<float> again = renderProgressively();
+                CHECK_EQ(again.size(), reference.size());
+                bool differs = false;
+                for (std::size_t i = 0; i < again.size(); ++i) {
+                    const double delta =
+                        std::abs(double(again[i]) - double(reference[i]));
+                    if (delta > 0.0) {
+                        differs = true;
+                        rebuildWorst = std::max(rebuildWorst, delta);
+                    }
+                }
+                if (differs) {
+                    ++rebuildDiffering;
+                }
+            }
+
+            std::printf("  determinism across a scene rebuild: %d of %d "
+                        "differ; worst %.3e\n",
+                        rebuildDiffering, kRepeats, rebuildWorst);
+
+            CHECK_EQ(rebuildDiffering, 0);
+        }
+
         // --- An instance transform is the same as baking it ------------------
         //
         // The same surface in the same place in the world, expressed two ways:
