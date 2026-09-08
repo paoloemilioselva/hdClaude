@@ -51,7 +51,7 @@ endif()
 # was there as "an error guard", which it never was: block() scopes variables
 # and catches nothing.
 if(EXISTS "${dlss_SOURCE_DIR}/include/nvsdk_ngx_vk.h")
-  # The static NGX library, at the path this SDK actually uses.
+  # The NGX import library, at the path and CRT this SDK actually uses.
   #
   # `lib/Windows_x86_64/` holds `x64`, `dev`, `rel`, `khr`, `uwp` and a set of
   # `vsNNNN` directories that stop at vs2013; the modern MSVC import library is
@@ -59,13 +59,22 @@ if(EXISTS "${dlss_SOURCE_DIR}/include/nvsdk_ngx_vk.h")
   # existed in this SDK, which the misscoped variable above kept anyone from
   # discovering.
   #
-  # The `_dbg` variant is built against the debug CRT, so the choice follows
-  # the configuration rather than being fixed.
+  # `_d` and not `_s`, which is a CRT choice and not a debug one. Read out of
+  # the libraries themselves rather than inferred from the naming:
+  # nvsdk_ngx_d.lib carries MSVCRT default-lib directives and nvsdk_ngx_s.lib
+  # carries LIBCMT, so `_d` is the dynamic-CRT build and `_s` the static one.
+  # hdClaude and OpenUSD are both /MD, so linking `_s` gives "mismatch detected
+  # for RuntimeLibrary: value MT_StaticRelease does not match MD_DynamicRelease"
+  # -- which nothing could discover until something actually linked NGX, and
+  # nothing did until 2026-09-08.
+  #
+  # The `_dbg` variants are the debug CRT, so that half follows the
+  # configuration rather than being fixed at the release one.
   set(_ngx_lib_dir "${dlss_SOURCE_DIR}/lib/Windows_x86_64/x64")
-  if(NOT EXISTS "${_ngx_lib_dir}/nvsdk_ngx_s.lib")
+  if(NOT EXISTS "${_ngx_lib_dir}/nvsdk_ngx_d.lib")
     message(FATAL_ERROR
         "hdClaude: the DLSS SDK at ${dlss_SOURCE_DIR} has its headers but not "
-        "${_ngx_lib_dir}/nvsdk_ngx_s.lib. The SDK's layout has changed; "
+        "${_ngx_lib_dir}/nvsdk_ngx_d.lib. The SDK's layout has changed; "
         "cmake/NvidiaDLSS.cmake names the path and has to be corrected rather "
         "than the feature quietly turned off.")
   endif()
@@ -73,7 +82,7 @@ if(EXISTS "${dlss_SOURCE_DIR}/include/nvsdk_ngx_vk.h")
   add_library(hdClaudeNgx INTERFACE)
   target_include_directories(hdClaudeNgx INTERFACE "${dlss_SOURCE_DIR}/include")
   target_link_libraries(hdClaudeNgx INTERFACE
-      "$<IF:$<CONFIG:Debug>,${_ngx_lib_dir}/nvsdk_ngx_s_dbg.lib,${_ngx_lib_dir}/nvsdk_ngx_s.lib>")
+      "$<IF:$<CONFIG:Debug>,${_ngx_lib_dir}/nvsdk_ngx_d_dbg.lib,${_ngx_lib_dir}/nvsdk_ngx_d.lib>")
   target_compile_definitions(hdClaudeNgx INTERFACE HDCLAUDE_HAS_DLSS=1)
 
   # Where the runtime models live, for the support query and for NGX's own

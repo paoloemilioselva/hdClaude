@@ -4559,3 +4559,94 @@ what to point NGX at when a feature refuses to initialise.
 is the configure and the fetch proven, and no more than that: nothing links
 `hdClaudeNgx` yet, so the link itself is still unexercised. The support query of
 phase 12 is what will exercise it.
+
+---
+
+## 2026-09-08 -- NGX answers, and three more things had to be right first
+
+The DLSS support query works, and this machine says:
+
+    DLSS SDK ....... compiled in
+    NGX extensions . 1 instance, 3 device
+    DLSS ........... available
+                     super resolution yes, ray reconstruction yes
+    validation ..... 0 errors, 0 warnings
+
+That is phase 12's subject: NGX initialises against hdClaude's Vulkan context,
+hands over its capability parameters, and is shut down again, leaving nothing
+running. Getting there took three corrections, and each was invisible until the
+step before it was right.
+
+**The library was the static-CRT one.** `cmake/NvidiaDLSS.cmake` linked
+`nvsdk_ngx_s.lib`, and the first thing that actually linked NGX got
+
+    nvsdk_ngx_s.lib(...) : error LNK2038: mismatch detected for 'RuntimeLibrary':
+    value 'MT_StaticRelease' doesn't match value 'MD_DynamicRelease'
+
+`_s` and `_d` are a CRT choice, not a debug one, and the naming does not say so.
+Read out of the libraries rather than guessed: `nvsdk_ngx_d.lib` carries MSVCRT
+default-lib directives and `nvsdk_ngx_s.lib` carries LIBCMT, so `_d` is the
+dynamic-CRT build. hdClaude and OpenUSD are both `/MD`. This is the third defect
+in that file and the second that could only surface once something linked.
+
+**NGX needs its extensions enabled, which is what the provider is for.**
+`VulkanRequirementProvider` was already designed and in `vulkan_context.h` --
+"instance extensions must be known before instance creation, and device
+extensions and features before *device selection*" -- and had no implementations.
+`NVSDK_NGX_VULKAN_RequiredExtensions` names one instance extension and four
+device ones, and without them `NVSDK_NGX_VULKAN_Init_with_ProjectID` answers
+`FAIL_InvalidParameter`. So the test installs the provider before constructing
+the context, which is the arrangement the design specifies and the first thing
+to use it.
+
+**One of the four cannot be enabled.** NGX asks for
+`VK_EXT_buffer_device_address`, which Vulkan 1.2 promoted to
+`VkPhysicalDeviceVulkan12Features::bufferDeviceAddress`. hdClaude enables the
+core feature because ray query and the acceleration structures need it, and the
+specification forbids both at once. The validation layer says it outright:
+
+    vkCreateDevice(): pNext chain includes VkPhysicalDeviceVulkan12Features with
+    bufferDeviceAddress set to VK_TRUE and ppEnabledExtensionNames contains
+    VK_EXT_buffer_device_address
+
+The provider drops it. That is not dropping a requirement: the capability NGX
+wants is present either way, and NGX names the extension because its list was
+written against a Vulkan that had no core form. Worth noting that the validation
+gate found this on the first run -- the same gate that exists because hdCodex
+shipped a frame whose counter reset raced the copy that read it.
+
+**And the project ID has to be a UUID.** `NVSDK_NGX_VULKAN_Init_with_ProjectID`
+with `NVSDK_NGX_ENGINE_TYPE_CUSTOM` validates the string, and answers
+`FAIL_InvalidParameter` for a name -- indistinguishable from every other way that
+call can be wrong, which is why it survived the extension fix. It is a fixed
+UUID for hdClaude now, with a comment saying why it is not the readable
+identifier it looks like it should be.
+
+**What the boundary looks like.** `include/hdclaude/gpu/reconstruction.h` names
+no NVIDIA type: a `ReconstructionSupport` that says what is possible and why not,
+and an `NgxRequirementProvider`. `src/gpu/ngx_support.cpp` is the only
+translation unit that includes an NGX header, its SDK-dependent half is inside
+one `#if HDCLAUDE_HAS_DLSS`, and the stubs below it are what the default build
+compiles. `hdClaudeNgx` is linked PRIVATE to `hdClaudeGpu`, so nothing above that
+library can see the SDK even by accident.
+
+What is deliberately absent is the `ReconstructionBackend` interface itself --
+Resize, Evaluate, ResetHistory. Those describe work phases 10 and 11 have not
+produced anything for, and declaring them now would leave three unimplemented
+virtuals standing in for a phase that is not done. They land with the native
+backend.
+
+**The gate is in two halves and neither asserts DLSS is available.** A test that
+demanded it would fail on every machine without an NVIDIA card, which is exactly
+the coupling the renderer-neutral boundary exists to prevent. What it asserts is
+that the answer is self-consistent -- available implies no reason given,
+unavailable implies one -- that a build with no SDK contributes no extensions and
+claims no support, and that installing the provider on any device leaves
+validation clean. The availability itself is printed, because on this machine the
+answer is the finding.
+
+Both configurations pass all seven suites: `dev` reports
+`NVIDIA DLSS ........ OFF` and the query answers "this build has no NVIDIA DLSS
+SDK", `dev-dlss` reports ON and answers with the capabilities above. A
+`dev-dlss` test preset now exists, which it did not; the configure preset had
+one and there was no way to run the suite against it.

@@ -7,6 +7,7 @@
 
 #include "test_support.h"
 
+#include "hdclaude/gpu/reconstruction.h"
 #include "hdclaude/gpu/vulkan_context.h"
 #include "hdclaude/gpu/vulkan_resources.h"
 
@@ -313,13 +314,104 @@ void TestDeviceLossLatchRefusesWork()
 
 }  // namespace
 
+/// What NGX says about this machine, and that asking cost the renderer nothing.
+///
+/// Two claims, and the second is the one that matters for every build that will
+/// never run DLSS. The support query has to give a *correct* answer -- not a
+/// hopeful one -- and it has to be safe to ask on any device, including one from
+/// another vendor and a build with no SDK at all.
+///
+/// This cannot assert that DLSS is available: whether it is depends on the
+/// machine, and a test that demanded it would fail on every non-NVIDIA
+/// developer's box, which is exactly the coupling the renderer-neutral boundary
+/// exists to prevent. What it asserts instead is that the answer is
+/// *self-consistent* -- available implies a reason of none and unavailable
+/// implies a reason given -- and it prints the answer, because on this machine
+/// the answer is the finding.
+void TestReconstructionSupportIsAnsweredHonestly(const VulkanContext& context)
+{
+    const bool compiledIn = NgxCompiledIn();
+    std::printf("  DLSS SDK ....... %s\n",
+                compiledIn ? "compiled in" : "not in this build");
+
+    // Constructing the provider must be safe with or without the SDK, because
+    // the context installs it during bootstrap before anything knows whether
+    // DLSS will be used.
+    const NgxRequirementProvider provider;
+    if (!provider.Unavailable().empty()) {
+        std::printf("  NGX extensions . unavailable: %s\n",
+                    provider.Unavailable().c_str());
+    } else {
+        const std::vector<const char*> instance = provider.InstanceExtensions();
+        const std::vector<const char*> device =
+            provider.DeviceExtensions(context.PhysicalDevice());
+        std::printf("  NGX extensions . %zu instance, %zu device\n",
+                    instance.size(), device.size());
+        for (const char* name : instance) {
+            std::printf("                   instance: %s\n", name);
+        }
+        for (const char* name : device) {
+            std::printf("                   device:   %s\n", name);
+        }
+    }
+
+    // A provider with nothing to contribute must contribute nothing, whatever
+    // the device. An optional backend that named an extension on a machine it
+    // cannot run on would be forcing a device choice for a feature that will
+    // never be used, which rule R-none-of-this exists to prevent
+    // (docs/dlss-integration.md 2).
+    if (!compiledIn) {
+        CHECK(provider.InstanceExtensions().empty());
+        CHECK(provider.DeviceExtensions(context.PhysicalDevice()).empty());
+        CHECK(!provider.SupportsDevice(context.PhysicalDevice()));
+    }
+
+    const ReconstructionSupport support = QueryNgxSupport(context);
+    std::printf("  DLSS ........... %s\n",
+                support.available ? "available" : support.reason.c_str());
+    if (support.available) {
+        std::printf("                   super resolution %s, "
+                    "ray reconstruction %s\n",
+                    support.superResolution ? "yes" : "no",
+                    support.rayReconstruction ? "yes" : "no");
+        if (support.needsNewerDriver) {
+            std::printf("                   needs driver %u.%u or newer\n",
+                        support.minDriverMajor, support.minDriverMinor);
+        }
+    }
+
+    // Self-consistency, which is the part that can fail on any machine.
+    if (support.available) {
+        CHECK(support.reason.empty());
+    } else {
+        CHECK(!support.reason.empty());
+        CHECK(!support.superResolution);
+        CHECK(!support.rayReconstruction);
+    }
+    // Without the SDK there is nothing to be available.
+    if (!compiledIn) {
+        CHECK(!support.available);
+    }
+}
+
 int main()
 {
     std::printf("hdClaudeGpuTests\n");
 
+    // NGX is installed as a requirement provider *before* the context exists,
+    // which is the whole reason the provider is a construction-time thing: NGX
+    // names instance and device extensions it will not initialise without, and
+    // they have to be enabled when the instance and device are created. The
+    // provider is safe to install unconditionally -- with no SDK it names
+    // nothing, and the context only enables extensions a device actually has,
+    // so a machine that will never run DLSS is unaffected.
+    const NgxRequirementProvider ngxProvider;
+
     std::unique_ptr<VulkanContext> context;
     try {
-        context = std::make_unique<VulkanContext>(TestOptions());
+        VulkanContextOptions options = TestOptions();
+        options.requirementProviders.push_back(&ngxProvider);
+        context = std::make_unique<VulkanContext>(options);
     } catch (const VulkanError& error) {
         std::printf("SKIP: no usable Vulkan ray-query device (%s)\n", error.what());
         return 0;
@@ -359,6 +451,8 @@ int main()
         TestImageCreationChecksFormatSupport(allocator);
         TestMoveSemanticsTransferOwnership(allocator);
     }
+
+    TestReconstructionSupportIsAnsweredHonestly(*context);
 
     // R8: validation errors fail the run. Checked before the device-loss test,
     // which deliberately tears a context down in the lost state.

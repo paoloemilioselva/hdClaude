@@ -80,6 +80,13 @@
       }
     },
     {
+      "name": "dev-dlss",
+      "configurePreset": "dev-dlss",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
       "name": "dev-validation",
       "configurePreset": "dev-validation",
       "output": {

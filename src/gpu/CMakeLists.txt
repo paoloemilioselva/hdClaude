@@ -13,6 +13,7 @@ add_library(hdClaudeGpu STATIC
     compute_pipeline.cpp
     environment_distribution.cpp
     glsl_compiler.cpp
+    ngx_support.cpp
     path_tracer.cpp
     vulkan_context.cpp
     vulkan_memory.cpp
@@ -52,5 +53,15 @@ endif()
 # itself; this is the in-tree location.
 target_compile_definitions(hdClaudeGpu PUBLIC
     HDCLAUDE_SHADER_DIR="${CMAKE_SOURCE_DIR}/shaders")
+
+# The optional NGX backend.
+#
+# Linked PRIVATE, and its HDCLAUDE_HAS_DLSS define reaches only this library:
+# nothing above hdClaudeGpu may see an NVIDIA type or change shape depending on
+# whether the SDK was found (docs/dlss-integration.md 2). Absent, ngx_support.cpp
+# compiles its stubs and every caller behaves the same.
+if(HDCLAUDE_ENABLE_DLSS AND HDCLAUDE_DLSS_AVAILABLE)
+  target_link_libraries(hdClaudeGpu PRIVATE hdClaudeNgx)
+endif()
 
 set_target_properties(hdClaudeGpu PROPERTIES POSITION_INDEPENDENT_CODE ON)
