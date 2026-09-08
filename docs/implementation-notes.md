@@ -4650,3 +4650,67 @@ Both configurations pass all seven suites: `dev` reports
 SDK", `dev-dlss` reports ON and answers with the capabilities above. A
 `dev-dlss` test preset now exists, which it did not; the configure preset had
 one and there was no way to run the suite against it.
+
+---
+
+## 2026-09-08 -- One entry point, and a frame that knows what it is of
+
+Phase 9's first step: `BeginFrame(FrameDescription)` / `EndFrame(FrameHandle)`
+replaces `Render(width, height, camera, settings)` as the entry point. Nothing
+overlaps yet -- the trace still happens inside `BeginFrame` and `EndFrame` hands
+back what it produced -- so the phase gate stays unmet. What lands is the shape
+the rest of the phase needs, and two properties that are worth having on their
+own.
+
+**The invalidation decision is made once.** `FrameDescription` carries
+everything that could invalidate anything -- extents, camera, settings, mode and
+scene revision -- and `InvalidateFor` is the only thing that reads it. The
+design has said so since 2026-09-05 and the reason is a lesson rather than a
+preference: hdCodex's `SetScene()` / `SetShadingMode()` /
+implicit-resize-inside-`Trace()` triad each had to guess what the others implied,
+each guessed wrong differently, and that triad is the direct cause of four
+shipped defects.
+
+The caller's `resetAccumulation` is now an *input* rather than the answer. It
+says what the caller believes; the renderer decides what it knows -- a changed
+resolution, a changed mode, a changed scene revision -- and a caller that forgets
+one of them gets a correct frame anyway. That asymmetry is the whole point, and
+it is what the gate tests: every case asks for `resetAccumulation = false` and is
+right to be overruled.
+
+**A frame carries what it is a frame of.** `FrameResult` holds the extents it was
+rendered at, its own index, and the sample range it added. Nothing re-derives
+those from the renderer's current extents, which is exactly what hdCodex did and
+why a host that resized between submitting a frame and receiving it wrote an
+image of one size into a buffer of another with nothing to say so -- findings A2,
+A1, N1 and N8.
+
+The render pass now checks the returned extents against the buffer it is about to
+write and drops the frame if they disagree. That check cannot fire today, because
+nothing overlaps and the frame is finished before the line runs. It is there now
+so that it is already right when something does, which is the opposite of how the
+four findings above happened.
+
+`EndFrame` on a handle whose frame has already been taken returns an invalid
+result rather than the previous frame's. Handing back a stale image is the
+failure this shape exists to prevent, so it must not be reachable by asking
+twice either -- and the gate asks twice.
+
+**`Render()` stays**, implemented as `EndFrame(BeginFrame(...))`, because every
+test and the whole gallery use it and none of them is interested in frame
+identity. It names no scene revision and no mode, so the invalidation reduces to
+the resize it always did, which is what keeps it exactly the function it was. It
+cannot overlap anything by construction, so it will stay a convenience rather
+than becoming the interactive path.
+
+**Every gallery scene re-renders byte identical**, all eleven at RMS 0, and the
+suite passes at 218 checks. For a change that moves an entry point that is the
+property worth having: nothing about what the renderer computes moved, so
+anything that does move later is attributable to the step that moved it.
+
+What is left of phase 9 is the part the gate is about. Every submit still goes
+through `SubmitImmediate` and is waited on before the call returns, so there is
+one frame in flight and no overlap to measure. Per-slot resources come next, then
+the submit moves into `BeginFrame` and the wait into `EndFrame`, and only then
+can GPU timestamps show frame N+1's trace overlapping frame N's readback across a
+queue -- which is the claim hdCodex could not make.

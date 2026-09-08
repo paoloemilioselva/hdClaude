@@ -111,6 +111,84 @@ std::string ResolveKernelIncludes(const std::filesystem::path& directory,
 std::string LoadKernel(const std::filesystem::path& directory,
                        const std::string& name);
 
+/// Which accumulation contract a frame is rendered under.
+///
+/// The two never share storage and never share history (docs/architecture.md 5).
+/// Interactive reduces sample count and path length; it does not change the
+/// estimator, because a preview that is a different estimator produces
+/// chromatic bias a temporal reconstructor will lock in.
+enum class RenderMode {
+    /// Persistent average, owned by the renderer. What the gallery renders.
+    Reference,
+    /// Per-frame noisy image plus guides, history owned by a reconstruction
+    /// backend. Nothing produces one yet; the mode exists so the frame that
+    /// carries it can be told apart from a reference frame, and so the
+    /// invalidation below can treat a switch between them as the reset it is.
+    Interactive,
+};
+
+/// Everything that could invalidate anything, in one place.
+///
+/// This is the single frame-scoped entry point's argument, and the reason it
+/// exists is a lesson rather than a preference: hdCodex's `SetScene()` /
+/// `SetShadingMode()` / implicit-resize-inside-`Trace()` triad each had to guess
+/// what the others implied, each guessed wrong differently, and that triad is
+/// the direct cause of four shipped defects (docs/lessons-from-hdcodex.md D3).
+/// Carrying the lot in one struct is what lets the invalidation decision be
+/// made once.
+struct FrameDescription {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    RenderCamera camera;
+    RenderSettings settings;
+    RenderMode mode = RenderMode::Reference;
+
+    /// The scene revision this frame is rendered against.
+    ///
+    /// The renderer does not fetch the scene from this -- `SetScene` publishes
+    /// it -- but a frame that names a different revision than the last one
+    /// cannot continue its accumulation, and saying so here is what stops the
+    /// caller having to remember.
+    std::uint64_t sceneRevision = 0;
+};
+
+/// A frame in progress. Returned by BeginFrame and consumed by EndFrame.
+///
+/// Opaque on purpose: it carries the identity the result will be tagged with,
+/// and nothing a caller should read directly.
+struct FrameHandle {
+    std::uint64_t index = 0;
+    bool valid = false;
+};
+
+/// A finished frame, and what it is a frame *of*.
+///
+/// The extents travel with the image rather than being re-derived from whatever
+/// the renderer's current extents happen to be. That is the whole point: a host
+/// that resized between submitting a frame and receiving it would otherwise
+/// write an image of one size into a buffer of another, which is how hdCodex
+/// produced findings A2, A1, N1 and N8.
+struct FrameResult {
+    std::uint64_t index = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+
+    /// The sample range this frame added, for a caller tracking convergence.
+    std::uint32_t firstSample = 0;
+    std::uint32_t sampleCount = 0;
+
+    /// True when the description's accumulation was restarted, whether the
+    /// caller asked for it or the renderer decided it. A caller that tracks its
+    /// own sample count needs to know which happened.
+    bool accumulationReset = false;
+
+    /// Linear RGBA, row-major, row 0 at the *bottom* -- Hydra's render-buffer
+    /// convention, so the AOV write is a straight copy.
+    std::vector<float> image;
+
+    bool Valid() const { return width != 0 && height != 0 && !image.empty(); }
+};
+
 class PathTracer {
   public:
     PathTracer(const VulkanContext& context, VulkanAllocator& allocator,
@@ -127,12 +205,34 @@ class PathTracer {
     /// the scene is the index here.
     void SetScene(const Scene& scene, const std::vector<CompiledMaterial>& materials);
 
+    /// Begin a frame. The one entry point; nothing else invalidates anything.
+    ///
+    /// Every decision this frame implies -- whether the resolution changed,
+    /// whether the accumulation can continue, whether the mode switched -- is
+    /// taken here, from the description alone, and taken once.
+    ///
+    /// The trace itself still happens inside this call and `EndFrame` only
+    /// hands back what it produced. That is phase 9's first step and not its
+    /// last: the split exists so that moving the submit here and the wait there
+    /// changes the renderer and not its callers. Until that lands there is no
+    /// overlap, and the phase 9 gate stays unmet.
+    FrameHandle BeginFrame(const FrameDescription& description);
+
+    /// Finish a frame and take its result, tagged with the extents it was
+    /// rendered at.
+    FrameResult EndFrame(FrameHandle handle);
+
     /// Render `settings.samplesPerPixel` samples and return the resolved image
     /// as linear RGBA floats, row-major.
     ///
     /// Row 0 is the *bottom* of the image. That is Hydra's render-buffer
     /// convention, so the AOV write is a straight copy and nothing downstream
     /// has to remember to flip.
+    ///
+    /// A convenience over BeginFrame/EndFrame for a caller with no interest in
+    /// frame identity, which is every test and the gallery. It cannot overlap
+    /// anything by construction, so it will stay a convenience rather than
+    /// becoming the interactive path.
     std::vector<float> Render(std::uint32_t width, std::uint32_t height,
                               const RenderCamera& camera,
                               const RenderSettings& settings);
@@ -153,6 +253,21 @@ class PathTracer {
     std::vector<std::uint32_t> MaterialCounts() const;
 
   private:
+    /// The invalidation decision, made once and in one place.
+    ///
+    /// Returns whether the accumulation has to restart. A caller may also ask
+    /// for a restart through `RenderSettings::resetAccumulation`; this decides
+    /// the cases the caller cannot be relied on to notice.
+    bool InvalidateFor(const FrameDescription& description);
+
+    /// The trace itself: the body the old Render() was, unchanged.
+    ///
+    /// Private because it takes no frame identity and makes no invalidation
+    /// decision -- both were lifted out of it, which is the whole of this step.
+    std::vector<float> Trace(std::uint32_t width, std::uint32_t height,
+                             const RenderCamera& camera,
+                             const RenderSettings& settings);
+
     void EnsureResolution(std::uint32_t width, std::uint32_t height);
     void UploadTextures(const std::vector<TextureImage>& textures);
     /// Sample the colour matching functions and the illuminant, fit the
@@ -234,6 +349,21 @@ class PathTracer {
     // Path state, sized to the current resolution.
     std::uint32_t _width = 0;
     std::uint32_t _height = 0;
+
+    // --- Frame identity and the last description accepted -------------------
+    //
+    // Held so the next frame can be compared against it. Nothing else reads
+    // them: a frame's own extents travel in its FrameResult, because
+    // re-deriving them from here is precisely the mistake this records exist to
+    // make impossible.
+    std::uint64_t _frameIndex = 0;
+    bool _hasPreviousFrame = false;
+    RenderMode _previousMode = RenderMode::Reference;
+    std::uint64_t _previousSceneRevision = 0;
+
+    /// Filled by BeginFrame, taken by EndFrame. One frame is in flight at a
+    /// time in this step, which is why this is a single slot rather than a ring.
+    FrameResult _pendingFrame;
     VulkanBuffer _frameUniforms;
     VulkanBuffer _origin, _direction, _throughput, _radiance, _pixel, _rng;
     VulkanBuffer _scatterPdf;

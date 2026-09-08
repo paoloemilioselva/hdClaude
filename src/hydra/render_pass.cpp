@@ -291,10 +291,24 @@ void HdClaudeRenderPass::_Execute(
                   settings.firstSample + settings.samplesPerPixel,
                   _targetSamples, settings.maxBounces);
 
+    // The frame-scoped entry point, not a bare Render.
+    //
+    // Everything that could invalidate anything travels in one struct and the
+    // decision is taken once, inside the renderer -- including the ones this
+    // pass already tracks, so the two cannot disagree about what a resize or a
+    // scene revision implies (docs/architecture.md 4).
+    hdclaude::FrameDescription description;
+    description.width = width;
+    description.height = height;
+    description.camera = framing.camera;
+    description.settings = settings;
+    description.sceneRevision = framing.sceneRevision;
+    description.mode = hdclaude::RenderMode::Reference;
+
     const auto start = std::chrono::steady_clock::now();
-    std::vector<float> image;
+    hdclaude::FrameResult frame;
     try {
-        image = tracer->Render(width, height, framing.camera, settings);
+        frame = tracer->EndFrame(tracer->BeginFrame(description));
     } catch (const std::exception& error) {
         HdClaudeTrace("path trace failed: %s", error.what());
         TF_RUNTIME_ERROR("hdClaude: the path trace failed: %s", error.what());
@@ -308,6 +322,28 @@ void HdClaudeRenderPass::_Execute(
         std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - start)
             .count();
+
+    // What the frame is a frame *of*, taken from the frame and not from
+    // whatever the current extents happen to be.
+    //
+    // This is the check whose absence produced hdCodex A2, A1, N1 and N8: a
+    // host that resized between the submit and the result would otherwise have
+    // an image of one size written into a buffer of another, and nothing would
+    // say so. It cannot fire today, because nothing overlaps yet and the frame
+    // is finished before this line runs. It is here now so that it is already
+    // right when something does.
+    if (!frame.Valid() || frame.width != width || frame.height != height) {
+        HdClaudeTrace("frame %llu was rendered at %ux%u but the buffer is now "
+                      "%ux%u; dropping it",
+                      static_cast<unsigned long long>(frame.index),
+                      frame.width, frame.height, width, height);
+        markConverged(noteFailure());
+        return;
+    }
+    // Non-const: the exposure control below scales it in place, on the
+    // resolved image, so the accumulated film keeps the radiance the renderer
+    // computed.
+    std::vector<float>& image = frame.image;
 
     if (HdClaudeTraceEnabled()) {
         // What the tracer actually produced, before the AOV and any display

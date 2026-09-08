@@ -2925,6 +2925,109 @@ int main()
             CHECK(Luminance(t1013) < 0.02f);
         }
 
+        // --- A frame decides its own invalidation, and says what it is of ----
+        //
+        // The single frame-scoped entry point exists because independent
+        // setters do not work: hdCodex's SetScene / SetShadingMode /
+        // implicit-resize-inside-Trace triad each had to guess what the others
+        // implied, each guessed wrong differently, and that triad is the direct
+        // cause of four shipped defects (docs/lessons-from-hdcodex.md D3).
+        //
+        // So the claim under test is not that BeginFrame renders -- every test
+        // above already proves that -- but that a caller which *forgets* to ask
+        // for a reset still gets one whenever the renderer knows the
+        // accumulation cannot continue. Each case below asks for
+        // `resetAccumulation = false` and is right to be overruled.
+        {
+            Scene scene;
+            scene.prototypes.push_back(MakeQuad());
+            scene.instances.push_back({0, Transform3x4{}, 0, true});
+            tracer.SetScene(scene, {materials[0]});
+
+            RenderSettings frameSettings = settings;
+            frameSettings.samplesPerPixel = 4;
+            frameSettings.maxBounces = 1;
+
+            hdclaude::FrameDescription description;
+            description.width = kWidth;
+            description.height = kHeight;
+            description.camera = LookDownZ(4.0f);
+            description.settings = frameSettings;
+            description.sceneRevision = 1;
+
+            // The first frame of all restarts, because there is nothing to
+            // continue.
+            description.settings.resetAccumulation = false;
+            hdclaude::FrameResult first =
+                tracer.EndFrame(tracer.BeginFrame(description));
+            CHECK(first.Valid());
+            CHECK(first.accumulationReset);
+
+            // A second frame that changes nothing may continue, and the
+            // renderer must not invent a reason to restart it.
+            description.settings.firstSample = 4;
+            hdclaude::FrameResult second =
+                tracer.EndFrame(tracer.BeginFrame(description));
+            CHECK(second.Valid());
+            CHECK(!second.accumulationReset);
+
+            // Its identity is its own, and increasing.
+            CHECK(second.index > first.index);
+
+            // What it is a frame *of* travels with it. Re-deriving this from
+            // the renderer's current extents is what hdCodex did, and it is why
+            // a host that resized mid-frame got an image of the wrong size with
+            // nothing to say so.
+            CHECK_EQ(second.width, kWidth);
+            CHECK_EQ(second.height, kHeight);
+            CHECK_EQ(second.image.size(),
+                     std::size_t(kWidth) * kHeight * 4);
+            CHECK_EQ(second.firstSample, 4u);
+            CHECK_EQ(second.sampleCount, frameSettings.samplesPerPixel);
+
+            // A different resolution cannot continue an accumulation of the
+            // old one, whatever the caller believes.
+            description.width = kWidth / 2;
+            description.height = kHeight / 2;
+            hdclaude::FrameResult resized =
+                tracer.EndFrame(tracer.BeginFrame(description));
+            CHECK(resized.Valid());
+            CHECK(resized.accumulationReset);
+            CHECK_EQ(resized.width, kWidth / 2);
+            CHECK_EQ(resized.image.size(),
+                     std::size_t(kWidth / 2) * (kHeight / 2) * 4);
+
+            // Nor can a different scene.
+            description.sceneRevision = 2;
+            hdclaude::FrameResult revised =
+                tracer.EndFrame(tracer.BeginFrame(description));
+            CHECK(revised.accumulationReset);
+
+            // Nor a switch between the two accumulation contracts, which never
+            // share storage or history.
+            description.mode = hdclaude::RenderMode::Interactive;
+            hdclaude::FrameResult switched =
+                tracer.EndFrame(tracer.BeginFrame(description));
+            CHECK(switched.accumulationReset);
+
+            std::printf("  frames: %llu..%llu, resets on resize %s, scene %s, "
+                        "mode %s\n",
+                        static_cast<unsigned long long>(first.index),
+                        static_cast<unsigned long long>(switched.index),
+                        resized.accumulationReset ? "yes" : "no",
+                        revised.accumulationReset ? "yes" : "no",
+                        switched.accumulationReset ? "yes" : "no");
+
+            // A handle whose frame has already been taken yields nothing, not
+            // the frame before it. Handing back a stale image is the failure
+            // this whole shape exists to make impossible, so it must not be
+            // reachable by asking twice either.
+            hdclaude::FrameHandle handle = tracer.BeginFrame(description);
+            CHECK(tracer.EndFrame(handle).Valid());
+            CHECK(!tracer.EndFrame(handle).Valid());
+            CHECK(!tracer.EndFrame(hdclaude::FrameHandle{}).Valid());
+        }
+
         // --- An instance transform is the same as baking it ------------------
         //
         // The same surface in the same place in the world, expressed two ways:

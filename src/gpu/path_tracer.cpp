@@ -953,12 +953,96 @@ std::vector<std::uint32_t> PathTracer::MaterialCounts() const
     return counts;
 }
 
+bool PathTracer::InvalidateFor(const FrameDescription& description)
+{
+    // Everything that could invalidate anything, decided here and nowhere else.
+    //
+    // The caller's own `resetAccumulation` is an input rather than the answer.
+    // It says what the caller believes; these say what the renderer knows, and
+    // a caller that forgets one of them gets a correct frame anyway. That
+    // asymmetry is the point: hdCodex's independent setters each had to guess
+    // what the others implied and each guessed wrong differently
+    // (docs/lessons-from-hdcodex.md D3).
+    const bool resized = description.width != _width || description.height != _height;
+    const bool modeChanged =
+        _hasPreviousFrame && description.mode != _previousMode;
+    const bool sceneChanged =
+        _hasPreviousFrame && description.sceneRevision != _previousSceneRevision;
+
+    // The resize is the only one with work attached. The others invalidate an
+    // accumulation that is about to be cleared anyway, so they need no more
+    // than to be noticed.
+    if (resized) {
+        EnsureResolution(description.width, description.height);
+    }
+
+    _previousMode = description.mode;
+    _previousSceneRevision = description.sceneRevision;
+    _hasPreviousFrame = true;
+
+    return description.settings.resetAccumulation || resized || modeChanged ||
+           sceneChanged;
+}
+
+FrameHandle PathTracer::BeginFrame(const FrameDescription& description)
+{
+    _context.RequireLive("PathTracer::BeginFrame");
+
+    FrameHandle handle;
+    handle.index = ++_frameIndex;
+    handle.valid = true;
+
+    RenderSettings settings = description.settings;
+    settings.resetAccumulation = InvalidateFor(description);
+
+    _pendingFrame = FrameResult{};
+    _pendingFrame.index = handle.index;
+    _pendingFrame.width = description.width;
+    _pendingFrame.height = description.height;
+    _pendingFrame.firstSample = settings.firstSample;
+    _pendingFrame.sampleCount = settings.samplesPerPixel;
+    _pendingFrame.accumulationReset = settings.resetAccumulation;
+    _pendingFrame.image =
+        Trace(description.width, description.height, description.camera, settings);
+
+    return handle;
+}
+
+FrameResult PathTracer::EndFrame(FrameHandle handle)
+{
+    if (!handle.valid || handle.index != _pendingFrame.index) {
+        // A handle from a frame that was never begun, or one that has already
+        // been taken. Returning an empty result rather than the previous
+        // frame's is what stops a caller writing a stale image into a buffer
+        // and never knowing.
+        return FrameResult{};
+    }
+    FrameResult result = std::move(_pendingFrame);
+    _pendingFrame = FrameResult{};
+    return result;
+}
+
 std::vector<float> PathTracer::Render(std::uint32_t width, std::uint32_t height,
                                       const RenderCamera& camera,
                                       const RenderSettings& settings)
 {
-    _context.RequireLive("PathTracer::Render");
-    EnsureResolution(width, height);
+    FrameDescription description;
+    description.width = width;
+    description.height = height;
+    description.camera = camera;
+    description.settings = settings;
+    // No scene revision and no mode: a caller using this overload is not
+    // tracking either, so every frame names the same ones and the invalidation
+    // above reduces to the resize it would have done anyway. That is what keeps
+    // this exactly the function it was.
+    return EndFrame(BeginFrame(description)).image;
+}
+
+std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
+                                     const RenderCamera& camera,
+                                     const RenderSettings& settings)
+{
+    _context.RequireLive("PathTracer::Trace");
 
     const std::uint32_t paths = width * height;
 
