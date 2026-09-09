@@ -193,16 +193,61 @@ What is shipped is the radical inverse in bases 2 and 3, indexed by the frame,
 offset to `[-0.5, 0.5]` and measured from the pixel centre in render pixels;
 `raygen` displaces the camera ray by it and `FrameResult::jitter` reports the
 offset that was used rather than a sequence a backend is expected to reproduce.
-It is handed to DLSS as `InJitterOffsetX/Y` unchanged.
+A caller may state the offset instead of taking that sequence, by setting
+`RenderSettings::fixedJitter`, and it is then used exactly as given — which is
+what a host already driving a temporal pattern of its own needs, and what makes
+the measurement below possible. A reference render ignores a stated offset and
+says so once: an average of hundreds of independently jittered samples has no
+single offset it could report.
 
-**Its sign is an open question.** DLSS documents the jitter as the offset
-applied to the projection, and hdClaude applies its offset to the ray; whether
-those two agree in sign is not something any instrument in the suite can
-currently distinguish, because a sign error in a per-frame jitter shows up as
-softening across many frames rather than as a displacement in one. It is
-recorded in [roadmap.md](roadmap.md) as an open question and belongs to the same
-measurement as the rest of phase 13's gate — SSIM and temporal stability against
-the converged reference — which is the only thing that can answer it.
+**It is handed to DLSS negated**, and that is the one translation on this
+boundary that is not a unit conversion. hdClaude's jitter says where the sample
+*landed*, measured from the pixel centre. DLSS asks for something else that is
+also called a jitter: "the jitter applied to the projection matrix", by the
+recipe `ProjectionMatrix.M[2][0] += ProjectionJitter.X` (DLSS Programming Guide
+3.7.2, 3.7.3). Offsetting a projection by `+d` moves the rendered content `+d`
+across the screen, so the sample a pixel takes moves `-d`. The two numbers are
+the same displacement seen from opposite ends.
+
+The axes need no flip on top of that. The guide asks for the co-ordinate system
+the motion vectors are in (3.7.3, point 4), and both hdClaude's motion vectors
+and the images it hands over are in the row order of those images — DLSS never
+learns which way is up, only that everything it is given agrees.
+
+### How the sign was settled
+
+It had been an open question, and the reason it survived is worth keeping: a
+reversed sign does not break the image. Over a Halton sequence the errors are
+symmetric about the pixel centre, so the damage is a softening, and nothing
+distinguishes it from the softening a reconstructor legitimately produces.
+
+Hold the offset still and it stops being a blur and becomes a **displacement**,
+of twice the offset — DLSS resolves its history at the pixel centre by shifting
+it by the jitter it was told, and a reversed sign shifts it the wrong way by
+exactly as much as the samples were already displaced. At half a pixel on each
+axis that is a whole pixel on each axis.
+
+SSIM cannot see it. On the test scene — a sphere and a backdrop lit by one rect
+light — SSIM against the converged reference reads 0.6675 aligned and 0.6655 a
+whole pixel out, two parts in a thousand, and at one sample a frame the reversal
+moves the DLAA figure by 0.004. A metric that answers the same either way is not
+an instrument. What answers is measuring the displacement itself:
+`hdclaude::EstimateShift` solves the Lucas-Kanade normal equations on a bilinear
+warp and returns how far one image has moved relative to another, in pixels,
+checked in the core suite against shifts known in closed form (recovered to
+about 0.002 px).
+
+Measured on an RTX 5060 Ti, 256x256, eight frames of 128 samples each at a held
+offset of (0.5, 0.5):
+
+| Sign handed to NGX | Displacement from the converged render |
+|---|---|
+| Negated, as shipped | **0.1302 px** |
+| Passed through, as it was | 1.3934 px |
+
+1.3934 is close to the 1.4142 a whole pixel on each axis would be, and short of
+it because DLSS's resolve is not a pure translation. The gate asserts under
+0.25 px, which no tolerance could be tuned to let the reversed sign through.
 
 ## 6. Reference mode is untouched
 
@@ -246,4 +291,20 @@ visible, the bug is still the finding.
 
 Practically: every reconstruction change is evaluated against the **converged
 reference** by SSIM and by a temporal-stability metric, never by eye against the
-previous reconstruction.
+previous reconstruction. Both live in `hdclaude::` core with no Vulkan and no
+OpenUSD, so their closed forms are checked on any host rather than only ever
+exercised through a render, and both are stated as comparisons rather than
+thresholds — the reconstructed frame must be a better picture of the converged
+reference than the frame it was made from, and the reconstructed sequence must
+be steadier than the sequence it was made from. Neither claim can be tuned
+without making the renderer worse. A third, `EstimateShift`, answers where a
+picture sits rather than how good it is; §5 says why that turned out to be a
+question SSIM could not be asked.
+
+Measured on an RTX 5060 Ti at 256x256, DLAA at native resolution over a
+twenty-four frame sequence of one sample each: SSIM against the converged
+reference 0.3755, against 0.0154 for the unreconstructed frame it was made
+from; temporal instability 0.0252 against 0.7265. The SSIM is low in absolute
+terms and is meant to be — a single path-traced sample is not the aliased
+raster frame DLSS was trained on, which is what Ray Reconstruction is for
+(phase 14).

@@ -73,14 +73,24 @@ struct RenderCamera {
 /// unlearned when real lights land.
 struct RenderSettings {
     /// The sub-pixel offset every camera ray of this frame is displaced by,
-    /// in pixels, and whether to use it at all.
+    /// measured from the pixel centre in pixels, and whether to use it at all.
     ///
     /// A reference render leaves this off and jitters each sample randomly,
     /// which is right for an estimator that will average hundreds of them. A
     /// reconstruction backend cannot work that way: it is given one sample and
-    /// must be *told* where in the pixel it landed, so the offset becomes a
-    /// known low-discrepancy sequence indexed by the frame and travels out on
-    /// the FrameResult.
+    /// must be *told* where in the pixel it landed, so an interactive frame's
+    /// offset is a known low-discrepancy sequence indexed by the frame and
+    /// travels out on the FrameResult.
+    ///
+    /// Setting `fixedJitter` on an interactive frame states the offset instead
+    /// of asking for that sequence, and it is then used exactly as given. A
+    /// reference render ignores it and says so: there is no single offset an
+    /// average of hundreds of independently jittered samples could report.
+    ///
+    /// The axes are the film's, so `+y` is the direction row indices increase
+    /// in, which is upward in the picture (row 0 is the bottom, following
+    /// Hydra). The offset should stay within +/-0.5 so a sample stays inside
+    /// its own pixel.
     float jitter[2] = {0.0f, 0.0f};
     bool fixedJitter = false;
 
@@ -99,7 +109,24 @@ struct RenderSettings {
     /// Clear the film before tracing. False continues an accumulation, which
     /// is only correct when the scene, the camera and the resolution are all
     /// unchanged since the previous call.
+    ///
+    /// Read in reference mode only. An interactive frame's film holds one
+    /// frame's samples and restarts every frame by contract
+    /// (docs/architecture.md 5), so there is no accumulation there to continue
+    /// and nothing for this to say.
     bool resetAccumulation = true;
+
+    /// This frame shares no history with the last: a camera cut, a teleport, a
+    /// deliberate restart.
+    ///
+    /// Separate from `resetAccumulation`, and the separation is the point. A
+    /// camera that *moved* restarts a reference accumulation -- the film was an
+    /// average of a different integral -- but leaves a reconstructor's history
+    /// perfectly valid, because motion vectors are exactly what carries it
+    /// forward. A cut leaves nothing to carry. The renderer decides this for
+    /// itself on a resize, a mode switch, a changed scene or a changed
+    /// reconstruction plan; this is for the cases only the caller can know.
+    bool resetHistory = false;
 
     float environmentColor[3] = {0.30f, 0.38f, 0.52f};
     /// Direction toward the stand-in sun, at 70 degrees of elevation for a
@@ -678,6 +705,12 @@ class PathTracer {
     float _previousWorldToClip[16] = {1, 0, 0, 0, 0, 1, 0, 0,
                                       0, 0, 1, 0, 0, 0, 0, 1};
     bool _hasPreviousClip = false;
+
+    /// Whether a reference render has already been told that the fixed
+    /// sub-pixel offset it asked for is not something a reference render has.
+    /// Said once rather than once a frame, because a host that does it does it
+    /// every frame and a message per frame would bury everything else.
+    bool _warnedReferenceJitter = false;
 
     /// The last frame's history-reset decision; see InvalidateFor.
     bool _historyReset = false;

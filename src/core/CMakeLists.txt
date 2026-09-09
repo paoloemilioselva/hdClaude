@@ -11,6 +11,7 @@ add_library(hdClaudeCore STATIC
     curve_sweep.cpp
     display.cpp
     hash.cpp
+    image_metrics.cpp
     shader_cache.cpp
     spectrum.cpp
 )

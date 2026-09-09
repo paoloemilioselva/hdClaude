@@ -4,6 +4,7 @@
 #include "hdclaude/core/shader_cache.h"
 #include "hdclaude/core/curve_sweep.h"
 #include "hdclaude/core/display.h"
+#include "hdclaude/core/image_metrics.h"
 #include "hdclaude/core/spectrum.h"
 
 #include <algorithm>
@@ -816,6 +817,233 @@ void TestCurveSweepRefusesWhatItCannotSweep()
     std::printf("  curve sweep refuses bad input by name\n");
 }
 
+/// SSIM against the cases where its value is known without measuring it.
+///
+/// A metric that is only ever run on renders can be wrong in a direction that
+/// makes every render look fine, and nothing would say so. These are the
+/// positions the definition pins down: an image against itself, an image
+/// against a scaled copy of itself, an image against noise, and an image
+/// against a blurred version of itself -- which is the one that matters, since
+/// it is the failure a reconstructor actually has.
+void TestSsimMatchesItsDefinition()
+{
+    constexpr std::uint32_t kSize = 64;
+    constexpr std::size_t kPixels = std::size_t(kSize) * kSize;
+
+    // A structured image: a diagonal ramp with a bright square in it and a fine
+    // checker over the whole of it, so there is a gradient, an edge and
+    // high-frequency detail. A flat field would make every term of the metric
+    // degenerate at once, and a smooth one would leave a blur nothing to
+    // destroy.
+    std::vector<float> image(kPixels * 4, 0.0f);
+    for (std::uint32_t y = 0; y < kSize; ++y) {
+        for (std::uint32_t x = 0; x < kSize; ++x) {
+            const std::size_t index = (std::size_t(y) * kSize + x) * 4;
+            const float ramp = float(x + y) / float(2 * kSize);
+            const bool square = x > 20 && x < 44 && y > 20 && y < 44;
+            const bool checker = ((x / 2) + (y / 2)) % 2 == 0;
+            const float value =
+                (square ? 0.9f : ramp) + (checker ? 0.05f : -0.05f);
+            image[index + 0] = value;
+            image[index + 1] = value;
+            image[index + 2] = value;
+            image[index + 3] = 1.0f;
+        }
+    }
+
+    // Identical images are exactly one: every term of the product is its own
+    // maximum, and no floating-point slack is involved because the numerator
+    // and the denominator are literally the same expression.
+    const double same =
+        hdclaude::Ssim(image.data(), image.data(), kSize, kSize);
+    CHECK(std::abs(same - 1.0) < 1e-12);
+
+    // A small constant added everywhere leaves the structure exactly as it was
+    // and moves the luminance term alone, so the result is below one and very
+    // close to it.
+    std::vector<float> brighter = image;
+    for (std::size_t i = 0; i < kPixels; ++i) {
+        for (int c = 0; c < 3; ++c) {
+            brighter[i * 4 + std::size_t(c)] += 0.02f;
+        }
+    }
+    const double offset =
+        hdclaude::Ssim(image.data(), brighter.data(), kSize, kSize);
+    CHECK(offset < 1.0);
+    CHECK(offset > 0.9);
+
+    // A blur keeps the luminance and destroys the detail, so it must score
+    // below a shift that kept the detail and moved the luminance a little.
+    // This is the ordering a reconstruction metric lives or dies on: if a
+    // blurred image scored higher than a slightly shifted one, the metric would
+    // reward exactly the failure it exists to catch. How much of each is
+    // arbitrary; that blur is punished harder than a shift of comparable
+    // magnitude is not.
+    std::vector<float> blurred = image;
+    for (std::uint32_t y = 1; y + 1 < kSize; ++y) {
+        for (std::uint32_t x = 1; x + 1 < kSize; ++x) {
+            for (int c = 0; c < 3; ++c) {
+                float sum = 0.0f;
+                for (int dy = -1; dy <= 1; ++dy) {
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const std::size_t index =
+                            ((std::size_t(y) + std::size_t(dy)) * kSize +
+                             std::size_t(x) + std::size_t(dx)) *
+                            4;
+                        sum += image[index + std::size_t(c)];
+                    }
+                }
+                blurred[(std::size_t(y) * kSize + x) * 4 + std::size_t(c)] =
+                    sum / 9.0f;
+            }
+        }
+    }
+    const double blur =
+        hdclaude::Ssim(image.data(), blurred.data(), kSize, kSize);
+    CHECK(blur < offset);
+    CHECK(blur > 0.0);
+
+    // Uncorrelated noise of the same mean scores near nothing. Deterministic
+    // noise, because a test that fails one run in fifty is not a test.
+    std::vector<float> noise(kPixels * 4, 1.0f);
+    std::uint32_t state = 0x12345678u;
+    for (std::size_t i = 0; i < kPixels; ++i) {
+        state = state * 1664525u + 1013904223u;
+        const float value = float(state >> 8) / float(1u << 24);
+        for (int c = 0; c < 3; ++c) {
+            noise[i * 4 + std::size_t(c)] = value;
+        }
+    }
+    const double random =
+        hdclaude::Ssim(image.data(), noise.data(), kSize, kSize);
+    CHECK(random < blur);
+    CHECK(random < 0.3);
+
+    std::printf("  ssim: identical %.6f, offset %.4f, blurred %.4f, noise %.4f\n",
+                same, offset, blur, random);
+
+    // An image too small for the window has no position where the window fits,
+    // and says so rather than inventing edge pixels.
+    CHECK_EQ(hdclaude::Ssim(image.data(), image.data(), 4, 4), 0.0);
+}
+
+/// Temporal instability against sequences whose flicker is known by
+/// construction.
+void TestTemporalInstabilityMeasuresFlicker()
+{
+    constexpr std::uint32_t kSize = 8;
+    constexpr std::size_t kPixels = std::size_t(kSize) * kSize;
+
+    const auto flat = [](float value) {
+        std::vector<float> frame(kPixels * 4, 1.0f);
+        for (std::size_t i = 0; i < kPixels; ++i) {
+            for (int c = 0; c < 3; ++c) {
+                frame[i * 4 + std::size_t(c)] = value;
+            }
+        }
+        return frame;
+    };
+
+    // A sequence that does not change does not flicker.
+    const std::vector<std::vector<float>> still = {flat(0.5f), flat(0.5f),
+                                                   flat(0.5f)};
+    CHECK_EQ(hdclaude::TemporalInstability(still, kSize, kSize), 0.0);
+
+    // One that alternates between two values flickers by exactly the ratio of
+    // the swing to the mean: 0.4 and 0.6 change by 0.2 about a mean of 0.5,
+    // which is 0.4. A closed form, so an implementation that averaged the wrong
+    // way or normalised by the wrong thing cannot pass it.
+    const std::vector<std::vector<float>> alternating = {flat(0.4f), flat(0.6f),
+                                                         flat(0.4f), flat(0.6f)};
+    const double flicker =
+        hdclaude::TemporalInstability(alternating, kSize, kSize);
+    CHECK_NEAR(flicker, 0.4, 1e-6);
+
+    // And a sequence of the same swing at twice the brightness flickers the
+    // same amount, because the measure is relative: a reconstructor is not more
+    // stable for having been given a darker image.
+    const std::vector<std::vector<float>> brighter = {flat(0.8f), flat(1.2f),
+                                                      flat(0.8f), flat(1.2f)};
+    CHECK_NEAR(hdclaude::TemporalInstability(brighter, kSize, kSize), 0.4, 1e-6);
+
+    // A black sequence does not flicker, rather than dividing by zero.
+    const std::vector<std::vector<float>> black = {flat(0.0f), flat(0.0f)};
+    CHECK_EQ(hdclaude::TemporalInstability(black, kSize, kSize), 0.0);
+
+    std::printf("  temporal: still 0, alternating %.4f (expected 0.4)\n", flicker);
+}
+
+/// The displacement estimator against shifts that are known exactly.
+///
+/// The image is a product of two sinusoids of different, coprime-ish periods,
+/// which makes this a closed form rather than a resampling: the shifted image
+/// is *evaluated* at the shifted coordinates instead of being interpolated from
+/// the unshifted one, so nothing the estimator is asked to recover has been
+/// smeared by the way the test built its input. The periods are long enough
+/// that a shift of a whole pixel is unambiguous -- a fine checker would let a
+/// one-pixel shift be mistaken for no shift at all, which is a property of the
+/// picture and not of the estimator.
+void TestShiftEstimatorRecoversAKnownDisplacement()
+{
+    constexpr std::uint32_t kSize = 96;
+
+    const auto field = [](double x, double y) {
+        return 0.5 + 0.35 * std::sin(2.0 * 3.14159265358979323846 * x / 23.0) *
+                         std::cos(2.0 * 3.14159265358979323846 * y / 17.0);
+    };
+
+    const auto build = [&](double dx, double dy) {
+        std::vector<float> image(std::size_t(kSize) * kSize * 4, 1.0f);
+        for (std::uint32_t y = 0; y < kSize; ++y) {
+            for (std::uint32_t x = 0; x < kSize; ++x) {
+                const auto value = float(field(x + dx, y + dy));
+                const std::size_t index = (std::size_t(y) * kSize + x) * 4;
+                image[index + 0] = value;
+                image[index + 1] = value;
+                image[index + 2] = value;
+            }
+        }
+        return image;
+    };
+
+    const std::vector<float> reference = build(0.0, 0.0);
+
+    // An image against itself has not moved, and the estimator says so exactly
+    // rather than to within something.
+    const hdclaude::ImageShift still = hdclaude::EstimateShift(
+        reference.data(), reference.data(), kSize, kSize);
+    CHECK(still.valid);
+    CHECK(still.Magnitude() < 1e-9);
+
+    // The tolerance is not tuned: a twentieth of a pixel is an order of
+    // magnitude below the half-pixel that would matter to anything asking this
+    // question, and what is left at that scale is the bilinear resampling the
+    // estimator does internally, not an error in the answer.
+    constexpr double kTolerance = 0.05;
+
+    struct Case {
+        double dx;
+        double dy;
+    };
+    const Case cases[] = {{0.37, -0.62}, {1.0, 0.0}, {0.0, -1.0}, {-0.5, 0.5}};
+    for (const Case& one : cases) {
+        const std::vector<float> moved = build(one.dx, one.dy);
+        const hdclaude::ImageShift found = hdclaude::EstimateShift(
+            reference.data(), moved.data(), kSize, kSize);
+        CHECK(found.valid);
+        CHECK_NEAR(found.dx, one.dx, kTolerance);
+        CHECK_NEAR(found.dy, one.dy, kTolerance);
+        std::printf("  shift (%+.2f %+.2f) recovered as (%+.4f %+.4f)\n",
+                    one.dx, one.dy, found.dx, found.dy);
+    }
+
+    // A flat field has moved by an amount nothing can recover, and the
+    // estimator abstains rather than reporting the zero that happens to fall
+    // out of the arithmetic.
+    const std::vector<float> flat(std::size_t(kSize) * kSize * 4, 0.5f);
+    CHECK(!hdclaude::EstimateShift(flat.data(), flat.data(), kSize, kSize).valid);
+}
+
 }  // namespace
 
 int main()
@@ -847,5 +1075,8 @@ int main()
     TestCurveSweepIsARadiusFromItsAxis();
     TestCurveSweepIndicesAreInRange();
     TestCurveSweepRefusesWhatItCannotSweep();
+    TestSsimMatchesItsDefinition();
+    TestTemporalInstabilityMeasuresFlicker();
+    TestShiftEstimatorRecoversAKnownDisplacement();
     return hdclaude_test::Summarize("hdClaudeCoreTests");
 }

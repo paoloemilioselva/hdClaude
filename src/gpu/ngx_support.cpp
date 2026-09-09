@@ -389,8 +389,26 @@ class NgxBackend final : public ReconstructionBackend {
         eval.Feature.pInOutput = &output;
         eval.pInDepth = &depth;
         eval.pInMotionVectors = &motion;
-        eval.InJitterOffsetX = frame.jitterX;
-        eval.InJitterOffsetY = frame.jitterY;
+        // Negated, and this is the one translation on this boundary that is not
+        // a unit conversion.
+        //
+        // hdClaude's jitter is where the sample *landed*, measured from the
+        // pixel centre (the contract on ReconstructionFrame). DLSS asks for
+        // something else that is also called a jitter: "the jitter applied to
+        // the projection matrix", by the recipe
+        // `ProjectionMatrix.M[2][0] += ProjectionJitter.X` (DLSS Programming
+        // Guide 3.7.2, 3.7.3). Offsetting a projection by +d moves the rendered
+        // content +d across the screen, so the sample a pixel takes moves -d.
+        // The two numbers are the same displacement seen from opposite ends,
+        // and they differ in sign.
+        //
+        // The axes need no flip on top of that. The guide asks for the
+        // co-ordinate system the motion vectors are in, and both hdClaude's
+        // motion vectors and the images it hands over are in the row order of
+        // those images (reconstruct_inputs.comp.glsl) -- DLSS never learns
+        // which way is up, only that everything it is given agrees.
+        eval.InJitterOffsetX = -frame.jitterX;
+        eval.InJitterOffsetY = -frame.jitterY;
         eval.InRenderSubrectDimensions.Width = frame.color.width;
         eval.InRenderSubrectDimensions.Height = frame.color.height;
         eval.InReset = (frame.reset || _reset) ? 1 : 0;

@@ -15,6 +15,7 @@
 
 #include "hdclaude/gpu/glsl_compiler.h"
 #include "hdclaude/core/spectrum.h"
+#include "hdclaude/core/image_metrics.h"
 #include "hdclaude/gpu/path_tracer.h"
 #include "hdclaude/gpu/scene.h"
 #include "hdclaude/gpu/vulkan_context.h"
@@ -3483,6 +3484,253 @@ int main()
             CHECK(tracer.EndFrame(handle).Valid());
             CHECK(!tracer.EndFrame(handle).Valid());
             CHECK(!tracer.EndFrame(hdclaude::FrameHandle{}).Valid());
+        }
+
+        // --- DLAA against the converged reference ----------------------------
+        //
+        // The other half of phase 13's gate, and the half that says whether the
+        // reconstruction is any *good* rather than merely plumbed in. Two
+        // measurements, because either alone can be satisfied by a failure.
+        //
+        // SSIM against the converged reference says the reconstructed frame is
+        // a better picture of the truth than the noisy frame it was made from.
+        // RMS could not ask this: a reconstructor moves every pixel a little
+        // and is meant to, and RMS cannot tell that apart from a picture that
+        // fell apart.
+        //
+        // Temporal instability says the sequence does not boil. A reconstructor
+        // could score well on every still frame and still flicker, because
+        // being close to the reference on each frame says nothing about being
+        // close to the frame before it -- and flicker is the artefact a
+        // temporal method actually produces when it is wrong.
+        //
+        // The comparison is against the *same estimator at one sample*, not
+        // against a fixed number, so the claim is "reconstruction improved
+        // this" rather than "reconstruction reached a threshold somebody chose".
+        // A threshold would be a tolerance to tune; this cannot be tuned
+        // without making the renderer worse.
+        //
+        // Skipped, loudly, on a build or a machine without DLSS.
+        {
+            Scene scene;
+            scene.prototypes.push_back(MakeSphere());
+            scene.prototypes.push_back(MakeQuad());
+            Transform3x4 behind;
+            behind.m[3] = 0.0f;
+            behind.m[7] = 0.0f;
+            behind.m[11] = -1.5f;
+            scene.instances.push_back({0, Transform3x4{}, 0, true});
+            scene.instances.push_back({1, behind, 1, true});
+
+            // A rect light, so there is a shadow edge and a specular highlight
+            // -- structure for the metric to be about. A furnace would give it
+            // nothing to measure.
+            Light rect;
+            rect.type = static_cast<std::uint32_t>(LightType::Rect);
+            rect.position[0] = 0.0f;
+            rect.position[1] = 2.5f;
+            rect.position[2] = 1.5f;
+            rect.direction[0] = 0.0f;
+            rect.direction[1] = -1.0f;
+            rect.direction[2] = 0.0f;
+            rect.uAxis[0] = 1.0f; rect.uAxis[1] = 0.0f; rect.uAxis[2] = 0.0f;
+            rect.vAxis[0] = 0.0f; rect.vAxis[1] = 0.0f; rect.vAxis[2] = 1.0f;
+            rect.area = 4.0f;
+            rect.radiance[0] = 4.0f;
+            rect.radiance[1] = 4.0f;
+            rect.radiance[2] = 4.0f;
+            rect.castsShadows = 1;
+            scene.lights.push_back(rect);
+
+            tracer.SetScene(scene, {materials[0], materials[1]});
+
+            constexpr std::uint32_t kDlaaWidth = 256;
+            constexpr std::uint32_t kDlaaHeight = 256;
+            constexpr int kSequence = 24;
+
+            hdclaude::FrameDescription converged;
+            converged.width = kDlaaWidth;
+            converged.height = kDlaaHeight;
+            converged.camera = LookDownZWithClip(4.0f, 0.1f, 100.0f);
+            converged.mode = hdclaude::RenderMode::Reference;
+            converged.sceneRevision = 7;
+            converged.settings.samplesPerPixel = 512;
+            converged.settings.maxBounces = 4;
+            converged.settings.resetAccumulation = true;
+
+            const hdclaude::FrameResult reference =
+                tracer.EndFrame(tracer.BeginFrame(converged));
+            CHECK(reference.Valid());
+
+            // One sample per frame, the same estimator and the same path
+            // length as the reference: an interactive preview that changed the
+            // estimator would be measuring two different integrals against each
+            // other (docs/architecture.md 5).
+            bool reconstructed = false;
+            const auto sequence = [&](bool reconstruct) {
+                hdclaude::FrameDescription frame = converged;
+                frame.mode = hdclaude::RenderMode::Interactive;
+                frame.settings.samplesPerPixel = 1;
+                frame.settings.reconstruct = reconstruct;
+                frame.settings.reconstructionQuality =
+                    hdclaude::ReconstructionQuality::NativeResolution;
+
+                std::vector<std::vector<float>> frames;
+                frames.reserve(kSequence);
+                for (int i = 0; i < kSequence; ++i) {
+                    // Each frame is its own single sample, decorrelated from
+                    // the last by the sample index -- which is what an
+                    // interactive host does, and what leaves the reconstructor
+                    // rather than the film to do the averaging.
+                    frame.settings.firstSample = static_cast<std::uint32_t>(i);
+                    frame.settings.resetAccumulation = true;
+                    const hdclaude::FrameResult result =
+                        tracer.EndFrame(tracer.BeginFrame(frame));
+                    CHECK_EQ(result.width, kDlaaWidth);
+                    if (reconstruct) {
+                        reconstructed = result.reconstructed;
+                    }
+                    frames.push_back(std::move(result.image));
+                }
+                return frames;
+            };
+
+            const std::vector<std::vector<float>> noisy = sequence(false);
+            const std::vector<std::vector<float>> clean = sequence(true);
+
+            if (!reconstructed) {
+                std::printf("  DLAA quality ... skipped: %s\n",
+                            tracer.ReconstructionUnavailable().c_str());
+            } else {
+                const double ssimNoisy =
+                    hdclaude::Ssim(noisy.back().data(), reference.image.data(),
+                                   kDlaaWidth, kDlaaHeight);
+                const double ssimClean =
+                    hdclaude::Ssim(clean.back().data(), reference.image.data(),
+                                   kDlaaWidth, kDlaaHeight);
+
+                // The last eight frames of each, by which point DLSS has a
+                // history to be unstable with. Measuring from the first frame
+                // would mostly measure the reset.
+                const std::vector<std::vector<float>> tailNoisy(
+                    noisy.end() - 8, noisy.end());
+                const std::vector<std::vector<float>> tailClean(
+                    clean.end() - 8, clean.end());
+                const double flickerNoisy = hdclaude::TemporalInstability(
+                    tailNoisy, kDlaaWidth, kDlaaHeight);
+                const double flickerClean = hdclaude::TemporalInstability(
+                    tailClean, kDlaaWidth, kDlaaHeight);
+
+                std::printf("  DLAA quality ... ssim %.4f against %.4f "
+                            "unreconstructed; flicker %.4f against %.4f\n",
+                            ssimClean, ssimNoisy, flickerClean, flickerNoisy);
+
+                // Both claims, and neither is a threshold: the reconstructed
+                // frame is a better picture of the converged reference than the
+                // frame it was made from, and the reconstructed sequence is
+                // steadier than the sequence it was made from.
+                CHECK(ssimClean > ssimNoisy);
+                CHECK(flickerClean < flickerNoisy);
+
+                // And it is a picture of *something*: a backend that returned
+                // the reference itself would pass both tests above and be
+                // wrong, so the reconstruction must still be short of the
+                // converged image it is estimating.
+                CHECK(ssimClean < 1.0);
+            }
+
+            // --- Which way the sub-pixel offset points ----------------------
+            //
+            // hdClaude's jitter says where the sample landed; DLSS's says how
+            // the projection was offset, and the two are the same displacement
+            // seen from opposite ends (docs/dlss-integration.md 5). Getting it
+            // backwards does not break the image, which is why it survived this
+            // long: over a Halton sequence the errors are symmetric about the
+            // pixel centre and show up as softening, which nothing here can
+            // tell from the softening a reconstructor legitimately produces.
+            //
+            // Hold the offset still and it stops being a blur and becomes a
+            // *displacement*, of twice the offset: DLSS resolves its history at
+            // the pixel centre by shifting it by the jitter it was told, and a
+            // reversed sign shifts it the wrong way by exactly as much as the
+            // samples were already displaced. At an offset of half a pixel that
+            // is a whole pixel.
+            //
+            // The frames are traced at many samples each, so the input is
+            // nearly converged and the only thing left for the measurement to
+            // be about is where the picture sits. A one-sample sequence would
+            // bury the shift under its own noise: at one sample a frame the
+            // reversal moves the DLAA SSIM above by 0.004, which is nothing.
+            if (reconstructed) {
+                constexpr std::uint32_t kSignWidth = 256;
+                constexpr std::uint32_t kSignHeight = 256;
+                constexpr std::uint32_t kSignFrames = 8;
+
+                hdclaude::FrameDescription converged;
+                converged.width = kSignWidth;
+                converged.height = kSignHeight;
+                converged.camera = LookDownZWithClip(4.0f, 0.1f, 100.0f);
+                converged.mode = hdclaude::RenderMode::Reference;
+                converged.sceneRevision = 9;
+                converged.settings.samplesPerPixel = 512;
+                converged.settings.maxBounces = 4;
+
+                const hdclaude::FrameResult centred =
+                    tracer.EndFrame(tracer.BeginFrame(converged));
+                CHECK(centred.Valid());
+
+                hdclaude::FrameDescription frame = converged;
+                frame.mode = hdclaude::RenderMode::Interactive;
+                frame.settings.samplesPerPixel = 128;
+                frame.settings.reconstruct = true;
+                frame.settings.reconstructionQuality =
+                    hdclaude::ReconstructionQuality::NativeResolution;
+                // Half a pixel on each axis, so a reversed sign displaces the
+                // picture by a whole pixel on each axis -- as far from correct
+                // as a sub-pixel offset can put it.
+                frame.settings.fixedJitter = true;
+                frame.settings.jitter[0] = 0.5f;
+                frame.settings.jitter[1] = 0.5f;
+
+                hdclaude::FrameResult held;
+                for (std::uint32_t i = 0; i < kSignFrames; ++i) {
+                    frame.settings.firstSample = i;
+                    held = tracer.EndFrame(tracer.BeginFrame(frame));
+                }
+                CHECK(held.reconstructed);
+                // The offset was the caller's and is reported back as given,
+                // rather than being replaced by the sequence.
+                CHECK_EQ(held.jitter[0], 0.5f);
+                CHECK_EQ(held.jitter[1], 0.5f);
+
+                // Where the reconstruction sits relative to the converged
+                // render, in pixels. Not SSIM: a sphere and a backdrop lit by
+                // one light have almost no detail for a shift to disturb, and
+                // SSIM over this scene reads 0.6675 aligned against 0.6655 a
+                // whole pixel out -- a difference of two parts in a thousand,
+                // which would have "passed" whichever sign was handed over.
+                // A displacement is what is in question, so a displacement is
+                // what is measured (docs/dlss-integration.md 5).
+                const hdclaude::ImageShift placement = hdclaude::EstimateShift(
+                    centred.image.data(), held.image.data(), kSignWidth,
+                    kSignHeight);
+                CHECK(placement.valid);
+
+                std::printf("  jitter sign ... reconstruction sits %.4f px "
+                            "from the converged render (%+.4f %+.4f); "
+                            "reversing the sign puts it at 1.39\n",
+                            placement.Magnitude(), placement.dx, placement.dy);
+
+                // A quarter of a pixel, which is nowhere near either answer:
+                // the offset was half a pixel on each axis, so reversing it
+                // displaces the picture by a whole pixel on each axis, and
+                // there is no tolerance between the two that could be tuned to
+                // make a wrong sign pass. Measured: 0.1302 px as it stands,
+                // and 1.3934 px with the sign handed to NGX reversed -- close
+                // to the 1.4142 a whole pixel on each axis would be, short of
+                // it because DLSS's resolve is not a pure translation.
+                CHECK(placement.Magnitude() < 0.25);
+            }
         }
 
         // --- The renderer reproduces its own output --------------------------

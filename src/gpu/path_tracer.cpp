@@ -1142,10 +1142,23 @@ bool PathTracer::InvalidateFor(const FrameDescription& description,
     // describing an image of a different size. It arrives as an argument
     // because the plan is decided by BeginFrame, which is also where the
     // extents this function compares against come from.
-    _historyReset = description.settings.resetAccumulation || resized ||
-                    modeChanged || sceneChanged || reconstructionChanged;
+    //
+    // `resetAccumulation` counts here only in reference mode. An interactive
+    // frame's film holds one frame's samples and its history lives in the
+    // backend (docs/architecture.md 5), so that film restarts every frame by
+    // contract -- and a restart that happens every frame is evidence of
+    // nothing. Folding it in was wrong and measurably so: it raised
+    // `historyReset` on every interactive frame, which reached DLSS as
+    // `InReset` and threw away the history on the frame that had just built
+    // it, leaving a temporal reconstructor with nothing temporal about it. A
+    // caller that genuinely means a cut says so with `resetHistory`.
+    const bool interactive = description.mode == RenderMode::Interactive;
+    _historyReset = description.settings.resetHistory || resized ||
+                    modeChanged || sceneChanged || reconstructionChanged ||
+                    (!interactive && description.settings.resetAccumulation);
 
-    return _historyReset || cameraMoved;
+    return _historyReset || cameraMoved || interactive ||
+           description.settings.resetAccumulation;
 }
 
 // --- Reconstruction ---------------------------------------------------------
@@ -1483,24 +1496,43 @@ FrameHandle PathTracer::BeginFrame(const FrameDescription& description)
     RenderSettings settings = description.settings;
     settings.resetAccumulation = InvalidateFor(traced, reconstructionChanged);
 
-    // The frame's sub-pixel offset, decided here because it is a property of
-    // the frame rather than of the caller.
+    // The frame's sub-pixel offset, decided here unless the caller stated one.
     //
     // Only an interactive frame has one. A reference render accumulates
     // hundreds of samples and jitters each independently, which is the correct
     // estimator and has no single offset to report; giving it a fixed one would
     // land every sample of a frame in the same place and turn an average into a
-    // point sample.
+    // point sample. A caller that asks for one anyway is told, rather than
+    // quietly given something else.
     //
     // Indexed by the frame rather than from zero, because the radical inverse
     // of zero is zero and a first frame with no jitter at all is the one frame
     // a reconstructor most needs jittered.
+    //
+    // A caller may state the offset instead, and it is then used exactly as
+    // given and reported back unchanged. That is what a host already driving a
+    // temporal pattern of its own needs -- the DLSS guide asks a renderer that
+    // has TAA to jitter the way its TAA does (3.7.2) -- and it is what lets a
+    // test hold the offset still, which is the only condition under which a
+    // sign error in it is a displacement rather than a blur.
     if (description.mode == RenderMode::Interactive) {
-        const auto index = static_cast<std::uint32_t>(handle.index);
-        settings.jitter[0] = RadicalInverse(index, 2) - 0.5f;
-        settings.jitter[1] = RadicalInverse(index, 3) - 0.5f;
-        settings.fixedJitter = true;
+        if (!settings.fixedJitter) {
+            const auto index = static_cast<std::uint32_t>(handle.index);
+            settings.jitter[0] = RadicalInverse(index, 2) - 0.5f;
+            settings.jitter[1] = RadicalInverse(index, 3) - 0.5f;
+            settings.fixedJitter = true;
+        }
     } else {
+        if (settings.fixedJitter && !_warnedReferenceJitter) {
+            _warnedReferenceJitter = true;
+            std::fprintf(stderr,
+                         "hdClaude: a reference render was given a fixed "
+                         "sub-pixel offset (%.4f %.4f) and is ignoring it; a "
+                         "reference render jitters every sample independently "
+                         "and has no single offset\n",
+                         static_cast<double>(settings.jitter[0]),
+                         static_cast<double>(settings.jitter[1]));
+        }
         settings.jitter[0] = 0.0f;
         settings.jitter[1] = 0.0f;
         settings.fixedJitter = false;
