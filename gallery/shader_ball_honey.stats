@@ -20,6 +20,8 @@
 settings              1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2
 instances             12
 triangles             255440
+blasBuilt             12
+blasReused            0
 meshesRefined         4
 subdivideInputPoints  24198
 subdivideOutputPoints 383388
@@ -31,16 +33,16 @@ tracedRays            4375783543
 shadowRays            2543350891
 rayHash               2889941527184573526
 hitHash               2363202165045729925
-deviceBytesPeak       990232576
+deviceBytesPeak       1359331328
 
 [cost]
 device                NVIDIA GeForce RTX 5060 Ti
 measured              2026-09-09
-wallSeconds           29.636
-traceMs               20887
-ingestMs              173
-publishMs             163
-subdivideMs           32
-materialMs            1887
-textureMs             1327
-outsideSeconds        8.413
+wallSeconds           30.113
+traceMs               21013
+ingestMs              175
+publishMs             167
+subdivideMs           45
+materialMs            1837
+textureMs             1322
+outsideSeconds        8.759

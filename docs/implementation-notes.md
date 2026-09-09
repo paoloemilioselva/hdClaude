@@ -6687,3 +6687,44 @@ in Paolo's session, 78.7 ms to 16.6 to 4.9 across two frames while the work
 *increased* -- and it survives no obvious cause: not a republish (forced offline,
 nothing follows), not free memory (it fell as the render sped up), not the
 camera (two explicit angles are both fast now, and the auto-framed one is too).
+
+---
+
+## 2026-09-09 -- The whole effect in one pair of numbers, on a gallery scene
+
+Paolo's objection was the right one: he had changed nothing, so an explanation
+resting on a change was suspect. The answer is that nothing *was* changed by
+anybody -- the driver's shader cache is a finite, machine-wide resource that
+fills and evicts as a side effect of running, and a day spent compiling ALab's
+ninety-three materials over and over evicted things that had been cached for
+weeks.
+
+Regenerating the gallery caught it in the act. Ten scenes came back within a
+second or two of their previous timings, so those were never in the slow state
+and the alarm raised two entries ago -- that every gallery number was suspect --
+was too broad. The eleventh did not:
+
+    OpenPBR Playground, cold    wallSeconds 1025.689   traceMs 964803   rms 1.19e-4
+    OpenPBR Playground, warm    wallSeconds   96.387   traceMs  32123   rms 0
+
+Two runs, back to back, same scene, same binary, nothing touched in between
+except that the first one compiled the pipelines the second one reused.
+**Thirty times the trace time, and the image differs from its baseline in the
+slow run and matches it exactly in the fast one.**
+
+That is the entire phenomenon in one pair of measurements, and on a gallery
+scene rather than a third-party asset: a pipeline the driver has not finished
+optimising is slower *and* numerically different, and both end together. It also
+explains, without anyone changing anything, why the effect appeared on ALab
+first -- its materials were new to the cache -- and why it later appeared on the
+Playground, whose fifty-four materials had been evicted to make room.
+
+The cold run's image was within the gate's tolerance, so the suite adopted it as
+the new baseline. It has been restored: a baseline must record a render the
+renderer meant to produce, and this one records a pipeline that had not warmed
+up. That is a new way for the gallery to be quietly wrong, and worth stating --
+the image gate cannot tell a cold render from a correct one, because the
+difference is two orders of magnitude below its limit.
+
+The timing table now carries the warm figures for all eleven scenes, the
+Playground re-rendered after its pipelines were rebuilt.
