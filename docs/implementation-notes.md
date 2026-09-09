@@ -5641,14 +5641,34 @@ kept the last one for the delegate's own use and never wrote it anywhere a
 reader could see. `traceMs` now accumulates it across the progressive calls.
 
 That still leaves a gap, and the gap turns out to be the interesting part. The
-chess set at gallery settings: 22.0 s of wall time, of which **8.0 s is
+chess set at gallery settings: 22.1 s of wall time, of which **8.2 s is
 tracing**. At one sample per pixel, where the trace collapses to 28 ms, the same
-scene still takes **11.85 s**. There is a fixed cost of about **ten and a half
-seconds per process** before any rendering happens -- `usdrecord` and Python
-starting, USD's plugin discovery, opening the stage, Hydra populating its scene
-index before the delegate's own ingest timer starts, then the EXR write and the
-device teardown. None of it is visible from inside the delegate, which is why no
-stage could account for it.
+scene still takes **11.85 s** -- so the remainder is not the render, and it is
+not the machine being busy either. It is `usdrecord` and Python starting, USD's
+plugin discovery, opening the stage, Hydra populating its scene index before the
+delegate's own ingest timer starts, then the EXR write and the device teardown.
+None of it is visible from inside the delegate, which is why no stage could
+account for it.
+
+Measured across the whole gallery it is emphatically **not** a fixed startup
+tax, which one scene alone made it look like:
+
+    scene                     wall     trace   outside
+    newzealand_heightmap      6.57       1.7      4.90
+    subdivision_features      8.85       3.1      5.68
+    shader_ball_bubblegum    59.61      51.0      8.25
+    shader_ball_gold         24.36      15.7      8.32
+    chess_board              22.12       8.2     12.66
+    intel_sponza             48.55      14.0     31.05
+    openpbr_playground       87.47      33.5     41.40
+    pixar_kitchen           157.80      93.3     61.14
+
+The four shader balls share one stage and sit at a flat 8.2-8.4 s however long
+they trace, which is the per-process floor for that asset. Sponza spends 31 s
+outside the renderer and the Kitchen Set 61 s. It scales with the scene, so what
+it measures is **stage loading and scene-index population** -- work done before
+the delegate is asked for anything -- and on the two largest scenes it is a
+third to a half of the wall time.
 
 So `outsideSeconds` is recorded explicitly, against trace plus ingest plus
 publish -- the three that are wall-clock stages of the render thread. The other
@@ -5656,7 +5676,9 @@ three are summed across Hydra's workers and happen *inside* ingest and publish;
 subtracting them as well would count the same work twice.
 
 The consequence for reading the gallery's table: **wall time is a poor measure
-of renderer cost for a cheap scene.** The New Zealand height map's nine seconds
-are almost entirely process startup, and comparing it with the Kitchen Set's
-three minutes compares two things that are mostly not the same quantity.
-`traceMs` is the column that means what the table was always taken to mean.
+of renderer cost.** Three quarters of the New Zealand height map's six seconds
+are not rendering, and neither is two fifths of the Kitchen Set's two and a
+half minutes; comparing the two on wall time compares two quantities that are
+each mostly something else. `traceMs` is the column that means what the table
+was always taken to mean, and `outsideSeconds` is the one that says how much of
+the rest is USD rather than hdClaude.

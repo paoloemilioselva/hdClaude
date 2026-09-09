@@ -8,6 +8,12 @@
 # stage can exceed the frame's wall time -- that is threads working
 # at once, not an error.
 #
+# traceMs is the path tracing itself, summed over the progressive
+# calls. outsideSeconds is the wall time that trace, ingest and
+# publish do not claim: opening the stage, plugin discovery, the
+# scene index, writing the EXR and
+# tearing the device down, none of which the renderer can see.
+#
 # Regenerate with: render_gallery.bat -Scene shader_ball_glass
 
 [scene]
@@ -30,9 +36,11 @@ deviceBytesPeak       990232576
 [cost]
 device                NVIDIA GeForce RTX 5060 Ti
 measured              2026-09-09
-wallSeconds           26.955
-ingestMs              175
-publishMs             152
-subdivideMs           32
-materialMs            1783
-textureMs             1344
+wallSeconds           27.551
+traceMs               18987
+ingestMs              172
+publishMs             153
+subdivideMs           39
+materialMs            1766
+textureMs             1324
+outsideSeconds        8.239

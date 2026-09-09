@@ -8,6 +8,12 @@
 # stage can exceed the frame's wall time -- that is threads working
 # at once, not an error.
 #
+# traceMs is the path tracing itself, summed over the progressive
+# calls. outsideSeconds is the wall time that trace, ingest and
+# publish do not claim: opening the stage, plugin discovery, the
+# scene index, writing the EXR and
+# tearing the device down, none of which the renderer can see.
+#
 # Regenerate with: render_gallery.bat -Scene openpbr_playground
 
 [scene]
@@ -30,9 +36,11 @@ deviceBytesPeak       13306509088
 [cost]
 device                NVIDIA GeForce RTX 5060 Ti
 measured              2026-09-09
-wallSeconds           150.317
-ingestMs              4754
-publishMs             70103
-subdivideMs           18231
-materialMs            6745
-textureMs             23250
+wallSeconds           87.471
+traceMs               33470
+ingestMs              4151
+publishMs             8448
+subdivideMs           16523
+materialMs            6873
+textureMs             25787
+outsideSeconds        41.402
