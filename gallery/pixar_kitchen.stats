@@ -32,17 +32,17 @@ cameraRays            640679936
 tracedRays            1770415731
 shadowRays            754840623
 rayHash               7474697996910621400
-hitHash               3955854728873354100
+hitHash               6125374916969829108
 deviceBytesPeak       1120272384
 
 [cost]
 device                NVIDIA GeForce RTX 5060 Ti
-measured              2026-09-09
-wallSeconds           173.980
-traceMs               93377
-ingestMs              159
-publishMs             19200
-subdivideMs           665
+measured              2026-09-10
+wallSeconds           179.316
+traceMs               95857
+ingestMs              164
+publishMs             19850
+subdivideMs           660
 materialMs            0
 textureMs             0
-outsideSeconds        61.244
+outsideSeconds        63.445

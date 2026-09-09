@@ -120,7 +120,7 @@ void mx_conductor_bsdf(ClosureData closureData, float weight, vec3 ior_n, vec3 i
 
         // The closure reports its own albedo. No surface-model name is
         // consulted, which is what lets reconstruction guides work for an
-        // arbitrary authored nodegraph (docs/dlss-integration.md 3).
+        // arbitrary authored nodegraph (docs/dlss-integration.md 4).
         vec3 Fv = mx_compute_fresnel(NdotV, fd);
         bsdf.guideAlbedo = mx_ggx_dir_albedo(NdotV, avgAlpha, Fv, vec3(1.0)) * weight;
         bsdf.guideRoughness = avgAlpha;

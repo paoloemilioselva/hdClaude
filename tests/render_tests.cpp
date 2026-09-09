@@ -34,6 +34,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <string>
 #include <vector>
 
 namespace mx = MaterialX;
@@ -981,10 +982,23 @@ int main()
     std::setvbuf(stderr, nullptr, _IONBF, 0);
     std::printf("hdClaudeRenderTests\n");
 
+    // NGX names instance and device extensions it will not initialise without,
+    // and they have to be enabled when the instance and the device are created
+    // -- which is why this is a construction-time thing and cannot be arranged
+    // later by whatever decides to reconstruct a frame. Without it the backend
+    // reports that the *device* cannot run DLSS, which is both untrue and
+    // unfixable from where it is read.
+    //
+    // Safe to install unconditionally: with no SDK it names nothing, and the
+    // context only enables extensions a device actually has, so a machine that
+    // will never run DLSS is unaffected.
+    const NgxRequirementProvider ngxProvider;
+
     std::unique_ptr<VulkanContext> context;
     try {
         VulkanContextOptions options;
         options.enableValidation = true;
+        options.requirementProviders.push_back(&ngxProvider);
         context = std::make_unique<VulkanContext>(options);
     } catch (const VulkanError& error) {
         std::printf("SKIP: no usable Vulkan device (%s)\n", error.what());
@@ -3253,6 +3267,173 @@ int main()
                 CHECK_EQ(highest, 1.0);  // and something was not
                 std::printf("  depth: centre %.6f, expected %.6f, range %.3f..%.3f\n",
                             measured, expected, lowest, highest);
+            }
+
+            // --- Reconstruction ---------------------------------------------
+            //
+            // Phase 13's gate, which has two halves.
+            //
+            // The half that holds on every machine: a reference render is
+            // bit-identical whether or not a backend exists
+            // (docs/dlss-integration.md 6). It is checked here by rendering one
+            // before anything has created a backend, creating one by asking for
+            // an interactive frame, and rendering the same reference frame
+            // again -- which is the strongest form of the claim available
+            // inside one process, because the second render happens with NGX
+            // initialised and the backend alive rather than merely compiled in.
+            // The comparison is bit-for-bit over the film, not by tolerance:
+            // "untouched" has no epsilon.
+            //
+            // The half that needs the hardware: an interactive frame asking to
+            // be reconstructed comes back at the extent it asked for, from an
+            // estimator that traced a smaller one. Skipped, loudly, on a build
+            // or a machine without DLSS -- and even then the extents and the
+            // honesty of `reconstructed` are still checked, because a frame
+            // that cannot be reconstructed must still be a frame.
+            {
+                hdclaude::FrameDescription referenceFrame = description;
+                referenceFrame.mode = hdclaude::RenderMode::Reference;
+                referenceFrame.width = kWidth;
+                referenceFrame.height = kHeight;
+                referenceFrame.camera = LookDownZWithClip(4.0f, 0.1f, 100.0f);
+                referenceFrame.settings.resetAccumulation = true;
+                referenceFrame.settings.firstSample = 0;
+                // Asked for, and ignored, because this is a reference frame.
+                // A caller that renders both modes from one settings struct
+                // should not have to remember to clear it.
+                referenceFrame.settings.reconstruct = true;
+                referenceFrame.settings.reconstructionQuality =
+                    hdclaude::ReconstructionQuality::Performance;
+
+                const hdclaude::FrameResult before =
+                    tracer.EndFrame(tracer.BeginFrame(referenceFrame));
+                CHECK(before.Valid());
+                CHECK(!before.reconstructed);
+                CHECK(before.reconstructionBackend.empty());
+                CHECK_EQ(before.width, kWidth);
+                CHECK_EQ(before.renderWidth, kWidth);
+                // Nothing has been created yet, which is the point: a gallery
+                // render must not initialise NGX.
+                CHECK_EQ(std::string(tracer.ReconstructionBackendName()),
+                         std::string());
+
+                constexpr std::uint32_t kOutputWidth = 256;
+                constexpr std::uint32_t kOutputHeight = 256;
+
+                hdclaude::FrameDescription interactive = referenceFrame;
+                interactive.mode = hdclaude::RenderMode::Interactive;
+                interactive.width = kOutputWidth;
+                interactive.height = kOutputHeight;
+                interactive.settings.samplesPerPixel = 1;
+                interactive.settings.maxBounces = 2;
+
+                const hdclaude::FrameResult upscaled =
+                    tracer.EndFrame(tracer.BeginFrame(interactive));
+                CHECK(upscaled.Valid());
+                // Whatever happened, the result describes itself: the image is
+                // exactly as large as the extents it reports, and the guides
+                // are exactly as large as the extents that were traced.
+                CHECK_EQ(upscaled.image.size(),
+                         std::size_t(upscaled.width) * upscaled.height * 4);
+                CHECK_EQ(upscaled.depth.size(),
+                         std::size_t(upscaled.renderWidth) * upscaled.renderHeight);
+                CHECK_EQ(upscaled.motion.size(),
+                         std::size_t(upscaled.renderWidth) * upscaled.renderHeight * 2);
+
+                if (!upscaled.reconstructed) {
+                    // No backend: the frame is the one that would have been
+                    // rendered without one, at the size it was asked for, and
+                    // the renderer says why rather than leaving it to be
+                    // guessed at.
+                    CHECK_EQ(upscaled.width, kOutputWidth);
+                    CHECK_EQ(upscaled.renderWidth, kOutputWidth);
+                    CHECK(upscaled.reconstructionBackend.empty());
+                    CHECK(!tracer.ReconstructionUnavailable().empty());
+                    std::printf("  reconstruction . skipped: %s\n",
+                                tracer.ReconstructionUnavailable().c_str());
+                } else {
+                    CHECK_EQ(upscaled.width, kOutputWidth);
+                    CHECK_EQ(upscaled.height, kOutputHeight);
+                    // Performance upscales, so the estimator traced fewer
+                    // pixels than were returned. This is the assertion that
+                    // separates reconstruction from a copy.
+                    CHECK(upscaled.renderWidth < kOutputWidth);
+                    CHECK(upscaled.renderHeight < kOutputHeight);
+                    CHECK(!upscaled.reconstructionBackend.empty());
+
+                    // The image is finite everywhere and is an image of
+                    // something: a backend that produced a black frame, or one
+                    // that produced NaNs, passes every extent check above.
+                    double brightest = 0.0;
+                    bool finite = true;
+                    for (std::size_t i = 0; i < upscaled.image.size(); i += 4) {
+                        for (int c = 0; c < 3; ++c) {
+                            const float value = upscaled.image[i + std::size_t(c)];
+                            finite = finite && std::isfinite(value);
+                            brightest = std::max(brightest, double(value));
+                        }
+                        CHECK_EQ(upscaled.image[i + 3], 1.0f);
+                    }
+                    CHECK(finite);
+                    CHECK(brightest > 0.0);
+
+                    std::printf("  reconstruction . %s, %ux%u -> %ux%u, "
+                                "brightest %.4f\n",
+                                upscaled.reconstructionBackend.c_str(),
+                                upscaled.renderWidth, upscaled.renderHeight,
+                                upscaled.width, upscaled.height, brightest);
+
+                    // DLAA is the same backend asked for no upscaling at all,
+                    // and it answers its own output extent as its render
+                    // extent. It also rebuilds the feature and the images,
+                    // which is the path a quality-mode change takes.
+                    hdclaude::FrameDescription native = interactive;
+                    native.settings.reconstructionQuality =
+                        hdclaude::ReconstructionQuality::NativeResolution;
+                    const hdclaude::FrameResult dlaa =
+                        tracer.EndFrame(tracer.BeginFrame(native));
+                    CHECK(dlaa.reconstructed);
+                    CHECK_EQ(dlaa.renderWidth, kOutputWidth);
+                    CHECK_EQ(dlaa.renderHeight, kOutputHeight);
+                    CHECK_EQ(dlaa.image.size(),
+                             std::size_t(kOutputWidth) * kOutputHeight * 4);
+                    // Changing what the extents mean is a history reset even
+                    // though the camera never moved.
+                    CHECK(dlaa.historyReset);
+                }
+
+                // And the reference frame again, now that a backend either
+                // exists or has been proven not to.
+                const hdclaude::FrameResult after =
+                    tracer.EndFrame(tracer.BeginFrame(referenceFrame));
+                CHECK(after.Valid());
+                CHECK(!after.reconstructed);
+                CHECK_EQ(after.image.size(), before.image.size());
+                const bool identical =
+                    after.image.size() == before.image.size() &&
+                    std::memcmp(after.image.data(), before.image.data(),
+                                before.image.size() * sizeof(float)) == 0;
+                CHECK(identical);
+
+                // The other half of "present and absent" is across two builds,
+                // which no single process can compare. So the film's bytes are
+                // hashed and printed: the build with the SDK and the build
+                // without it print the same number, or the claim is false. FNV
+                // over the raw bytes, because the claim is about bytes.
+                std::uint64_t filmHash = 1469598103934665603ull;
+                const auto* bytes =
+                    reinterpret_cast<const unsigned char*>(after.image.data());
+                for (std::size_t i = 0; i < after.image.size() * sizeof(float);
+                     ++i) {
+                    filmHash = (filmHash ^ bytes[i]) * 1099511628211ull;
+                }
+                std::printf("  reference is bit-identical with a backend "
+                            "%s: %s (film hash %016llx)\n",
+                            tracer.ReconstructionBackendName()[0] != '\0'
+                                ? "alive"
+                                : "absent",
+                            identical ? "yes" : "NO",
+                            static_cast<unsigned long long>(filmHash));
             }
 
             // Nor a camera that moved, which this decision did not previously

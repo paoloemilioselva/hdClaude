@@ -256,6 +256,33 @@ void InvertTransform3x4(const float m[12], float out[12])
     out[11] = -(out[8] * tx + out[9] * ty + out[10] * tz);
 }
 
+/// Half-precision to float, for the one image the renderer reads back that is
+/// not already float: a reconstruction backend's output.
+///
+/// Written out rather than taken from a library because there is no portable
+/// one -- `_Float16` is a compiler extension and `std::float16_t` is C++23 --
+/// and because the whole of it is a bit rearrangement. Subnormals are rounded
+/// to zero, which is the only inexactness here and is below what any display
+/// transform can carry; infinities and NaNs survive, which matters: a
+/// non-finite pixel out of a backend is a finding, not something to swallow.
+float HalfToFloat(std::uint16_t half)
+{
+    const std::uint32_t sign = static_cast<std::uint32_t>(half & 0x8000u) << 16;
+    const std::uint32_t exponent = (half >> 10) & 0x1Fu;
+    const std::uint32_t mantissa = half & 0x3FFu;
+    std::uint32_t bits = 0;
+    if (exponent == 0) {
+        bits = sign;
+    } else if (exponent == 31) {
+        bits = sign | 0x7F800000u | (mantissa << 13);
+    } else {
+        bits = sign | ((exponent + 112u) << 23) | (mantissa << 13);
+    }
+    float value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
 void Barrier(VkCommandBuffer command)
 {
     // A blunt whole-pipeline barrier between kernels. The wavefront stages are
@@ -1068,7 +1095,8 @@ std::vector<std::uint32_t> PathTracer::MaterialCounts() const
     return counts;
 }
 
-bool PathTracer::InvalidateFor(const FrameDescription& description)
+bool PathTracer::InvalidateFor(const FrameDescription& description,
+                               bool reconstructionChanged)
 {
     // Everything that could invalidate anything, decided here and nowhere else.
     //
@@ -1108,10 +1136,327 @@ bool PathTracer::InvalidateFor(const FrameDescription& description)
     // exists to handle: the history is still of this scene and motion vectors
     // say where it went. A resize, a mode switch or a changed scene leaves
     // nothing to reproject from.
+    // `reconstructionChanged` is the one of these the description does not
+    // carry: a quality mode that traces at a different extent, or a backend
+    // that has just appeared or gone away, leaves a reconstructor's history
+    // describing an image of a different size. It arrives as an argument
+    // because the plan is decided by BeginFrame, which is also where the
+    // extents this function compares against come from.
     _historyReset = description.settings.resetAccumulation || resized ||
-                    modeChanged || sceneChanged;
+                    modeChanged || sceneChanged || reconstructionChanged;
 
     return _historyReset || cameraMoved;
+}
+
+// --- Reconstruction ---------------------------------------------------------
+
+PathTracer::ReconstructionPlan PathTracer::PlanReconstruction(
+    const FrameDescription& description)
+{
+    ReconstructionPlan plan;
+    plan.resolution.renderWidth = description.width;
+    plan.resolution.renderHeight = description.height;
+    plan.resolution.outputWidth = description.width;
+    plan.resolution.outputHeight = description.height;
+    plan.resolution.quality = description.settings.reconstructionQuality;
+
+    // Reference frames never reach a backend, and the test is here rather than
+    // at the call site so there is one place it can be read from
+    // (docs/dlss-integration.md 6).
+    if (description.mode != RenderMode::Interactive ||
+        !description.settings.reconstruct) {
+        return plan;
+    }
+
+    if (!_reconstructionAttempted) {
+        _reconstructionAttempted = true;
+        std::string reason;
+        _reconstruction = CreateNgxBackend(_context, &reason);
+        if (!_reconstruction) {
+            // An ordinary answer rather than an error: a build without the SDK,
+            // a device from another vendor, a driver too old. The frame renders
+            // without reconstruction and says so.
+            _reconstructionUnavailable = reason;
+        }
+    }
+    if (!_reconstruction) {
+        return plan;
+    }
+
+    // The render extent is the backend's answer, not the caller's request:
+    // DLSS chooses it per quality mode, and tracing at a size it did not ask
+    // for either wastes work or hands its model less than it expects.
+    const ReconstructionSizing sizing = _reconstruction->QuerySizing(
+        description.width, description.height,
+        description.settings.reconstructionQuality);
+    if (!sizing.valid || sizing.renderWidth == 0 || sizing.renderHeight == 0) {
+        _reconstructionUnavailable = sizing.reason.empty()
+                                         ? "backend declined these extents"
+                                         : sizing.reason;
+        return plan;
+    }
+
+    _reconstructionUnavailable.clear();
+    plan.active = true;
+    plan.resolution.renderWidth = sizing.renderWidth;
+    plan.resolution.renderHeight = sizing.renderHeight;
+    return plan;
+}
+
+bool PathTracer::EnsureReconstructionImages(
+    const ReconstructionResolution& resolution, std::string* reason)
+{
+    const bool unchanged =
+        _reconstructionBuilt &&
+        _reconstructionResolution.renderWidth == resolution.renderWidth &&
+        _reconstructionResolution.renderHeight == resolution.renderHeight &&
+        _reconstructionResolution.outputWidth == resolution.outputWidth &&
+        _reconstructionResolution.outputHeight == resolution.outputHeight &&
+        _reconstructionResolution.quality == resolution.quality;
+    if (unchanged) {
+        return true;
+    }
+
+    // The packing kernel, compiled the first time a frame asks to be
+    // reconstructed and never in a run that does not.
+    if (!_reconstructPack.Valid()) {
+        std::vector<BindingDescription> bindings;
+        auto add = [&bindings](std::uint32_t binding, VkDescriptorType type,
+                               const char* name) {
+            BindingDescription description;
+            description.binding = binding;
+            description.type = type;
+            description.debugName = name;
+            bindings.push_back(description);
+        };
+        add(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, "accumulation");
+        add(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, "guideDepth");
+        add(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, "guideMotion");
+        add(3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, "colorImage");
+        add(4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, "depthImage");
+        add(5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, "motionImage");
+
+        const std::string source =
+            LoadKernel(_shaderDirectory, "reconstruct_inputs.comp.glsl");
+        GlslCompileOptions options;
+        options.moduleName = "reconstruct_inputs.comp.glsl";
+        const GlslCompileResult compiled = _compiler.Compile(source, options);
+        if (!compiled.ok) {
+            if (reason != nullptr) {
+                *reason = "reconstruct_inputs.comp.glsl failed:\n" + compiled.log;
+            }
+            return false;
+        }
+        _reconstructPack =
+            ComputePipeline(_context, compiled.spirv, bindings,
+                            sizeof(std::uint32_t) * 2, "reconstruct_inputs");
+        _reconstructSet = _reconstructPack.AllocateSet();
+    }
+
+    // Storage support on every format the kernel writes, asked of the device
+    // rather than assumed. Vulkan requires it of R16G16B16A16_SFLOAT and of
+    // neither of the others, so a device that cannot should say so here rather
+    // than through a validation error at the first dispatch.
+    const auto storageSupported = [this](VkFormat format) {
+        VkFormatProperties properties{};
+        vkGetPhysicalDeviceFormatProperties(_context.PhysicalDevice(), format,
+                                            &properties);
+        return (properties.optimalTilingFeatures &
+                VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0;
+    };
+    for (const VkFormat format :
+         {VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R32_SFLOAT,
+          VK_FORMAT_R16G16_SFLOAT}) {
+        if (!storageSupported(format)) {
+            if (reason != nullptr) {
+                *reason = "device supports no storage image in Vulkan format " +
+                          std::to_string(static_cast<int>(format));
+            }
+            return false;
+        }
+    }
+
+    const auto makeImage = [this](std::uint32_t width, std::uint32_t height,
+                                  VkFormat format, VkImageUsageFlags usage,
+                                  const char* name) {
+        ImageDescription description;
+        description.width = width;
+        description.height = height;
+        description.format = format;
+        description.usage = usage;
+        description.debugName = name;
+        return VulkanImage(_allocator, description);
+    };
+
+    // Sampled because the backend reads them, storage because the packing
+    // kernel writes them.
+    constexpr VkImageUsageFlags kInputUsage =
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+    _reconstructColor =
+        makeImage(resolution.renderWidth, resolution.renderHeight,
+                  VK_FORMAT_R16G16B16A16_SFLOAT, kInputUsage, "reconstruct.color");
+    _reconstructDepth =
+        makeImage(resolution.renderWidth, resolution.renderHeight,
+                  VK_FORMAT_R32_SFLOAT, kInputUsage, "reconstruct.depth");
+    _reconstructMotion =
+        makeImage(resolution.renderWidth, resolution.renderHeight,
+                  VK_FORMAT_R16G16_SFLOAT, kInputUsage, "reconstruct.motion");
+    // Storage, because NGX refuses a read-write resource whose image was not
+    // created with it; transfer-destination, because DLSS clears the output
+    // itself before writing; transfer-source, because this is where the frame
+    // is read back from.
+    _reconstructOutput =
+        makeImage(resolution.outputWidth, resolution.outputHeight,
+                  VK_FORMAT_R16G16B16A16_SFLOAT,
+                  VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                      VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                      VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                  "reconstruct.output");
+
+    BufferDescription readback;
+    readback.size = static_cast<VkDeviceSize>(resolution.outputWidth) *
+                    resolution.outputHeight * 4 * sizeof(std::uint16_t);
+    readback.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    readback.domain = BufferDomain::HostReadback;
+    readback.debugName = "reconstruct.readback";
+    _reconstructReadback = VulkanBuffer(_allocator, readback);
+
+    _reconstructPack.WriteStorageImage(_reconstructSet, 3, _reconstructColor);
+    _reconstructPack.WriteStorageImage(_reconstructSet, 4, _reconstructDepth);
+    _reconstructPack.WriteStorageImage(_reconstructSet, 5, _reconstructMotion);
+
+    // The backend's own feature, built with a command buffer because DLSS's
+    // creation is recorded rather than immediate, and submitted on its own: the
+    // build has to have completed before an evaluation is recorded against it.
+    bool built = false;
+    std::string buildReason;
+    _context.SubmitImmediate([&](VkCommandBuffer command) {
+        built = _reconstruction->Resize(command, resolution, &buildReason);
+    });
+    if (!built) {
+        if (reason != nullptr) {
+            *reason = buildReason.empty() ? "backend failed to resize" : buildReason;
+        }
+        _reconstructionBuilt = false;
+        return false;
+    }
+
+    _reconstructionResolution = resolution;
+    _reconstructionBuilt = true;
+    return true;
+}
+
+std::vector<float> PathTracer::Reconstruct(
+    const FrameSlot& slot, const ReconstructionResolution& resolution,
+    const RenderSettings& settings, bool historyReset)
+{
+    std::string reason;
+    if (!EnsureReconstructionImages(resolution, &reason)) {
+        _reconstructionUnavailable = reason;
+        return {};
+    }
+
+    // The film and the guides are the same buffers every kernel indexes, so the
+    // set is pointed at this frame's slot rather than written once: the slots
+    // alternate.
+    _reconstructPack.WriteBuffer(_reconstructSet, 0, _accumulation);
+    _reconstructPack.WriteBuffer(_reconstructSet, 1, slot.guideDepth);
+    _reconstructPack.WriteBuffer(_reconstructSet, 2, slot.guideMotion);
+
+    const std::uint32_t extent[2] = {resolution.renderWidth,
+                                     resolution.renderHeight};
+    const std::uint32_t groupsX = (resolution.renderWidth + 7) / 8;
+    const std::uint32_t groupsY = (resolution.renderHeight + 7) / 8;
+
+    ReconstructionFrame frame;
+    const auto describe = [](const VulkanImage& image) {
+        ReconstructionTexture texture;
+        texture.image = image.Handle();
+        texture.view = image.View();
+        texture.format = image.Description().format;
+        texture.width = image.Description().width;
+        texture.height = image.Description().height;
+        return texture;
+    };
+    frame.color = describe(_reconstructColor);
+    frame.depth = describe(_reconstructDepth);
+    frame.motion = describe(_reconstructMotion);
+    frame.output = describe(_reconstructOutput);
+    frame.jitterX = settings.jitter[0];
+    frame.jitterY = settings.jitter[1];
+    // The film is linear HDR with nothing folded into it: hdClaude applies
+    // exposure in the display transform, downstream of everything here.
+    frame.preExposure = 1.0f;
+    frame.reset = historyReset;
+
+    _context.SubmitImmediate([&](VkCommandBuffer command) {
+        // The inputs go from whatever they held -- nothing on the first frame,
+        // the previous frame's guides on every one after, neither of which this
+        // kernel reads -- to general, which is the layout a storage image is
+        // written in.
+        for (const VulkanImage* image :
+             {&_reconstructColor, &_reconstructDepth, &_reconstructMotion}) {
+            image->RecordBarrier(command, VK_IMAGE_LAYOUT_UNDEFINED,
+                                 VK_IMAGE_LAYOUT_GENERAL,
+                                 VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0,
+                                 VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+        }
+        _reconstructOutput.RecordBarrier(
+            command, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0, VK_ACCESS_2_MEMORY_WRITE_BIT);
+
+        _reconstructPack.Dispatch(command, _reconstructSet, groupsX, groupsY, 1,
+                                  extent, sizeof(extent));
+
+        // Written by a compute shader here, read by whatever the backend does
+        // with them there, which this side of the boundary knows nothing about
+        // and so names every stage.
+        for (const VulkanImage* image :
+             {&_reconstructColor, &_reconstructDepth, &_reconstructMotion}) {
+            image->RecordBarrier(command, VK_IMAGE_LAYOUT_GENERAL,
+                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                 VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                 VK_ACCESS_2_MEMORY_READ_BIT);
+        }
+
+        _reconstruction->Evaluate(command, frame);
+
+        _reconstructOutput.RecordBarrier(
+            command, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+            VK_ACCESS_2_MEMORY_WRITE_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+
+        VkBufferImageCopy region{};
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent.width = resolution.outputWidth;
+        region.imageExtent.height = resolution.outputHeight;
+        region.imageExtent.depth = 1;
+        vkCmdCopyImageToBuffer(command, _reconstructOutput.Handle(),
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               _reconstructReadback.Handle(), 1, &region);
+    });
+
+    const std::size_t pixels =
+        static_cast<std::size_t>(resolution.outputWidth) * resolution.outputHeight;
+    std::vector<std::uint16_t> half(pixels * 4);
+    std::memcpy(half.data(), _reconstructReadback.MappedData(),
+                half.size() * sizeof(std::uint16_t));
+
+    std::vector<float> image(pixels * 4);
+    for (std::size_t i = 0; i < image.size(); ++i) {
+        image[i] = HalfToFloat(half[i]);
+    }
+    // The alpha is the renderer's, not the backend's: every other path out of
+    // the film returns an opaque image and so does this one.
+    for (std::size_t i = 0; i < pixels; ++i) {
+        image[i * 4 + 3] = 1.0f;
+    }
+    return image;
 }
 
 FrameHandle PathTracer::BeginFrame(const FrameDescription& description)
@@ -1122,8 +1467,21 @@ FrameHandle PathTracer::BeginFrame(const FrameDescription& description)
     handle.index = ++_frameIndex;
     handle.valid = true;
 
+    // What this frame will be traced at, which is not always what it was asked
+    // for: an upscaling backend chooses its own render extent, and everything
+    // below -- the invalidation, the trace, the guides -- is in those extents.
+    // Only the image that comes out is in the requested ones.
+    const ReconstructionPlan plan = PlanReconstruction(description);
+    const bool reconstructionChanged =
+        _hasPreviousFrame && plan.active != _previousReconstructed;
+    _previousReconstructed = plan.active;
+
+    FrameDescription traced = description;
+    traced.width = plan.resolution.renderWidth;
+    traced.height = plan.resolution.renderHeight;
+
     RenderSettings settings = description.settings;
-    settings.resetAccumulation = InvalidateFor(description);
+    settings.resetAccumulation = InvalidateFor(traced, reconstructionChanged);
 
     // The frame's sub-pixel offset, decided here because it is a property of
     // the frame rather than of the caller.
@@ -1152,6 +1510,8 @@ FrameHandle PathTracer::BeginFrame(const FrameDescription& description)
     _pendingFrame.index = handle.index;
     _pendingFrame.width = description.width;
     _pendingFrame.height = description.height;
+    _pendingFrame.renderWidth = traced.width;
+    _pendingFrame.renderHeight = traced.height;
     _pendingFrame.firstSample = settings.firstSample;
     _pendingFrame.sampleCount = settings.samplesPerPixel;
     _pendingFrame.accumulationReset = settings.resetAccumulation;
@@ -1159,9 +1519,29 @@ FrameHandle PathTracer::BeginFrame(const FrameDescription& description)
     _pendingFrame.jitter[1] = settings.jitter[1];
     _pendingFrame.historyReset = _historyReset;
     _pendingFrame.image =
-        Trace(description.width, description.height, description.camera, settings);
+        Trace(traced.width, traced.height, description.camera, settings);
     _pendingFrame.depth = std::move(_lastDepth);
     _pendingFrame.motion = std::move(_lastMotion);
+
+    if (plan.active) {
+        // The traced image is what the backend is *given*, by way of the film
+        // it came out of; what it produces replaces it. A backend that fails
+        // here leaves the frame exactly as it was traced rather than failing
+        // the frame: at the render extent, with `reconstructed` false and
+        // `ReconstructionUnavailable` saying why, which is a preview at the
+        // wrong size and never a black image.
+        std::vector<float> reconstructed =
+            Reconstruct(_slots[_lastSlot], plan.resolution, settings,
+                        _pendingFrame.historyReset);
+        if (!reconstructed.empty()) {
+            _pendingFrame.image = std::move(reconstructed);
+            _pendingFrame.reconstructed = true;
+            _pendingFrame.reconstructionBackend = _reconstruction->Name();
+        } else {
+            _pendingFrame.width = traced.width;
+            _pendingFrame.height = traced.height;
+        }
+    }
 
     return handle;
 }

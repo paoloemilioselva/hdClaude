@@ -18,6 +18,7 @@
 #include "hdclaude/gpu/acceleration_structure.h"
 #include "hdclaude/gpu/compute_pipeline.h"
 #include "hdclaude/gpu/glsl_compiler.h"
+#include "hdclaude/gpu/reconstruction.h"
 #include "hdclaude/gpu/scene.h"
 #include "hdclaude/gpu/vulkan_context.h"
 #include "hdclaude/gpu/vulkan_resources.h"
@@ -108,6 +109,31 @@ struct RenderSettings {
     float sunDirection[3] = {0.24184476f, 0.93969262f, 0.24184476f};
     float sunAngularRadius = 0.02f;
     float sunRadiance[3] = {3.0f, 2.9f, 2.7f};
+
+    /// Whether this frame is handed to a reconstruction backend, and how hard
+    /// that backend is asked to work.
+    ///
+    /// Honoured only in `RenderMode::Interactive`. A reference render is never
+    /// reconstructed, whatever this says: the two are different accumulation
+    /// contracts, and passing a converged average through a temporal
+    /// reconstructor would produce an image that is neither
+    /// (docs/dlss-integration.md 6). Asking for it in reference mode is
+    /// therefore ignored rather than refused -- a caller that renders both from
+    /// one settings struct should not have to clear a field it never set.
+    ///
+    /// `NativeResolution` is DLAA: the frame is traced at the requested extent
+    /// and anti-aliased. Every other quality traces smaller and upscales, and
+    /// how much smaller is the backend's answer rather than this caller's --
+    /// `FrameResult::renderWidth` reports what was actually traced.
+    ///
+    /// When no backend is available the frame is rendered exactly as it would
+    /// have been without one, at the requested extent, and
+    /// `FrameResult::reconstructed` is false. An optional backend that turned
+    /// its own absence into a failed frame would make the renderer's behaviour
+    /// depend on the machine.
+    bool reconstruct = false;
+    ReconstructionQuality reconstructionQuality =
+        ReconstructionQuality::NativeResolution;
 };
 
 /// A material ready to shade with: the SPIR-V of its generated MaterialX
@@ -218,6 +244,24 @@ struct FrameResult {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
 
+    /// The extents the estimator actually traced at.
+    ///
+    /// Equal to `width` and `height` unless a reconstruction backend upscaled
+    /// the frame, in which case they are what the backend asked to be handed
+    /// and the guides below are that size while the image is the size above.
+    /// Reported rather than left to be inferred from the image: a caller
+    /// reading `depth` at the image's stride would otherwise walk off the end
+    /// of a perfectly correct buffer.
+    std::uint32_t renderWidth = 0;
+    std::uint32_t renderHeight = 0;
+
+    /// Whether a backend produced this image, and which one.
+    ///
+    /// False with an empty name is the ordinary answer on a machine or a build
+    /// without one, and on every reference frame.
+    bool reconstructed = false;
+    std::string reconstructionBackend;
+
     /// The sample range this frame added, for a caller tracking convergence.
     std::uint32_t firstSample = 0;
     std::uint32_t sampleCount = 0;
@@ -246,13 +290,14 @@ struct FrameResult {
     /// convention, so the AOV write is a straight copy.
     std::vector<float> image;
 
-    /// Normalised device depth of the primary hit, one float per pixel, in the
-    /// same row order as the image. 1.0 where a ray hit nothing, which is the
-    /// clear value Hydra gives a depth AOV.
+    /// Normalised device depth of the primary hit, one float per pixel of the
+    /// *render* extent, in the same row order as the image. 1.0 where a ray hit
+    /// nothing, which is the clear value Hydra gives a depth AOV.
     std::vector<float> depth;
 
-    /// Screen-space motion of the primary hit, two floats per pixel, in the
-    /// same row order as the image. The displacement in pixels from where this
+    /// Screen-space motion of the primary hit, two floats per pixel of the
+    /// *render* extent, in the same row order as the image, and in render
+    /// pixels. The displacement in pixels from where this
     /// surface is now to where it was, so a reconstructor adds it to a pixel's
     /// coordinate to find that pixel's history. Zero where nothing was hit and
     /// on a frame with no previous one.
@@ -308,6 +353,29 @@ class PathTracer {
     std::vector<float> Render(std::uint32_t width, std::uint32_t height,
                               const RenderCamera& camera,
                               const RenderSettings& settings);
+
+    /// The reconstruction backend's name, or an empty string when there is
+    /// none.
+    ///
+    /// Creating the backend is deferred until a frame asks to be
+    /// reconstructed, so this is empty until then even on a machine that can
+    /// run one: a gallery render must not initialise NGX. Call
+    /// `ReconstructionUnavailable` for why, when it is.
+    const char* ReconstructionBackendName() const
+    {
+        return _reconstruction ? _reconstruction->Name() : "";
+    }
+
+    /// Why there is no backend, when a frame has asked for one and not got it.
+    ///
+    /// Empty before anything has asked, and empty when one was created. This is
+    /// the string `CreateNgxBackend` declined with -- a build without the SDK,
+    /// a device from another vendor, and a driver too old are three different
+    /// answers -- or the backend's own reason for refusing an extent.
+    const std::string& ReconstructionUnavailable() const
+    {
+        return _reconstructionUnavailable;
+    }
 
     /// The shade kernel source, joined to a generated material to produce a
     /// shading pipeline. Exposed so the Hydra layer can compile materials
@@ -398,12 +466,53 @@ class PathTracer {
     }
 
   private:
+    /// Everything one frame in flight owns; defined with the members
+    /// below, declared here because the descriptor writer and the
+    /// reconstruction step each take one.
+    struct FrameSlot;
+
     /// The invalidation decision, made once and in one place.
     ///
     /// Returns whether the accumulation has to restart. A caller may also ask
     /// for a restart through `RenderSettings::resetAccumulation`; this decides
     /// the cases the caller cannot be relied on to notice.
-    bool InvalidateFor(const FrameDescription& description);
+    bool InvalidateFor(const FrameDescription& description,
+                       bool reconstructionChanged);
+
+    /// What this frame will be traced at, and what a backend will be asked to
+    /// turn that into.
+    ///
+    /// `Valid()` is false when the frame is not being reconstructed at all, in
+    /// which case the render extents are the requested ones and nothing else
+    /// here is read.
+    struct ReconstructionPlan {
+        bool active = false;
+        ReconstructionResolution resolution;
+    };
+
+    /// Decide the plan, creating the backend the first time one is asked for.
+    ///
+    /// Returns an inactive plan, and sets `_reconstructionUnavailable`, on
+    /// every ordinary way of not having a backend: a reference frame, a caller
+    /// that did not ask, a build without the SDK, a device that cannot run it,
+    /// or a backend that declines these extents.
+    ReconstructionPlan PlanReconstruction(const FrameDescription& description);
+
+    /// Build the images a backend reads and writes, and the descriptor set the
+    /// packing kernel fills them through. Does nothing when they already match.
+    bool EnsureReconstructionImages(const ReconstructionResolution& resolution,
+                                    std::string* reason);
+
+    /// Pack the film and the guides into images, evaluate the backend, and read
+    /// the output back as linear RGBA floats at the output extent.
+    ///
+    /// Returns an empty vector on failure, which the caller reports by leaving
+    /// `FrameResult::reconstructed` false and keeping the traced image.
+    std::vector<float> Reconstruct(const FrameSlot& slot,
+                                   const ReconstructionResolution& resolution,
+                                   const RenderSettings& settings,
+                                   bool historyReset);
+
 
     /// The trace itself: the body the old Render() was, unchanged.
     ///
@@ -421,10 +530,6 @@ class PathTracer {
     void BuildSpectralTables();
 
     VulkanImage UploadTexture(const TextureImage& texture);
-
-    /// Everything one frame in flight owns; defined with the members
-    /// below, declared here because the descriptor writer takes one.
-    struct FrameSlot;
 
     /// The image array a material's descriptor set should be written with.
     /// `material` indexes the compiled materials; a negative index means a
@@ -493,6 +598,47 @@ class PathTracer {
     ComputePipeline _film;
     ComputePipeline _guides;
     std::vector<ComputePipeline> _shade;
+
+    // --- Reconstruction ------------------------------------------------------
+    //
+    // All of it built on demand. A gallery render never asks to be
+    // reconstructed, and nothing here -- not the backend, not the images, not
+    // even the packing kernel's pipeline -- exists until a frame does. That is
+    // what makes "reference output is bit-identical with DLSS present and
+    // absent" (docs/dlss-integration.md 6) a property of the code rather than
+    // of a branch somebody has to keep remembering to write.
+
+    /// The kernel that moves the film and the guides out of their buffers and
+    /// into the images a backend reads. Its own binding table, not the shared
+    /// one: no other kernel has a storage image, and adding three to the table
+    /// every kernel shares would mean every descriptor set carrying images that
+    /// only exist in interactive mode.
+    ComputePipeline _reconstructPack;
+    VkDescriptorSet _reconstructSet = VK_NULL_HANDLE;
+
+    std::unique_ptr<ReconstructionBackend> _reconstruction;
+    /// Whether creating one has been attempted. The attempt is made once:
+    /// NGX's answer does not change within a process, and retrying it every
+    /// frame would mean initialising the SDK once per frame on a machine that
+    /// cannot run it.
+    bool _reconstructionAttempted = false;
+    std::string _reconstructionUnavailable;
+
+    /// The images the packing kernel writes and the backend reads, and the one
+    /// it writes.
+    VulkanImage _reconstructColor;
+    VulkanImage _reconstructDepth;
+    VulkanImage _reconstructMotion;
+    VulkanImage _reconstructOutput;
+    VulkanBuffer _reconstructReadback;
+    /// What the images and the backend's feature were built for. A frame whose
+    /// plan differs rebuilds both.
+    ReconstructionResolution _reconstructionResolution;
+    bool _reconstructionBuilt = false;
+    /// Whether the previous frame was reconstructed. A frame that turns
+    /// reconstruction on or off changes what the extents mean, which is a
+    /// history reset even when nothing else moved.
+    bool _previousReconstructed = false;
 
     // Path state, sized to the current resolution.
     VulkanBuffer _rayReadback;

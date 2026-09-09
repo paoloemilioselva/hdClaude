@@ -142,7 +142,7 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
             _allocator ? _allocator->DeviceLocalBytesSpilled() : 0;
         if (std::ofstream out{path}; out) {
             const auto& stages = _stageStats;
-            out << "deviceBytesPeak " << peak << '\n'
+            out << "deviceBytesPeak " << peak << '\n'
                 << "deviceBytesSpilled " << spilled << '\n'
                 << "deviceBytesAvailable " << available << '\n'
                 << "ingestMs "
@@ -255,6 +255,20 @@ void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
         options.enableValidation =
             TfGetenvBool("HDCLAUDE_ENABLE_VULKAN_VALIDATION", false);
         options.preferredDeviceName = TfGetenv("HDCLAUDE_DEVICE");
+
+        // NGX will not initialise without instance and device extensions of its
+        // own, and they can only be enabled while the instance and the device
+        // are being created -- so an interactive frame that asks to be
+        // reconstructed, much later, cannot arrange them. Installing the
+        // provider here is what makes reconstruction possible at all; the
+        // decision to *use* it stays with the render settings.
+        //
+        // Unconditional, and safe to be: without the SDK it names nothing, and
+        // the context enables only extensions the chosen device actually has.
+        // It is consulted during bootstrap alone, so a local outliving the
+        // constructor is all its lifetime has to cover.
+        const hdclaude::NgxRequirementProvider ngxProvider;
+        options.requirementProviders.push_back(&ngxProvider);
 
         _context = std::make_unique<hdclaude::VulkanContext>(options);
         _allocator = std::make_unique<hdclaude::VulkanAllocator>(*_context);
