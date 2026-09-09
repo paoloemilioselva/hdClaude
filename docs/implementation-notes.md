@@ -5898,3 +5898,69 @@ while the resized, revised and switched frames reset both.
 The gate also asserts that a camera which then stays put may continue, so it
 cannot pass by resetting everything -- the failure mode that would make the whole
 check vacuous.
+
+---
+
+## 2026-09-09 -- Any change to the kernels' layout makes the renderer irreproducible
+
+The depth AOV was built end to end and it is not what this entry is about.
+
+It follows the specification rather than a convention of its own: hdEmbree
+transforms the hit by the view and projection matrices it was handed and writes
+`(ndc.z + 1) / 2`, so `RenderCamera` now carries the host's `worldToClip` --
+composed in `HdClaudeMakeRenderCamera` from the same two matrices the pass
+already had -- and the guide kernel does the same arithmetic. Which
+normalisation is *the* one is a question about the host's projection, not about
+this renderer, and rebuilding a projection here from a field of view would be
+inventing an answer to it. The kernel runs once per sample, immediately after
+the first bounce's `extend`, which is the only point where the primary hit
+exists; the bounce after it overwrites both the hit record and the origin that
+`extend` moved onto the hit. A miss writes 1.0, which is the clear value Hydra
+gives a depth AOV.
+
+Then the guard flagged in the phase 10 plan fired.
+
+**Adding the binding makes the renderer disagree with itself inside one
+process.** Three renders of the chess set in a single process, twice over: once
+`[canonical, divergent, canonical]`, once `[divergent, canonical, canonical]`.
+The committed build has never done this -- 24 renders across 8 processes, every
+one identical, including a control taken in the same hour specifically so the
+comparison could not be blamed on the scene drifting.
+
+The obvious suspect was the extra dispatch, and it is not that. With the binding
+still declared and the dispatch removed by a `false &&`, the divergence remains.
+**It is the layout change alone.**
+
+That makes four independent changes, all of them layout changes, all perturbing:
+
+    raygen gains a push constant range          diverges (4 trials, first render)
+    binding 0 becomes UNIFORM_BUFFER_DYNAMIC    diverges (2 trials, first render)
+    a binding is added, kernel dispatched       diverges (2 of 6 renders)
+    a binding is added, kernel not dispatched   diverges (1 of 6 renders)
+    ------------------------------------------------------------------------
+    layout unchanged                            30 renders, 0 divergent
+
+And it is *in-process* nondeterminism, which is the part that matters. The
+acceleration structure cannot produce it: it is built once and every render of a
+repeat traverses the same tree, which is exactly why the committed build's
+repeats agree. Something that varies between two renders in one process is a
+race or a warm-up, not a structure.
+
+The shader-cache hypothesis -- a new layout being a new cache key, so the driver
+compiles in-process rather than loading a compiled pipeline -- fits the shape of
+it, and the one test available was inconclusive: `__GL_SHADER_DISK_CACHE=0` did
+not make the committed build diverge, but nothing confirms that variable is
+honoured on this platform, and the cache directory itself cannot be cleared from
+here.
+
+**This is now the critical path, not a side quest.** It has stopped two
+different pieces of work today, and it will stop every future one: the id AOVs,
+normals, albedo, motion vectors and the reconstruction backend all add bindings,
+and adding a binding is the thing that breaks reproducibility. The next task is
+not another feature but understanding this, and it is at last a well-posed
+question with a clean control and four data points.
+
+The depth AOV is reverted rather than shipped, for the reason that has decided
+every one of these today and one more besides: the committed hashes are the
+instrument that found this, and shipping something that makes them unstable
+would spend the instrument to buy the feature.
