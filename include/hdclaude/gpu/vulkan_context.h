@@ -104,6 +104,13 @@ struct VulkanCapabilities {
     bool externalMemory = false;
 
     std::uint32_t subgroupSize = 0;
+    /// Alignment every dynamic uniform buffer offset must be a multiple of.
+    ///
+    /// The frame block is uploaded once per sample into one buffer and bound
+    /// with a per-sample offset, so the stride between copies is this rounded
+    /// up. 256 is the conservative default the specification's minimum
+    /// guarantees, used if the device is never asked.
+    std::uint64_t uniformBufferOffsetAlignment = 256;
     /// Alignment an acceleration-structure build's scratch address must meet.
     ///
     /// Recorded because nothing else enforces it: a scratch buffer's own

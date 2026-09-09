@@ -5793,3 +5793,68 @@ The answer is not a push constant but a **dynamic uniform offset** -- one buffer
 holding an aligned copy per sample, bound with a per-sample offset, so nothing
 is ever rewritten while it is being read and no kernel signature changes at all.
 That is the next thing to build.
+
+---
+
+## 2026-09-09 -- The dynamic offset works, and something in the first trace does not
+
+The design named for the split is right and it is implemented: binding 0 becomes
+`VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC`, the frame block is allocated with
+one copy per sample at the device's `minUniformBufferOffsetAlignment` stride,
+every dispatch of sample *n* binds at offset *n* x stride, and the host fills all
+of them before recording. No kernel signature changes. It works: the whole suite
+passes, and the images are unchanged.
+
+It also makes the **first render of every process** disagree with every later
+one -- the same signature the push constant produced, and the reason that is
+worth stating is that it means **the push constant was never the culprit**. Two
+implementations with nothing in common in the data path do the same thing.
+
+The baseline is not in doubt. The committed build gives **eighteen renders across
+six processes, every one identical**, first renders included. The changed builds
+gave a divergent first render **eight times out of eight**, across three
+independent attempts: the push constant, the dynamic offset writing all copies
+up front, and the dynamic offset writing each copy immediately before its own
+submit.
+
+That third one was a bisect and it eliminates the obvious explanation. Writing
+ahead of time is not the problem: with the write moved back to exactly where the
+committed build does it, byte for byte the same host behaviour, the first render
+still diverges. Also eliminated: uninitialised path state (`HDCLAUDE_POISON_PATH_STATE`
+does not change it), descriptor ordering (the buffer grows and bumps the
+generation *before* the sets are written, so nothing dangles), and the
+acceleration structure -- which cannot be it at all, because the structure is
+built once per process and answers all three renders of a repeat identically,
+which is exactly what the committed build shows.
+
+What the two attempts do share is that each **changes a pipeline layout**:
+raygen gaining a push constant range, or binding 0 changing descriptor type. The
+hypothesis that fits every observation is a driver-side one -- the first
+execution of a freshly compiled pipeline differing numerically from later ones,
+with the layout change moving the compilation onto a different path. It is
+consistent with the effect surviving every change to the data path and with its
+being confined to the first trace. It is a hypothesis and not a finding: nothing
+here has tested it.
+
+**Not shipped.** A renderer whose first image differs for reasons nobody can
+state is exactly what this phase spent a week making visible, and shipping one
+to buy an optimisation would be the same trade refused twice already today.
+
+**Shipped: the plumbing**, which is independent and inert. `Dispatch` and
+`DispatchIndirect` take a dynamic offset and bind exactly as many offsets as the
+layout has dynamic descriptors -- none, at present, so every call is unchanged.
+`WriteBuffer` takes a range, because a dynamic binding needs the size of one
+element rather than the whole buffer, or every offset but zero runs past its end.
+`VulkanCapabilities` records `uniformBufferOffsetAlignment`. Turning it on is
+then a three-line change: the binding type, the range, and the per-sample
+allocation.
+
+**And a latent bug, found by it.** `ComputePipeline`'s move constructor and move
+assignment are written out by hand, member by member, and the new `_dynamicBindings`
+was not among them. Every pipeline is built as `_raygen = build(...)`, so the
+count was computed correctly and then moved away, and the bind supplied no offset
+for a layout that required one -- which the validation layer caught immediately
+and stated exactly. The member is carried now, and the header says why anything
+added beside it must be too. That hazard is a property of hand-written move
+operations, not of this change: the next member added there will be silently
+dropped the same way.

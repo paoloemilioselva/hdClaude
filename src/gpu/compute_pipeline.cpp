@@ -88,6 +88,14 @@ ComputePipeline::ComputePipeline(const VulkanContext& context,
         std::map<VkDescriptorType, std::uint32_t> counts;
         for (const BindingDescription& binding : bindings) {
             counts[binding.type] += binding.count * kDescriptorSetsPerPipeline;
+            // Derived from the same list, for the same reason the pool is: a
+            // bind must supply exactly one offset per dynamic descriptor, and
+            // counting them anywhere else would be a second answer to a
+            // question this list already settles.
+            if (binding.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
+                binding.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC) {
+                _dynamicBindings += binding.count;
+            }
         }
         std::vector<VkDescriptorPoolSize> poolSizes;
         poolSizes.reserve(counts.size());
@@ -183,6 +191,7 @@ ComputePipeline::ComputePipeline(ComputePipeline&& other) noexcept
       _bindings(std::move(other._bindings)),
       _pushConstantBytes(std::exchange(other._pushConstantBytes, 0)),
       _generation(std::exchange(other._generation, 0)),
+      _dynamicBindings(std::exchange(other._dynamicBindings, 0)),
       _debugName(std::move(other._debugName))
 {
 }
@@ -200,6 +209,7 @@ ComputePipeline& ComputePipeline::operator=(ComputePipeline&& other) noexcept
         _bindings = std::move(other._bindings);
         _pushConstantBytes = std::exchange(other._pushConstantBytes, 0);
         _generation = std::exchange(other._generation, 0);
+        _dynamicBindings = std::exchange(other._dynamicBindings, 0);
         _debugName = std::move(other._debugName);
     }
     return *this;
@@ -250,12 +260,15 @@ void ComputePipeline::ResetSets()
 
 void ComputePipeline::WriteBuffer(VkDescriptorSet set, std::uint32_t binding,
                                   const VulkanBuffer& buffer,
-                                  VkDescriptorType type) const
+                                  VkDescriptorType type, VkDeviceSize range) const
 {
     VkDescriptorBufferInfo bufferInfo{};
     bufferInfo.buffer = buffer.Handle();
     bufferInfo.offset = 0;
-    bufferInfo.range = VK_WHOLE_SIZE;
+    // A dynamic binding needs the size of *one* element rather than the whole
+    // buffer: the offset supplied at bind time is added to this range, and a
+    // range of the whole buffer would put every offset but zero past its end.
+    bufferInfo.range = range;
 
     VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     write.dstSet = set;
@@ -288,11 +301,17 @@ void ComputePipeline::WriteStorageImage(VkDescriptorSet set, std::uint32_t bindi
 void ComputePipeline::Dispatch(VkCommandBuffer command, VkDescriptorSet set,
                                std::uint32_t groupsX, std::uint32_t groupsY,
                                std::uint32_t groupsZ, const void* pushConstants,
-                               std::uint32_t pushConstantBytes) const
+                               std::uint32_t pushConstantBytes,
+                               std::uint32_t dynamicOffset) const
 {
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, _pipeline);
+    // Exactly as many offsets as the layout has dynamic descriptors, which is
+    // one for the integrator's kernels and none for a pipeline built with its
+    // own bindings -- a test kernel, say. Passing an offset a layout has no
+    // dynamic binding for is invalid.
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, _layout, 0, 1,
-                            &set, 0, nullptr);
+                            &set, _dynamicBindings,
+                            _dynamicBindings > 0 ? &dynamicOffset : nullptr);
     if (pushConstants != nullptr && pushConstantBytes > 0) {
         vkCmdPushConstants(command, _layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            pushConstantBytes, pushConstants);
@@ -305,11 +324,13 @@ void ComputePipeline::DispatchIndirect(VkCommandBuffer command,
                                        const VulkanBuffer& args,
                                        VkDeviceSize offset,
                                        const void* pushConstants,
-                                       std::uint32_t pushConstantBytes) const
+                                       std::uint32_t pushConstantBytes,
+                                       std::uint32_t dynamicOffset) const
 {
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, _pipeline);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, _layout, 0, 1,
-                            &set, 0, nullptr);
+                            &set, _dynamicBindings,
+                            _dynamicBindings > 0 ? &dynamicOffset : nullptr);
     if (pushConstants != nullptr && pushConstantBytes > 0) {
         vkCmdPushConstants(command, _layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            pushConstantBytes, pushConstants);

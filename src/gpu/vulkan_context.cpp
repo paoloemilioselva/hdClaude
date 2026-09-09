@@ -450,6 +450,10 @@ void VulkanContext::SelectPhysicalDevice(const VulkanContextOptions& options)
         properties2.pNext = &subgroup;
         vkGetPhysicalDeviceProperties2(candidate, &properties2);
         capabilities.subgroupSize = subgroup.subgroupSize;
+        if (properties.limits.minUniformBufferOffsetAlignment > 0) {
+            capabilities.uniformBufferOffsetAlignment =
+                properties.limits.minUniformBufferOffsetAlignment;
+        }
         if (accelerationProperties.minAccelerationStructureScratchOffsetAlignment > 0) {
             capabilities.scratchAlignment =
                 accelerationProperties.minAccelerationStructureScratchOffsetAlignment;

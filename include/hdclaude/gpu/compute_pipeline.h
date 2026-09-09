@@ -82,7 +82,8 @@ class ComputePipeline {
     /// Point a storage-buffer binding at a buffer.
     void WriteBuffer(VkDescriptorSet set, std::uint32_t binding,
                      const VulkanBuffer& buffer,
-                     VkDescriptorType type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) const;
+                     VkDescriptorType type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                     VkDeviceSize range = VK_WHOLE_SIZE) const;
 
     /// Point a storage-image binding at an image.
     void WriteStorageImage(VkDescriptorSet set, std::uint32_t binding,
@@ -101,10 +102,16 @@ class ComputePipeline {
 
     /// Bind and dispatch. `groups` is the workgroup count, not the thread
     /// count -- the kernel's own `local_size` decides the rest.
+    /// `dynamicOffset` is the byte offset into the one buffer bound at the
+    /// dynamic binding -- the frame block, which holds one aligned copy per
+    /// sample. Every dispatch of a sample passes that sample's offset, which is
+    /// what lets the host fill all of them before recording and never rewrite
+    /// one that work in flight is still reading.
     void Dispatch(VkCommandBuffer command, VkDescriptorSet set,
                   std::uint32_t groupsX, std::uint32_t groupsY = 1,
                   std::uint32_t groupsZ = 1, const void* pushConstants = nullptr,
-                  std::uint32_t pushConstantBytes = 0) const;
+                  std::uint32_t pushConstantBytes = 0,
+                  std::uint32_t dynamicOffset = 0) const;
 
     /// Bind and dispatch with the workgroup count read from `args` at
     /// `offset`, where a kernel earlier in the frame wrote it.
@@ -117,7 +124,8 @@ class ComputePipeline {
     void DispatchIndirect(VkCommandBuffer command, VkDescriptorSet set,
                           const VulkanBuffer& args, VkDeviceSize offset = 0,
                           const void* pushConstants = nullptr,
-                          std::uint32_t pushConstantBytes = 0) const;
+                          std::uint32_t pushConstantBytes = 0,
+                          std::uint32_t dynamicOffset = 0) const;
 
     void Reset();
 
@@ -131,6 +139,16 @@ class ComputePipeline {
     std::vector<BindingDescription> _bindings;
     std::uint32_t _pushConstantBytes = 0;
     ResourceGeneration _generation = 0;
+    /// How many descriptors in this layout are of a dynamic type, and so how
+    /// many offsets a bind must supply. Zero for any pipeline whose bindings do
+    /// not include one.
+    ///
+    /// Every member here must also be carried by the move constructor and the
+    /// move assignment, which are written out by hand. This one was not, at
+    /// first, and the pipelines are all built by `_raygen = build(...)` -- so
+    /// the count was set correctly and then moved away, and the bind supplied
+    /// no offset for a layout that required one.
+    std::uint32_t _dynamicBindings = 0;
     std::string _debugName;
 };
 
