@@ -391,6 +391,10 @@ PathTracer::~PathTracer()
         vkDestroySampler(_context.Device(), _sampler, nullptr);
         _sampler = VK_NULL_HANDLE;
     }
+    if (_timestampPool != VK_NULL_HANDLE) {
+        vkDestroyQueryPool(_context.Device(), _timestampPool, nullptr);
+        _timestampPool = VK_NULL_HANDLE;
+    }
 }
 
 void PathTracer::BuildSpectralTables()
@@ -1270,6 +1274,16 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     // buffer with a known pattern makes that content the same everywhere, so if
     // the renderer becomes reproducible across processes with this on, the
     // cause is a slot read before it was written.
+    // The kernel profile, asked for once. Declined rather than approximated
+    // where the device or its queue cannot timestamp: a period of zero or no
+    // valid bits means the numbers would be noise, and reporting noise as a
+    // breakdown is worse than reporting nothing.
+    if (!_profileKernels && std::getenv("HDCLAUDE_PROFILE_KERNELS") != nullptr &&
+        _context.Capabilities().timestampPeriod > 0.0f &&
+        _context.Capabilities().timestampValidBits > 0) {
+        _profileKernels = true;
+    }
+
     if (std::getenv("HDCLAUDE_POISON_PATH_STATE") != nullptr) {
         _context.SubmitImmediate([&](VkCommandBuffer command) {
             for (VulkanBuffer* buffer :
@@ -1286,13 +1300,47 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
         });
     }
 
+    // The kernel profile's query slots. Twelve spans a bounce -- prepare,
+    // extend, sort, environment, shade, shadow -- and two for the film, which
+    // runs once per sample rather than once per bounce.
+    constexpr std::uint32_t kStampsPerBounce = 12;
+    const std::uint32_t stampCount = settings.maxBounces * kStampsPerBounce + 2;
+    if (_profileKernels && _timestampPool == VK_NULL_HANDLE) {
+        VkQueryPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        poolInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        poolInfo.queryCount = stampCount;
+        if (vkCreateQueryPool(_context.Device(), &poolInfo, nullptr,
+                              &_timestampPool) != VK_SUCCESS) {
+            _timestampPool = VK_NULL_HANDLE;
+            _profileKernels = false;
+        }
+    }
+    // Only the first sample is measured; every other one records nothing.
+    const bool profileThisCall = _profileKernels && _timestampPool != VK_NULL_HANDLE;
+
     for (std::uint32_t sample = 0; sample < settings.samplesPerPixel; ++sample) {
+        const bool stamping = profileThisCall && sample == 0;
         block.sampleIndex = settings.firstSample + sample;
         slot.frameUniforms.Write(&block, sizeof(block));
 
+        const bool readStamps = stamping;
         _context.SubmitImmediate([&](VkCommandBuffer command) {
+            // Written with ALL_COMMANDS at both ends of a span. Every kernel is
+            // already separated by a full barrier, so a span measures that
+            // kernel and nothing either side of it.
+            const auto stamp = [&](std::uint32_t index) {
+                if (stamping) {
+                    vkCmdWriteTimestamp2(command,
+                                         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                         _timestampPool, index);
+                }
+            };
+            if (stamping) {
+                vkCmdResetQueryPool(command, _timestampPool, 0, stampCount);
+            }
             for (std::uint32_t bounce = 0; bounce < settings.maxBounces;
                  ++bounce) {
+                const std::uint32_t base = bounce * kStampsPerBounce;
                 if (bounce == 0) {
                     if (sample == 0) {
                         // The accumulators measure this call, so they start it
@@ -1339,15 +1387,20 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
                 // -- are written on the device, and reading one back to size
                 // the next dispatch would stall the middle of every bounce
                 // (docs/wavefront-integrator.md 2).
+                stamp(base + 0);
                 _prepareDispatch.Dispatch(command, prepareSet, 1, 1, 1,
                                           &kPrepareActive, sizeof(kPrepareActive));
                 Barrier(command);
+                stamp(base + 1);
 
+                stamp(base + 2);
                 _extend.DispatchIndirect(command, extendSet, slot.dispatchArgs,
                                          kDispatchSlotActive * kDispatchArgStride);
                 Barrier(command);
+                stamp(base + 3);
 
                 // Group the hits by material: count, prefix-sum, scatter.
+                stamp(base + 4);
                 _materialSort.DispatchIndirect(
                     command, sortSet, slot.dispatchArgs,
                     kDispatchSlotActive * kDispatchArgStride, &kSortCount,
@@ -1364,9 +1417,11 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
                     kDispatchSlotActive * kDispatchArgStride, &kSortScatter,
                     sizeof(kSortScatter));
                 Barrier(command);
+                stamp(base + 5);
 
                 // The misses are still on the active queue; the sort left them
                 // there rather than giving them a group.
+                stamp(base + 6);
                 EnvironmentPush environmentPush;
                 environmentPush.bounce = bounce;
                 _environment.DispatchIndirect(
@@ -1374,7 +1429,9 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
                     kDispatchSlotActive * kDispatchArgStride, &environmentPush,
                     sizeof(environmentPush));
                 Barrier(command);
+                stamp(base + 7);
 
+                stamp(base + 8);
                 for (std::size_t i = 0; i < _shade.size(); ++i) {
                     ShadePush push;
                     push.materialId = static_cast<std::uint32_t>(i);
@@ -1388,6 +1445,8 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
                     Barrier(command);
                 }
 
+                stamp(base + 9);
+                stamp(base + 10);
                 _prepareDispatch.Dispatch(command, prepareSet, 1, 1, 1,
                                           &kPrepareShadow, sizeof(kPrepareShadow));
                 Barrier(command);
@@ -1395,14 +1454,60 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
                 _shadow.DispatchIndirect(command, shadowSet, slot.dispatchArgs,
                                          kDispatchSlotShadow * kDispatchArgStride);
                 Barrier(command);
+                stamp(base + 11);
             }
 
             // The film, in the same buffer as the bounces that filled the
             // radiance it reads. The barrier that ends the last bounce is
             // what orders it; it used to be a submit boundary, which was a
             // full barrier obtained by stalling the device.
+            stamp(settings.maxBounces * kStampsPerBounce + 0);
             _film.Dispatch(command, filmSet, pathGroups);
+            Barrier(command);
+            stamp(settings.maxBounces * kStampsPerBounce + 1);
         });
+
+        // Read back while the sample that wrote them is the last thing the
+        // device did, which `SubmitImmediate` guarantees by waiting.
+        if (readStamps) {
+            std::vector<std::uint64_t> ticks(stampCount, 0);
+            if (vkGetQueryPoolResults(
+                    _context.Device(), _timestampPool, 0, stampCount,
+                    ticks.size() * sizeof(std::uint64_t), ticks.data(),
+                    sizeof(std::uint64_t),
+                    VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) ==
+                VK_SUCCESS) {
+                const double period =
+                    static_cast<double>(_context.Capabilities().timestampPeriod);
+                // Ticks to milliseconds. A span whose end is not after its start
+                // is dropped rather than counted: a timestamp the queue did not
+                // write reads as zero, and subtracting it would manufacture a
+                // negative or a vast interval out of nothing.
+                const auto span = [&](std::uint32_t a, std::uint32_t b) {
+                    if (ticks[b] <= ticks[a]) {
+                        return 0.0;
+                    }
+                    return static_cast<double>(ticks[b] - ticks[a]) * period /
+                           1.0e6;
+                };
+                KernelProfile profile;
+                for (std::uint32_t bounce = 0; bounce < settings.maxBounces;
+                     ++bounce) {
+                    const std::uint32_t base = bounce * kStampsPerBounce;
+                    profile.prepareMs += span(base + 0, base + 1);
+                    profile.extendMs += span(base + 2, base + 3);
+                    profile.sortMs += span(base + 4, base + 5);
+                    profile.environmentMs += span(base + 6, base + 7);
+                    profile.shadeMs += span(base + 8, base + 9);
+                    profile.shadowMs += span(base + 10, base + 11);
+                }
+                const std::uint32_t filmBase =
+                    settings.maxBounces * kStampsPerBounce;
+                profile.filmMs = span(filmBase + 0, filmBase + 1);
+                profile.valid = true;
+                _kernelProfile = profile;
+            }
+        }
     }
 
     // --- Resolve ------------------------------------------------------------

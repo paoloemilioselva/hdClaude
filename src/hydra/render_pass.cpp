@@ -440,6 +440,21 @@ void HdClaudeRenderPass::_Execute(
         stages.shadowRays.store(tracer->ShadowRays(), std::memory_order_relaxed);
         stages.hitHash.store(tracer->HitHash(), std::memory_order_relaxed);
         stages.rayHash.store(tracer->RayHash(), std::memory_order_relaxed);
+        const auto& kernels = tracer->LastKernelProfile();
+        if (kernels.valid) {
+            stages.kernelPrepareMs.store(kernels.prepareMs,
+                                         std::memory_order_relaxed);
+            stages.kernelExtendMs.store(kernels.extendMs,
+                                        std::memory_order_relaxed);
+            stages.kernelSortMs.store(kernels.sortMs, std::memory_order_relaxed);
+            stages.kernelEnvironmentMs.store(kernels.environmentMs,
+                                             std::memory_order_relaxed);
+            stages.kernelShadeMs.store(kernels.shadeMs,
+                                       std::memory_order_relaxed);
+            stages.kernelShadowMs.store(kernels.shadowMs,
+                                        std::memory_order_relaxed);
+            stages.kernelFilmMs.store(kernels.filmMs, std::memory_order_relaxed);
+        }
     }
 
     HdClaudeAddMilliseconds(_renderDelegate->StageStats().traceMilliseconds,

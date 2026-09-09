@@ -100,6 +100,17 @@ struct HdClaudeStageStats {
     /// found a gap the size of the render and no line to put it against.
     std::atomic<double> traceMilliseconds{0.0};
 
+    /// The per-kernel GPU time of one sample, when HDCLAUDE_PROFILE_KERNELS is
+    /// set. Zero otherwise. See PathTracer::KernelProfile: traceMs alone cannot
+    /// say which kernel a slow scene is slow in.
+    std::atomic<double> kernelPrepareMs{0.0};
+    std::atomic<double> kernelExtendMs{0.0};
+    std::atomic<double> kernelSortMs{0.0};
+    std::atomic<double> kernelEnvironmentMs{0.0};
+    std::atomic<double> kernelShadeMs{0.0};
+    std::atomic<double> kernelShadowMs{0.0};
+    std::atomic<double> kernelFilmMs{0.0};
+
     std::atomic<double> materialMilliseconds{0.0};
     std::atomic<std::uint64_t> materialsCompiled{0};
 

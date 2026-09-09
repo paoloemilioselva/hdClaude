@@ -320,6 +320,26 @@ class PathTracer {
     {
         return _accelerator ? _accelerator->LastBuiltCount() : 0;
     }
+    /// The per-kernel GPU time of one sample, in milliseconds, when the
+    /// kernel profile is enabled by HDCLAUDE_PROFILE_KERNELS.
+    ///
+    /// It exists because `traceMs` covers extend, sort, shade, shadow and film
+    /// together and so cannot say which of them a slow scene is slow in.
+    /// Measured on one sample rather than all of them: a sample is
+    /// representative, and timestamping every dispatch of a thousand-sample
+    /// render would change the thing being measured.
+    struct KernelProfile {
+        double prepareMs = 0.0;
+        double extendMs = 0.0;
+        double sortMs = 0.0;
+        double environmentMs = 0.0;
+        double shadeMs = 0.0;
+        double shadowMs = 0.0;
+        double filmMs = 0.0;
+        bool valid = false;
+    };
+    const KernelProfile& LastKernelProfile() const { return _kernelProfile; }
+
     std::uint32_t BlasReused() const
     {
         return _accelerator ? _accelerator->LastReusedCount() : 0;
@@ -452,6 +472,13 @@ class PathTracer {
     bool _hasPreviousFrame = false;
     RenderMode _previousMode = RenderMode::Reference;
     RenderCamera _previousCamera;
+    /// The kernel profile and the query pool it is measured with. Created
+    /// only when HDCLAUDE_PROFILE_KERNELS asks for it, so a normal render
+    /// records no timestamps at all.
+    KernelProfile _kernelProfile;
+    VkQueryPool _timestampPool = VK_NULL_HANDLE;
+    bool _profileKernels = false;
+
     /// The last frame's history-reset decision; see InvalidateFor.
     bool _historyReset = false;
     std::uint64_t _previousSceneRevision = 0;

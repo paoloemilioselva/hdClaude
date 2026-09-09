@@ -10,6 +10,7 @@
 #include "subdivision.h"
 #include "trace.h"
 
+#include "pxr/base/gf/range3d.h"
 #include "pxr/base/gf/matrix4d.h"
 #include "pxr/base/gf/vec2f.h"
 #include "pxr/base/gf/vec3f.h"
@@ -347,6 +348,48 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
                                                   std::memory_order_relaxed);
             stats->subdivideOutputPoints.fetch_add(refined.positions.size(),
                                                    std::memory_order_relaxed);
+        }
+        // The limit surface of a Catmull-Clark cage lies inside the convex
+        // hull of that cage, so a refined mesh can never be larger than the
+        // mesh it came from. That is a theorem rather than a tolerance, which
+        // makes it worth asserting: a refined point outside the input's bounds
+        // is a defect in refinement, and a single stray vertex is enough to
+        // inflate an acceleration structure's upper nodes and cost far more in
+        // traversal than the geometry it belongs to.
+        if (refined.Valid() && !points.empty() &&
+            !refined.positions.empty()) {
+            // Both are flat triples of floats, so they are walked as such.
+            const auto bounds = [](const std::vector<float>& xyz) {
+                GfRange3d range;
+                for (std::size_t i = 0; i + 2 < xyz.size(); i += 3) {
+                    range.UnionWith(
+                        GfVec3d(xyz[i], xyz[i + 1], xyz[i + 2]));
+                }
+                return range;
+            };
+            const GfRange3d cage = bounds(points);
+            const GfRange3d limit = bounds(refined.positions);
+            const bool comparable = !cage.IsEmpty() && !limit.IsEmpty();
+            // A hair of slack for the arithmetic, proportional to the cage
+            // rather than absolute, so the check means the same thing on a
+            // building and on a bolt.
+            const double slack =
+                1e-4 * std::max(1e-6, cage.GetSize().GetLength());
+            GfRange3d grown = cage;
+            grown.UnionWith(cage.GetMin() - GfVec3d(slack, slack, slack));
+            grown.UnionWith(cage.GetMax() + GfVec3d(slack, slack, slack));
+            if (comparable && !grown.Contains(limit)) {
+                TF_WARN(
+                    "hdClaude: %s refined outside its control cage: cage "
+                    "(%g %g %g)-(%g %g %g), limit (%g %g %g)-(%g %g %g). "
+                    "A Catmull-Clark limit surface cannot leave the hull of "
+                    "its cage, so this is a refinement defect.",
+                    id.GetText(), cage.GetMin()[0], cage.GetMin()[1],
+                    cage.GetMin()[2], cage.GetMax()[0], cage.GetMax()[1],
+                    cage.GetMax()[2], limit.GetMin()[0], limit.GetMin()[1],
+                    limit.GetMin()[2], limit.GetMax()[0], limit.GetMax()[1],
+                    limit.GetMax()[2]);
+            }
         }
         if (refined.Valid()) {
             points = refined.positions;

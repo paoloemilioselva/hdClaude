@@ -473,6 +473,8 @@ void VulkanContext::SelectPhysicalDevice(const VulkanContextOptions& options)
         properties2.pNext = &subgroup;
         vkGetPhysicalDeviceProperties2(candidate, &properties2);
         capabilities.subgroupSize = subgroup.subgroupSize;
+        capabilities.timestampPeriod = properties.limits.timestampPeriod;
+
         if (properties.limits.minUniformBufferOffsetAlignment > 0) {
             capabilities.uniformBufferOffsetAlignment =
                 properties.limits.minUniformBufferOffsetAlignment;
@@ -526,6 +528,11 @@ void VulkanContext::CreateDevice(const VulkanContextOptions& options)
         const VkQueueFlags required = VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT;
         if ((families[i].queueFlags & required) == required) {
             _queueFamily = i;
+            // Timestamps are a property of the *queue family*, not only of
+            // the device: a family may report zero valid bits and write
+            // nothing useful. Recorded with the family that was chosen, so
+            // the profile can decline rather than report noise.
+            _capabilities.timestampValidBits = families[i].timestampValidBits;
             found = true;
             break;
         }

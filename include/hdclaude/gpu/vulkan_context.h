@@ -112,6 +112,13 @@ struct VulkanCapabilities {
     /// up. 256 is the conservative default the specification's minimum
     /// guarantees, used if the device is never asked.
     std::uint64_t uniformBufferOffsetAlignment = 256;
+
+    /// Nanoseconds per timestamp tick, and how many bits of a timestamp are
+    /// meaningful. Zero for the period means the device does not support
+    /// timestamps at all, in which case the kernel profile is unavailable
+    /// rather than wrong.
+    float timestampPeriod = 0.0f;
+    std::uint32_t timestampValidBits = 0;
     /// Alignment an acceleration-structure build's scratch address must meet.
     ///
     /// Recorded because nothing else enforces it: a scratch buffer's own

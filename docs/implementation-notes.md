@@ -6216,3 +6216,66 @@ points at a constant width of 0.014 -- whiskers, not a coat. Only `mesh` is in
 than wrong. Supporting them is a real piece of phase 3 work (a curve primitive,
 its acceleration-structure geometry type, and a shading frame for a swept
 curve), but this asset sets the bar low enough to be a reasonable first case.
+
+---
+
+## 2026-09-09 -- The kernel profile, and traversal collapsing on refined geometry
+
+`traceMs` covers extend, sort, shade, shadow, environment and film together, so
+it could say a scene was slow and never say in what. `HDCLAUDE_PROFILE_KERNELS`
+splits it: a query pool timestamps each kernel group of **one** sample, twelve
+spans a bounce plus two for the film, and the totals reach the stats. One sample
+rather than all of them, because a sample is representative and timestamping
+every dispatch of a thousand-sample render would change what it measures. The
+device is asked first -- a timestamp period of zero or a queue family with no
+valid bits means the profile declines rather than reports noise.
+
+On ALab's `lab_structure01`, at 512 px and eight samples, per sample in
+milliseconds:
+
+                subdiv 0   subdiv 1   subdiv 2
+    prepare         0.04       0.04       0.04
+    extend          0.25      46.27      51.22
+    sort            0.15       1.95       2.07
+    environment     0.31       1.65       1.65
+    shade           4.84      24.08      29.92
+    shadow          0.15       1.08       1.07
+    film            0.05       0.28       0.45
+
+**It is `extend`** -- the ray query itself. Traversal goes from about four per
+cent of the trace to sixty per cent, and against the full-size render that is
+roughly **377 Mrays/s falling to 1.8**. Four times the triangles costs a hundred
+and eighty-six times the traversal, and four times more after that costs eleven
+per cent.
+
+The ray counts rule out the obvious reading: 2,336,376 traced at level 0 against
+2,332,181 at level 1 and 2,331,249 at level 2. The same rays, in the same
+numbers, taking two hundred times longer each.
+
+Six explanations are eliminated by measurement.
+
+* **Not deduplication.** 335 structures built and 4 reused at every level.
+* **Not triangle count.** Level 2 has four times level 1's geometry and costs
+  eleven per cent more.
+* **Not memory.** The peak moves 7.31 to 9.11 GiB with 3.4 GiB still free.
+* **Not opacity.** Every prototype is classified `Opaque`, so no build takes the
+  any-hit path.
+* **Not broken refinement.** A Catmull-Clark limit surface lies inside the
+  convex hull of its cage -- a theorem, not a tolerance -- and a check on that
+  invariant now runs on every refined mesh and reports not one violation on this
+  asset. The check is kept: a single stray vertex inflates an acceleration
+  structure's upper nodes and costs far more in traversal than the geometry it
+  belongs to, and that is worth catching by assertion rather than by a
+  fortnight's confusion.
+* **Not scrambled connectivity.** Scrambled indices would draw a different
+  picture; the mean across levels is 0.269, 0.270.
+
+And it is not refinement in general. The chess set refines to 23 M triangles --
+about level 1's count here -- and traces six times faster. Something about *this*
+asset's refined geometry is pathological for the hierarchy, and black-box
+measurement has run out of road: the next instrument is a GPU profiler that can
+report traversal steps and hierarchy quality, or an isolation that renders one
+prototype at a time until the bad one names itself.
+
+What can be said without it: the slowness is traversal, it is not the amount of
+geometry, and it appears the moment refinement runs.

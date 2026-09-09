@@ -165,6 +165,27 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
                 << "traceMs "
                 << stages.traceMilliseconds.load(std::memory_order_relaxed)
                 << '\n'
+                << "kernelPrepareMs "
+                << stages.kernelPrepareMs.load(std::memory_order_relaxed)
+                << '\n'
+                << "kernelExtendMs "
+                << stages.kernelExtendMs.load(std::memory_order_relaxed)
+                << '\n'
+                << "kernelSortMs "
+                << stages.kernelSortMs.load(std::memory_order_relaxed)
+                << '\n'
+                << "kernelEnvironmentMs "
+                << stages.kernelEnvironmentMs.load(std::memory_order_relaxed)
+                << '\n'
+                << "kernelShadeMs "
+                << stages.kernelShadeMs.load(std::memory_order_relaxed)
+                << '\n'
+                << "kernelShadowMs "
+                << stages.kernelShadowMs.load(std::memory_order_relaxed)
+                << '\n'
+                << "kernelFilmMs "
+                << stages.kernelFilmMs.load(std::memory_order_relaxed)
+                << '\n'
                 << "subdivideMs "
                 << stages.subdivideMilliseconds.load(std::memory_order_relaxed)
                 << '\n'
