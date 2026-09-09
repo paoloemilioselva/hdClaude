@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <array>
 #include <vector>
 
 #include "hdclaude/gpu/acceleration_structure.h"
@@ -313,12 +314,16 @@ class PathTracer {
 
     VulkanImage UploadTexture(const TextureImage& texture);
 
+    /// Everything one frame in flight owns; defined with the members
+    /// below, declared here because the descriptor writer takes one.
+    struct FrameSlot;
+
     /// The image array a material's descriptor set should be written with.
     /// `material` indexes the compiled materials; a negative index means a
     /// kernel that never samples, which gets placeholders throughout.
     std::vector<VkDescriptorImageInfo> TextureBindingsFor(int material) const;
     void WriteDescriptors(VkDescriptorSet set, const ComputePipeline& pipeline,
-                          int material = -1);
+                          const FrameSlot& slot, int material = -1);
 
     const VulkanContext& _context;
     VulkanAllocator& _allocator;
@@ -349,8 +354,6 @@ class PathTracer {
     /// The dome map's sampling distribution, uploaded as one buffer. Always a
     /// real buffer -- a descriptor set cannot point at nothing -- and the
     /// kernels read `hasEnvironmentDistribution` rather than its size.
-    /// The hero packet each path carries.
-    VulkanBuffer _wavelengths;
 
     /// The colour matching functions, the illuminant, and the chromaticity
     /// table, in one buffer. Built once at construction: none of it depends on
@@ -403,29 +406,87 @@ class PathTracer {
     RenderMode _previousMode = RenderMode::Reference;
     std::uint64_t _previousSceneRevision = 0;
 
+    /// How many frames may be in flight at once.
+    ///
+    /// Two is the number that does the work: it lets the next frame be
+    /// recorded and submitted while this one is still being read back. A
+    /// third would cost another full set of path state -- the renderer's
+    /// largest allocation by far -- to overlap something nothing is waiting
+    /// on.
+    static constexpr std::size_t kFrameSlots = 2;
+
     /// Filled by BeginFrame, taken by EndFrame. One frame is in flight at a
     /// time in this step, which is why this is a single slot rather than a ring.
     FrameResult _pendingFrame;
-    VulkanBuffer _frameUniforms;
-    VulkanBuffer _origin, _direction, _throughput, _radiance, _pixel, _rng;
-    VulkanBuffer _scatterPdf;
-    /// Absorption coefficient of the medium each path is currently inside,
-    /// or zero in vacuum. Written when a transmission event crosses into a
-    /// surface whose closure published one.
-    VulkanBuffer _medium;
-    /// Whether each path has already been collapsed onto its hero wavelength
-    /// by a dispersive surface, so the collapse compensates exactly once.
-    VulkanBuffer _heroOnly;
-    VulkanBuffer _hits, _counters, _activeQueue, _nextActiveQueue, _shadowRays;
-    VulkanBuffer _accumulation;
-    VulkanBuffer _readback;
 
-    // The material sort. The queue is sized by the resolution; the table and
-    // the indirect commands are sized by the number of materials, so they are
-    // built when a scene is published rather than when the resolution changes.
-    VulkanBuffer _materialQueue;
-    VulkanBuffer _materialTable;
-    VulkanBuffer _dispatchArgs;
+    /// The film every frame accumulates into.
+    ///
+    /// Deliberately *not* per slot. Progressive accumulation is the one thing
+    /// consecutive frames are meant to share, and giving each slot its own
+    /// would not protect it but break it.
+    VulkanBuffer _accumulation;
+
+    /// Everything a frame writes, and therefore everything two frames in
+    /// flight must not share.
+    ///
+    /// The descriptor sets live here too, and that is the half that matters.
+    /// They used to be allocated per `Trace` from a pool reset at the top of
+    /// it, which is correct only because every submit waits for the device:
+    /// resetting a pool whose sets an earlier frame's command buffers still
+    /// reference is undefined behaviour. Overlap is impossible until each
+    /// frame in flight owns its own sets, so they are allocated once per slot
+    /// and rewritten only when the resources they name actually change.
+    struct FrameSlot {
+        VulkanBuffer frameUniforms;
+        VulkanBuffer origin, direction, throughput, radiance, pixel, rng;
+        VulkanBuffer wavelengths;
+        VulkanBuffer scatterPdf;
+        /// Absorption coefficient of the medium each path is currently inside,
+        /// or zero in vacuum. Written when a transmission event crosses into a
+        /// surface whose closure published one.
+        VulkanBuffer medium;
+        /// Whether each path has already been collapsed onto its hero
+        /// wavelength by a dispersive surface, so the collapse compensates
+        /// exactly once.
+        VulkanBuffer heroOnly;
+        VulkanBuffer hits, counters, activeQueue, nextActiveQueue, shadowRays;
+        VulkanBuffer readback;
+        VulkanBuffer rayReadback;
+
+        // The material sort. The queue is sized by the resolution; the table
+        // and the indirect commands are sized by the number of materials, so
+        // they are built when a scene is published rather than when the
+        // resolution changes.
+        VulkanBuffer materialQueue;
+        VulkanBuffer materialTable;
+        VulkanBuffer dispatchArgs;
+
+        VkDescriptorSet raygenSet = VK_NULL_HANDLE;
+        VkDescriptorSet extendSet = VK_NULL_HANDLE;
+        VkDescriptorSet prepareSet = VK_NULL_HANDLE;
+        VkDescriptorSet sortSet = VK_NULL_HANDLE;
+        VkDescriptorSet environmentSet = VK_NULL_HANDLE;
+        VkDescriptorSet shadowSet = VK_NULL_HANDLE;
+        VkDescriptorSet filmSet = VK_NULL_HANDLE;
+        std::vector<VkDescriptorSet> shadeSets;
+
+        /// The resource generation these sets were written against. Zero means
+        /// they have never been written, and any value behind
+        /// `_resourceGeneration` means the buffers or the scene have moved
+        /// under them.
+        std::uint64_t descriptorGeneration = 0;
+    };
+
+    /// Bumped whenever anything a descriptor set names is replaced -- a
+    /// resolution change, a published scene, an uploaded texture. A slot whose
+    /// sets are behind rewrites them before it is used.
+    std::uint64_t _resourceGeneration = 1;
+
+    std::array<FrameSlot, kFrameSlots> _slots;
+
+    /// Which slot the frame most recently traced used, for the readbacks that
+    /// happen after it.
+    std::size_t _lastSlot = 0;
 };
 
 }  // namespace hdclaude

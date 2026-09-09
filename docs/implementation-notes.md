@@ -5682,3 +5682,50 @@ half minutes; comparing the two on wall time compares two quantities that are
 each mostly something else. `traceMs` is the column that means what the table
 was always taken to mean, and `outsideSeconds` is the one that says how much of
 the rest is USD rather than hdClaude.
+
+---
+
+## 2026-09-09 -- Per-slot resources, and the reset that was in the way
+
+Phase 9's next step: everything a frame writes now belongs to a **frame slot**,
+and there are two of them. A `FrameSlot` holds the path state, the queues, the
+counters, the sort's table and indirect commands, the frame uniform and both
+readbacks. The film is deliberately *not* in it -- progressive accumulation is
+the one thing consecutive frames are meant to share, and giving each slot its own
+would not protect the accumulation but break it.
+
+Two is the number that does the work. It lets the next frame be recorded and
+submitted while this one is still being read back; a third would cost another
+full set of path state, the renderer's largest allocation by far, to overlap
+something nothing is waiting on.
+
+**The descriptor sets are the half that mattered**, and they were the actual
+obstacle. They used to be allocated inside `Trace` from a pool reset at the top
+of it, every single call. Resetting a descriptor pool whose sets an earlier
+frame's command buffers still reference is undefined behaviour, so that
+arrangement is correct *only* because every submit waits for the device to go
+idle -- which is exactly the property the next step removes. No amount of
+per-frame buffering would have helped while the pool was still being reset under
+whatever was in flight.
+
+So sets are allocated once per slot and rewritten only when what they name has
+actually moved. A `_resourceGeneration` counter is bumped by the two things that
+invalidate them -- a resolution change replacing every buffer, and a published
+scene replacing the shading pipelines -- and a slot whose sets are behind
+rewrites them before it is used. The pool reset survives, but only inside that
+branch, where it is safe for a reason that can be stated: the resource change
+that bumped the generation happened *between* frames, not during one.
+
+It is meant to be behaviour-neutral and it is. The whole suite passes; the chess
+set, the glass ball, the subdivision matrix and the height map all render at
+rms 0 against their committed baselines with **both hashes unmoved**, which is
+a stronger statement than the images alone -- a gallery render makes 32
+progressive calls and therefore alternates slots 32 times, so every one of those
+frames used a different slot from the one before it and produced the identical
+answer.
+
+It is also, unexpectedly, faster. The render suite goes from 100.33 s to
+**77.27 s**, because allocating seven-plus descriptor sets and writing
+twenty-odd bindings into each of them, on every trace, was never free. Against
+the 237.84 s the suite cost before the batching, the two steps together are
+3.1x.

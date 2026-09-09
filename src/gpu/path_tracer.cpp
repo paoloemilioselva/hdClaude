@@ -788,9 +788,6 @@ void PathTracer::SetScene(const Scene& scene,
     // buffer's size.
     const auto materialCount = static_cast<std::uint32_t>(_shade.size());
     const std::uint32_t tableEntries = std::max<std::uint32_t>(1, materialCount);
-    _materialTable = MakeStorage(_allocator, VkDeviceSize(tableEntries) * 3 * 4,
-                                 "sort.materialTable");
-
     BufferDescription argsDescription;
     argsDescription.size =
         (VkDeviceSize(kDispatchSlotFirstMaterial) + tableEntries) * kDispatchArgStride;
@@ -799,16 +796,26 @@ void PathTracer::SetScene(const Scene& scene,
                             VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     argsDescription.domain = BufferDomain::DeviceLocal;
     argsDescription.debugName = "sort.dispatchArgs";
-    _dispatchArgs = VulkanBuffer(_allocator, argsDescription);
+    for (FrameSlot& slot : _slots) {
+        slot.materialTable = MakeStorage(
+            _allocator, VkDeviceSize(tableEntries) * 3 * 4, "sort.materialTable");
+        slot.dispatchArgs = VulkanBuffer(_allocator, argsDescription);
+    }
 
     // The command processor reads every slot of an indirect buffer it is
     // pointed at, including one this frame's kernels never wrote. Zeroing
     // means an unwritten slot dispatches nothing rather than whatever the
     // allocation happened to contain.
     _context.SubmitImmediate([&](VkCommandBuffer command) {
-        vkCmdFillBuffer(command, _dispatchArgs.Handle(), 0, VK_WHOLE_SIZE, 0);
-        vkCmdFillBuffer(command, _materialTable.Handle(), 0, VK_WHOLE_SIZE, 0);
+        for (FrameSlot& slot : _slots) {
+            vkCmdFillBuffer(command, slot.dispatchArgs.Handle(), 0, VK_WHOLE_SIZE, 0);
+            vkCmdFillBuffer(command, slot.materialTable.Handle(), 0, VK_WHOLE_SIZE, 0);
+        }
     });
+
+    // A published scene replaces the shading pipelines, so every set that named
+    // the old ones is stale.
+    ++_resourceGeneration;
 }
 
 void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
@@ -819,104 +826,115 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
 
     const std::uint32_t paths = width * height;
 
-    // Built into locals and published together, so a failure part-way leaves
-    // the previous resolution's buffers intact rather than a half-resized set
-    // (docs/architecture.md 6 rule 1).
-    VulkanBuffer origin = MakeStorage(_allocator, paths * 12, "path.origin");
-    VulkanBuffer direction = MakeStorage(_allocator, paths * 12, "path.direction");
-    // Sixteen bytes, not twelve: a path carries four spectral lanes, not three
-    // colour channels.
-    VulkanBuffer throughput = MakeStorage(_allocator, paths * 16, "path.throughput");
-    VulkanBuffer radiance = MakeStorage(_allocator, paths * 16, "path.radiance");
-    VulkanBuffer wavelengths = MakeStorage(_allocator, paths * 16, "path.wavelengths");
-    VulkanBuffer pixel = MakeStorage(_allocator, paths * 4, "path.pixel");
-    VulkanBuffer rng = MakeStorage(_allocator, paths * 4, "path.rng");
-    // The density of the scattering behind each path's current ray, for the
-    // MIS weight the environment kernel applies.
-    VulkanBuffer scatterPdf = MakeStorage(_allocator, paths * 4, "path.scatterPdf");
-    // The interior medium a path is inside, as an absorption coefficient.
-    VulkanBuffer medium = MakeStorage(_allocator, paths * 32, "path.medium");
-    // Whether a dispersive surface has already collapsed the path's packet onto
-    // its hero wavelength.
-    VulkanBuffer heroOnly = MakeStorage(_allocator, paths * 4, "path.heroOnly");
-    VulkanBuffer hits = MakeStorage(_allocator, paths * 16, "path.hits");
-    // Eight uints: activeCount, nextActiveCount, shadowCount, a pad, the two
-    // ray accumulators, and the two hashes -- over what the rays were and over
-    // what they hit. Everything past byte 16 is per call rather than per
-    // bounce, which is why it sits there: the inter-bounce reset fills bytes 4
-    // to 16 and would otherwise clear it every bounce.
-    VulkanBuffer counters = MakeStorage(_allocator, 32, "counters");
-
-    // A host-visible landing place for the accumulators and the hashes. Allocated with
-    // the rest of the resolution-dependent state so it is created once rather
-    // than per frame, though it does not depend on the resolution at all.
-    BufferDescription rayReadbackDescription;
-    rayReadbackDescription.size = 16;
-    rayReadbackDescription.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    rayReadbackDescription.domain = BufferDomain::HostReadback;
-    rayReadbackDescription.debugName = "counters.rayReadback";
-    VulkanBuffer rayReadback(_allocator, rayReadbackDescription);
-    VulkanBuffer activeQueue = MakeStorage(_allocator, paths * 4, "queue.active");
-    VulkanBuffer nextQueue = MakeStorage(_allocator, paths * 4, "queue.nextActive");
-    VulkanBuffer shadowRays = MakeStorage(_allocator, paths * 64, "queue.shadow");
-    // The sorted queue holds the active paths that hit geometry, which is at
-    // most every path.
-    VulkanBuffer materialQueue = MakeStorage(_allocator, paths * 4, "queue.material");
+    // The film first, and once: every slot accumulates into the same one.
     VulkanBuffer accumulation = MakeStorage(_allocator, paths * 16, "film");
 
-    BufferDescription uniformDescription;
-    uniformDescription.size = sizeof(FrameBlock);
-    uniformDescription.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-    uniformDescription.domain = BufferDomain::HostUpload;
-    uniformDescription.debugName = "frame";
-    VulkanBuffer frameUniforms(_allocator, uniformDescription);
+    // Each slot's own path state. Built into locals and published together, so
+    // a failure part-way leaves the previous resolution's buffers intact rather
+    // than a half-resized set (docs/architecture.md 6 rule 1).
+    for (FrameSlot& slot : _slots) {
+        VulkanBuffer origin = MakeStorage(_allocator, paths * 12, "path.origin");
+        VulkanBuffer direction = MakeStorage(_allocator, paths * 12, "path.direction");
+        // Sixteen bytes, not twelve: a path carries four spectral lanes, not three
+        // colour channels.
+        VulkanBuffer throughput = MakeStorage(_allocator, paths * 16, "path.throughput");
+        VulkanBuffer radiance = MakeStorage(_allocator, paths * 16, "path.radiance");
+        VulkanBuffer wavelengths = MakeStorage(_allocator, paths * 16, "path.wavelengths");
+        VulkanBuffer pixel = MakeStorage(_allocator, paths * 4, "path.pixel");
+        VulkanBuffer rng = MakeStorage(_allocator, paths * 4, "path.rng");
+        // The density of the scattering behind each path's current ray, for the
+        // MIS weight the environment kernel applies.
+        VulkanBuffer scatterPdf = MakeStorage(_allocator, paths * 4, "path.scatterPdf");
+        // The interior medium a path is inside, as an absorption coefficient.
+        VulkanBuffer medium = MakeStorage(_allocator, paths * 32, "path.medium");
+        // Whether a dispersive surface has already collapsed the path's packet onto
+        // its hero wavelength.
+        VulkanBuffer heroOnly = MakeStorage(_allocator, paths * 4, "path.heroOnly");
+        VulkanBuffer hits = MakeStorage(_allocator, paths * 16, "path.hits");
+        // Eight uints: activeCount, nextActiveCount, shadowCount, a pad, the two
+        // ray accumulators, and the two hashes -- over what the rays were and over
+        // what they hit. Everything past byte 16 is per call rather than per
+        // bounce, which is why it sits there: the inter-bounce reset fills bytes 4
+        // to 16 and would otherwise clear it every bounce.
+        VulkanBuffer counters = MakeStorage(_allocator, 32, "counters");
 
-    BufferDescription readbackDescription;
-    readbackDescription.size = paths * 16;
-    readbackDescription.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    readbackDescription.domain = BufferDomain::HostReadback;
-    readbackDescription.debugName = "film.readback";
-    VulkanBuffer readback(_allocator, readbackDescription);
+        // A host-visible landing place for the accumulators and the hashes. Allocated with
+        // the rest of the resolution-dependent state so it is created once rather
+        // than per frame, though it does not depend on the resolution at all.
+        BufferDescription rayReadbackDescription;
+        rayReadbackDescription.size = 16;
+        rayReadbackDescription.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        rayReadbackDescription.domain = BufferDomain::HostReadback;
+        rayReadbackDescription.debugName = "counters.rayReadback";
+        VulkanBuffer rayReadback(_allocator, rayReadbackDescription);
+        VulkanBuffer activeQueue = MakeStorage(_allocator, paths * 4, "queue.active");
+        VulkanBuffer nextQueue = MakeStorage(_allocator, paths * 4, "queue.nextActive");
+        VulkanBuffer shadowRays = MakeStorage(_allocator, paths * 64, "queue.shadow");
+        // The sorted queue holds the active paths that hit geometry, which is at
+        // most every path.
+        VulkanBuffer materialQueue = MakeStorage(_allocator, paths * 4, "queue.material");
 
-    _origin = std::move(origin);
-    _direction = std::move(direction);
-    _throughput = std::move(throughput);
-    _radiance = std::move(radiance);
-    _wavelengths = std::move(wavelengths);
-    _pixel = std::move(pixel);
-    _rng = std::move(rng);
-    _scatterPdf = std::move(scatterPdf);
-    _medium = std::move(medium);
-    _heroOnly = std::move(heroOnly);
-    _hits = std::move(hits);
-    _counters = std::move(counters);
-    _rayReadback = std::move(rayReadback);
-    _activeQueue = std::move(activeQueue);
-    _nextActiveQueue = std::move(nextQueue);
-    _shadowRays = std::move(shadowRays);
-    _materialQueue = std::move(materialQueue);
+        BufferDescription uniformDescription;
+        uniformDescription.size = sizeof(FrameBlock);
+        uniformDescription.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        uniformDescription.domain = BufferDomain::HostUpload;
+        uniformDescription.debugName = "frame";
+        VulkanBuffer frameUniforms(_allocator, uniformDescription);
+
+        BufferDescription readbackDescription;
+        readbackDescription.size = paths * 16;
+        readbackDescription.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        readbackDescription.domain = BufferDomain::HostReadback;
+        readbackDescription.debugName = "film.readback";
+        VulkanBuffer readback(_allocator, readbackDescription);
+
+        slot.origin = std::move(origin);
+        slot.direction = std::move(direction);
+        slot.throughput = std::move(throughput);
+        slot.radiance = std::move(radiance);
+        slot.wavelengths = std::move(wavelengths);
+        slot.pixel = std::move(pixel);
+        slot.rng = std::move(rng);
+        slot.scatterPdf = std::move(scatterPdf);
+        slot.medium = std::move(medium);
+        slot.heroOnly = std::move(heroOnly);
+        slot.hits = std::move(hits);
+        slot.counters = std::move(counters);
+        slot.rayReadback = std::move(rayReadback);
+        slot.activeQueue = std::move(activeQueue);
+        slot.nextActiveQueue = std::move(nextQueue);
+        slot.shadowRays = std::move(shadowRays);
+        slot.materialQueue = std::move(materialQueue);
+        slot.frameUniforms = std::move(frameUniforms);
+        slot.readback = std::move(readback);
+        }
+
+    // The film is shared, so it is built once outside the loop.
     _accumulation = std::move(accumulation);
-    _frameUniforms = std::move(frameUniforms);
-    _readback = std::move(readback);
     _width = width;
     _height = height;
+
+    // Every descriptor set now names a buffer that no longer exists.
+    ++_resourceGeneration;
 }
 
 void PathTracer::WriteDescriptors(VkDescriptorSet set,
-                                  const ComputePipeline& pipeline, int material)
+                                  const ComputePipeline& pipeline,
+                                  const FrameSlot& slot, int material)
 {
-    pipeline.WriteBuffer(set, 0, _frameUniforms, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
-    pipeline.WriteBuffer(set, 1, _origin);
-    pipeline.WriteBuffer(set, 2, _direction);
-    pipeline.WriteBuffer(set, 3, _throughput);
-    pipeline.WriteBuffer(set, 4, _radiance);
-    pipeline.WriteBuffer(set, 5, _pixel);
-    pipeline.WriteBuffer(set, 6, _rng);
-    pipeline.WriteBuffer(set, 7, _hits);
-    pipeline.WriteBuffer(set, 8, _counters);
-    pipeline.WriteBuffer(set, 9, _activeQueue);
-    pipeline.WriteBuffer(set, 10, _nextActiveQueue);
-    pipeline.WriteBuffer(set, 11, _shadowRays);
+    pipeline.WriteBuffer(set, 0, slot.frameUniforms,
+                         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+    pipeline.WriteBuffer(set, 1, slot.origin);
+    pipeline.WriteBuffer(set, 2, slot.direction);
+    pipeline.WriteBuffer(set, 3, slot.throughput);
+    pipeline.WriteBuffer(set, 4, slot.radiance);
+    pipeline.WriteBuffer(set, 5, slot.pixel);
+    pipeline.WriteBuffer(set, 6, slot.rng);
+    pipeline.WriteBuffer(set, 7, slot.hits);
+    pipeline.WriteBuffer(set, 8, slot.counters);
+    pipeline.WriteBuffer(set, 9, slot.activeQueue);
+    pipeline.WriteBuffer(set, 10, slot.nextActiveQueue);
+    pipeline.WriteBuffer(set, 11, slot.shadowRays);
     pipeline.WriteBuffer(set, 12, _accumulation);
 
     VkAccelerationStructureKHR tlas = _accelerator->Tlas().Handle();
@@ -944,20 +962,21 @@ void PathTracer::WriteDescriptors(VkDescriptorSet set,
     dome.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     pipeline.WriteSampledImageArray(set, 17, {dome});
 
-    pipeline.WriteBuffer(set, 18, _materialQueue);
-    pipeline.WriteBuffer(set, 19, _materialTable);
-    pipeline.WriteBuffer(set, 20, _dispatchArgs);
-    pipeline.WriteBuffer(set, 21, _scatterPdf);
-    pipeline.WriteBuffer(set, 25, _medium);
-    pipeline.WriteBuffer(set, 26, _heroOnly);
+    pipeline.WriteBuffer(set, 18, slot.materialQueue);
+    pipeline.WriteBuffer(set, 19, slot.materialTable);
+    pipeline.WriteBuffer(set, 20, slot.dispatchArgs);
+    pipeline.WriteBuffer(set, 21, slot.scatterPdf);
+    pipeline.WriteBuffer(set, 25, slot.medium);
+    pipeline.WriteBuffer(set, 26, slot.heroOnly);
     pipeline.WriteBuffer(set, 22, _environmentDistribution);
-    pipeline.WriteBuffer(set, 23, _wavelengths);
+    pipeline.WriteBuffer(set, 23, slot.wavelengths);
     pipeline.WriteBuffer(set, 24, _spectralTables);
 }
 
 std::vector<std::uint32_t> PathTracer::MaterialCounts() const
 {
-    if (_shade.empty() || !_materialTable.Valid()) {
+    const FrameSlot& slot = _slots[_lastSlot];
+    if (_shade.empty() || !slot.materialTable.Valid()) {
         return {};
     }
     const VkDeviceSize size = VkDeviceSize(_shade.size()) * 4;
@@ -972,7 +991,7 @@ std::vector<std::uint32_t> PathTracer::MaterialCounts() const
     _context.SubmitImmediate([&](VkCommandBuffer command) {
         VkBufferCopy region{};
         region.size = size;
-        vkCmdCopyBuffer(command, _materialTable.Handle(), readback.Handle(), 1,
+        vkCmdCopyBuffer(command, slot.materialTable.Handle(), readback.Handle(), 1,
                         &region);
     });
 
@@ -1085,44 +1104,78 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     // Allocating once and rewriting only on a resource change would be
     // cheaper still; it is recorded in docs/roadmap.md rather than done here,
     // because it needs the descriptor-generation tracking to be authoritative.
-    _raygen.ResetSets();
-    _extend.ResetSets();
-    _prepareDispatch.ResetSets();
-    _materialSort.ResetSets();
-    _environment.ResetSets();
-    _shadow.ResetSets();
-    _film.ResetSets();
-    for (ComputePipeline& pipeline : _shade) {
-        pipeline.ResetSets();
+    // The slot this frame owns. Frames alternate, so the one still being read
+    // back is never the one being written.
+    _lastSlot = static_cast<std::size_t>(_frameIndex % kFrameSlots);
+    FrameSlot& slot = _slots[_lastSlot];
+
+    // Sets are allocated once per slot and rewritten only when what they name
+    // has moved, rather than allocated afresh out of a pool reset at the top of
+    // every trace. The reset was the thing standing in the way: resetting a
+    // pool whose sets an earlier frame's command buffers still reference is
+    // undefined behaviour, and it is only safe today because every submit waits
+    // for the device. A frame that owns its sets does not need anyone else to
+    // have finished with theirs.
+    if (slot.descriptorGeneration != _resourceGeneration) {
+        // The sets a previous generation allocated are freed by resetting the
+        // pool, which is safe *here* precisely because nothing is in flight:
+        // the resource change that bumped the generation happened between
+        // frames, not during one.
+        _raygen.ResetSets();
+        _extend.ResetSets();
+        _prepareDispatch.ResetSets();
+        _materialSort.ResetSets();
+        _environment.ResetSets();
+        _shadow.ResetSets();
+        _film.ResetSets();
+        for (ComputePipeline& pipeline : _shade) {
+            pipeline.ResetSets();
+        }
+        for (FrameSlot& other : _slots) {
+            other.descriptorGeneration = 0;
+            other.shadeSets.clear();
+        }
+
+        // Descriptor sets are allocated per pipeline but written identically:
+        // the binding table is shared, so every kernel sees the same state.
+        for (FrameSlot& other : _slots) {
+            other.raygenSet = _raygen.AllocateSet();
+            other.extendSet = _extend.AllocateSet();
+            other.prepareSet = _prepareDispatch.AllocateSet();
+            other.sortSet = _materialSort.AllocateSet();
+            other.environmentSet = _environment.AllocateSet();
+            other.shadowSet = _shadow.AllocateSet();
+            other.filmSet = _film.AllocateSet();
+            other.shadeSets.reserve(_shade.size());
+            for (ComputePipeline& pipeline : _shade) {
+                other.shadeSets.push_back(pipeline.AllocateSet());
+            }
+
+            WriteDescriptors(other.raygenSet, _raygen, other);
+            WriteDescriptors(other.extendSet, _extend, other);
+            WriteDescriptors(other.prepareSet, _prepareDispatch, other);
+            WriteDescriptors(other.sortSet, _materialSort, other);
+            WriteDescriptors(other.environmentSet, _environment, other);
+            WriteDescriptors(other.shadowSet, _shadow, other);
+            WriteDescriptors(other.filmSet, _film, other);
+            for (std::size_t i = 0; i < _shade.size(); ++i) {
+                // Each material's set carries its own textures, which is what
+                // lets the generator number a material's samplers from zero.
+                WriteDescriptors(other.shadeSets[i], _shade[i], other,
+                                 static_cast<int>(i));
+            }
+            other.descriptorGeneration = _resourceGeneration;
+        }
     }
 
-    // Descriptor sets are allocated per pipeline but written identically: the
-    // binding table is shared, so every kernel sees the same state.
-    VkDescriptorSet raygenSet = _raygen.AllocateSet();
-    VkDescriptorSet extendSet = _extend.AllocateSet();
-    VkDescriptorSet prepareSet = _prepareDispatch.AllocateSet();
-    VkDescriptorSet sortSet = _materialSort.AllocateSet();
-    VkDescriptorSet environmentSet = _environment.AllocateSet();
-    VkDescriptorSet shadowSet = _shadow.AllocateSet();
-    VkDescriptorSet filmSet = _film.AllocateSet();
-    std::vector<VkDescriptorSet> shadeSets;
-    shadeSets.reserve(_shade.size());
-    for (ComputePipeline& pipeline : _shade) {
-        shadeSets.push_back(pipeline.AllocateSet());
-    }
-
-    WriteDescriptors(raygenSet, _raygen);
-    WriteDescriptors(extendSet, _extend);
-    WriteDescriptors(prepareSet, _prepareDispatch);
-    WriteDescriptors(sortSet, _materialSort);
-    WriteDescriptors(environmentSet, _environment);
-    WriteDescriptors(shadowSet, _shadow);
-    WriteDescriptors(filmSet, _film);
-    for (std::size_t i = 0; i < _shade.size(); ++i) {
-        // Each material's set carries its own textures, which is what lets the
-        // generator number a material's samplers from zero.
-        WriteDescriptors(shadeSets[i], _shade[i], static_cast<int>(i));
-    }
+    const VkDescriptorSet raygenSet = slot.raygenSet;
+    const VkDescriptorSet extendSet = slot.extendSet;
+    const VkDescriptorSet prepareSet = slot.prepareSet;
+    const VkDescriptorSet sortSet = slot.sortSet;
+    const VkDescriptorSet environmentSet = slot.environmentSet;
+    const VkDescriptorSet shadowSet = slot.shadowSet;
+    const VkDescriptorSet filmSet = slot.filmSet;
+    const std::vector<VkDescriptorSet>& shadeSets = slot.shadeSets;
 
     // Clear the film once; samples accumulate into it. A progressive caller
     // asks not to, and its samples land on top of what is already there.
@@ -1204,10 +1257,10 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     if (std::getenv("HDCLAUDE_POISON_PATH_STATE") != nullptr) {
         _context.SubmitImmediate([&](VkCommandBuffer command) {
             for (VulkanBuffer* buffer :
-                 {&_origin, &_direction, &_throughput, &_radiance,
-                  &_wavelengths, &_pixel, &_rng, &_scatterPdf, &_medium,
-                  &_heroOnly, &_hits, &_activeQueue, &_nextActiveQueue,
-                  &_shadowRays, &_materialQueue}) {
+                 {&slot.origin, &slot.direction, &slot.throughput, &slot.radiance,
+                  &slot.wavelengths, &slot.pixel, &slot.rng, &slot.scatterPdf, &slot.medium,
+                  &slot.heroOnly, &slot.hits, &slot.activeQueue, &slot.nextActiveQueue,
+                  &slot.shadowRays, &slot.materialQueue}) {
                 if (buffer->Valid()) {
                     vkCmdFillBuffer(command, buffer->Handle(), 0, VK_WHOLE_SIZE,
                                     0xCDCDCDCDu);
@@ -1219,7 +1272,7 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
 
     for (std::uint32_t sample = 0; sample < settings.samplesPerPixel; ++sample) {
         block.sampleIndex = settings.firstSample + sample;
-        _frameUniforms.Write(&block, sizeof(block));
+        slot.frameUniforms.Write(&block, sizeof(block));
 
         _context.SubmitImmediate([&](VkCommandBuffer command) {
             for (std::uint32_t bounce = 0; bounce < settings.maxBounces;
@@ -1229,7 +1282,7 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
                         // The accumulators measure this call, so they start it
                         // at zero. Cleared here rather than by raygen because
                         // raygen runs once per *sample* and this must not.
-                        vkCmdFillBuffer(command, _counters.Handle(), 16, 16, 0);
+                        vkCmdFillBuffer(command, slot.counters.Handle(), 16, 16, 0);
                         Barrier(command);
                     }
                     _raygen.Dispatch(command, raygenSet, pixelGroupsX, pixelGroupsY);
@@ -1248,19 +1301,19 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
                     // bounce dispatches over nothing.
                     VkBufferCopy queueRegion{};
                     queueRegion.size = static_cast<VkDeviceSize>(paths) * 4;
-                    vkCmdCopyBuffer(command, _nextActiveQueue.Handle(),
-                                    _activeQueue.Handle(), 1, &queueRegion);
+                    vkCmdCopyBuffer(command, slot.nextActiveQueue.Handle(),
+                                    slot.activeQueue.Handle(), 1, &queueRegion);
 
                     VkBufferCopy countRegion{};
                     countRegion.srcOffset = 4;   // nextActiveCount
                     countRegion.dstOffset = 0;   // activeCount
                     countRegion.size = 4;
-                    vkCmdCopyBuffer(command, _counters.Handle(), _counters.Handle(),
+                    vkCmdCopyBuffer(command, slot.counters.Handle(), slot.counters.Handle(),
                                     1, &countRegion);
                     Barrier(command);
 
                     // nextActiveCount and shadowCount start this bounce at zero.
-                    vkCmdFillBuffer(command, _counters.Handle(), 4, 12, 0);
+                    vkCmdFillBuffer(command, slot.counters.Handle(), 4, 12, 0);
                     Barrier(command);
                 }
 
@@ -1274,13 +1327,13 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
                                           &kPrepareActive, sizeof(kPrepareActive));
                 Barrier(command);
 
-                _extend.DispatchIndirect(command, extendSet, _dispatchArgs,
+                _extend.DispatchIndirect(command, extendSet, slot.dispatchArgs,
                                          kDispatchSlotActive * kDispatchArgStride);
                 Barrier(command);
 
                 // Group the hits by material: count, prefix-sum, scatter.
                 _materialSort.DispatchIndirect(
-                    command, sortSet, _dispatchArgs,
+                    command, sortSet, slot.dispatchArgs,
                     kDispatchSlotActive * kDispatchArgStride, &kSortCount,
                     sizeof(kSortCount));
                 Barrier(command);
@@ -1291,7 +1344,7 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
                 Barrier(command);
 
                 _materialSort.DispatchIndirect(
-                    command, sortSet, _dispatchArgs,
+                    command, sortSet, slot.dispatchArgs,
                     kDispatchSlotActive * kDispatchArgStride, &kSortScatter,
                     sizeof(kSortScatter));
                 Barrier(command);
@@ -1301,7 +1354,7 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
                 EnvironmentPush environmentPush;
                 environmentPush.bounce = bounce;
                 _environment.DispatchIndirect(
-                    command, environmentSet, _dispatchArgs,
+                    command, environmentSet, slot.dispatchArgs,
                     kDispatchSlotActive * kDispatchArgStride, &environmentPush,
                     sizeof(environmentPush));
                 Barrier(command);
@@ -1312,7 +1365,7 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
                     push.dispersionAbbe = _materialDispersion[i];
                     push.bounce = bounce;
                     _shade[i].DispatchIndirect(
-                        command, shadeSets[i], _dispatchArgs,
+                        command, shadeSets[i], slot.dispatchArgs,
                         (kDispatchSlotFirstMaterial + push.materialId) *
                             kDispatchArgStride,
                         &push, sizeof(push));
@@ -1323,7 +1376,7 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
                                           &kPrepareShadow, sizeof(kPrepareShadow));
                 Barrier(command);
 
-                _shadow.DispatchIndirect(command, shadowSet, _dispatchArgs,
+                _shadow.DispatchIndirect(command, shadowSet, slot.dispatchArgs,
                                          kDispatchSlotShadow * kDispatchArgStride);
                 Barrier(command);
             }
@@ -1340,7 +1393,7 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     _context.SubmitImmediate([&](VkCommandBuffer command) {
         VkBufferCopy region{};
         region.size = static_cast<VkDeviceSize>(paths) * 16;
-        vkCmdCopyBuffer(command, _accumulation.Handle(), _readback.Handle(), 1,
+        vkCmdCopyBuffer(command, _accumulation.Handle(), slot.readback.Handle(), 1,
                         &region);
         // The ray accumulators, copied in the same submit as the film. One
         // readback for a whole call, after every dispatch it describes has
@@ -1349,12 +1402,12 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
         VkBufferCopy rays{};
         rays.srcOffset = 16;
         rays.size = 16;
-        vkCmdCopyBuffer(command, _counters.Handle(), _rayReadback.Handle(), 1,
+        vkCmdCopyBuffer(command, slot.counters.Handle(), slot.rayReadback.Handle(), 1,
                         &rays);
     });
 
     std::uint32_t rayCounts[4] = {0, 0, 0, 0};
-    std::memcpy(rayCounts, _rayReadback.MappedData(), sizeof(rayCounts));
+    std::memcpy(rayCounts, slot.rayReadback.MappedData(), sizeof(rayCounts));
     _tracedRayCount += rayCounts[0];
     _shadowRayCount += rayCounts[1];
     // Folded rather than summed, so the order calls arrive in is part of the
@@ -1363,7 +1416,7 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     _rayHash = _rayHash * 1099511628211ull + rayCounts[3];
 
     std::vector<float> image(static_cast<std::size_t>(paths) * 4);
-    std::memcpy(image.data(), _readback.MappedData(), image.size() * sizeof(float));
+    std::memcpy(image.data(), slot.readback.MappedData(), image.size() * sizeof(float));
 
     // Divide by the sample count each pixel actually received.
     for (std::size_t i = 0; i < paths; ++i) {
