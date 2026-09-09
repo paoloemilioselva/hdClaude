@@ -6340,3 +6340,50 @@ whole map backwards.
 Not yet verified end to end: the plugin could not be installed while another
 render held it, so the stoat has not been rendered with this build. The code
 compiles and the core tests pass; the picture is still owed.
+
+---
+
+## 2026-09-09 -- The curves were there, and Hydra never asked for them
+
+Declaring `basisCurves` supported was not enough, and the reason is worth
+recording because nothing about it fails loudly.
+
+`UsdImagingNurbsCurvesAdapter` has two faces. Through the **legacy** path it
+reports a `basisCurves` prim with a linear basis -- its own comment says it is
+"drawing the cage for NURBS curves" -- and a renderer that supports
+`basisCurves` gets the control polygon. Through a **scene index**, the same
+adapter's `GetImagingSubprimType` returns `HdPrimTypeTokens->nurbsCurves` and
+hands the NURBS data over untouched. `usdrecord` takes the second path.
+
+So the whiskers arrived as `nurbsCurves`, Hydra gated their creation on
+`IsRprimTypeSupported`, hdClaude said no, and **nothing was reported at all** --
+not even the "unsupported rprim type" warning, because the delegate was never
+asked. The geometry was simply absent, and every earlier statement that ALab's
+curves "are absent rather than wrong" was true for a reason nobody had checked.
+
+Declaring `nurbsCurves` supported instead is a dead end, and it was worth ten
+minutes to prove rather than assume: the prims are then created -- confirmed by
+name, all thirty-three -- and `GetBasisCurvesTopology` returns nothing, because
+`HdSceneIndexAdapterSceneDelegate` has no `nurbsCurves` handling and `HdTokens`
+has no `curveVertexCounts`. There is an `HdNurbsCurvesSchema` and no
+`HdNurbsCurves` rprim to read it through the legacy API.
+
+OpenUSD ships the conversion: `HdsiNurbsApproximatingSceneIndex`. hdClaude now
+registers a scene index plugin that inserts it, so a NURBS prim becomes the
+linear cage before the renderer sees it -- the same cage the legacy path would
+have produced, which means hdClaude draws what every other Hydra renderer draws
+and needs no NURBS code of its own.
+
+**One line made the difference and it is not in any C++ file.** The plugin's
+`plugInfo.json` entry needs `"loadWithRenderer": "Claude GPU Path Tracer"`.
+Without it the type is declared, the registry knows it exists, and it is never
+loaded: `_LoadPluginsForRenderer` preloads only what a plugInfo has tagged for
+that renderer, and a scene index plugin registers itself for a renderer *from
+inside the library*, so a library that is never loaded never registers. The
+symptom is a correct-looking plugin that does nothing whatsoever.
+
+With it, the stoat renders its whiskers: 288 instances against 255, each strand
+56 vertices and 84 triangles -- seven segments, six sides, two triangles a side.
+Against the same render without them the image moves by an RMS of 0.0085 over
+0.53 per cent of pixels, which is what thirty-three hairs at 256 pixels should
+be. The suite passes and the gallery is unmoved.

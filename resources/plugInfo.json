@@ -7,6 +7,12 @@
             "bases": ["HdRendererPlugin"],
             "displayName": "Claude GPU Path Tracer",
             "priority": 100
+          },
+          "HdClaude_NurbsApproximatingSceneIndexPlugin": {
+            "bases": ["HdSceneIndexPlugin"],
+            "loadWithRenderer": "Claude GPU Path Tracer",
+            "priority": 0,
+            "displayName": "Approximates NURBS curves as the linear cage hdClaude draws"
           }
         }
       },
