@@ -142,7 +142,33 @@ struct FrameBlock {
     float domeLightToWorld[16];
     /// World to clip, for the depth guide. See RenderCamera::worldToClip.
     float worldToClip[16];
+    /// The frame's sub-pixel offset, and whether raygen should use it rather
+    /// than drawing one per sample.
+    float jitter[2];
+    std::uint32_t useFixedJitter;
+    std::uint32_t jitterPad;
 };
+
+/// The radical inverse of `index` in `base`, one coordinate of a Halton
+/// sequence.
+///
+/// Halton rather than a random draw because a reconstruction backend must be
+/// told where the sample landed, and rather than a regular grid because a grid
+/// of N offsets repeats with period N, and any period becomes a standing
+/// pattern in the reconstructed image. Bases two and three are the pair every
+/// temporal renderer uses: the first two primes, so the coordinates share no
+/// common period.
+inline float RadicalInverse(std::uint32_t index, std::uint32_t base)
+{
+    float result = 0.0f;
+    float fraction = 1.0f / static_cast<float>(base);
+    while (index > 0) {
+        result += static_cast<float>(index % base) * fraction;
+        index /= base;
+        fraction /= static_cast<float>(base);
+    }
+    return result;
+}
 
 /// Mirrors the indirect command slots in path_state.glsl. Each slot is a
 /// VkDispatchIndirectCommand followed by a word of padding, so a slot's byte
@@ -1077,6 +1103,29 @@ FrameHandle PathTracer::BeginFrame(const FrameDescription& description)
     RenderSettings settings = description.settings;
     settings.resetAccumulation = InvalidateFor(description);
 
+    // The frame's sub-pixel offset, decided here because it is a property of
+    // the frame rather than of the caller.
+    //
+    // Only an interactive frame has one. A reference render accumulates
+    // hundreds of samples and jitters each independently, which is the correct
+    // estimator and has no single offset to report; giving it a fixed one would
+    // land every sample of a frame in the same place and turn an average into a
+    // point sample.
+    //
+    // Indexed by the frame rather than from zero, because the radical inverse
+    // of zero is zero and a first frame with no jitter at all is the one frame
+    // a reconstructor most needs jittered.
+    if (description.mode == RenderMode::Interactive) {
+        const auto index = static_cast<std::uint32_t>(handle.index);
+        settings.jitter[0] = RadicalInverse(index, 2) - 0.5f;
+        settings.jitter[1] = RadicalInverse(index, 3) - 0.5f;
+        settings.fixedJitter = true;
+    } else {
+        settings.jitter[0] = 0.0f;
+        settings.jitter[1] = 0.0f;
+        settings.fixedJitter = false;
+    }
+
     _pendingFrame = FrameResult{};
     _pendingFrame.index = handle.index;
     _pendingFrame.width = description.width;
@@ -1084,6 +1133,8 @@ FrameHandle PathTracer::BeginFrame(const FrameDescription& description)
     _pendingFrame.firstSample = settings.firstSample;
     _pendingFrame.sampleCount = settings.samplesPerPixel;
     _pendingFrame.accumulationReset = settings.resetAccumulation;
+    _pendingFrame.jitter[0] = settings.jitter[0];
+    _pendingFrame.jitter[1] = settings.jitter[1];
     _pendingFrame.historyReset = _historyReset;
     _pendingFrame.image =
         Trace(description.width, description.height, description.camera, settings);
@@ -1262,6 +1313,10 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     std::memcpy(block.domeLightToWorld, _domeLightToWorld,
                 sizeof(block.domeLightToWorld));
     std::memcpy(block.worldToClip, camera.worldToClip, sizeof(block.worldToClip));
+    block.jitter[0] = settings.jitter[0];
+    block.jitter[1] = settings.jitter[1];
+    block.useFixedJitter = settings.fixedJitter ? 1u : 0u;
+    block.jitterPad = 0;
 
     const std::uint32_t pathGroups = (paths + 63) / 64;
     const std::uint32_t pixelGroupsX = (width + 7) / 8;

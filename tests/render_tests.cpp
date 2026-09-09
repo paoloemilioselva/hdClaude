@@ -3109,6 +3109,49 @@ int main()
                 tracer.EndFrame(tracer.BeginFrame(description));
             CHECK(switched.accumulationReset);
 
+            // --- The frame's jitter -----------------------------------------
+            //
+            // A reconstruction backend is handed one sample and must be told
+            // where in the pixel it landed, so an interactive frame reports
+            // the offset it actually used. A reference frame has no single
+            // offset -- it jitters each of its samples independently -- and
+            // reports none rather than an average that describes nothing.
+            {
+                hdclaude::FrameDescription jitterFrame = description;
+                jitterFrame.mode = hdclaude::RenderMode::Reference;
+                jitterFrame.settings.resetAccumulation = true;
+                const hdclaude::FrameResult reference =
+                    tracer.EndFrame(tracer.BeginFrame(jitterFrame));
+                CHECK_EQ(reference.jitter[0], 0.0f);
+                CHECK_EQ(reference.jitter[1], 0.0f);
+
+                // Interactive frames each report their own offset, inside the
+                // pixel and not all the same.
+                jitterFrame.mode = hdclaude::RenderMode::Interactive;
+                std::vector<std::pair<float, float>> offsets;
+                for (int i = 0; i < 8; ++i) {
+                    const hdclaude::FrameResult interactive =
+                        tracer.EndFrame(tracer.BeginFrame(jitterFrame));
+                    CHECK(interactive.jitter[0] >= -0.5f &&
+                          interactive.jitter[0] <= 0.5f);
+                    CHECK(interactive.jitter[1] >= -0.5f &&
+                          interactive.jitter[1] <= 0.5f);
+                    offsets.emplace_back(interactive.jitter[0],
+                                         interactive.jitter[1]);
+                }
+                // No two of eight repeat. A sequence that repeated would put
+                // a standing pattern into whatever reconstructs it.
+                for (std::size_t i = 0; i < offsets.size(); ++i) {
+                    for (std::size_t j = i + 1; j < offsets.size(); ++j) {
+                        CHECK(offsets[i] != offsets[j]);
+                    }
+                }
+                std::printf("  jitter: reference none, interactive "
+                            "(%.3f %.3f) (%.3f %.3f) ...\n",
+                            offsets[0].first, offsets[0].second,
+                            offsets[1].first, offsets[1].second);
+            }
+
             // --- The depth guide -------------------------------------------
             //
             // Depth is checkable in closed form, which is the only kind of

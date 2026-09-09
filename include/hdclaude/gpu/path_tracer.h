@@ -71,6 +71,18 @@ struct RenderCamera {
 /// delegate. Deliberately simple rather than approximate: nothing here has to be
 /// unlearned when real lights land.
 struct RenderSettings {
+    /// The sub-pixel offset every camera ray of this frame is displaced by,
+    /// in pixels, and whether to use it at all.
+    ///
+    /// A reference render leaves this off and jitters each sample randomly,
+    /// which is right for an estimator that will average hundreds of them. A
+    /// reconstruction backend cannot work that way: it is given one sample and
+    /// must be *told* where in the pixel it landed, so the offset becomes a
+    /// known low-discrepancy sequence indexed by the frame and travels out on
+    /// the FrameResult.
+    float jitter[2] = {0.0f, 0.0f};
+    bool fixedJitter = false;
+
     std::uint32_t samplesPerPixel = 64;
     std::uint32_t maxBounces = 4;
 
@@ -214,6 +226,11 @@ struct FrameResult {
     /// caller asked for it or the renderer decided it. A caller that tracks its
     /// own sample count needs to know which happened.
     bool accumulationReset = false;
+
+    /// The sub-pixel offset this frame's camera rays were displaced by, in
+    /// pixels, relative to the pixel centre. Zero in a reference render, which
+    /// jitters per sample and has nothing single to report.
+    float jitter[2] = {0.0f, 0.0f};
 
     /// True when a temporal reconstructor must discard its history rather than
     /// reproject it.

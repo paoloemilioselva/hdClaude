@@ -6773,3 +6773,40 @@ it is not noise on every frame; it is the same per-process variation this
 project has been chasing all day, and the layout change appears to have moved
 this scene from the stable set into the unstable one. The committed hashes will
 therefore move on the affected scenes, which is what they exist to show.
+
+---
+
+## 2026-09-09 -- The frame's jitter, which only an interactive frame has
+
+The second input a reconstruction backend needs. It is handed one sample and
+must be told where in the pixel that sample landed, so the offset stops being a
+private draw and becomes something the frame reports.
+
+Only an interactive frame has one. A reference render accumulates hundreds of
+samples and jitters each independently, which is the correct estimator for an
+average; giving it a single fixed offset would land every sample of a frame in
+the same place and turn that average into a point sample. So `Reference` keeps
+the per-sample draw and reports a jitter of zero, meaning *none* rather than
+*centre*.
+
+The sequence is Halton in bases two and three, indexed by the frame. Halton
+rather than a random draw because the backend has to be told the value, and
+rather than a regular grid of N offsets because such a grid repeats with period
+N and any period becomes a standing pattern in the reconstructed image. Two and
+three are the first two primes, so the coordinates share no common period. The
+index is the frame's own, not a counter from zero, because the radical inverse
+of zero is zero and a first frame with no jitter at all is the one frame a
+reconstructor most needs jittered.
+
+The gate states both halves: a reference frame reports exactly zero, and eight
+consecutive interactive frames report offsets inside the pixel with no two alike.
+
+    jitter: reference none, interactive (-0.398 0.060) (0.102 0.393) ...
+
+The chess set moved again, by an RMS of 1.2e-3, and its baseline is adopted with
+the rest. Any change to a shader recompiles every kernel that includes
+`path_state.glsl`, and that scene is now demonstrably in the set whose renders
+shift when the compiled code does -- it varied run to run after the depth
+binding landed and it varies still. The subdivision matrix, rendered in the same
+pass, is unchanged at rms 0, so this is not a general perturbation but a
+property of particular scenes.

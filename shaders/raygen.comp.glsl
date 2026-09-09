@@ -19,9 +19,17 @@ void main()
 
     uint rng = hdclaude_seed(index, frame.sampleIndex, 0u);
 
-    // Subpixel jitter. Uniform within the pixel: a reconstruction filter is a
-    // film concern and is not folded into the sampling here.
-    vec2 jitter = vec2(hdclaude_random(rng), hdclaude_random(rng));
+    // Subpixel jitter. Uniform within the pixel: a reconstruction filter is
+    // a film concern and is not folded into the sampling here.
+    //
+    // An interactive frame carries one offset for the whole frame, because
+    // the backend that will reconstruct it has to be told where the sample
+    // landed. A reference render draws one per sample, which is the correct
+    // estimator for an average of hundreds and has no single offset to
+    // report.
+    vec2 jitter = frame.useFixedJitter != 0u
+                      ? vec2(0.5) + frame.jitter
+                      : vec2(hdclaude_random(rng), hdclaude_random(rng));
     vec2 uv = (vec2(pixel) + jitter) / vec2(frame.resolution);
 
     // Right-handed camera looking down -Z, matching USD's convention, so a

@@ -70,6 +70,11 @@ layout(set = 0, binding = 0, scalar) uniform FrameBlock {
     // one is a question about the host's projection rather than about this
     // renderer, so it is carried rather than rebuilt from a field of view.
     mat4  worldToClip;
+    // The frame's sub-pixel offset in pixels, and whether raygen uses it
+    // instead of drawing one per sample. See RenderSettings::jitter.
+    vec2  jitter;
+    uint  useFixedJitter;
+    uint  jitterPad;
 } frame;
 
 // --- Path state -------------------------------------------------------------
