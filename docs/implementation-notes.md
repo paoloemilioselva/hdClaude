@@ -6063,3 +6063,61 @@ entire 32-call render -- the first *image* differs, not merely the first
 dispatch -- so a token dispatch may not be enough. That is now a cheap
 experiment rather than a speculation: the fault reproduces on demand by moving
 one directory.
+
+---
+
+## 2026-09-09 -- What the cache does and does not explain, and two failed fixes
+
+The diagnosis holds and sharpens. Three further experiments, all of them
+negative, and they matter because each removes a fix that would otherwise have
+looked obvious.
+
+**A pipeline cache of hdClaude's own does not substitute for the driver's.**
+With `GLCache` moved aside and our own cache warm at 2.3 MB, written by the
+previous run and loaded at startup, the first render still diverges. Whatever
+the driver keeps in `GLCache` is not what a `VkPipelineCache` holds. The cache
+is shipped anyway -- passing `VK_NULL_HANDLE` was an omission, not a decision --
+but it is not the fix and is not described as one.
+
+**It is not the cache's capacity.** `GLCache` stood at 975 MB, close enough to
+NVIDIA's default limit to suggest that new entries simply could not be written.
+Emptying it entirely and rendering three times over says otherwise: with all the
+room in the world the divergence is unchanged, and the directory grows to four
+files and stops. The driver is not caching these pipelines during these runs at
+all.
+
+Which leaves an asymmetry worth stating, because it is the useful part. A
+**cached** layout gives a clean first render -- that is why the committed build
+is reproducible, and why the gallery, which renders every scene in a fresh
+process, has been trustworthy. An **uncached** layout diverges on the first
+render of every process and does not stop: five consecutive trials of the depth
+AOV build, and three more on an empty cache. Yet the current layout is cached,
+so the driver evidently does write these entries eventually, under conditions
+that no experiment here reproduced. What those conditions are is the open
+question.
+
+**A warm-up sample does not absorb it.** The reasoning was sound -- if the first
+execution of a pipeline differs, make that execution one whose result is thrown
+away -- and the implementation is cheap, because a throwaway sample recorded
+before the film clear costs nothing but its own time: the clear that had to
+happen anyway wipes it, and the counters are zeroed at the real sample zero.
+Three trials say it does not work. The cold period is longer than one sample's
+dispatches, and a warm-up long enough to cover it would cost about as much as
+the frame it protects. Reverted, because a mitigation that does not mitigate is
+just a code path.
+
+One detail may explain the shortfall and is worth checking before anyone tries
+this again: every queue-sized dispatch in the integrator is *indirect*, and an
+indirect dispatch of zero workgroups executes no invocations at all. A material
+that no path reached during the warm-up sample is therefore still cold
+afterwards, so one sample warms only the pipelines it happened to feed.
+
+**The depth AOV stays unshipped and the reason is now precise rather than
+mysterious.** It is not that the AOV is wrong -- it follows hdEmbree, it renders,
+the suite passes. It is that its binding changes the layout, an uncached layout
+diverges on every process's first render, and the gallery renders every scene in
+exactly one process. Shipping it would make every committed hash in the gallery
+unreliable, which is to say it would destroy the instrument that found all of
+this. The kernel and its wiring are described in the entries above in enough
+detail to rebuild in an afternoon; what is worth more than the code is knowing
+why it could not go in.
