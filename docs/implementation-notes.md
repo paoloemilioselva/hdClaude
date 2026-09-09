@@ -6634,3 +6634,56 @@ batch render never enters it.
 That reframes the earlier traversal finding too. Extend collapsing 186x with
 subdivision was measured entirely in the slow state, and whether the fast state
 has the same cliff is unknown.
+
+---
+
+## 2026-09-09 -- It is the driver, and the traversal cliff was never real
+
+Paolo's guess -- "I wonder if it is a driver issue" -- is right, and the
+retraction it forces is the largest of the day.
+
+**The same command is ten times faster than it was an hour ago.** Rendering
+`lab_structure01` offline, auto-framed, identical settings, with `rays` matching
+the earlier run *to the unit* at 1,165,497:
+
+    earlier   45 to 80 ms a sample on the device
+    now       4.8 to 5.6 ms a sample
+
+Nothing changed that could account for it. The GLSL is untouched, so the driver's
+cache keys are the same; the only C++ changes since were host-side logging. What
+did change is that this machine has since run the same pipelines many times over.
+
+**And the traversal cliff disappears with it.** Re-measured in this state:
+
+    subdiv 0    extend 0.181 ms     5,483,056 triangles
+    subdiv 1    extend 0.194 ms    21,937,256 triangles
+    subdiv 2    extend 0.259 ms    87,749,024 triangles
+
+Sixteen times the geometry costs **1.43 times** the traversal, which is what a
+hierarchy is supposed to do. The 186x collapse reported earlier -- 0.25 ms
+against 46 ms for four times the triangles, "a cliff followed by saturation, not
+a scaling curve" -- was **entirely an artefact of the unoptimised state**. The
+acceleration structure was never the problem, subdivision was never the problem,
+and ALab's lab structure is not a slow asset.
+
+That entry's careful eliminations were all correct and all beside the point: it
+was not deduplication, not memory, not opacity, not connectivity, not refinement
+-- and not traversal either. Every one of those measurements was taken on a
+pipeline the driver had not finished with.
+
+**What this costs the project.** Every performance number measured before today's
+fast state appeared is suspect, and that includes the gallery's timing table and
+its ray-throughput figures. A scene's cost is now known to depend on how many
+times this machine has run that pipeline, which is not a property of the scene,
+the renderer, or even the hardware -- and nothing in the numbers said so.
+
+The instrument that finally caught it is `gpuSampleMs` in the frame log: wall
+time could always be blamed on the host, and only the device's own timestamps
+could show the device doing identical work at two speeds an order of magnitude
+apart. It is worth keeping for that reason alone.
+
+What remains unexplained is the trigger. The collapse is a step, not a curve --
+in Paolo's session, 78.7 ms to 16.6 to 4.9 across two frames while the work
+*increased* -- and it survives no obvious cause: not a republish (forced offline,
+nothing follows), not free memory (it fell as the render sped up), not the
+camera (two explicit angles are both fast now, and the auto-framed one is too).

@@ -16,6 +16,7 @@ IF NOT EXIST "%SCENE_FILE%" (
 
 set HDCLAUDE_FRAME_LOG=.\debugging_frames.log
 set HDCLAUDE_STATS_REPORT=.\debugging_session.stats
+set HDCLAUDE_SAMPLES_PER_PIXEL 4096
 
 ECHO [hdClaude] usdview: %SCENE_FILE%
 CALL usdview "%SCENE_FILE%" --renderer "Claude GPU Path Tracer"
