@@ -161,6 +161,14 @@ struct RenderSettings {
     bool reconstruct = false;
     ReconstructionQuality reconstructionQuality =
         ReconstructionQuality::NativeResolution;
+
+    /// Which of the backend's trained models to use.
+    ///
+    /// Read when the backend is built rather than per frame, so changing it
+    /// rebuilds. `Default` is the backend's own choice and can move under a
+    /// driver or model update; naming one is what makes a comparison between
+    /// two of them reproducible.
+    ReconstructionPreset reconstructionPreset = ReconstructionPreset::Default;
 };
 
 /// A material ready to shade with: the SPIR-V of its generated MaterialX

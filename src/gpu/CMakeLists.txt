@@ -62,6 +62,12 @@ target_compile_definitions(hdClaudeGpu PUBLIC
 # compiles its stubs and every caller behaves the same.
 if(HDCLAUDE_ENABLE_DLSS AND HDCLAUDE_DLSS_AVAILABLE)
   target_link_libraries(hdClaudeGpu PRIVATE hdClaudeNgx)
+  # version.lib, for reading which nvngx_dlss.dll is about to be loaded. NGX has
+  # no call that reports its own version, and the version is the model, so the
+  # answer comes off the file itself.
+  if(WIN32)
+    target_link_libraries(hdClaudeGpu PRIVATE version)
+  endif()
 endif()
 
 set_target_properties(hdClaudeGpu PROPERTIES POSITION_INDEPENDENT_CODE ON)

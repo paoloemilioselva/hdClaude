@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <chrono>
 #include <cmath>
+#include <cctype>
 #include <cstring>
 #include <limits>
 
@@ -31,7 +32,77 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (environmentIntensity)
                          (sunIntensity)
                          (upAxis)
-                         (exposure));
+                         (exposure)
+                         (reconstruction)
+                         (reconstructionPreset));
+
+/// The reconstruction setting, parsed.
+///
+/// A name nobody recognises is reported and refused rather than guessed at: a
+/// user who typed "perf" and got a reference render with no explanation would
+/// have no way to tell that from DLSS being unavailable, and the whole purpose
+/// of the setting is to make those two states distinguishable.
+struct ReconstructionChoice {
+    bool on = false;
+    hdclaude::ReconstructionQuality quality =
+        hdclaude::ReconstructionQuality::NativeResolution;
+    bool recognised = true;
+};
+
+std::string Lowered(const std::string& text)
+{
+    std::string out = text;
+    std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return out;
+}
+
+ReconstructionChoice ParseReconstruction(const std::string& value)
+{
+    using Q = hdclaude::ReconstructionQuality;
+    const std::string name = Lowered(value);
+    ReconstructionChoice choice;
+    if (name.empty() || name == "off" || name == "none" || name == "0") {
+        return choice;
+    }
+    choice.on = true;
+    if (name == "dlaa" || name == "native") {
+        choice.quality = Q::NativeResolution;
+    } else if (name == "quality") {
+        choice.quality = Q::Quality;
+    } else if (name == "balanced") {
+        choice.quality = Q::Balanced;
+    } else if (name == "performance" || name == "perf") {
+        choice.quality = Q::Performance;
+    } else if (name == "ultraperformance" || name == "ultra-performance" ||
+               name == "ultraperf") {
+        choice.quality = Q::UltraPerformance;
+    } else {
+        choice.on = false;
+        choice.recognised = false;
+    }
+    return choice;
+}
+
+bool ParsePreset(const std::string& value, hdclaude::ReconstructionPreset* out)
+{
+    using P = hdclaude::ReconstructionPreset;
+    const std::string name = Lowered(value);
+    if (name.empty() || name == "default") {
+        *out = P::Default;
+    } else if (name == "stable" || name == "f") {
+        *out = P::Stable;
+    } else if (name == "transformer" || name == "k") {
+        *out = P::Transformer;
+    } else if (name == "transformer-alt" || name == "transformeralt" ||
+               name == "j") {
+        *out = P::TransformerAlternate;
+    } else {
+        return false;
+    }
+    return true;
+}
 
 }  // namespace
 
@@ -161,6 +232,42 @@ void HdClaudeRenderPass::_Execute(
     const std::uint32_t samplesPerFrame = static_cast<std::uint32_t>(std::clamp(
         _renderDelegate->GetRenderSetting<int>(_tokens->samplesPerFrame, 4), 1,
         4096));
+
+    // --- Reconstruction -------------------------------------------------------
+    //
+    // Off is the reference render this delegate has always done. On switches
+    // the whole pass to interactive frames: each one is its own estimate at
+    // `samplesPerFrame` samples, decorrelated from the last, and the averaging
+    // that a reference render does in the film is done instead by the backend's
+    // temporal history. The sample budget is spent the same way and means
+    // something different, so `Samples per pixel` still bounds the sequence and
+    // the last reconstructed frame is what a converged host is left looking at.
+    const std::string reconstructionName =
+        _renderDelegate->GetRenderSetting<std::string>(_tokens->reconstruction,
+                                                       std::string("off"));
+    const ReconstructionChoice reconstruction =
+        ParseReconstruction(reconstructionName);
+    if (!reconstruction.recognised && _reportedReconstruction != reconstructionName) {
+        _reportedReconstruction = reconstructionName;
+        TF_WARN(
+            "hdClaude: \"%s\" is not a reconstruction mode, so this renders "
+            "without reconstruction. Use one of: off, dlaa, quality, balanced, "
+            "performance, ultraperformance.",
+            reconstructionName.c_str());
+    }
+
+    const std::string presetName = _renderDelegate->GetRenderSetting<std::string>(
+        _tokens->reconstructionPreset, std::string("default"));
+    hdclaude::ReconstructionPreset preset =
+        hdclaude::ReconstructionPreset::Default;
+    if (!ParsePreset(presetName, &preset) && _reportedPreset != presetName) {
+        _reportedPreset = presetName;
+        TF_WARN(
+            "hdClaude: \"%s\" is not a reconstruction preset, so the backend "
+            "chooses its own. Use one of: default, stable (DLSS preset F), "
+            "transformer (K), transformer-alt (J).",
+            presetName.c_str());
+    }
 
     // --- Framing --------------------------------------------------------------
     const HdClaudeCameraResult cameraResult = HdClaudeMakeRenderCamera(
@@ -331,6 +438,9 @@ void HdClaudeRenderPass::_Execute(
     // by the same comparison that decided whether to reset the sample count, so
     // they cannot disagree.
     settings.resetAccumulation = (_samplesCompleted == 0);
+    settings.reconstruct = reconstruction.on;
+    settings.reconstructionQuality = reconstruction.quality;
+    settings.reconstructionPreset = preset;
 
     HdClaudeTrace("tracing %ux%u, samples %u..%u of %u, %u bounces", width,
                   height, settings.firstSample,
@@ -349,7 +459,11 @@ void HdClaudeRenderPass::_Execute(
     description.camera = framing.camera;
     description.settings = settings;
     description.sceneRevision = framing.sceneRevision;
-    description.mode = hdclaude::RenderMode::Reference;
+    // Reconstruction is honoured in interactive mode alone, by contract, so
+    // asking for it is what selects the mode. Nothing else in this pass chooses
+    // between the two.
+    description.mode = reconstruction.on ? hdclaude::RenderMode::Interactive
+                                         : hdclaude::RenderMode::Reference;
 
     // Camera rays are the pixels times the samples and need no counter to
     // know. What they go on to spawn -- a ray per surviving bounce and a shadow
@@ -434,6 +548,43 @@ void HdClaudeRenderPass::_Execute(
     _consecutiveFailures = 0;
     _samplesCompleted += settings.samplesPerPixel;
 
+    // What actually reconstructed the frame, or why nothing did.
+    //
+    // Reported rather than left to be inferred from the picture, because the
+    // two failures look alike: a mode nobody recognised and a backend that
+    // could not run both leave an unreconstructed frame on screen, and at one
+    // sample a frame both look like the renderer is broken. Said once per
+    // distinct answer.
+    if (reconstruction.on) {
+        if (frame.reconstructed) {
+            char described[256];
+            std::snprintf(described, sizeof(described),
+                          "%s, %s, %ux%u -> %ux%u, preset \"%s\"",
+                          frame.reconstructionBackend.c_str(),
+                          reconstructionName.c_str(), frame.renderWidth,
+                          frame.renderHeight, frame.width, frame.height,
+                          presetName.c_str());
+            if (_reportedBackend != described) {
+                _reportedBackend = described;
+                TF_STATUS("hdClaude: reconstructing with %s", described);
+            }
+        } else {
+            const std::string reason = tracer->ReconstructionUnavailable();
+            if (_reportedUnavailable != reason) {
+                _reportedUnavailable = reason;
+                TF_WARN(
+                    "hdClaude: \"%s\" was asked for and no backend "
+                    "reconstructed the frame: %s. The image is the interactive "
+                    "estimate as traced, %u sample%s a frame, which is noisy by "
+                    "construction rather than converged.",
+                    reconstructionName.c_str(),
+                    reason.empty() ? "no reason given" : reason.c_str(),
+                    settings.samplesPerPixel,
+                    settings.samplesPerPixel == 1 ? "" : "s");
+            }
+        }
+    }
+
     // Exposure last, on the resolved image, so the accumulated film keeps the
     // radiance the renderer computed and changing exposure costs no samples.
     const float exposure =
@@ -451,8 +602,28 @@ void HdClaudeRenderPass::_Execute(
     // Depth only when a host asked for it, and untouched on the way: it is a
     // geometric measurement rather than a picture, so no exposure and no
     // transfer function apply to it.
+    //
+    // And only when it describes the same grid as the colour AOV. An upscaling
+    // reconstruction traces smaller than it outputs, so the depth guide is at
+    // `renderWidth` x `renderHeight` while the buffer is at the output extent;
+    // writing one into the other reads a correct buffer at the wrong stride.
+    // The guide is real and correct, it is simply not an AOV at this size, so
+    // it is withheld rather than stretched into place.
     if (depthBuffer != nullptr && !frame.depth.empty()) {
-        depthBuffer->WriteScalar(frame.depth);
+        if (frame.renderWidth == width && frame.renderHeight == height) {
+            depthBuffer->WriteScalar(frame.depth);
+        } else {
+            static bool warnedDepthExtent = false;
+            if (!warnedDepthExtent) {
+                warnedDepthExtent = true;
+                TF_WARN(
+                    "hdClaude: the depth AOV is not written while "
+                    "reconstruction upscales -- the frame was traced at %ux%u "
+                    "and the buffer is %ux%u. Use the DLAA mode, which traces "
+                    "at the output extent.",
+                    frame.renderWidth, frame.renderHeight, width, height);
+            }
+        }
     }
     // Taken from the tracer rather than accumulated here: it counts them on
     // the device and reads them back once, and a total kept on this side would

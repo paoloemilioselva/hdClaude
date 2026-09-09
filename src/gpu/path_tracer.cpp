@@ -1172,6 +1172,7 @@ PathTracer::ReconstructionPlan PathTracer::PlanReconstruction(
     plan.resolution.outputWidth = description.width;
     plan.resolution.outputHeight = description.height;
     plan.resolution.quality = description.settings.reconstructionQuality;
+    plan.resolution.preset = description.settings.reconstructionPreset;
 
     // Reference frames never reach a backend, and the test is here rather than
     // at the call site so there is one place it can be read from
@@ -1225,7 +1226,8 @@ bool PathTracer::EnsureReconstructionImages(
         _reconstructionResolution.renderHeight == resolution.renderHeight &&
         _reconstructionResolution.outputWidth == resolution.outputWidth &&
         _reconstructionResolution.outputHeight == resolution.outputHeight &&
-        _reconstructionResolution.quality == resolution.quality;
+        _reconstructionResolution.quality == resolution.quality &&
+        _reconstructionResolution.preset == resolution.preset;
     if (unchanged) {
         return true;
     }

@@ -7,6 +7,7 @@
 #include "pxr/imaging/hd/renderPass.h"
 
 #include <cstdint>
+#include <string>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -88,6 +89,18 @@ class HDCLAUDE_API HdClaudeRenderPass final : public HdRenderPass {
     /// because the snapshot is only taken when the revision changes while the
     /// render settings are read every frame.
     float _environmentColor[3] = {0.05f, 0.07f, 0.10f};
+
+    /// The reconstruction setting values already reported as unusable, and the
+    /// reason already reported for a backend that could not run. Kept so each
+    /// is said once per distinct value rather than once per frame: a host reads
+    /// these settings every execute, and a warning repeated sixty times a
+    /// second buries everything else in the log.
+    std::string _reportedReconstruction;
+    std::string _reportedPreset;
+    std::string _reportedUnavailable;
+    /// What the last reconstructed frame was produced by, so a change of
+    /// backend, mode or preset is announced once rather than never.
+    std::string _reportedBackend;
 
     /// Consecutive failed executes. Bounds the retry so a deterministic
     /// failure cannot hold a render-until-converged host forever.

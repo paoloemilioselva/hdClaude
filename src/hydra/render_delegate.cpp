@@ -37,7 +37,9 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (environmentIntensity)
                          (sunIntensity)
                          (upAxis)
-                         (exposure));
+                         (exposure)
+                         (reconstruction)
+                         (reconstructionPreset));
 
 namespace {
 
@@ -538,6 +540,31 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         // control is quietly scaling the lighting instead.
         {"Exposure", _tokens->exposure,
          VtValue(float(TfGetenvDouble("HDCLAUDE_EXPOSURE", 0.0)))},
+
+        // Reconstruction, and which model reconstructs.
+        //
+        // Strings rather than an enum because Hydra render settings carry
+        // `VtValue` and a host renders a string as an editable field, which is
+        // the only control usdview offers for something that is not a number or
+        // a checkbox. The same names work as environment variables, so a batch
+        // render and a viewport session are configured identically.
+        //
+        // "off" is a reference render: the progressive accumulation this
+        // renderer has always done, converging to the truth. Everything else
+        // switches the pass to interactive frames handed to a reconstruction
+        // backend, which is a *different estimator* rather than a faster one
+        // (docs/dlss-integration.md 6) -- so this setting changes what the
+        // image is, not merely how long it takes.
+        //
+        // Accepted: off, dlaa, quality, balanced, performance, ultraperformance.
+        {"Reconstruction", _tokens->reconstruction,
+         VtValue(std::string(TfGetenv("HDCLAUDE_RECONSTRUCTION", "off")))},
+
+        // Accepted: default, stable, transformer, transformer-alt. DLSS reads
+        // the preset when its feature is built, so changing this rebuilds.
+        {"Reconstruction preset", _tokens->reconstructionPreset,
+         VtValue(std::string(TfGetenv("HDCLAUDE_RECONSTRUCTION_PRESET",
+                                      "default")))},
     };
 }
 

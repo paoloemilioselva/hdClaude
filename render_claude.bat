@@ -43,6 +43,20 @@ IF "%~1"=="" (
   ECHO   HDCLAUDE_SUN_INTENSITY         default 1     stand-in sun, unlit stages
   ECHO   HDCLAUDE_DEVICE                substring of the GPU to select
   ECHO.
+  ECHO Reconstruction. Off renders the progressive reference this delegate has
+  ECHO always rendered; anything else switches to interactive frames handed to a
+  ECHO reconstruction backend, which is a different estimator and not merely a
+  ECHO faster one. Samples per pixel still bounds the sequence, and samples per
+  ECHO frame is what each frame of it is traced at.
+  ECHO   HDCLAUDE_RECONSTRUCTION        default off. off, dlaa, quality,
+  ECHO                                  balanced, performance, ultraperformance
+  ECHO   HDCLAUDE_RECONSTRUCTION_PRESET default. default, stable ^(DLSS preset
+  ECHO                                  F^), transformer ^(K^), transformer-alt ^(J^)
+  ECHO   HDCLAUDE_DLSS_RUNTIME_DIR      directory holding nvngx_dlss.dll, to put
+  ECHO                                  a different DLSS runtime in front of the
+  ECHO                                  renderer. The version is reported with
+  ECHO                                  the backend's name on every frame
+  ECHO.
   ECHO Diagnostics. Off unless set, and none of them changes an image.
   ECHO   HDCLAUDE_REPEAT_RENDERS        render the finished image n more
   ECHO                                  times in the same process, reporting

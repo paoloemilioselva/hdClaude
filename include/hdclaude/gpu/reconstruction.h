@@ -145,13 +145,54 @@ struct ReconstructionSizing {
     std::string reason;
 };
 
-/// The extents a backend is being built for.
+/// Which of a backend's trained models to use, where it has more than one.
+///
+/// Separate from the quality mode, which says how much to upscale. A backend
+/// can offer several models that all do the same job with different trade-offs,
+/// and DLSS does: `Stable` is its convolutional model and `Transformer` the one
+/// that replaced it, which is sharper and costs more. The names here say what
+/// distinguishes the models rather than repeating NVIDIA's letters, because
+/// this interface is the renderer-neutral one and a native backend will have
+/// its own set or none at all -- a backend with nothing to choose between
+/// ignores this.
+///
+/// `Default` leaves the choice to the backend, and it is not a fixed choice: it
+/// is what NVIDIA ships as the default for the active quality mode, and it can
+/// change under a driver or an over-the-air model update. Naming a preset is
+/// what makes a comparison between two of them reproducible.
+enum class ReconstructionPreset {
+    Default,
+    /// DLSS preset F: the convolutional model, and what DLAA and Ultra
+    /// Performance defaulted to before the transformer arrived.
+    Stable,
+    /// DLSS preset K: transformer-based, the best image quality at a higher
+    /// cost, and the default for DLAA, Quality, Balanced and Performance.
+    Transformer,
+    /// DLSS preset J: also transformer-based. Slightly less ghosting than K at
+    /// the cost of more flickering, which is exactly the trade the temporal
+    /// stability metric was built to measure.
+    TransformerAlternate,
+};
+
+/// There is deliberately no "latest" here. DLSS SDK 310.3.0 offers no such
+/// value -- its presets run A to O, of which A to E are deprecated in favour of
+/// J and K, and G and H through O are documented as reverting to the default --
+/// so a "latest" would be hdClaude inventing a meaning the runtime does not
+/// have. `Default` already means "whatever NVIDIA currently ships for this
+/// mode", which is the closest thing that actually exists.
+
+/// The extents a backend is being built for, and the model to build.
+///
+/// The preset belongs here rather than on the frame because DLSS reads it when
+/// the feature is *created*, so changing it rebuilds rather than taking effect
+/// on the next frame. Anything in this struct that changes is a rebuild.
 struct ReconstructionResolution {
     std::uint32_t renderWidth = 0;
     std::uint32_t renderHeight = 0;
     std::uint32_t outputWidth = 0;
     std::uint32_t outputHeight = 0;
     ReconstructionQuality quality = ReconstructionQuality::NativeResolution;
+    ReconstructionPreset preset = ReconstructionPreset::Default;
 };
 
 /// One image a backend reads or writes. Owned by the caller throughout.

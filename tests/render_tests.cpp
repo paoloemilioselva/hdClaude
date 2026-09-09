@@ -3621,9 +3621,35 @@ int main()
                 const double flickerClean = hdclaude::TemporalInstability(
                     tailClean, kDlaaWidth, kDlaaHeight);
 
+                // What fraction of the light survived. A reconstructor is not
+                // an estimator and owes no unbiasedness, but the number is
+                // worth carrying: DLSS rejects outliers against a
+                // neighbourhood, a one-sample path trace is largely outliers,
+                // and this is where the cost of feeding a raster-trained model
+                // path-traced noise actually shows up. Reported here, and
+                // *asserted* further down where the input is nearly converged
+                // and there is no longer anything legitimate to reject.
+                const auto meanLuminance = [](const std::vector<float>& image) {
+                    double total = 0.0;
+                    const std::size_t pixels = image.size() / 4;
+                    for (std::size_t i = 0; i < pixels; ++i) {
+                        total += 0.2126 * image[i * 4 + 0] +
+                                 0.7152 * image[i * 4 + 1] +
+                                 0.0722 * image[i * 4 + 2];
+                    }
+                    return pixels > 0 ? total / double(pixels) : 0.0;
+                };
+                const double convergedMean = meanLuminance(reference.image);
+                const double keptAtOneSample =
+                    convergedMean > 0.0
+                        ? meanLuminance(clean.back()) / convergedMean
+                        : 0.0;
+
                 std::printf("  DLAA quality ... ssim %.4f against %.4f "
-                            "unreconstructed; flicker %.4f against %.4f\n",
-                            ssimClean, ssimNoisy, flickerClean, flickerNoisy);
+                            "unreconstructed; flicker %.4f against %.4f; "
+                            "energy kept %.1f%% at one sample a frame\n",
+                            ssimClean, ssimNoisy, flickerClean, flickerNoisy,
+                            100.0 * keptAtOneSample);
 
                 // Both claims, and neither is a threshold: the reconstructed
                 // frame is a better picture of the converged reference than the
@@ -3730,6 +3756,42 @@ int main()
                 // to the 1.4142 a whole pixel on each axis would be, short of
                 // it because DLSS's resolve is not a pure translation.
                 CHECK(placement.Magnitude() < 0.25);
+
+                // And the light is still there.
+                //
+                // These frames are traced at many samples each, so there is
+                // almost no variance left for an outlier rejector to reject,
+                // and a reconstruction of an image that is already converged
+                // must not change how much light is in it. This is the
+                // assertion that catches the plumbing failing -- a pre-exposure
+                // dropped, a format that cannot carry the range, a packing
+                // kernel scaling what it copies -- none of which the
+                // displacement above or the structure before it would notice.
+                //
+                // The bound is loose against what it measures on purpose. About
+                // 3% goes here and on the gallery's gold shader ball, which is
+                // DLSS still rejecting the little variance that remains; a
+                // tenth is well clear of that and far below the 30% a
+                // one-sample sequence loses, so it separates "reconstructing"
+                // from "losing the image" without being a number tuned to pass.
+                const auto meanOf = [](const std::vector<float>& image) {
+                    double total = 0.0;
+                    const std::size_t pixels = image.size() / 4;
+                    for (std::size_t i = 0; i < pixels; ++i) {
+                        total += 0.2126 * image[i * 4 + 0] +
+                                 0.7152 * image[i * 4 + 1] +
+                                 0.0722 * image[i * 4 + 2];
+                    }
+                    return pixels > 0 ? total / double(pixels) : 0.0;
+                };
+                const double truth = meanOf(centred.image);
+                const double retained =
+                    truth > 0.0 ? meanOf(held.image) / truth : 0.0;
+                std::printf("  reconstruction energy ... %.1f%% of the "
+                            "converged mean at %u samples a frame\n",
+                            100.0 * retained, frame.settings.samplesPerPixel);
+                CHECK(retained > 0.90);
+                CHECK(retained < 1.10);
             }
         }
 

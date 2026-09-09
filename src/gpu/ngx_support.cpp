@@ -9,8 +9,17 @@
 #include "hdclaude/gpu/reconstruction.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <utility>
+#include <vector>
+
+#if defined(_WIN32)
+#include <windows.h>
+// Explicitly, because WIN32_LEAN_AND_MEAN is defined for this build and the
+// version API is one of the things that leaves out.
+#include <winver.h>
+#endif
 
 #if defined(HDCLAUDE_HAS_DLSS)
 #include <nvsdk_ngx_vk.h>
@@ -63,14 +72,75 @@ constexpr const char* kEngineVersion = "0.1";
 /// there: hdClaude ships none of NVIDIA's runtime binaries, so the only copy on
 /// this machine is the one the CMake fetch put in the dependency tree. That
 /// path is compiled in by cmake/NvidiaDLSS.cmake.
+///
+/// `HDCLAUDE_DLSS_RUNTIME_DIR` in the environment overrides it, which is how a
+/// different DLSS runtime is put in front of the renderer: the model that runs
+/// is the one in that DLL, and comparing two of them means pointing this at two
+/// directories. Nothing else in hdClaude selects a version.
 #if defined(HDCLAUDE_DLSS_RUNTIME_DIR)
+const std::string& RuntimeDirectory()
+{
+    static const std::string path = [] {
+        if (const char* override_ = std::getenv("HDCLAUDE_DLSS_RUNTIME_DIR")) {
+            if (*override_ != 0) {
+                return std::string(override_);
+            }
+        }
+        return std::string(HDCLAUDE_DLSS_RUNTIME_DIR);
+    }();
+    return path;
+}
+
 const wchar_t* RuntimeSearchPath()
 {
     static const std::wstring path = [] {
-        const std::string narrow = HDCLAUDE_DLSS_RUNTIME_DIR;
+        const std::string& narrow = RuntimeDirectory();
         return std::wstring(narrow.begin(), narrow.end());
     }();
     return path.c_str();
+}
+
+/// The version of the DLSS runtime that will actually be loaded.
+///
+/// Read off the file rather than asked of NGX, because NGX has no call that
+/// reports it -- there is no snippet-version parameter in the SDK headers. It
+/// matters because the model is the DLL: "which DLSS" is a question about this
+/// number, and a comparison that cannot name the two things being compared is
+/// not a comparison.
+std::string RuntimeVersion()
+{
+    static const std::string version = [] {
+        const std::string file = RuntimeDirectory() + "/nvngx_dlss.dll";
+#if defined(_WIN32)
+        DWORD ignored = 0;
+        const DWORD size = GetFileVersionInfoSizeA(file.c_str(), &ignored);
+        if (size == 0) {
+            return std::string("unknown");
+        }
+        std::vector<unsigned char> block(size);
+        if (!GetFileVersionInfoA(file.c_str(), 0, size, block.data())) {
+            return std::string("unknown");
+        }
+        VS_FIXEDFILEINFO* info = nullptr;
+        UINT length = 0;
+        if (!VerQueryValueA(block.data(), "\\",
+                            reinterpret_cast<LPVOID*>(&info), &length) ||
+            info == nullptr) {
+            return std::string("unknown");
+        }
+        char text[64];
+        std::snprintf(text, sizeof(text), "%u.%u.%u.%u",
+                      unsigned(HIWORD(info->dwFileVersionMS)),
+                      unsigned(LOWORD(info->dwFileVersionMS)),
+                      unsigned(HIWORD(info->dwFileVersionLS)),
+                      unsigned(LOWORD(info->dwFileVersionLS)));
+        return std::string(text);
+#else
+        (void)file;
+        return std::string("unknown");
+#endif
+    }();
+    return version;
 }
 #endif
 
@@ -232,6 +302,44 @@ NVSDK_NGX_PerfQuality_Value ToNgx(ReconstructionQuality quality)
     return NVSDK_NGX_PerfQuality_Value_DLAA;
 }
 
+/// A preset as NGX's letter, and the parameter that carries it.
+///
+/// The hint is per quality mode -- there is a separate parameter for DLAA, for
+/// Quality, and so on -- so the one that matches the mode being created is the
+/// one set. Setting all of them would work and would also say that hdClaude did
+/// not know which mode it was asking for.
+NVSDK_NGX_DLSS_Hint_Render_Preset ToNgx(ReconstructionPreset preset)
+{
+    switch (preset) {
+        case ReconstructionPreset::Default:
+            return NVSDK_NGX_DLSS_Hint_Render_Preset_Default;
+        case ReconstructionPreset::Stable:
+            return NVSDK_NGX_DLSS_Hint_Render_Preset_F;
+        case ReconstructionPreset::Transformer:
+            return NVSDK_NGX_DLSS_Hint_Render_Preset_K;
+        case ReconstructionPreset::TransformerAlternate:
+            return NVSDK_NGX_DLSS_Hint_Render_Preset_J;
+    }
+    return NVSDK_NGX_DLSS_Hint_Render_Preset_Default;
+}
+
+const char* PresetParameter(ReconstructionQuality quality)
+{
+    switch (quality) {
+        case ReconstructionQuality::NativeResolution:
+            return NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA;
+        case ReconstructionQuality::Quality:
+            return NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality;
+        case ReconstructionQuality::Balanced:
+            return NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced;
+        case ReconstructionQuality::Performance:
+            return NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance;
+        case ReconstructionQuality::UltraPerformance:
+            return NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance;
+    }
+    return NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA;
+}
+
 /// An hdClaude texture as an NGX resource.
 ///
 /// The subresource range is the whole of the image, because every image
@@ -275,7 +383,16 @@ class NgxBackend final : public ReconstructionBackend {
     NgxBackend(const NgxBackend&) = delete;
     NgxBackend& operator=(const NgxBackend&) = delete;
 
-    const char* Name() const override { return "NVIDIA DLSS"; }
+    /// The name carries the runtime's version, because the version *is* the
+    /// model: which DLSS is running is a question about which `nvngx_dlss.dll`
+    /// was loaded, and a comparison between two of them has to be able to say
+    /// which one produced a picture. Built once and held, since `Name` returns
+    /// a pointer and callers keep it.
+    const char* Name() const override
+    {
+        static const std::string name = "NVIDIA DLSS " + RuntimeVersion();
+        return name.c_str();
+    }
 
     ReconstructionSizing QuerySizing(std::uint32_t outputWidth,
                                      std::uint32_t outputHeight,
@@ -324,6 +441,13 @@ class NgxBackend final : public ReconstructionBackend {
             }
             return false;
         }
+
+        // The preset, set before the feature is created because that is when
+        // DLSS reads it. `Default` is passed through rather than skipped: the
+        // parameters outlive one build, so leaving a previous preset in place
+        // would make "default" mean "whatever was asked for last time".
+        _parameters->Set(PresetParameter(resolution.quality),
+                         static_cast<unsigned int>(ToNgx(resolution.preset)));
 
         NVSDK_NGX_DLSS_Create_Params create{};
         create.Feature.InWidth = resolution.renderWidth;

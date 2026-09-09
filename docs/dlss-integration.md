@@ -249,6 +249,68 @@ offset of (0.5, 0.5):
 it because DLSS's resolve is not a pure translation. The gate asserts under
 0.25 px, which no tolerance could be tuned to let the reversed sign through.
 
+## 5a. Driving it from Hydra
+
+Two render settings, which are also environment variables, so a viewport
+session and a batch render are configured the same way:
+
+| Setting | Environment | Values |
+|---|---|---|
+| Reconstruction | `HDCLAUDE_RECONSTRUCTION` | `off` (default), `dlaa`, `quality`, `balanced`, `performance`, `ultraperformance` |
+| Reconstruction preset | `HDCLAUDE_RECONSTRUCTION_PRESET` | `default`, `stable` (DLSS preset F), `transformer` (K), `transformer-alt` (J) |
+| — | `HDCLAUDE_DLSS_RUNTIME_DIR` | a directory holding `nvngx_dlss.dll` |
+
+**`off` and everything else are different estimators, not different speeds.**
+Off is the progressive accumulation this delegate has always done: samples are
+added to a film that converges toward the truth. On switches the render pass to
+interactive frames — each one its own estimate at `samplesPerFrame` samples,
+decorrelated from the last — and the averaging that the film used to do is done
+instead by the backend's temporal history. `samplesPerPixel` still bounds the
+sequence, so a host that renders to convergence stops after the same budget and
+is left looking at the last reconstructed frame.
+
+A name nothing recognises is reported and refused rather than guessed at. Both
+failures otherwise look identical on screen — a misspelt mode and a machine
+without DLSS both leave an unreconstructed frame — so the pass says which, once
+per distinct answer, and names the backend and extents when one does run:
+
+```
+hdClaude: reconstructing with NVIDIA DLSS 310.3.0.0, dlaa, 512x373 -> 512x373, preset "default"
+```
+
+The version is in the backend's name because **the version is the model**. NGX
+has no call that reports it, so it is read off the file that is about to be
+loaded, and `HDCLAUDE_DLSS_RUNTIME_DIR` is how a different runtime is put in
+front of the renderer. Nothing else in hdClaude selects a DLSS version.
+
+The depth AOV is withheld, with a warning, whenever reconstruction upscales: the
+guide is at the render extent and the buffer is at the output extent, so writing
+one into the other reads a correct buffer at the wrong stride. The guide is real
+and correct, it is simply not an AOV at that size. DLAA traces at the output
+extent and is unaffected.
+
+### What it costs to feed DLSS a path tracer
+
+Measured on the gallery's gold shader ball at 512 px, and asserted in
+`hdClaudeRenderTests`:
+
+| Input | Mean of the reference | Mean reconstructed | Energy kept |
+|---|---|---|---|
+| 1 sample a frame, 32 frames | 0.4398 | 0.3093 | 70% |
+| 64 samples a frame, 8 frames | 0.4397 | 0.4267 | 97% |
+
+The loss tracks the **variance of the input**, not the reconstruction. DLSS
+rejects outliers against a neighbourhood, and a one-sample path trace is largely
+outliers, so a third of the light is thrown away with the fireflies — the image
+maximum falls from 15.8 to 8.8 in the same measurement. This is not a defect in
+the plumbing, and the test that says so is the near-converged case: at 128
+samples a frame the reconstruction keeps 99.8% of the converged mean, which
+nothing dropping a pre-exposure or scaling a copy could do.
+
+It is, however, the sharpest argument for Ray Reconstruction (phase 14), which
+is trained on exactly this input. Until then, DLAA over a path-traced sequence
+should be read as an anti-aliaser that also dims what it cannot resolve.
+
 ## 6. Reference mode is untouched
 
 **Reference rendering never passes through a reconstruction backend.** With DLSS
