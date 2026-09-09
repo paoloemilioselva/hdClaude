@@ -5729,3 +5729,67 @@ It is also, unexpectedly, faster. The render suite goes from 100.33 s to
 twenty-odd bindings into each of them, on every trace, was never free. Against
 the 237.84 s the suite cost before the batching, the two steps together are
 3.1x.
+
+---
+
+## 2026-09-09 -- Two things tried on the way to the wait, and both reverted
+
+With per-slot resources in, the remaining step is to move the submit into
+`BeginFrame` and the wait into `EndFrame`. Two attempts at the ground work were
+made and neither survives; both are recorded because each rules something out.
+
+**One command buffer for the whole frame is slower, not faster.** The batching
+that halved the render suite went from one buffer per bounce to one per sample,
+so the obvious next move was one per *frame*: thirty-two submits down to one.
+It is correct -- the suite passes and the images are unchanged at rms 0 with the
+hashes unmoved -- and it costs a great deal of time:
+
+    chess set      22.5 s -> 31.6 s
+    glass ball     27.6 s -> 41.8 s
+    subdiv matrix   8.8 s -> 12.4 s
+
+The reason is not mysterious in hindsight. A frame at gallery settings is 32
+samples of 8 bounces of ten-odd dispatches with a barrier between each, so a
+whole-frame buffer holds some two and a half thousand commands, and **the device
+does nothing at all while the host records them**. Per-sample buffers hand the
+GPU a quarter-million-path workload every few milliseconds instead. The earlier
+step won because it removed *waits*; this one lost because it added latency
+before the first one.
+
+The lesson generalises past this change: fewer submits is not the goal, and it
+was never the mechanism. The mechanism was removing the device stall that
+`SubmitImmediate` performs after each submit, and that is achieved by not
+waiting, not by merging buffers.
+
+**And the sample index does not want to be a push constant.** Whole-frame
+recording needs one, because `sampleIndex` was a field of a host-written uniform
+and the host cannot rewrite it while recorded dispatches still read it -- exactly
+the argument that moved `bounce` out. So it moved the same way, raygen being the
+only kernel that reads it.
+
+It works, and it makes the **first render of every process** disagree with every
+later one. Four trials of three renders in one process, and every trial has the
+same shape:
+
+    render 1   993843147 / 993842489 / 993843165 / ...    all different
+    render 2   \  identical to each other, every time
+    render 3   /
+
+That is not the acceleration structure, which is fixed for the life of a process
+and gives the *same* answer to all three. It is not uninitialised path state
+either: `HDCLAUDE_POISON_PATH_STATE` does not change it. Reverting the change
+restores six identical canonical renders across two processes. The cause is
+unexplained, the change had no remaining benefit once whole-frame recording was
+abandoned, and shipping an unexplained first-frame regression to buy nothing is
+not a trade worth making.
+
+Worth keeping from it: the instrument found this in one run. A regression that
+appears only in the first image of a process, two orders of magnitude below the
+gate's RMS limit, is exactly what would have shipped invisibly a week ago.
+
+**What the split actually needs.** The obstacle is real and still there: one
+uniform buffer written by the host between samples cannot be in flight twice.
+The answer is not a push constant but a **dynamic uniform offset** -- one buffer
+holding an aligned copy per sample, bound with a per-sample offset, so nothing
+is ever rewritten while it is being read and no kernel signature changes at all.
+That is the next thing to build.
