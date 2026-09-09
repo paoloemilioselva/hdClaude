@@ -2,6 +2,7 @@
 
 #include "hdclaude/core/hash.h"
 #include "hdclaude/core/shader_cache.h"
+#include "hdclaude/core/curve_sweep.h"
 #include "hdclaude/core/display.h"
 #include "hdclaude/core/spectrum.h"
 
@@ -695,6 +696,126 @@ void TestDisplayTransformSanitisesAndExposes()
     CHECK_NEAR(exposed.x, doubled.x, 1.0e-6);
 }
 
+// --- Curve sweep -----------------------------------------------------------
+
+/// A straight two-point curve swept into a tube of a known radius.
+///
+/// The claim is geometric and checkable without a renderer: every vertex of the
+/// tube lies exactly one radius from the curve's axis, and the normals point
+/// straight out from it. That is what a swept circle *is*, so it is what the
+/// tessellation must satisfy however many sides it has.
+void TestCurveSweepIsARadiusFromItsAxis()
+{
+    const std::vector<int> counts{2};
+    // Along +z, from the origin.
+    const std::vector<float> points{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 4.0f};
+    const std::vector<float> widths{0.5f};
+
+    std::string reason;
+    const hdclaude::CurveMesh mesh = hdclaude::SweepCurves(
+        counts, points, widths, 1.0f, 8, false, &reason);
+    CHECK(mesh.Valid());
+    CHECK(reason.empty());
+
+    const std::size_t vertices = mesh.positions.size() / 3;
+    // Two rings of nine vertices: eight sides plus the seam's second copy.
+    CHECK_EQ(vertices, std::size_t(18));
+    CHECK_EQ(mesh.normals.size(), mesh.positions.size());
+    CHECK_EQ(mesh.uvs.size(), vertices * 2);
+
+    double worstRadius = 0.0;
+    double worstNormal = 0.0;
+    for (std::size_t i = 0; i < vertices; ++i) {
+        const double x = mesh.positions[i * 3 + 0];
+        const double y = mesh.positions[i * 3 + 1];
+        const double z = mesh.positions[i * 3 + 2];
+        // The axis is the z line, so the distance to it is the xy radius.
+        const double radius = std::sqrt(x * x + y * y);
+        worstRadius = std::max(worstRadius, std::abs(radius - 0.25));
+        // A ring sits on one of the two control points and nowhere between.
+        CHECK(std::abs(z) < 1e-5 || std::abs(z - 4.0) < 1e-5);
+
+        // The outward normal of a tube about the z axis is the radial
+        // direction, and has no component along the axis.
+        const double nx = mesh.normals[i * 3 + 0];
+        const double ny = mesh.normals[i * 3 + 1];
+        const double nz = mesh.normals[i * 3 + 2];
+        worstNormal = std::max(worstNormal,
+                               std::abs(nx * x + ny * y - radius));
+        worstNormal = std::max(worstNormal, std::abs(nz));
+    }
+    CHECK(worstRadius < 1e-5);
+    CHECK(worstNormal < 1e-5);
+    std::printf("  curve sweep: %zu vertices, radius error %.2e, normal error %.2e\n",
+                vertices, worstRadius, worstNormal);
+}
+
+/// Every triangle indexes a vertex that exists, and every vertex is used.
+///
+/// An index past the end is the failure that produces a device loss rather than
+/// a wrong picture, so it is worth asserting rather than discovering.
+void TestCurveSweepIndicesAreInRange()
+{
+    const std::vector<int> counts{4, 3};
+    std::vector<float> points;
+    for (int i = 0; i < 4; ++i) {
+        points.insert(points.end(), {static_cast<float>(i), 0.0f, 0.0f});
+    }
+    for (int i = 0; i < 3; ++i) {
+        points.insert(points.end(), {0.0f, static_cast<float>(i), 2.0f});
+    }
+    std::string reason;
+    const hdclaude::CurveMesh mesh =
+        hdclaude::SweepCurves(counts, points, {}, 0.1f, 5, false, &reason);
+    CHECK(mesh.Valid());
+
+    const auto vertices = static_cast<std::uint32_t>(mesh.positions.size() / 3);
+    std::vector<bool> used(vertices, false);
+    std::uint32_t highest = 0;
+    for (const std::uint32_t index : mesh.indices) {
+        CHECK(index < vertices);
+        if (index < vertices) {
+            used[index] = true;
+            highest = std::max(highest, index);
+        }
+    }
+    CHECK_EQ(mesh.indices.size() % 3, std::size_t(0));
+    // Two strands of 4 and 3 rings: (4-1 + 3-1) segments, 5 sides, two
+    // triangles a side.
+    CHECK_EQ(mesh.indices.size(), std::size_t((3 + 2) * 5 * 2 * 3));
+    CHECK_EQ(highest, vertices - 1);
+    std::printf("  curve sweep: %zu triangles over %u vertices\n",
+                mesh.indices.size() / 3, vertices);
+}
+
+/// Input the sweep cannot honour is refused by name rather than half drawn.
+void TestCurveSweepRefusesWhatItCannotSweep()
+{
+    std::string reason;
+    // Counts that do not add up to the points given.
+    const hdclaude::CurveMesh mismatched = hdclaude::SweepCurves(
+        {5}, {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f}, {}, 1.0f, 6, false, &reason);
+    CHECK(!mismatched.Valid());
+    CHECK(!reason.empty());
+
+    reason.clear();
+    // A single-vertex curve has no segment to sweep along.
+    const hdclaude::CurveMesh degenerate = hdclaude::SweepCurves(
+        {1, 1}, {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f}, {}, 1.0f, 6, false,
+        &reason);
+    CHECK(!degenerate.Valid());
+    CHECK(!reason.empty());
+
+    reason.clear();
+    // Widths that match neither the curves nor the points.
+    const hdclaude::CurveMesh widths = hdclaude::SweepCurves(
+        {2}, {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f}, {1.0f, 2.0f, 3.0f}, 1.0f, 6,
+        false, &reason);
+    CHECK(!widths.Valid());
+    CHECK(!reason.empty());
+    std::printf("  curve sweep refuses bad input by name\n");
+}
+
 }  // namespace
 
 int main()
@@ -723,5 +844,8 @@ int main()
     TestDisplayTransformLeavesTheDiffuseRangeAlone();
     TestDisplayTransformCompressesRatherThanClips();
     TestDisplayTransformSanitisesAndExposes();
+    TestCurveSweepIsARadiusFromItsAxis();
+    TestCurveSweepIndicesAreInRange();
+    TestCurveSweepRefusesWhatItCannotSweep();
     return hdclaude_test::Summarize("hdClaudeCoreTests");
 }

@@ -21,12 +21,13 @@ class HdClaudeRenderParam final : public HdRenderParam {
     HdClaudeRenderParam(HdClaudeSceneStore* store,
                         HdClaudeMaterialCompiler* materialCompiler,
                         HdClaudeTexturePool* texturePool,
-                        int subdivisionLevel,
+                        int subdivisionLevel, int curveSides,
                         HdClaudeStageStats* stageStats)
         : _store(store),
           _materialCompiler(materialCompiler),
           _texturePool(texturePool),
           _subdivisionLevel(subdivisionLevel),
+          _curveSides(curveSides),
           _stageStats(stageStats)
     {
     }
@@ -47,12 +48,20 @@ class HdClaudeRenderParam final : public HdRenderParam {
     /// cage, so the level is part of what a prim publishes.
     int SubdivisionLevel() const { return _subdivisionLevel; }
 
+    /// How many faces a swept curve's cross-section has.
+    ///
+    /// The same kind of number as the subdivision level and read at the same
+    /// time, for the same reason: it changes the geometry a prim publishes,
+    /// not how that geometry is drawn.
+    int CurveSides() const { return _curveSides; }
+
   private:
     HdClaudeSceneStore* _store;
     HdClaudeMaterialCompiler* _materialCompiler;
     HdClaudeTexturePool* _texturePool;
     HdClaudeStageStats* _stageStats = nullptr;
     int _subdivisionLevel = 0;
+    int _curveSides = 6;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

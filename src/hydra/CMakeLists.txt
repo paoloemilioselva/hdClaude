@@ -17,6 +17,7 @@ add_library(hdClaude MODULE
     light.cpp
     material.cpp
     material_compiler.cpp
+    basis_curves.cpp
     mesh.cpp
     render_buffer.cpp
     render_delegate.cpp

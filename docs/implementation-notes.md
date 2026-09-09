@@ -6279,3 +6279,64 @@ prototype at a time until the bad one names itself.
 
 What can be said without it: the slowness is traversal, it is not the amount of
 geometry, and it appears the moment refinement runs.
+
+---
+
+## 2026-09-09 -- Curves, as swept tubes through the mesh path
+
+Only `mesh` was in `kSupportedRprimTypes`, so a stage's curves were never
+created by Hydra at all -- absent rather than wrong, which is the better of the
+two failures but still a hole. `basisCurves` is supported now, swept into a tube
+and published through exactly the path a mesh takes.
+
+**The shape of the choice.** A ray tracer needs an explicit surface to build an
+acceleration structure over. The exact alternative -- procedural AABB geometry
+with the swept cone intersected in the traversal kernel -- is what a hair
+renderer eventually wants, and it costs two things this project currently cannot
+spend cheaply: a candidate-intersection path in `extend`, which is the kernel
+every other measurement depends on and the one just found to be collapsing on
+ALab's geometry, and a new binding, which is the change that reliably perturbs
+the first render of a process. Sweeping a tube costs neither. It reuses the
+acceleration structure, the shading, and the descriptor set layout exactly as
+they are, so **this feature adds no shader change and no binding at all**.
+
+The approximation is honest and bounded: a tube of *n* faces approximates a
+circular sweep as a subdivided mesh approximates a limit surface, and converges
+the same way. `HDCLAUDE_CURVE_SIDES` sets it, defaulting to six, for the same
+reason the subdivision level is a setting.
+
+**What the asset actually needs, checked rather than assumed.** ALab's
+`stoat01` carries 33 `NurbsCurves` of 260 control points between them, at a
+constant width of 0.014 -- whiskers, not a coat. And `UsdImagingNurbsCurvesAdapter`
+reports them to Hydra as `basisCurves` with a **linear** basis: its own comment
+says it is "drawing the cage for NURBS curves", so the control polygon is what
+every Hydra renderer receives, not the evaluated NURBS. hdClaude therefore draws
+what every other Hydra renderer draws. A cubic basis is refused by name rather
+than swept as though it were linear, because evaluating basis matrices to a
+polyline is separate work and silently treating a cubic curve as a polyline
+would make it visibly wrong in a way nothing reported.
+
+**The sweep lives in the core**, with no USD and no Vulkan in it, which is what
+makes it testable on any host. Three tests state the claim geometrically rather
+than by eye:
+
+* every vertex of a tube swept along the z axis lies exactly one radius from
+  that axis and its normal points straight out of it -- that is what a swept
+  circle *is*, so it must hold whatever the side count. Worst error 4.3e-09.
+* every index is in range, every vertex is used, and the triangle count is the
+  one the segment and side counts imply. An index past the end is the failure
+  that costs a device rather than a picture.
+* input that cannot be honoured -- counts that do not add up, a single-vertex
+  curve, widths matching neither points nor curves -- is refused with a reason,
+  not half drawn.
+
+A frame is carried along each curve by parallel transport rather than rebuilt
+from a fixed axis, because rebuilding makes the tube spin wherever the tangent
+passes near that axis, and that shows as a twist in the shading and a crease in
+the silhouette. Each ring carries one extra vertex so the texture seam closes:
+two copies at the same position with u of 0 and 1, or the last face samples the
+whole map backwards.
+
+Not yet verified end to end: the plugin could not be installed while another
+render held it, so the stoat has not been rendered with this build. The code
+compiles and the core tests pass; the picture is still owed.

@@ -6,6 +6,7 @@
 #include "camera.h"
 #include "light.h"
 #include "material.h"
+#include "basis_curves.h"
 #include "mesh.h"
 #include "render_buffer.h"
 #include "render_pass.h"
@@ -42,6 +43,11 @@ namespace {
 
 const TfTokenVector kSupportedRprimTypes = {
     HdPrimTypeTokens->mesh,
+    // NurbsCurves arrive here too: UsdImaging's adapter reports them as
+    // basisCurves with a linear basis, drawing the control cage rather than the
+    // evaluated NURBS, so a stage's curves reach every Hydra renderer as
+    // polylines.
+    HdPrimTypeTokens->basisCurves,
 };
 
 /// Light types hdClaude samples. A type absent from this list is never created
@@ -288,10 +294,16 @@ void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
     // that alters the scene.
     const int subdivisionLevel =
         std::clamp(TfGetenvInt("HDCLAUDE_SUBDIVISION_LEVEL", 2), 0, 6);
+    // Six faces round a tube. Enough that a whisker reads as round at the size
+    // curves are usually authored, cheap enough that a head of hair does not
+    // pay for a smoothness nothing can see, and a setting because the right
+    // answer depends on how close the camera gets.
+    const int curveSides =
+        std::clamp(TfGetenvInt("HDCLAUDE_CURVE_SIDES", 6), 3, 64);
 
     _renderParam = std::make_unique<HdClaudeRenderParam>(
         _store.get(), _materialCompiler.get(), _texturePool.get(),
-        subdivisionLevel, &_stageStats);
+        subdivisionLevel, curveSides, &_stageStats);
 }
 
 const TfTokenVector& HdClaudeRenderDelegate::GetSupportedRprimTypes() const
@@ -363,6 +375,9 @@ HdRprim* HdClaudeRenderDelegate::CreateRprim(const TfToken& typeId,
 {
     if (typeId == HdPrimTypeTokens->mesh) {
         return new HdClaudeMesh(rprimId);
+    }
+    if (typeId == HdPrimTypeTokens->basisCurves) {
+        return new HdClaudeBasisCurves(rprimId);
     }
     TF_WARN("hdClaude: unsupported rprim type <%s>", typeId.GetText());
     return nullptr;

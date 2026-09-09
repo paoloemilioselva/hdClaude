@@ -8,6 +8,7 @@
 # ---------------------------------------------------------------------------
 
 add_library(hdClaudeCore STATIC
+    curve_sweep.cpp
     display.cpp
     hash.cpp
     shader_cache.cpp
