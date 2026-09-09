@@ -77,6 +77,19 @@ suite's output instead of arriving quietly as a diff. That is not hypothetical:
 the committed `chess_board.stats` carried a `tracedRays` written by a run that
 had the renderer's intermittent nondeterminism, and nothing at the time noticed.
 
+**Wall time is not render time, and on some scenes it is mostly not.** The
+`[cost]` group splits it: `traceMs` is the path tracing itself, and
+`outsideSeconds` is what the wall clock saw that no stage of the renderer
+claims -- opening the stage, USD's plugin discovery, Hydra populating its scene
+index before the delegate is asked for anything, writing the EXR, and tearing
+the device down. It is not a fixed startup tax: it runs from 4.9 s on the height
+map to 61.1 s on the Kitchen Set, scaling with the stage rather than with the
+render, while the four shader balls share one asset and sit at a flat 8.3 s
+however long they trace. Three quarters of the height map's six seconds are not
+rendering; nor are two fifths of the Kitchen Set's two and a half minutes. Read
+`traceMs` for what the renderer cost and the table's wall time for what a person
+waits.
+
 A change there is reported rather than fatal. The image gate already fails a
 render that moved, and a deliberate change that legitimately alters how far
 paths travel should not have to fight the suite to land -- so the suite says
