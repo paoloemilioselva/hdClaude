@@ -1278,7 +1278,13 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     // where the device or its queue cannot timestamp: a period of zero or no
     // valid bits means the numbers would be noise, and reporting noise as a
     // breakdown is worse than reporting nothing.
-    if (!_profileKernels && std::getenv("HDCLAUDE_PROFILE_KERNELS") != nullptr &&
+    // The frame log turns this on by itself: its whole purpose is to say
+    // whether a slow frame was slow on the device or waiting on the host,
+    // and it cannot answer that without the device's own time.
+    const bool profileAsked =
+        std::getenv("HDCLAUDE_PROFILE_KERNELS") != nullptr ||
+        std::getenv("HDCLAUDE_FRAME_LOG") != nullptr;
+    if (!_profileKernels && profileAsked &&
         _context.Capabilities().timestampPeriod > 0.0f &&
         _context.Capabilities().timestampValidBits > 0) {
         _profileKernels = true;

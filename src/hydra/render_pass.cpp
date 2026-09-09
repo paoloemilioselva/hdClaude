@@ -484,12 +484,24 @@ void HdClaudeRenderPass::_Execute(
             _renderDelegate->DeviceBytesAvailable();
         const std::uint64_t spilled =
             _renderDelegate->DeviceBytesSpilled();
+        const auto& profile = tracer->LastKernelProfile();
+        const double gpuSampleMs =
+            profile.valid ? profile.prepareMs + profile.extendMs +
+                                profile.sortMs + profile.environmentMs +
+                                profile.shadeMs + profile.shadowMs +
+                                profile.filmMs
+                          : 0.0;
+        HdClaudeStageStats& logStages = _renderDelegate->StageStats();
+        const double subdivideNow =
+            logStages.subdivideMilliseconds.load(std::memory_order_relaxed);
+        const double publishNow =
+            logStages.publishMilliseconds.load(std::memory_order_relaxed);
         const std::uint64_t shadow = tracer->ShadowRays();
         if (std::ofstream out{path, std::ios::app}; out) {
             if (_frameLogIndex == 0) {
                 out << "# frame samples traceMs rays shadowRays hitHash "
                     << "rayHash width height deviceMiB availableMiB "
-                    << "spilledMiB\n";
+                    << "spilledMiB gpuSampleMs subdivideMs publishMs\n";
             }
             out << ++_frameLogIndex << ' ' << settings.samplesPerPixel
                 << ' ' << std::fixed << std::setprecision(2)
@@ -508,10 +520,25 @@ void HdClaudeRenderPass::_Execute(
                 // PCIe instead. The budget is the only thing visible from
                 // here that moves when it happens, so it is on every line.
                 << (peak >> 20) << ' ' << (available >> 20) << ' '
-                << (spilled >> 20) << '\n';
+                << (spilled >> 20) << ' '
+                // The GPU's own time for one sample, and the host work
+                // that happened alongside this frame.
+                //
+                // `traceMs` is wall time on the render thread, so it counts
+                // every stall as well as every dispatch. A frame whose GPU
+                // time is small and whose wall time is not was waiting for
+                // something, and the two columns beside it say what: Hydra
+                // subdividing and publishing on the worker threads is host
+                // work that competes with a render loop built out of
+                // submit-and-wait.
+                << std::fixed << std::setprecision(3) << gpuSampleMs
+                << std::defaultfloat << ' ' << (subdivideNow - _frameLogSubdivideMs)
+                << ' ' << (publishNow - _frameLogPublishMs) << '\n';
         }
         _frameLogTracedRays = traced;
         _frameLogShadowRays = shadow;
+        _frameLogSubdivideMs = subdivideNow;
+        _frameLogPublishMs = publishNow;
     }
 
     // The repeat diagnostic, decided here because this is where the image is

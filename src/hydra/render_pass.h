@@ -76,6 +76,8 @@ class HDCLAUDE_API HdClaudeRenderPass final : public HdRenderPass {
     std::uint64_t _frameLogIndex = 0;
     std::uint64_t _frameLogTracedRays = 0;
     std::uint64_t _frameLogShadowRays = 0;
+    double _frameLogSubdivideMs = 0.0;
+    double _frameLogPublishMs = 0.0;
 
     /// The scene revision actually uploaded to the path tracer. Advanced only
     /// after a successful upload, so a failed one is retried.

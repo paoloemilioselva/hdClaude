@@ -6532,3 +6532,54 @@ mark, what the driver says is left, and the spill. If the available figure
 collapses through the slow frames and recovers at the toggle, that is the answer;
 if it does not move at all, residency is wrong too and the search continues with
 one more candidate eliminated.
+
+---
+
+## 2026-09-09 -- Residency is out, and the frame log learns to name the waiting
+
+The second session's log carries the memory columns and they acquit residency.
+
+    frame     traceMs      rays   deviceMiB  availableMiB
+    1         1528.46   1555518        8976          3863
+    39         825.17   1304633        8976          5448
+    59          14.95   1171136        8976          5576
+    179        53.67    1558665        9104          3735
+
+Available memory does rise as the render speeds up, which is what the eviction
+story predicted. But by frame 179 it is back to 3735 MiB -- *below* the 3863 it
+had while running at 1528 ms -- and the render is still twenty-eight times
+faster. A quantity that returns to its starting value while the effect does not
+is not the cause of the effect. `deviceBytesSpilled` is zero throughout, so VMA's
+own fallback was never involved either.
+
+What is unique about the opening frames is not memory but *work*: the session
+spent `subdivideMs 27662` and `publishMs 35162` -- tens of seconds of host work
+on Hydra's threads -- and hdClaude's render loop is a chain of submit-and-wait
+calls on a single thread. A thread that cannot get scheduled measures its own
+starvation as trace time, because `traceMs` is wall time around the trace and
+counts every stall alongside every dispatch.
+
+So the frame log gains three columns that separate those: `gpuSampleMs`, the
+device's own time for one sample taken from the kernel profile, and the
+`subdivideMs` and `publishMs` that elapsed *during* that frame rather than in
+total. The frame log turns the profiler on by itself, because a log that cannot
+say whether a slow frame was slow on the device or waiting on the host is not
+answering the question it exists for.
+
+It is already worth something offline, where there is no viewer competing for
+anything:
+
+    frame  traceMs   gpuSampleMs   subdivideMs  publishMs
+    1      1010.66     76.609          7630         6540
+    2       595.22     53.486             0            0
+    3      1001.61     87.393             0            0
+
+At four samples a frame the device accounts for about 306 ms of the first
+frame's 1011, and roughly a third of each frame after it. **Two thirds of this
+renderer's wall time is not the device**, in a loop where every sample is a
+submit that waits for the queue to drain -- which is the cost phase 9's remaining
+step exists to remove, now visible per frame rather than inferred.
+
+Whether that is the whole of Paolo's ninety-fold needs his session rather than
+this one: only there does a viewer subdivide eighty-seven million triangles on
+the worker threads while the render loop tries to get a word in.
