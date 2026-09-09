@@ -56,3 +56,15 @@ __pycache__/
 # Editor and agent session state. Local to one machine and one session.
 # ---------------------------------------------------------------------------
 /.claude/
+
+# ---------------------------------------------------------------------------
+# Debugging output written into the tree while investigating something.
+#
+# A session log or a stats dump is evidence for one investigation, not a
+# project file, and these were committed once and then re-added by a later
+# `git add -A` after being untracked. Ignoring them makes that impossible
+# rather than merely corrected.
+# ---------------------------------------------------------------------------
+debugging_*.log
+debugging_*.stats
+*.frames.log
