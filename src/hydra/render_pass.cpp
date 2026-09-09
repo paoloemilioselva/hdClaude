@@ -190,6 +190,18 @@ void HdClaudeRenderPass::_Execute(
     _targetSamples = targetSamples;
 
     // --- Scene upload ----------------------------------------------------------
+    //
+    // DIAGNOSTIC: republish once, at a chosen frame.
+    //
+    // An interactive session that republishes and then keeps rendering
+    // reaches a state tens of times faster than a batch render ever does.
+    // Reproducing that offline is the only way to find out what the fast
+    // state *is*, so this forces the republish a viewer would have caused.
+    const int republishAt = TfGetenvInt("HDCLAUDE_REPUBLISH_AT", 0);
+    if (republishAt > 0 &&
+        _frameLogIndex == static_cast<std::uint64_t>(republishAt)) {
+        _hasUploaded = false;
+    }
     if (!_hasUploaded || _uploadedRevision != framing.sceneRevision) {
         // Ingestion and publication are timed separately because they fail and
         // scale for different reasons: the first is a traversal on the host and

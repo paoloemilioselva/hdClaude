@@ -6583,3 +6583,54 @@ step exists to remove, now visible per frame rather than inferred.
 Whether that is the whole of Paolo's ninety-fold needs his session rather than
 this one: only there does a viewer subdivide eighty-seven million triangles on
 the worker threads while the render loop tries to get a word in.
+
+---
+
+## 2026-09-09 -- The device is forty-six times faster than it usually is
+
+The third session settles what the effect is *not*, and turns the question from
+"why is this asset slow" into something sharper and more uncomfortable.
+
+The frame log now carries the device's own time, and it moves with everything
+else:
+
+    frame     traceMs   gpuSampleMs   rays       availMiB
+    14        1202.00      106.238    1586070      3863
+    15         883.29      158.580    1304732      5576   <- republish
+    19         442.78      133.299    1299425      5576
+    20          17.60        3.042    1291772      5576   <- collapse
+    180         52.13       10.831    1522011      3735
+
+**It is not host starvation.** That was the previous entry's reading and it is
+withdrawn: `gpuSampleMs` is the device's own time between two timestamps, and it
+falls from 139.55 ms to 3.042 ms. The GPU really does the same traversal
+forty-six times faster.
+
+**It is not free memory.** The republish at frame 15 released 1.7 GiB and made
+the device *slower*, 106 ms to 158. And frame 180 runs at 10.8 ms with 3735 MiB
+free, where frame 1 ran at 139 ms with 3863 -- more memory, thirteen times
+slower. `deviceBytesSpilled` is zero throughout, so VMA's fallback never
+happened.
+
+**And it is not the republish.** Forced offline at a chosen frame -- the
+diagnostic exists now as `HDCLAUDE_REPUBLISH_AT` -- the collapse does not
+follow. Forty frames after it, the device is still at 45 to 80 ms a sample.
+
+What is left is the shape of the thing: five frames after a republish the cost
+falls by a factor of forty-four *in a single frame* and stays there. That is not
+a warm-up curve, it is a switch. The only mechanism yet seen in this project
+that behaves that way is the driver replacing a compiled pipeline with an
+optimised one, which the shader-cache experiment showed is both slower and
+numerically different before it happens.
+
+**The uncomfortable part is the batch case.** An offline render of this asset
+sits at 45 to 80 ms a sample and never once reaches the interactive session's
+2.6 ms, through forty frames and a forced republish. So hdClaude renders this
+scene roughly **seventeen times slower than the same hardware demonstrably
+runs it**, and every timing in the gallery was measured in that state. The
+question is no longer why ALab is slow; it is what the fast state is and why a
+batch render never enters it.
+
+That reframes the earlier traversal finding too. Extend collapsing 186x with
+subdivision was measured entirely in the slow state, and whether the fast state
+has the same cliff is unknown.

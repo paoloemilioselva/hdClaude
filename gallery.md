@@ -139,7 +139,7 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 | Scene | Measured | Wall time | Device memory | SHA-256 | Device | Settings |
 |---|---:|---:|---:|---|---|---|
 | Intel Sponza | 2026-09-09 | 48.548 s (0m 48.548s) | 5.3 GiB | `41f68fd0d37c3c3ac7295c2b128d21b98e97373040d9299e72676095f9fd1604` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| OpenChessSet | 2026-09-09 | 22.696 s (0m 22.696s) | 1.7 GiB | `bbca72434fac7484627860fbe00d94e7cc9001e9e354089bab749c6dd9631317` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| OpenChessSet | 2026-09-09 | 22.889 s (0m 22.889s) | 1.7 GiB | `bbca72434fac7484627860fbe00d94e7cc9001e9e354089bab749c6dd9631317` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | StandardShaderBall Gold | 2026-09-09 | 24.360 s (0m 24.360s) | 944.4 MiB | `5260d440c066c90ca172f98b065394123fe012f6b08231d172e23dc6ea6c67e1` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | StandardShaderBall Glass | 2026-09-09 | 27.715 s (0m 27.715s) | 1.3 GiB | `74bd8465cfc86759e6eb0ec99d3a61542b367f868afcb9b9a3732d4385319602` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | StandardShaderBall BubbleGum | 2026-09-09 | 59.614 s (0m 59.614s) | 944.4 MiB | `e2ed540454cd2a807b88cc82df4aec11a129531cd42889bde350ddc71a4588f3` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
