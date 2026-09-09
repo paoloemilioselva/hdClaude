@@ -81,6 +81,7 @@ std::vector<BindingDescription> KernelBindings()
     bindings.push_back(storage(25, "pathMedium"));
     bindings.push_back(storage(26, "pathHeroOnly"));
     bindings.push_back(storage(27, "guideDepth"));
+    bindings.push_back(storage(28, "guideMotion"));
     bindings.push_back(storage(22, "environmentDistribution"));
     bindings.push_back(storage(23, "pathWavelengths"));
     bindings.push_back(storage(24, "spectralTables"));
@@ -142,6 +143,10 @@ struct FrameBlock {
     float domeLightToWorld[16];
     /// World to clip, for the depth guide. See RenderCamera::worldToClip.
     float worldToClip[16];
+    /// The previous frame's world-to-clip, for motion vectors. Equal to
+    /// `worldToClip` on a frame with no previous one, which reports no motion
+    /// rather than motion from nowhere.
+    float previousWorldToClip[16];
     /// The frame's sub-pixel offset, and whether raygen should use it rather
     /// than drawing one per sample.
     float jitter[2];
@@ -196,6 +201,9 @@ struct InstanceGeometry {
     std::uint64_t triangleMaterials;
     float objectToWorld[12];
     float worldToObject[12];
+    /// The previous frame's placement, for motion vectors. Composed with
+    /// `worldToObject` it takes a hit back to where it was.
+    float previousObjectToWorld[12];
     std::uint32_t material;
     /// 1 when `uvs` holds one coordinate per triangle corner.
     std::uint32_t uvsPerCorner;
@@ -670,6 +678,10 @@ void PathTracer::SetScene(const Scene& scene,
         }
         std::memcpy(entry.objectToWorld, instance.transform.m, sizeof(entry.objectToWorld));
         InvertTransform3x4(instance.transform.m, entry.worldToObject);
+        std::memcpy(entry.previousObjectToWorld,
+                    instance.hasPreviousTransform ? instance.previousTransform.m
+                                                  : instance.transform.m,
+                    sizeof(entry.previousObjectToWorld));
         entry.material = instance.material;
         if (instance.prototype < scene.prototypes.size()) {
             entry.uvsPerCorner =
@@ -887,6 +899,8 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
         VulkanBuffer hits = MakeStorage(_allocator, paths * 16, "path.hits");
         VulkanBuffer guideDepth =
             MakeStorage(_allocator, paths * 4, "guide.depth");
+        VulkanBuffer guideMotion =
+            MakeStorage(_allocator, paths * 8, "guide.motion");
         // Eight uints: activeCount, nextActiveCount, shadowCount, a pad, the two
         // ray accumulators, and the two hashes -- over what the rays were and over
         // what they hit. Everything past byte 16 is per call rather than per
@@ -924,6 +938,11 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
         guideReadbackDescription.debugName = "guide.readback";
         VulkanBuffer guideReadback(_allocator, guideReadbackDescription);
 
+        BufferDescription motionReadbackDescription = guideReadbackDescription;
+        motionReadbackDescription.size = paths * 8;
+        motionReadbackDescription.debugName = "guide.motionReadback";
+        VulkanBuffer motionReadback(_allocator, motionReadbackDescription);
+
         BufferDescription readbackDescription;
         readbackDescription.size = paths * 16;
         readbackDescription.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -943,6 +962,7 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
         slot.heroOnly = std::move(heroOnly);
         slot.hits = std::move(hits);
         slot.guideDepth = std::move(guideDepth);
+        slot.guideMotion = std::move(guideMotion);
         slot.counters = std::move(counters);
         slot.rayReadback = std::move(rayReadback);
         slot.activeQueue = std::move(activeQueue);
@@ -952,6 +972,7 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
         slot.frameUniforms = std::move(frameUniforms);
         slot.readback = std::move(readback);
         slot.guideReadback = std::move(guideReadback);
+        slot.motionReadback = std::move(motionReadback);
         }
 
     // The film is shared, so it is built once outside the loop.
@@ -1014,6 +1035,7 @@ void PathTracer::WriteDescriptors(VkDescriptorSet set,
     pipeline.WriteBuffer(set, 25, slot.medium);
     pipeline.WriteBuffer(set, 26, slot.heroOnly);
     pipeline.WriteBuffer(set, 27, slot.guideDepth);
+    pipeline.WriteBuffer(set, 28, slot.guideMotion);
     pipeline.WriteBuffer(set, 22, _environmentDistribution);
     pipeline.WriteBuffer(set, 23, slot.wavelengths);
     pipeline.WriteBuffer(set, 24, _spectralTables);
@@ -1139,6 +1161,7 @@ FrameHandle PathTracer::BeginFrame(const FrameDescription& description)
     _pendingFrame.image =
         Trace(description.width, description.height, description.camera, settings);
     _pendingFrame.depth = std::move(_lastDepth);
+    _pendingFrame.motion = std::move(_lastMotion);
 
     return handle;
 }
@@ -1313,6 +1336,17 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     std::memcpy(block.domeLightToWorld, _domeLightToWorld,
                 sizeof(block.domeLightToWorld));
     std::memcpy(block.worldToClip, camera.worldToClip, sizeof(block.worldToClip));
+    // The previous frame's matrix, or this one's when there is no previous
+    // frame. The second reports no motion, which is the truth: a surface seen
+    // for the first time has not moved on screen, and inventing a displacement
+    // would send a reconstructor to fetch history that does not exist.
+    if (_hasPreviousClip) {
+        std::memcpy(block.previousWorldToClip, _previousWorldToClip,
+                    sizeof(block.previousWorldToClip));
+    } else {
+        std::memcpy(block.previousWorldToClip, camera.worldToClip,
+                    sizeof(block.previousWorldToClip));
+    }
     block.jitter[0] = settings.jitter[0];
     block.jitter[1] = settings.jitter[1];
     block.useFixedJitter = settings.fixedJitter ? 1u : 0u;
@@ -1618,6 +1652,11 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
         vkCmdCopyBuffer(command, slot.guideDepth.Handle(),
                         slot.guideReadback.Handle(), 1, &guides);
 
+        VkBufferCopy motion{};
+        motion.size = static_cast<VkDeviceSize>(paths) * 8;
+        vkCmdCopyBuffer(command, slot.guideMotion.Handle(),
+                        slot.motionReadback.Handle(), 1, &motion);
+
         VkBufferCopy rays{};
         rays.srcOffset = 16;
         rays.size = 16;
@@ -1637,6 +1676,14 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     _lastDepth.assign(static_cast<std::size_t>(paths), 1.0f);
     std::memcpy(_lastDepth.data(), slot.guideReadback.MappedData(),
                 _lastDepth.size() * sizeof(float));
+    _lastMotion.assign(static_cast<std::size_t>(paths) * 2, 0.0f);
+    std::memcpy(_lastMotion.data(), slot.motionReadback.MappedData(),
+                _lastMotion.size() * sizeof(float));
+
+    // This frame becomes the next frame's past.
+    std::memcpy(_previousWorldToClip, camera.worldToClip,
+                sizeof(_previousWorldToClip));
+    _hasPreviousClip = true;
 
     std::vector<float> image(static_cast<std::size_t>(paths) * 4);
     std::memcpy(image.data(), slot.readback.MappedData(), image.size() * sizeof(float));

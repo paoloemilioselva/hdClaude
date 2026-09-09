@@ -70,6 +70,10 @@ layout(set = 0, binding = 0, scalar) uniform FrameBlock {
     // one is a question about the host's projection rather than about this
     // renderer, so it is carried rather than rebuilt from a field of view.
     mat4  worldToClip;
+    // The previous frame's world-to-clip. Equal to worldToClip when there was
+    // no previous frame, which reports no motion rather than motion invented
+    // from nothing.
+    mat4  previousWorldToClip;
     // The frame's sub-pixel offset in pixels, and whether raygen uses it
     // instead of drawing one per sample. See RenderSettings::jitter.
     vec2  jitter;
@@ -152,6 +156,14 @@ layout(set = 0, binding = 26, scalar) buffer PathHeroOnly { uint values[]; } pat
 // across jittered samples would give, at a silhouette, a value lying on neither
 // surface -- worse for anything consuming it than either surface alone.
 layout(set = 0, binding = 27, scalar) buffer GuideDepth { float values[]; } guideDepth;
+
+// Screen-space motion of the primary hit, in pixels, one vec2 per pixel.
+//
+// Where the surface seen at this pixel *was* on the previous frame, minus where
+// it is now -- the displacement a reconstructor adds to a pixel's coordinate to
+// find its history. Zero where nothing was hit, and zero on a frame with no
+// previous one.
+layout(set = 0, binding = 28, scalar) buffer GuideMotion { vec2 values[]; } guideMotion;
 
 
 
@@ -321,6 +333,9 @@ struct InstanceGeometry {
     uint64_t triangleMaterials;
     mat3x4 objectToWorld;
     mat3x4 worldToObject;
+    // The previous frame's placement. With worldToObject it takes a hit point
+    // back to where that surface was, which is what a motion vector measures.
+    mat3x4 previousObjectToWorld;
     uint material;
     /// 1 when `uvs` holds one coordinate per triangle *corner* rather than per
     /// vertex, which is how a face-varying primvar arrives. A UV seam cannot

@@ -33,6 +33,10 @@ void main()
         // ray that hit nothing is not at zero depth, it is at no depth, and 1.0
         // is how that is spelled.
         guideDepth.values[index] = 1.0;
+        // A ray that hit nothing has no surface to have moved, so it reports no
+        // motion. A reconstructor reprojecting the background uses the camera's
+        // own motion, which it already knows.
+        guideMotion.values[index] = vec2(0.0);
         return;
     }
 
@@ -45,12 +49,44 @@ void main()
     if (clip.w <= 0.0)
     {
         guideDepth.values[index] = 1.0;
+        guideMotion.values[index] = vec2(0.0);
         return;
     }
+
+    // Where this surface was, and therefore where it moved from.
+    //
+    // The hit is taken back to the object it belongs to and forward again by
+    // that object's previous placement, so an instance that moved contributes
+    // its own motion and not just the camera's. `previousObjectToWorld` equals
+    // `objectToWorld` for anything that did not move, which makes this the
+    // identity there rather than a special case.
+    //
+    // Rigid only: a mesh whose points changed moved in a way no matrix
+    // describes, and this reports the rigid part rather than pretending to the
+    // rest.
+    InstanceGeometry geometry = instances.values[record.x];
+    vec3 objectPoint = vec4(hitWorld, 1.0) * geometry.worldToObject;
+    vec3 previousWorld = vec4(objectPoint, 1.0) * geometry.previousObjectToWorld;
+    vec4 previousClip = frame.previousWorldToClip * vec4(previousWorld, 1.0);
 
     // NDC z in [-1, 1] mapped to the [0, 1] the depth AOV is defined over,
     // matching hdEmbree, and clamped because a hit fractionally beyond the far
     // plane is at the far plane rather than outside the range.
     float ndc = clip.z / clip.w;
     guideDepth.values[index] = clamp((ndc + 1.0) * 0.5, 0.0, 1.0);
+
+    // The motion, in pixels. Behind the previous camera there is no previous
+    // pixel to point at, so the surface reports no motion rather than a
+    // projection through the eye.
+    if (previousClip.w <= 0.0)
+    {
+        guideMotion.values[index] = vec2(0.0);
+        return;
+    }
+    vec2 nowNdc = clip.xy / clip.w;
+    vec2 thenNdc = previousClip.xy / previousClip.w;
+    // NDC spans [-1, 1] across the frame, so half the resolution converts a
+    // difference in it to a difference in pixels.
+    guideMotion.values[index] =
+        (thenNdc - nowNdc) * vec2(frame.resolution) * 0.5;
 }

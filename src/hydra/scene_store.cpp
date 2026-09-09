@@ -76,7 +76,7 @@ bool HdClaudeSceneStore::HasFallbackMaterial() const
 }
 
 hdclaude::Scene HdClaudeSceneStore::Snapshot(
-    std::vector<hdclaude::CompiledMaterial>& materials) const
+    std::vector<hdclaude::CompiledMaterial>& materials)
 {
     std::lock_guard<std::mutex> lock(_mutex);
 
@@ -131,10 +131,23 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
             }
         }
 
-        for (const hdclaude::Transform3x4& transform : mesh.transforms) {
+        // Where this mesh's instances were last time, if it was here last
+        // time and had the same number of them. A mesh whose instance count
+        // changed cannot be matched up one to one -- an instancer that grew or
+        // shrank has no correspondence to offer -- so it reports no history
+        // rather than pairing placements that are not the same placement.
+        const auto previous = _previousTransforms.find(path);
+        const bool matched = previous != _previousTransforms.end() &&
+                             previous->second.size() == mesh.transforms.size();
+
+        for (std::size_t i = 0; i < mesh.transforms.size(); ++i) {
             hdclaude::MeshInstance instance;
             instance.prototype = prototype;
-            instance.transform = transform;
+            instance.transform = mesh.transforms[i];
+            if (matched) {
+                instance.previousTransform = previous->second[i];
+                instance.hasPreviousTransform = true;
+            }
             instance.material = material;
             instance.visible = true;
             scene.instances.push_back(instance);
@@ -192,6 +205,14 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
     }
 
     scene.revision = _revision;
+    // This snapshot becomes the next one's past. Recorded for every mesh
+    // currently held, and only for those: a mesh that has gone should not
+    // leave a history behind for a later mesh at the same path to inherit.
+    _previousTransforms.clear();
+    for (const auto& [path, mesh] : _meshes) {
+        _previousTransforms[path] = mesh.transforms;
+    }
+
     return scene;
 }
 

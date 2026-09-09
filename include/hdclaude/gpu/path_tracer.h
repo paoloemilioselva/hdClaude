@@ -251,6 +251,13 @@ struct FrameResult {
     /// clear value Hydra gives a depth AOV.
     std::vector<float> depth;
 
+    /// Screen-space motion of the primary hit, two floats per pixel, in the
+    /// same row order as the image. The displacement in pixels from where this
+    /// surface is now to where it was, so a reconstructor adds it to a pixel's
+    /// coordinate to find that pixel's history. Zero where nothing was hit and
+    /// on a frame with no previous one.
+    std::vector<float> motion;
+
     bool Valid() const { return width != 0 && height != 0 && !image.empty(); }
 };
 
@@ -518,6 +525,13 @@ class PathTracer {
     /// here rather than threaded through `Trace`'s signature, which every
     /// caller of the plain `Render` would otherwise have to carry.
     std::vector<float> _lastDepth;
+    std::vector<float> _lastMotion;
+
+    /// The world-to-clip the previous frame was rendered with, and whether
+    /// there was one. Motion is measured against this.
+    float _previousWorldToClip[16] = {1, 0, 0, 0, 0, 1, 0, 0,
+                                      0, 0, 1, 0, 0, 0, 0, 1};
+    bool _hasPreviousClip = false;
 
     /// The last frame's history-reset decision; see InvalidateFor.
     bool _historyReset = false;
@@ -570,7 +584,9 @@ class PathTracer {
         /// Normalised device depth of the primary hit, and its landing place on
         /// the host.
         VulkanBuffer guideDepth;
+        VulkanBuffer guideMotion;
         VulkanBuffer guideReadback;
+        VulkanBuffer motionReadback;
         VulkanBuffer readback;
         VulkanBuffer rayReadback;
 

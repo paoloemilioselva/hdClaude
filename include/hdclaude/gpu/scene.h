@@ -98,6 +98,30 @@ struct MeshInstance {
     /// Visible to camera rays. Invisible instances still cast shadows unless
     /// excluded separately, matching UsdGeom's purpose semantics.
     bool visible = true;
+
+    // --- Motion ----------------------------------------------------------
+    //
+    // These are *last* on purpose. Adding a member in the middle of an
+    // aggregate silently changes what every positional initialiser means:
+    // brace elision let `{0, Transform3x4{}, 1, true}` keep compiling with
+    // its material index flowing into the first float of a transform, and
+    // thirty-seven call sites lost their materials without a diagnostic.
+    // A field appended after every existing one cannot do that.
+
+    /// Where this placement was on the previous published scene.
+    ///
+    /// Rigid only. A mesh whose *points* changed has moved in a way one
+    /// matrix cannot describe, and this does not pretend otherwise.
+    Transform3x4 previousTransform;
+    /// Whether `previousTransform` was actually supplied.
+    ///
+    /// False means this instance has no history, and the renderer then
+    /// treats its previous placement as its current one and reports no
+    /// motion. That is the only safe default: an unset transform is the
+    /// identity, and believing it would say every instance had just flown
+    /// in from the origin. A caller that knows nothing of motion gets
+    /// none, rather than nonsense.
+    bool hasPreviousTransform = false;
 };
 
 /// What kind of emitter a Light is. Mirrors `path_state.glsl`.

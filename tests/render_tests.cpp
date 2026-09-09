@@ -3109,6 +3109,64 @@ int main()
                 tracer.EndFrame(tracer.BeginFrame(description));
             CHECK(switched.accumulationReset);
 
+            // --- Motion vectors ---------------------------------------------
+            //
+            // A static scene seen from a camera that has not moved has moved
+            // by nothing, and that is worth asserting rather than assuming:
+            // the previous placement of an instance defaults to the identity,
+            // and a renderer that believed it would report every surface as
+            // having flown in from the origin.
+            {
+                hdclaude::FrameDescription still = description;
+                // Its own extents: an earlier case above resized this
+                // description, and a test that inherits a size it did not
+                // choose is measuring something it did not mean to.
+                still.width = kWidth;
+                still.height = kHeight;
+                still.camera = LookDownZWithClip(4.0f, 0.1f, 100.0f);
+                still.settings.resetAccumulation = true;
+                (void)tracer.EndFrame(tracer.BeginFrame(still));
+                const hdclaude::FrameResult second =
+                    tracer.EndFrame(tracer.BeginFrame(still));
+                CHECK_EQ(second.motion.size(),
+                         std::size_t(kWidth) * kHeight * 2);
+                double worstStill = 0.0;
+                for (const float value : second.motion) {
+                    worstStill = std::max(worstStill, std::abs(double(value)));
+                }
+                CHECK(worstStill < 1e-3);
+
+                // A camera that steps sideways moves a static surface across
+                // the film by an amount trigonometry gives without rendering
+                // anything: the quad sits at z = 0, four units ahead, and the
+                // half-width of the frame there is 4 * tanHalfFov.
+                const float step = 0.1f;
+                hdclaude::FrameDescription moved = still;
+                moved.camera = LookDownZWithClip(4.0f, 0.1f, 100.0f);
+                moved.camera.cameraToWorld[12] = step;
+                // The view translation enters the clip matrix's last column.
+                moved.camera.worldToClip[12] -=
+                    step * moved.camera.worldToClip[0];
+                const hdclaude::FrameResult after =
+                    tracer.EndFrame(tracer.BeginFrame(moved));
+
+                const std::size_t centre =
+                    (static_cast<std::size_t>(kHeight / 2) * kWidth) +
+                    kWidth / 2;
+                const double halfWidth = 4.0 * 0.5;  // distance * tanHalfFov
+                const double expectedX =
+                    step / halfWidth * (kWidth * 0.5);
+                const double measuredX = after.motion[centre * 2 + 0];
+                const double measuredY = after.motion[centre * 2 + 1];
+                // The surface moves *right* on the film when the camera steps
+                // left, so the history of this pixel lies to its right.
+                CHECK(std::abs(measuredX - expectedX) < 0.05 * expectedX + 0.05);
+                CHECK(std::abs(measuredY) < 1e-2);
+                std::printf("  motion: still %.2e, stepped %.3f px, expected "
+                            "%.3f\n",
+                            worstStill, measuredX, expectedX);
+            }
+
             // --- The frame's jitter -----------------------------------------
             //
             // A reconstruction backend is handed one sample and must be told

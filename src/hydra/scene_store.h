@@ -100,7 +100,10 @@ class HdClaudeSceneStore {
     ///
     /// Material index 0 is always the fallback, so a mesh with no usable
     /// material still renders as something rather than being dropped.
-    hdclaude::Scene Snapshot(std::vector<hdclaude::CompiledMaterial>& materials) const;
+    /// Not const: taking a snapshot records it as the next one's past, which
+    /// is what lets an instance say where it was. A snapshot is a point in a
+    /// sequence rather than a pure view of the store.
+    hdclaude::Scene Snapshot(std::vector<hdclaude::CompiledMaterial>& materials);
 
     /// Materials that did not compile as authored, for render stats.
     std::vector<std::string> FallbackReports() const;
@@ -112,6 +115,16 @@ class HdClaudeSceneStore {
   private:
     mutable std::mutex _mutex;
     std::map<SdfPath, HdClaudeMeshEntry> _meshes;
+
+    /// Where each mesh's instances were on the previous snapshot.
+    ///
+    /// Kept here rather than on the entry because it is a property of the
+    /// *sequence of snapshots* rather than of a mesh: an rprim republishes
+    /// whenever anything about it changes and has no idea which publication is
+    /// which, while the store sees them in order and is the only thing that
+    /// does. A mesh absent from this map has no history and is reported as
+    /// having none, which the renderer turns into no motion.
+    std::map<SdfPath, std::vector<hdclaude::Transform3x4>> _previousTransforms;
     std::map<SdfPath, HdClaudeMaterialEntry> _materials;
     std::map<SdfPath, HdClaudeLightEntry> _lights;
     hdclaude::CompiledMaterial _fallback;
