@@ -6121,3 +6121,41 @@ unreliable, which is to say it would destroy the instrument that found all of
 this. The kernel and its wiring are described in the entries above in enough
 detail to rebuild in an afternoon; what is worth more than the code is knowing
 why it could not go in.
+
+---
+
+## 2026-09-09 -- The render purpose, and a profile that measured the wrong scene
+
+`usdrecord` renders the `default` purpose unless told otherwise, and a
+production asset puts its real geometry under `purpose="render"` while keeping a
+cheap stand-in under `purpose="proxy"`. The default is therefore not a subset of
+the right answer; it is the wrong half of the stage.
+
+ALab's `lab_structure01` shows the size of the mistake. Thirty-six of its meshes
+and its single `PointInstancer` are render purpose; two meshes are proxy.
+Rendered as `usdrecord` defaults:
+
+    instances    25      triangles    304,698      wall  47.5 s
+
+and with `--purposes render`:
+
+    instances  2,074     triangles 87,749,024      wall 170.4 s
+
+The first render succeeded, took forty-seven seconds, wrote an image, and was of
+almost nothing. That is the failure worth guarding against: nothing errors,
+nothing warns, and the picture looks like a picture. Every number taken from it
+-- the ray throughput, the memory peak, the split timings -- described a scene
+nobody asked about, and was wrong by two orders of magnitude.
+
+So `render_claude.bat` now passes `--purposes render` for every caller, beside
+the two flags that were already always-on for the same class of reason, and the
+gallery's per-scene `Purposes` field is gone because nothing needs to remember
+it any more. Checked rather than assumed: of the eleven gallery stages only
+`collectiveproject001` has a render/proxy split at all and it already requested
+render, so the change moves no image, and the chess set and Collective Project
+both re-render at rms 0.
+
+This belongs with hdClaude's standing refusal to substitute something plausible
+for what a scene authored. Rendering the proxy while the stage asks for render
+geometry is that same error wearing a different hat -- except that here the
+input is perfectly valid and the renderer is choosing the wrong half of it.

@@ -374,7 +374,9 @@ foreach ($item in $selected) {
     # passing --colorCorrectionMode disabled itself, so every caller gets it
     # rather than only this one.
     $arguments = @('--imageWidth', [string]$imageWidth)
-    if ($item.Purposes) { $arguments += @('--purposes', $item.Purposes) }
+    # No --purposes here: render_claude.bat requests the render purpose for
+    # every caller, because a stage's real geometry lives there and the
+    # default purpose quietly renders the proxy instead.
     $arguments += @('--camera', $item.Camera, $scenePath, $linearPath)
 
     Write-Host "Rendering $($item.Title)..."

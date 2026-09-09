@@ -5,6 +5,18 @@ REM Render with the hdClaude delegate. Accepts normal usdrecord arguments.
 REM Camera lighting is always disabled so authored or fallback lighting is what
 REM gets tested -- a default headlight would mask every lighting defect.
 REM
+REM The render purpose is always requested, and this is not a preference. A
+REM production asset puts its real geometry under purpose="render" and keeps a
+REM cheap stand-in under purpose="proxy", and usdrecord renders the "default"
+REM purpose unless told otherwise -- so the default is not a subset of the right
+REM answer, it is the wrong half of the stage. ALab's lab_structure01 has 36
+REM render meshes and a 1636-instance PointInstancer against 2 proxy meshes:
+REM without this flag it reports 25 instances and 304,698 triangles, with it
+REM 2,074 and 87,749,024. The first renders in 47 seconds, succeeds, and is a
+REM picture of almost nothing, which is the failure worth guarding against --
+REM nothing errors and the image looks like an image. A measurement taken
+REM without it describes a different scene by two orders of magnitude.
+REM
 REM Colour correction is always disabled for the same class of reason. The
 REM delegate's AOV is scene-linear and the output must stay that way: the sRGB
 REM transform belongs to the EXR-to-JPEG conversion, which is what
@@ -42,5 +54,5 @@ IF "%~1"=="" (
   EXIT /B 2
 )
 
-CALL usdrecord --renderer "Claude GPU Path Tracer" --disableCameraLight --colorCorrectionMode disabled %*
+CALL usdrecord --renderer "Claude GPU Path Tracer" --disableCameraLight --colorCorrectionMode disabled --purposes render %*
 EXIT /B %ERRORLEVEL%
