@@ -849,6 +849,47 @@ RenderCamera LookDownZ(float distance)
     return camera;
 }
 
+/// A camera at `distance` down +Z, with a projection the depth guide can be
+/// checked against in closed form.
+///
+/// `worldToClip` is what the depth AOV is defined in terms of, so a test that
+/// leaves it at the identity is not testing depth at all. This builds the same
+/// composition the Hydra layer does -- the view matrix times a standard
+/// perspective projection with a [-1, 1] clip range -- so the depth of a plane
+/// at a known distance can be predicted rather than merely eyeballed.
+RenderCamera LookDownZWithClip(float distance, float nearPlane, float farPlane)
+{
+    RenderCamera camera = LookDownZ(distance);
+
+    // Column-major, as GLSL reads it. The view matrix is the inverse of a pure
+    // translation down +Z, so it translates by -distance; the projection is the
+    // textbook one, negating and scaling z into [-1, 1].
+    const float f = 1.0f / camera.tanHalfFov;
+    const float range = nearPlane - farPlane;
+    float clip[16] = {0};
+    clip[0] = f / camera.aspect;             // column 0, row 0
+    clip[5] = f;                             // column 1, row 1
+    clip[10] = (farPlane + nearPlane) / range;
+    clip[11] = -1.0f;                        // column 2, row 3: w = -z_view
+    clip[14] = 2.0f * farPlane * nearPlane / range;
+    // The view translation folded in: z_view = z_world - distance.
+    clip[14] += clip[10] * -distance;
+    clip[15] = distance;                     // w picks up -(z - distance)
+    std::memcpy(camera.worldToClip, clip, sizeof(clip));
+    return camera;
+}
+
+/// The depth the guide should report for a plane at `z` in world space.
+double ExpectedNdcDepth(float z, float distance, float nearPlane, float farPlane)
+{
+    const double viewZ = static_cast<double>(z) - distance;   // negative, ahead
+    const double range = nearPlane - farPlane;
+    const double clipZ =
+        (farPlane + nearPlane) / range * viewZ + 2.0 * farPlane * nearPlane / range;
+    const double clipW = -viewZ;
+    return (clipZ / clipW + 1.0) * 0.5;
+}
+
 struct Pixel { float r, g, b; };
 
 Pixel At(const std::vector<float>& image, float u, float v)
@@ -3067,6 +3108,51 @@ int main()
             hdclaude::FrameResult switched =
                 tracer.EndFrame(tracer.BeginFrame(description));
             CHECK(switched.accumulationReset);
+
+            // --- The depth guide -------------------------------------------
+            //
+            // Depth is checkable in closed form, which is the only kind of
+            // check worth having for it: a plane at a known distance, seen
+            // through a known projection, has one normalised device depth and
+            // it can be computed rather than compared against a previous run.
+            {
+                hdclaude::FrameDescription depthFrame = description;
+                depthFrame.width = kWidth;
+                depthFrame.height = kHeight;
+                depthFrame.camera = LookDownZWithClip(4.0f, 0.1f, 100.0f);
+                depthFrame.settings.resetAccumulation = true;
+                depthFrame.settings.firstSample = 0;
+                const hdclaude::FrameResult depthResult =
+                    tracer.EndFrame(tracer.BeginFrame(depthFrame));
+                CHECK(depthResult.Valid());
+                CHECK_EQ(depthResult.depth.size(),
+                         std::size_t(kWidth) * kHeight);
+
+                // The quad sits at z = 0 and fills the middle of the frame.
+                const std::size_t centre =
+                    (static_cast<std::size_t>(kHeight / 2) * kWidth) + kWidth / 2;
+                const double expected = ExpectedNdcDepth(0.0f, 4.0f, 0.1f, 100.0f);
+                const double measured = depthResult.depth[centre];
+                CHECK(std::abs(measured - expected) < 1e-4);
+
+                // A corner sees nothing, and a ray that hit nothing is at the
+                // far plane rather than at zero: reporting zero there would put
+                // the background in front of everything.
+                CHECK_EQ(depthResult.depth[0], 1.0f);
+
+                // Every value is inside the range the AOV is defined over.
+                double lowest = 1.0;
+                double highest = 0.0;
+                for (const float value : depthResult.depth) {
+                    CHECK(value >= 0.0f && value <= 1.0f);
+                    lowest = std::min(lowest, double(value));
+                    highest = std::max(highest, double(value));
+                }
+                CHECK(lowest < 1.0);   // something was hit
+                CHECK_EQ(highest, 1.0);  // and something was not
+                std::printf("  depth: centre %.6f, expected %.6f, range %.3f..%.3f\n",
+                            measured, expected, lowest, highest);
+            }
 
             // Nor a camera that moved, which this decision did not previously
             // include. An accumulated film is an average of one integral and a

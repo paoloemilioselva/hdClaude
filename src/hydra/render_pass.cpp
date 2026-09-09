@@ -70,6 +70,7 @@ void HdClaudeRenderPass::_Execute(
     // calls back.
     HdClaudeRenderBuffer* colorBuffer = nullptr;
     const HdRenderPassAovBinding* colorBinding = nullptr;
+    HdClaudeRenderBuffer* depthBuffer = nullptr;
     const HdRenderPassAovBindingVector& bindings =
         renderPassState->GetAovBindings();
     for (const HdRenderPassAovBinding& binding : bindings) {
@@ -81,6 +82,8 @@ void HdClaudeRenderPass::_Execute(
         if (binding.aovName == HdAovTokens->color) {
             colorBuffer = buffer;
             colorBinding = &binding;
+        } else if (binding.aovName == HdAovTokens->depth) {
+            depthBuffer = buffer;
         }
     }
 
@@ -445,6 +448,12 @@ void HdClaudeRenderPass::_Execute(
     }
 
     colorBuffer->Write(image);
+    // Depth only when a host asked for it, and untouched on the way: it is a
+    // geometric measurement rather than a picture, so no exposure and no
+    // transfer function apply to it.
+    if (depthBuffer != nullptr && !frame.depth.empty()) {
+        depthBuffer->WriteScalar(frame.depth);
+    }
     // Taken from the tracer rather than accumulated here: it counts them on
     // the device and reads them back once, and a total kept on this side would
     // be a second answer to the same question.

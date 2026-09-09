@@ -32,6 +32,17 @@ struct RenderCamera {
     float tanHalfFov = 0.414f;  // ~45 degrees vertical
     float aspect = 1.0f;
 
+    /// World to clip, column-major for GLSL: the host's view matrix times its
+    /// own projection, carried rather than re-derived.
+    ///
+    /// The depth AOV is normalised device depth, and *which* normalisation is
+    /// the right one is a question about the host's projection rather than
+    /// about this renderer -- its near and far, whether its clip range is
+    /// [-1, 1] or [0, 1], whether it is reversed. Rebuilding a projection here
+    /// from a field of view would be inventing an answer; hdEmbree transforms
+    /// the hit by the matrices it was handed and so does this.
+    float worldToClip[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+
     /// Exact equality, deliberately.
     ///
     /// This decides whether an accumulated film is still an average of the
@@ -44,7 +55,8 @@ struct RenderCamera {
     bool operator==(const RenderCamera& other) const
     {
         for (int i = 0; i < 16; ++i) {
-            if (cameraToWorld[i] != other.cameraToWorld[i]) {
+            if (cameraToWorld[i] != other.cameraToWorld[i] ||
+                worldToClip[i] != other.worldToClip[i]) {
                 return false;
             }
         }
@@ -216,6 +228,11 @@ struct FrameResult {
     /// Linear RGBA, row-major, row 0 at the *bottom* -- Hydra's render-buffer
     /// convention, so the AOV write is a straight copy.
     std::vector<float> image;
+
+    /// Normalised device depth of the primary hit, one float per pixel, in the
+    /// same row order as the image. 1.0 where a ray hit nothing, which is the
+    /// clear value Hydra gives a depth AOV.
+    std::vector<float> depth;
 
     bool Valid() const { return width != 0 && height != 0 && !image.empty(); }
 };
@@ -450,6 +467,7 @@ class PathTracer {
     ComputePipeline _environment;
     ComputePipeline _shadow;
     ComputePipeline _film;
+    ComputePipeline _guides;
     std::vector<ComputePipeline> _shade;
 
     // Path state, sized to the current resolution.
@@ -478,6 +496,11 @@ class PathTracer {
     KernelProfile _kernelProfile;
     VkQueryPool _timestampPool = VK_NULL_HANDLE;
     bool _profileKernels = false;
+
+    /// The depth guide the last `Trace` produced. A second return value, kept
+    /// here rather than threaded through `Trace`'s signature, which every
+    /// caller of the plain `Render` would otherwise have to carry.
+    std::vector<float> _lastDepth;
 
     /// The last frame's history-reset decision; see InvalidateFor.
     bool _historyReset = false;
@@ -527,6 +550,10 @@ class PathTracer {
         /// exactly once.
         VulkanBuffer heroOnly;
         VulkanBuffer hits, counters, activeQueue, nextActiveQueue, shadowRays;
+        /// Normalised device depth of the primary hit, and its landing place on
+        /// the host.
+        VulkanBuffer guideDepth;
+        VulkanBuffer guideReadback;
         VulkanBuffer readback;
         VulkanBuffer rayReadback;
 
@@ -545,6 +572,7 @@ class PathTracer {
         VkDescriptorSet environmentSet = VK_NULL_HANDLE;
         VkDescriptorSet shadowSet = VK_NULL_HANDLE;
         VkDescriptorSet filmSet = VK_NULL_HANDLE;
+        VkDescriptorSet guidesSet = VK_NULL_HANDLE;
         std::vector<VkDescriptorSet> shadeSets;
 
         /// The resource generation these sets were written against. Zero means

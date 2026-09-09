@@ -65,6 +65,11 @@ layout(set = 0, binding = 0, scalar) uniform FrameBlock {
     float environmentTemperatureScale; // equates its luminance with D65's
     mat4  domeWorldToLight;     // takes a world direction into the dome's frame
     mat4  domeLightToWorld;     // and back, for a direction sampled in the map
+    // World to clip, the host's own view times its own projection. The depth
+    // guide is normalised device depth, and which normalisation is the right
+    // one is a question about the host's projection rather than about this
+    // renderer, so it is carried rather than rebuilt from a field of view.
+    mat4  worldToClip;
 } frame;
 
 // --- Path state -------------------------------------------------------------
@@ -134,6 +139,14 @@ layout(set = 0, binding = 25, scalar) buffer PathMedium { vec4 values[]; } pathM
 //   0  the packet is intact, all four lanes live
 //   1  hero only, and already compensated
 layout(set = 0, binding = 26, scalar) buffer PathHeroOnly { uint values[]; } pathHeroOnly;
+
+// Normalised device depth of the primary hit, one float per pixel.
+//
+// A guide rather than an accumulator: every sample writes it and the last one
+// wins, which is deterministic because samples run in order. Averaging depth
+// across jittered samples would give, at a silhouette, a value lying on neither
+// surface -- worse for anything consuming it than either surface alone.
+layout(set = 0, binding = 27, scalar) buffer GuideDepth { float values[]; } guideDepth;
 
 
 

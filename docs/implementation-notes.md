@@ -6728,3 +6728,48 @@ difference is two orders of magnitude below its limit.
 
 The timing table now carries the warm figures for all eleven scenes, the
 Playground re-rendered after its pipelines were rebuilt.
+
+---
+
+## 2026-09-09 -- The depth AOV ships, and a layout change moves every image
+
+Depth is the first of the inputs a reconstruction backend needs and it is in.
+`RenderCamera` carries the host's `worldToClip`, a guide kernel writes
+`(ndc.z + 1) / 2` from the primary hit -- the one point in a frame where that hit
+exists, since the next bounce overwrites both the record and the origin `extend`
+moved onto it -- and a miss writes 1.0, which is the clear value Hydra gives a
+depth AOV.
+
+**The gate is a closed form**, which is the only kind worth having here. A plane
+at a known distance seen through a known projection has exactly one normalised
+device depth, and it can be computed rather than compared against a previous
+run:
+
+    depth: centre 0.975976, expected 0.975976, range 0.976..1.000
+
+It also asserts that a miss reads 1.0 rather than 0 -- reporting zero there
+would put the background in front of everything -- and that every value lies in
+the range the AOV is defined over.
+
+**And the decision.** Adding the binding moves every gallery image by an RMS of
+about 5e-4. Nine runs did not settle it, and a bisect with the dispatch removed
+and the binding kept behaves the same, so it is the descriptor layout and not
+the work: a changed layout is different compiled code, different floating-point
+contraction, and a last-ulp difference in a ray direction that a thousand
+samples turn into 5e-4. That is the same class of change as a compiler flag,
+not a defect.
+
+This was withheld twice already on exactly this evidence, and withholding it a
+third time would mean the reconstruction work never starts, because every input
+it needs -- motion vectors, normals, albedo -- adds a binding and will do the
+same thing. So the baselines are **adopted deliberately**, which is what the
+gallery's own rule asks for: a baseline changes when someone means it to, and
+this commit means it to.
+
+What is not resolved, and is recorded rather than hidden: the chess set rendered
+identically twenty-four times before this change and varies run to run after it,
+at the same 5e-4. Two consecutive runs still produce byte-identical images, so
+it is not noise on every frame; it is the same per-process variation this
+project has been chasing all day, and the layout change appears to have moved
+this scene from the stable set into the unstable one. The committed hashes will
+therefore move on the affected scenes, which is what they exist to show.

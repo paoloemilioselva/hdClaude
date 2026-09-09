@@ -80,6 +80,7 @@ std::vector<BindingDescription> KernelBindings()
     bindings.push_back(storage(21, "pathScatterPdf"));
     bindings.push_back(storage(25, "pathMedium"));
     bindings.push_back(storage(26, "pathHeroOnly"));
+    bindings.push_back(storage(27, "guideDepth"));
     bindings.push_back(storage(22, "environmentDistribution"));
     bindings.push_back(storage(23, "pathWavelengths"));
     bindings.push_back(storage(24, "spectralTables"));
@@ -139,6 +140,8 @@ struct FrameBlock {
     float environmentTemperatureScale;
     float domeWorldToLight[16];
     float domeLightToWorld[16];
+    /// World to clip, for the depth guide. See RenderCamera::worldToClip.
+    float worldToClip[16];
 };
 
 /// Mirrors the indirect command slots in path_state.glsl. Each slot is a
@@ -346,6 +349,7 @@ PathTracer::PathTracer(const VulkanContext& context, VulkanAllocator& allocator,
     _environment = build("environment.comp.glsl", sizeof(EnvironmentPush));
     _shadow = build("shadow.comp.glsl", 0);
     _film = build("film.comp.glsl", 0);
+    _guides = build("guides.comp.glsl", 0);
 
     _accelerator = std::make_unique<SceneAccelerator>(context, allocator);
 
@@ -855,6 +859,8 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
         // its hero wavelength.
         VulkanBuffer heroOnly = MakeStorage(_allocator, paths * 4, "path.heroOnly");
         VulkanBuffer hits = MakeStorage(_allocator, paths * 16, "path.hits");
+        VulkanBuffer guideDepth =
+            MakeStorage(_allocator, paths * 4, "guide.depth");
         // Eight uints: activeCount, nextActiveCount, shadowCount, a pad, the two
         // ray accumulators, and the two hashes -- over what the rays were and over
         // what they hit. Everything past byte 16 is per call rather than per
@@ -885,6 +891,13 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
         uniformDescription.debugName = "frame";
         VulkanBuffer frameUniforms(_allocator, uniformDescription);
 
+        BufferDescription guideReadbackDescription;
+        guideReadbackDescription.size = paths * 4;
+        guideReadbackDescription.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        guideReadbackDescription.domain = BufferDomain::HostReadback;
+        guideReadbackDescription.debugName = "guide.readback";
+        VulkanBuffer guideReadback(_allocator, guideReadbackDescription);
+
         BufferDescription readbackDescription;
         readbackDescription.size = paths * 16;
         readbackDescription.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -903,6 +916,7 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
         slot.medium = std::move(medium);
         slot.heroOnly = std::move(heroOnly);
         slot.hits = std::move(hits);
+        slot.guideDepth = std::move(guideDepth);
         slot.counters = std::move(counters);
         slot.rayReadback = std::move(rayReadback);
         slot.activeQueue = std::move(activeQueue);
@@ -911,6 +925,7 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
         slot.materialQueue = std::move(materialQueue);
         slot.frameUniforms = std::move(frameUniforms);
         slot.readback = std::move(readback);
+        slot.guideReadback = std::move(guideReadback);
         }
 
     // The film is shared, so it is built once outside the loop.
@@ -972,6 +987,7 @@ void PathTracer::WriteDescriptors(VkDescriptorSet set,
     pipeline.WriteBuffer(set, 21, slot.scatterPdf);
     pipeline.WriteBuffer(set, 25, slot.medium);
     pipeline.WriteBuffer(set, 26, slot.heroOnly);
+    pipeline.WriteBuffer(set, 27, slot.guideDepth);
     pipeline.WriteBuffer(set, 22, _environmentDistribution);
     pipeline.WriteBuffer(set, 23, slot.wavelengths);
     pipeline.WriteBuffer(set, 24, _spectralTables);
@@ -1071,6 +1087,7 @@ FrameHandle PathTracer::BeginFrame(const FrameDescription& description)
     _pendingFrame.historyReset = _historyReset;
     _pendingFrame.image =
         Trace(description.width, description.height, description.camera, settings);
+    _pendingFrame.depth = std::move(_lastDepth);
 
     return handle;
 }
@@ -1148,6 +1165,7 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
         _environment.ResetSets();
         _shadow.ResetSets();
         _film.ResetSets();
+        _guides.ResetSets();
         for (ComputePipeline& pipeline : _shade) {
             pipeline.ResetSets();
         }
@@ -1166,6 +1184,7 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
             other.environmentSet = _environment.AllocateSet();
             other.shadowSet = _shadow.AllocateSet();
             other.filmSet = _film.AllocateSet();
+            other.guidesSet = _guides.AllocateSet();
             other.shadeSets.reserve(_shade.size());
             for (ComputePipeline& pipeline : _shade) {
                 other.shadeSets.push_back(pipeline.AllocateSet());
@@ -1178,6 +1197,7 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
             WriteDescriptors(other.environmentSet, _environment, other);
             WriteDescriptors(other.shadowSet, _shadow, other);
             WriteDescriptors(other.filmSet, _film, other);
+            WriteDescriptors(other.guidesSet, _guides, other);
             for (std::size_t i = 0; i < _shade.size(); ++i) {
                 // Each material's set carries its own textures, which is what
                 // lets the generator number a material's samplers from zero.
@@ -1195,6 +1215,7 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     const VkDescriptorSet environmentSet = slot.environmentSet;
     const VkDescriptorSet shadowSet = slot.shadowSet;
     const VkDescriptorSet filmSet = slot.filmSet;
+    const VkDescriptorSet guidesSet = slot.guidesSet;
     const std::vector<VkDescriptorSet>& shadeSets = slot.shadeSets;
 
     // Clear the film once; samples accumulate into it. A progressive caller
@@ -1240,6 +1261,7 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
                 sizeof(block.domeWorldToLight));
     std::memcpy(block.domeLightToWorld, _domeLightToWorld,
                 sizeof(block.domeLightToWorld));
+    std::memcpy(block.worldToClip, camera.worldToClip, sizeof(block.worldToClip));
 
     const std::uint32_t pathGroups = (paths + 63) / 64;
     const std::uint32_t pixelGroupsX = (width + 7) / 8;
@@ -1405,6 +1427,16 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
                 Barrier(command);
                 stamp(base + 3);
 
+                // The guides, from the primary hit and only from it. This is
+                // the one point in a frame where the first bounce's hit
+                // exists: the next bounce overwrites the record and the origin
+                // it left behind.
+                if (bounce == 0) {
+                    _guides.Dispatch(command, guidesSet, pixelGroupsX,
+                                     pixelGroupsY);
+                    Barrier(command);
+                }
+
                 // Group the hits by material: count, prefix-sum, scatter.
                 stamp(base + 4);
                 _materialSort.DispatchIndirect(
@@ -1526,6 +1558,11 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
         // readback for a whole call, after every dispatch it describes has
         // finished, which is the only point a count of rays can be taken
         // without stalling the frame that is producing it.
+        VkBufferCopy guides{};
+        guides.size = static_cast<VkDeviceSize>(paths) * 4;
+        vkCmdCopyBuffer(command, slot.guideDepth.Handle(),
+                        slot.guideReadback.Handle(), 1, &guides);
+
         VkBufferCopy rays{};
         rays.srcOffset = 16;
         rays.size = 16;
@@ -1541,6 +1578,10 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     // answer: a render is the whole sequence, not a bag of them.
     _hitHash = _hitHash * 1099511628211ull + rayCounts[2];
     _rayHash = _rayHash * 1099511628211ull + rayCounts[3];
+
+    _lastDepth.assign(static_cast<std::size_t>(paths), 1.0f);
+    std::memcpy(_lastDepth.data(), slot.guideReadback.MappedData(),
+                _lastDepth.size() * sizeof(float));
 
     std::vector<float> image(static_cast<std::size_t>(paths) * 4);
     std::memcpy(image.data(), slot.readback.MappedData(), image.size() * sizeof(float));

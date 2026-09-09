@@ -42,6 +42,14 @@ class HdClaudeRenderBuffer final : public HdRenderBuffer {
     /// Fill from the renderer's linear RGBA float output.
     void Write(const std::vector<float>& linearRgba);
 
+    /// One value per pixel, for a single-channel AOV such as depth.
+    ///
+    /// Separate from `Write` rather than a stride on it, because the two differ
+    /// in what they are given and not merely in how they walk it: expanding a
+    /// depth buffer to RGBA to reuse the other path would allocate four times
+    /// the data to throw three quarters of it away.
+    void WriteScalar(const std::vector<float>& values);
+
     void Clear(const float* value);
 
   protected:

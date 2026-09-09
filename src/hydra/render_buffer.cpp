@@ -93,6 +93,41 @@ void HdClaudeRenderBuffer::Clear(const float* value)
     }
 }
 
+void HdClaudeRenderBuffer::WriteScalar(const std::vector<float>& values)
+{
+    const size_t pixels = static_cast<size_t>(_width) * _height;
+    if (pixels == 0 || values.size() < pixels) {
+        return;
+    }
+    const HdFormat component = HdGetComponentFormat(_format);
+    const size_t pixelSize = HdDataSizeOfFormat(_format);
+
+    for (size_t i = 0; i < pixels; ++i) {
+        char* destination = _data.data() + i * pixelSize;
+        const float value = values[i];
+        switch (component) {
+            case HdFormatFloat32:
+                std::memcpy(destination, &value, sizeof(float));
+                break;
+            case HdFormatFloat16: {
+                const GfHalf half(value);
+                std::memcpy(destination, &half, sizeof(GfHalf));
+                break;
+            }
+            case HdFormatUNorm8: {
+                const auto quantised = static_cast<unsigned char>(
+                    std::clamp(value, 0.0f, 1.0f) * 255.0f + 0.5f);
+                std::memcpy(destination, &quantised, sizeof(unsigned char));
+                break;
+            }
+            default:
+                // A format this does not know how to fill is left at its clear
+                // value rather than filled with something plausible.
+                return;
+        }
+    }
+}
+
 void HdClaudeRenderBuffer::Write(const std::vector<float>& linearRgba)
 {
     const size_t pixels = static_cast<size_t>(_width) * _height;

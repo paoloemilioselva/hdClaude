@@ -23,6 +23,17 @@ HdClaudeCameraResult HdClaudeMakeRenderCamera(const GfMatrix4d& worldToView,
         }
     }
 
+    // World to clip, in the same transposition and for the same reason. USD
+    // composes row-vector transforms left to right, so a world point reaches
+    // clip space as p * worldToView * projection.
+    const GfMatrix4d worldToClip = worldToView * projection;
+    for (int column = 0; column < 4; ++column) {
+        for (int row = 0; row < 4; ++row) {
+            result.camera.worldToClip[column * 4 + row] =
+                static_cast<float>(worldToClip[column][row]);
+        }
+    }
+
     // P[3][3] is 0 for a perspective projection and 1 for an orthographic one.
     result.orthographic = std::abs(projection[3][3] - 1.0) < 1e-6;
 
