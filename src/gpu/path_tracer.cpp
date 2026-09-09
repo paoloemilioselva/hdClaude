@@ -1015,6 +1015,13 @@ bool PathTracer::InvalidateFor(const FrameDescription& description)
         _hasPreviousFrame && description.mode != _previousMode;
     const bool sceneChanged =
         _hasPreviousFrame && description.sceneRevision != _previousSceneRevision;
+    // The camera, which this decision did not previously include and should
+    // have. An accumulated film is an average of one integral, and a camera
+    // that has moved makes it an average of two. A caller that moves the camera
+    // and forgets to ask for a reset was the one case the asymmetry this
+    // function exists for did not actually cover.
+    const bool cameraMoved =
+        _hasPreviousFrame && description.camera != _previousCamera;
 
     // The resize is the only one with work attached. The others invalidate an
     // accumulation that is about to be cleared anyway, so they need no more
@@ -1025,10 +1032,18 @@ bool PathTracer::InvalidateFor(const FrameDescription& description)
 
     _previousMode = description.mode;
     _previousSceneRevision = description.sceneRevision;
+    _previousCamera = description.camera;
     _hasPreviousFrame = true;
 
-    return description.settings.resetAccumulation || resized || modeChanged ||
-           sceneChanged;
+    // What a reconstruction backend must discard its history for, which is not
+    // the same set. A camera that merely *moved* is the case reprojection
+    // exists to handle: the history is still of this scene and motion vectors
+    // say where it went. A resize, a mode switch or a changed scene leaves
+    // nothing to reproject from.
+    _historyReset = description.settings.resetAccumulation || resized ||
+                    modeChanged || sceneChanged;
+
+    return _historyReset || cameraMoved;
 }
 
 FrameHandle PathTracer::BeginFrame(const FrameDescription& description)
@@ -1049,6 +1064,7 @@ FrameHandle PathTracer::BeginFrame(const FrameDescription& description)
     _pendingFrame.firstSample = settings.firstSample;
     _pendingFrame.sampleCount = settings.samplesPerPixel;
     _pendingFrame.accumulationReset = settings.resetAccumulation;
+    _pendingFrame.historyReset = _historyReset;
     _pendingFrame.image =
         Trace(description.width, description.height, description.camera, settings);
 

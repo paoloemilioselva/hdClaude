@@ -31,6 +31,26 @@ struct RenderCamera {
     float cameraToWorld[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     float tanHalfFov = 0.414f;  // ~45 degrees vertical
     float aspect = 1.0f;
+
+    /// Exact equality, deliberately.
+    ///
+    /// This decides whether an accumulated film is still an average of the
+    /// right thing, and there is no tolerance at which a camera has moved "not
+    /// enough to matter": a hundredth of a pixel of parallax is a different
+    /// integral, and accepting it would keep averaging two of them. A camera
+    /// that has not moved produces bit-identical numbers from the same source
+    /// data, so equality is the honest test and a comparison against an epsilon
+    /// would be inventing a threshold nothing asked for.
+    bool operator==(const RenderCamera& other) const
+    {
+        for (int i = 0; i < 16; ++i) {
+            if (cameraToWorld[i] != other.cameraToWorld[i]) {
+                return false;
+            }
+        }
+        return tanHalfFov == other.tanHalfFov && aspect == other.aspect;
+    }
+    bool operator!=(const RenderCamera& other) const { return !(*this == other); }
 };
 
 /// Lighting and sampling settings.
@@ -182,6 +202,16 @@ struct FrameResult {
     /// caller asked for it or the renderer decided it. A caller that tracks its
     /// own sample count needs to know which happened.
     bool accumulationReset = false;
+
+    /// True when a temporal reconstructor must discard its history rather than
+    /// reproject it.
+    ///
+    /// A subset of `accumulationReset`, and deliberately so. A camera that
+    /// moved restarts the reference accumulation -- the film was an average of
+    /// a different integral -- but it does *not* invalidate a reconstructor's
+    /// history, which is what motion vectors exist to carry forward. A resize,
+    /// a mode switch or a changed scene leaves nothing to carry.
+    bool historyReset = false;
 
     /// Linear RGBA, row-major, row 0 at the *bottom* -- Hydra's render-buffer
     /// convention, so the AOV write is a straight copy.
@@ -404,6 +434,9 @@ class PathTracer {
     std::uint64_t _frameIndex = 0;
     bool _hasPreviousFrame = false;
     RenderMode _previousMode = RenderMode::Reference;
+    RenderCamera _previousCamera;
+    /// The last frame's history-reset decision; see InvalidateFor.
+    bool _historyReset = false;
     std::uint64_t _previousSceneRevision = 0;
 
     /// How many frames may be in flight at once.

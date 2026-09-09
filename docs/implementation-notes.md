@@ -5858,3 +5858,43 @@ and stated exactly. The member is carried now, and the header says why anything
 added beside it must be too. That hazard is a property of hand-written move
 operations, not of this change: the next member added there will be silently
 dropped the same way.
+
+---
+
+## 2026-09-09 -- Phase 10 begins with a hole in phase 9's decision
+
+The temporal foundation's first requirement is the one signal a reconstruction
+backend cannot work without: when to throw its history away. Building it found
+that the decision it belongs in was incomplete.
+
+`InvalidateFor` compared the extents, the mode and the scene revision, and
+**not the camera**. The function exists to make a caller's `resetAccumulation` an
+input rather than the answer -- "a caller that forgets a resize, a mode switch or
+a scene revision still gets a correct frame" -- and a caller that moved the
+camera and forgot was the one case that claim did not actually cover. An
+accumulated film is an average of one integral; a camera that has moved makes it
+an average of two, and every sample after the move is being added to the wrong
+picture.
+
+The comparison is exact, deliberately. There is no tolerance at which a camera
+has moved "not enough to matter": a hundredth of a pixel of parallax is a
+different integral. A camera that has not moved produces bit-identical numbers
+from the same source data, so equality is the honest test and an epsilon would be
+a threshold nothing asked for. The risk in that -- that the delegate recomputes
+its matrix each `Sync` with some instability and every call then resets -- is
+real and is checked rather than assumed: the chess set and the glass ball still
+accumulate across 32 progressive calls and render at rms 0 with both hashes
+unmoved, so the camera arriving from Hydra is stable to the bit.
+
+**History reset is a strict subset of accumulation reset, and the camera is what
+separates them.** A resize, a mode switch or a changed scene leaves a
+reconstructor nothing to carry forward. A camera that moved leaves it everything
+to carry forward -- that is precisely what motion vectors are for, and discarding
+history on camera motion would throw away the one case temporal reconstruction
+exists to handle. So `FrameResult` now carries both, and the gate asserts the
+difference: the moved-camera frame resets the accumulation and not the history,
+while the resized, revised and switched frames reset both.
+
+The gate also asserts that a camera which then stays put may continue, so it
+cannot pass by resetting everything -- the failure mode that would make the whole
+check vacuous.

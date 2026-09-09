@@ -3068,6 +3068,34 @@ int main()
                 tracer.EndFrame(tracer.BeginFrame(description));
             CHECK(switched.accumulationReset);
 
+            // Nor a camera that moved, which this decision did not previously
+            // include. An accumulated film is an average of one integral and a
+            // moved camera makes it an average of two, so a caller that moves
+            // the camera and forgets to say so must still be overruled.
+            description.mode = hdclaude::RenderMode::Reference;
+            (void)tracer.EndFrame(tracer.BeginFrame(description));
+            description.camera = LookDownZ(5.0f);
+            hdclaude::FrameResult moved =
+                tracer.EndFrame(tracer.BeginFrame(description));
+            CHECK(moved.accumulationReset);
+
+            // And a camera that then stays put may continue again, so the test
+            // above is not passing merely because everything resets.
+            hdclaude::FrameResult still =
+                tracer.EndFrame(tracer.BeginFrame(description));
+            CHECK(!still.accumulationReset);
+
+            // History reset is the *subset* a reconstructor must discard on,
+            // and the camera is exactly what separates the two. Moving it
+            // restarts the reference accumulation and does not invalidate a
+            // history that motion vectors can carry forward; a resize, a scene
+            // change or a mode switch leaves nothing to carry.
+            CHECK(!moved.historyReset);
+            CHECK(!still.historyReset);
+            CHECK(resized.historyReset);
+            CHECK(revised.historyReset);
+            CHECK(switched.historyReset);
+
             std::printf("  frames: %llu..%llu, resets on resize %s, scene %s, "
                         "mode %s\n",
                         static_cast<unsigned long long>(first.index),
@@ -3075,6 +3103,9 @@ int main()
                         resized.accumulationReset ? "yes" : "no",
                         revised.accumulationReset ? "yes" : "no",
                         switched.accumulationReset ? "yes" : "no");
+            std::printf("  camera move resets accumulation %s, history %s\n",
+                        moved.accumulationReset ? "yes" : "no",
+                        moved.historyReset ? "yes" : "no");
 
             // A handle whose frame has already been taken yields nothing, not
             // the frame before it. Handing back a stale image is the failure
