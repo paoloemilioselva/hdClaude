@@ -13,17 +13,18 @@
 // discovered. The NGX headers are included by src/gpu/ngx_support.cpp and
 // nowhere else.
 //
-// What is deliberately *not* here yet is the `ReconstructionBackend` interface
-// itself -- Resize, Evaluate, ResetHistory. Those describe work that phases 10
-// and 11 have not produced anything for, and declaring them now would leave
-// three unimplemented virtuals standing in for a phase that is not done. They
-// land with the native backend in phase 11, and this header grows into them.
+// The `ReconstructionBackend` interface is here now that phase 10 has produced
+// the inputs it takes. Vulkan types *do* cross this line -- images and command
+// buffers are how any GPU reconstruction is expressed, and hiding them would
+// buy nothing -- but NVIDIA types still do not.
 
 #ifndef HDCLAUDE_GPU_RECONSTRUCTION_H
 #define HDCLAUDE_GPU_RECONSTRUCTION_H
 
 #include "hdclaude/gpu/vulkan_context.h"
 
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -107,6 +108,170 @@ class NgxRequirementProvider final : public VulkanRequirementProvider {
 /// so this leaves nothing running and can be called before anything has decided
 /// to use DLSS. It is the phase 12 gate's whole subject.
 ReconstructionSupport QueryNgxSupport(const VulkanContext& context);
+
+// ---------------------------------------------------------------------------
+
+/// How hard a backend is asked to work, in the terms DLSS uses.
+///
+/// `NativeResolution` is DLAA: the render and output extents are equal and the
+/// backend is anti-aliasing rather than upscaling. It is a separate value
+/// rather than "upscaling by a factor of one" because DLSS treats it as its own
+/// quality mode with its own model.
+enum class ReconstructionQuality {
+    NativeResolution,
+    Quality,
+    Balanced,
+    Performance,
+    UltraPerformance,
+};
+
+/// What a backend says it wants to be handed for a given output size.
+///
+/// The render extents are the backend's answer, not the caller's request: DLSS
+/// chooses them per quality mode, and rendering at a size it did not ask for
+/// either wastes work or gives its model less than it expects. `valid` is false
+/// with a `reason` when it declines to answer.
+struct ReconstructionSizing {
+    std::uint32_t renderWidth = 0;
+    std::uint32_t renderHeight = 0;
+    /// The bounds a dynamic-resolution caller may move between without
+    /// rebuilding. Equal to the optimal extents when the backend offers no
+    /// range.
+    std::uint32_t minWidth = 0;
+    std::uint32_t minHeight = 0;
+    std::uint32_t maxWidth = 0;
+    std::uint32_t maxHeight = 0;
+    bool valid = false;
+    std::string reason;
+};
+
+/// The extents a backend is being built for.
+struct ReconstructionResolution {
+    std::uint32_t renderWidth = 0;
+    std::uint32_t renderHeight = 0;
+    std::uint32_t outputWidth = 0;
+    std::uint32_t outputHeight = 0;
+    ReconstructionQuality quality = ReconstructionQuality::NativeResolution;
+};
+
+/// One image a backend reads or writes. Owned by the caller throughout.
+struct ReconstructionTexture {
+    VkImage image = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+
+    bool Valid() const
+    {
+        return image != VK_NULL_HANDLE && view != VK_NULL_HANDLE &&
+               width != 0 && height != 0;
+    }
+};
+
+/// Everything a backend needs about one frame.
+///
+/// The conventions here are hdClaude's, stated once so a backend can translate
+/// rather than guess:
+///
+///   * `motion` is in **pixels of the render image**, current-to-previous, in
+///     the same axis directions as the image's own rows and columns. Adding it
+///     to a pixel's coordinate gives that surface's coordinate on the previous
+///     frame.
+///   * `jitter` is the frame's sub-pixel offset **in render pixels**, measured
+///     from the pixel centre, in the same axis directions. It is the offset
+///     `raygen` actually used, not a sequence a backend is expected to
+///     reproduce.
+///   * `depth` is normalised device depth in [0, 1], near at 0.
+///   * `color` is linear HDR, pre-exposure applied, never display-encoded.
+///
+/// Row 0 of every one of these is the same row of the same image, and that is
+/// the whole of what the axis directions have to agree on: a temporal filter
+/// reprojects within one coordinate system and never needs to know which way is
+/// up. hdClaude's row 0 is the bottom of the frame, following Hydra.
+///
+/// Image layouts are the caller's to arrange, because the caller owns the
+/// images and the command buffer and knows what wrote them last: `color`,
+/// `depth` and `motion` must be in `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL`
+/// and `output` in `VK_IMAGE_LAYOUT_GENERAL` when `Evaluate` is recorded.
+///
+/// Usage flags are the caller's too, and DLSS asks for more of `output` than
+/// it looks like it needs: `VK_IMAGE_USAGE_STORAGE_BIT`, because a read-write
+/// resource without it is refused outright, and
+/// `VK_IMAGE_USAGE_TRANSFER_DST_BIT`, because it clears the image itself
+/// before writing. The inputs need `VK_IMAGE_USAGE_SAMPLED_BIT`.
+struct ReconstructionFrame {
+    ReconstructionTexture color;
+    ReconstructionTexture depth;
+    ReconstructionTexture motion;
+    ReconstructionTexture output;
+
+    float jitterX = 0.0f;
+    float jitterY = 0.0f;
+
+    /// The exposure already folded into `color`, so a backend can divide it out
+    /// of history that was scaled differently. One means none was applied.
+    float preExposure = 1.0f;
+
+    /// This frame shares no history with the last: a scene edit, a resize, a
+    /// mode switch, or a camera cut. Distinct from `ResetHistory`, which says
+    /// the same thing outside a frame.
+    bool reset = false;
+};
+
+/// A reconstruction backend: takes a correct, noisy, low-sample frame and the
+/// guides that describe it, and produces the output image.
+///
+/// Selected at runtime (docs/dlss-integration.md 2). Nothing above this
+/// interface knows which one it holds.
+class ReconstructionBackend {
+  public:
+    virtual ~ReconstructionBackend() = default;
+
+    /// For diagnostics and stats. Stable, short, and never parsed.
+    virtual const char* Name() const = 0;
+
+    /// What to render at, for a given output size and quality.
+    virtual ReconstructionSizing QuerySizing(std::uint32_t outputWidth,
+                                             std::uint32_t outputHeight,
+                                             ReconstructionQuality) const = 0;
+
+    /// Build, or rebuild, for these extents.
+    ///
+    /// Takes a command buffer because DLSS's feature creation is *recorded*
+    /// rather than immediate -- it initialises device state and needs somewhere
+    /// to put that work. The buffer must be recording, and must be submitted
+    /// and complete before `Evaluate` is recorded against the feature. This is
+    /// a documented departure from the sketch in docs/dlss-integration.md 2,
+    /// which had `Resize` take extents alone.
+    ///
+    /// Returns false with a reason on failure, and leaves any previous state
+    /// destroyed rather than half-replaced: a backend that failed to resize
+    /// evaluates nothing rather than evaluating at the old size.
+    virtual bool Resize(VkCommandBuffer command, const ReconstructionResolution&,
+                        std::string* reason) = 0;
+
+    /// Record the reconstruction. Does nothing if `Resize` has not succeeded.
+    virtual void Evaluate(VkCommandBuffer command, const ReconstructionFrame&) = 0;
+
+    /// Discard accumulated history before the next frame.
+    virtual void ResetHistory() = 0;
+};
+
+/// The DLSS backend, or nothing.
+///
+/// Returns null with a reason when this build has no SDK, when the device
+/// cannot run DLSS, or when NGX declines to initialise -- all three of which
+/// are ordinary answers rather than errors, because an optional backend that
+/// threw would make the renderer's construction depend on the machine.
+///
+/// The returned backend holds NGX initialised for its own lifetime, which is
+/// why this is separate from `QueryNgxSupport`: that one initialises, asks, and
+/// shuts down again, and is safe to call before anything has decided to use
+/// DLSS. Only one may exist at a time, because NGX is initialised per device
+/// and not per object.
+std::unique_ptr<ReconstructionBackend> CreateNgxBackend(const VulkanContext& context,
+                                                        std::string* reason);
 
 }   // namespace hdclaude
 

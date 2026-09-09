@@ -11,7 +11,11 @@
 #include "hdclaude/gpu/vulkan_context.h"
 #include "hdclaude/gpu/vulkan_resources.h"
 
+#include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <memory>
+#include <string>
 #include <vector>
 
 using namespace hdclaude;
@@ -394,6 +398,335 @@ void TestReconstructionSupportIsAnsweredHonestly(const VulkanContext& context)
     }
 }
 
+// ---------------------------------------------------------------------------
+
+/// Half-precision, because that is the format DLSS documents for colour and
+/// motion and the test has to write and read real bytes rather than assume.
+/// Round-to-nearest is unnecessary here -- the values are exact in half -- so
+/// this is the plain bit rearrangement, and it handles zero and normals only,
+/// which is all this test produces.
+std::uint16_t ToHalf(float value)
+{
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    const std::uint32_t sign = (bits >> 16) & 0x8000u;
+    const std::int32_t exponent = static_cast<std::int32_t>((bits >> 23) & 0xFFu) - 127;
+    const std::uint32_t mantissa = bits & 0x7FFFFFu;
+    if (exponent < -14) {
+        return static_cast<std::uint16_t>(sign);
+    }
+    if (exponent > 15) {
+        return static_cast<std::uint16_t>(sign | 0x7C00u);
+    }
+    return static_cast<std::uint16_t>(
+        sign | (static_cast<std::uint32_t>(exponent + 15) << 10) | (mantissa >> 13));
+}
+
+float FromHalf(std::uint16_t half)
+{
+    const std::uint32_t sign = static_cast<std::uint32_t>(half & 0x8000u) << 16;
+    const std::uint32_t exponent = (half >> 10) & 0x1Fu;
+    const std::uint32_t mantissa = half & 0x3FFu;
+    std::uint32_t bits = 0;
+    if (exponent == 0) {
+        bits = sign;  // zero, and subnormals rounded to it
+    } else if (exponent == 31) {
+        bits = sign | 0x7F800000u | (mantissa << 13);
+    } else {
+        bits = sign | ((exponent + 112u) << 23) | (mantissa << 13);
+    }
+    float value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+/// Upload host bytes into an image and leave it in `layout`.
+void UploadImage(const VulkanContext& context, VulkanAllocator& allocator,
+                 VulkanImage& image, const void* data, VkDeviceSize size,
+                 VkImageLayout layout)
+{
+    BufferDescription staging;
+    staging.size = size;
+    staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    staging.domain = BufferDomain::HostUpload;
+    staging.debugName = "test.dlss.staging";
+    VulkanBuffer upload(allocator, staging);
+    upload.Write(data, size);
+
+    context.SubmitImmediate([&](VkCommandBuffer command) {
+        image.RecordBarrier(command, VK_IMAGE_LAYOUT_UNDEFINED,
+                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                            VK_PIPELINE_STAGE_2_COPY_BIT, 0,
+                            VK_ACCESS_2_TRANSFER_WRITE_BIT);
+
+        VkBufferImageCopy region{};
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent.width = image.Description().width;
+        region.imageExtent.height = image.Description().height;
+        region.imageExtent.depth = 1;
+        vkCmdCopyBufferToImage(command, upload.Handle(), image.Handle(),
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+        image.RecordBarrier(command, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, layout,
+                            VK_PIPELINE_STAGE_2_COPY_BIT,
+                            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                            VK_ACCESS_2_MEMORY_READ_BIT);
+    });
+}
+
+/// DLSS reconstructs a frame, and the frame it produces is the one it was
+/// given.
+///
+/// This is the first time anything actually *runs* DLSS rather than asking
+/// whether it could. It cannot assert image quality -- the model is closed and
+/// its output is not a closed form -- so it asserts the things that are true of
+/// any correct upscale and false of every way this plumbing can be wrong: the
+/// output is the target size, it is finite everywhere, and the bright half of
+/// the input is the bright half of the output. A backend that received the
+/// images in the wrong layouts, or wrote nothing, or upscaled a buffer of
+/// zeros, fails all three.
+///
+/// Skipped, loudly, on a machine or a build without DLSS. That is not a
+/// weakening: `TestReconstructionSupportIsAnsweredHonestly` already gates the
+/// answer, and this one gates the evaluation when there is one to gate.
+void TestDlssReconstructsTheFrameItIsGiven(const VulkanContext& context,
+                                           VulkanAllocator& allocator)
+{
+    std::string reason;
+    std::unique_ptr<ReconstructionBackend> backend =
+        CreateNgxBackend(context, &reason);
+    if (!backend) {
+        std::printf("  DLSS evaluate .. skipped: %s\n", reason.c_str());
+        return;
+    }
+    std::printf("  backend ........ %s\n", backend->Name());
+
+    constexpr std::uint32_t kOutputWidth = 512;
+    constexpr std::uint32_t kOutputHeight = 512;
+
+    // DLAA first, because its answer is one the specification fixes rather
+    // than one the model chooses: anti-aliasing at native resolution renders
+    // at the output extent, and a backend that answered otherwise would have
+    // the caller rendering at a size DLAA does not mean.
+    const ReconstructionSizing native = backend->QuerySizing(
+        kOutputWidth, kOutputHeight, ReconstructionQuality::NativeResolution);
+    CHECK(native.valid);
+    CHECK_EQ(native.renderWidth, kOutputWidth);
+    CHECK_EQ(native.renderHeight, kOutputHeight);
+
+    const ReconstructionSizing sizing = backend->QuerySizing(
+        kOutputWidth, kOutputHeight, ReconstructionQuality::Performance);
+    CHECK(sizing.valid);
+    CHECK(sizing.renderWidth > 0 && sizing.renderWidth < kOutputWidth);
+    CHECK(sizing.renderHeight > 0 && sizing.renderHeight < kOutputHeight);
+    std::printf("  DLSS sizing .... %ux%u -> %ux%u (performance)\n",
+                sizing.renderWidth, sizing.renderHeight, kOutputWidth,
+                kOutputHeight);
+
+    const std::uint32_t renderWidth = sizing.renderWidth;
+    const std::uint32_t renderHeight = sizing.renderHeight;
+    const std::size_t renderPixels =
+        static_cast<std::size_t>(renderWidth) * renderHeight;
+    const std::size_t outputPixels =
+        static_cast<std::size_t>(kOutputWidth) * kOutputHeight;
+
+    const auto makeImage = [&](std::uint32_t width, std::uint32_t height,
+                               VkFormat format, VkImageUsageFlags usage,
+                               const char* name) {
+        ImageDescription description;
+        description.width = width;
+        description.height = height;
+        description.format = format;
+        description.usage = usage;
+        description.debugName = name;
+        return VulkanImage(allocator, description);
+    };
+
+    constexpr VkImageUsageFlags kInputUsage =
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    VulkanImage color = makeImage(renderWidth, renderHeight,
+                                  VK_FORMAT_R16G16B16A16_SFLOAT, kInputUsage,
+                                  "test.dlss.color");
+    VulkanImage depth = makeImage(renderWidth, renderHeight, VK_FORMAT_R32_SFLOAT,
+                                  kInputUsage, "test.dlss.depth");
+    VulkanImage motion = makeImage(renderWidth, renderHeight,
+                                   VK_FORMAT_R16G16_SFLOAT, kInputUsage,
+                                   "test.dlss.motion");
+    // Storage, because NGX refuses a read-write resource whose image was not
+    // created with it -- FAIL_RWFlagMissing, which is the one failure this
+    // test would otherwise report as a black image. Transfer-destination too,
+    // because DLSS clears the output itself with vkCmdClearColorImage, which
+    // validation reported the first time this ran.
+    VulkanImage output = makeImage(kOutputWidth, kOutputHeight,
+                                   VK_FORMAT_R16G16B16A16_SFLOAT,
+                                   VK_IMAGE_USAGE_STORAGE_BIT |
+                                       VK_IMAGE_USAGE_SAMPLED_BIT |
+                                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                       VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                   "test.dlss.output");
+
+    // A frame with a left half at zero and a right half bright. Anything that
+    // upscales it keeps that; anything that drops it does not.
+    constexpr float kBright = 4.0f;
+    std::vector<std::uint16_t> colorBytes(renderPixels * 4, 0);
+    for (std::uint32_t y = 0; y < renderHeight; ++y) {
+        for (std::uint32_t x = 0; x < renderWidth; ++x) {
+            const std::size_t index = (static_cast<std::size_t>(y) * renderWidth + x) * 4;
+            const float value = x >= renderWidth / 2 ? kBright : 0.0f;
+            colorBytes[index + 0] = ToHalf(value);
+            colorBytes[index + 1] = ToHalf(value);
+            colorBytes[index + 2] = ToHalf(value);
+            colorBytes[index + 3] = ToHalf(1.0f);
+        }
+    }
+    // A flat surface halfway down the depth range, and nothing moving. The
+    // guides have to be present and consistent even when they say nothing
+    // happened: DLSS reads them whether or not they carry information.
+    const std::vector<float> depthBytes(renderPixels, 0.5f);
+    const std::vector<std::uint16_t> motionBytes(renderPixels * 2, 0);
+
+    UploadImage(context, allocator, color, colorBytes.data(),
+                colorBytes.size() * sizeof(std::uint16_t),
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    UploadImage(context, allocator, depth, depthBytes.data(),
+                depthBytes.size() * sizeof(float),
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    UploadImage(context, allocator, motion, motionBytes.data(),
+                motionBytes.size() * sizeof(std::uint16_t),
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    context.SubmitImmediate([&](VkCommandBuffer command) {
+        output.RecordBarrier(command, VK_IMAGE_LAYOUT_UNDEFINED,
+                             VK_IMAGE_LAYOUT_GENERAL,
+                             VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
+                             VK_ACCESS_2_MEMORY_WRITE_BIT);
+    });
+
+    ReconstructionResolution resolution;
+    resolution.renderWidth = renderWidth;
+    resolution.renderHeight = renderHeight;
+    resolution.outputWidth = kOutputWidth;
+    resolution.outputHeight = kOutputHeight;
+    resolution.quality = ReconstructionQuality::Performance;
+
+    // Building is recorded and must complete before evaluating is recorded,
+    // which is why these are two submissions and not one.
+    bool built = false;
+    std::string buildReason;
+    context.SubmitImmediate([&](VkCommandBuffer command) {
+        built = backend->Resize(command, resolution, &buildReason);
+    });
+    if (!built) {
+        std::printf("  DLSS build ..... %s\n", buildReason.c_str());
+    }
+    CHECK(built);
+    if (!built) {
+        return;
+    }
+
+    ReconstructionFrame frame;
+    const auto describe = [](const VulkanImage& image) {
+        ReconstructionTexture texture;
+        texture.image = image.Handle();
+        texture.view = image.View();
+        texture.format = image.Description().format;
+        texture.width = image.Description().width;
+        texture.height = image.Description().height;
+        return texture;
+    };
+    frame.color = describe(color);
+    frame.depth = describe(depth);
+    frame.motion = describe(motion);
+    frame.output = describe(output);
+    frame.reset = true;
+
+    context.SubmitImmediate([&](VkCommandBuffer command) {
+        backend->Evaluate(command, frame);
+    });
+
+    BufferDescription readbackDescription;
+    readbackDescription.size = outputPixels * 4 * sizeof(std::uint16_t);
+    readbackDescription.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    readbackDescription.domain = BufferDomain::HostReadback;
+    readbackDescription.debugName = "test.dlss.readback";
+    VulkanBuffer readback(allocator, readbackDescription);
+
+    context.SubmitImmediate([&](VkCommandBuffer command) {
+        output.RecordBarrier(command, VK_IMAGE_LAYOUT_GENERAL,
+                             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                             VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                             VK_PIPELINE_STAGE_2_COPY_BIT,
+                             VK_ACCESS_2_MEMORY_WRITE_BIT,
+                             VK_ACCESS_2_TRANSFER_READ_BIT);
+        VkBufferImageCopy region{};
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent.width = kOutputWidth;
+        region.imageExtent.height = kOutputHeight;
+        region.imageExtent.depth = 1;
+        vkCmdCopyImageToBuffer(command, output.Handle(),
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               readback.Handle(), 1, &region);
+    });
+
+    const auto* pixels = static_cast<const std::uint16_t*>(readback.MappedData());
+    CHECK(pixels != nullptr);
+    if (pixels == nullptr) {
+        return;
+    }
+
+    double left = 0.0;
+    double right = 0.0;
+    std::size_t leftCount = 0;
+    std::size_t rightCount = 0;
+    bool finite = true;
+    // The middle eighth is skipped on both sides. An upscaler is entitled to
+    // blur across the edge, and asserting about pixels on it would be
+    // asserting about the model's filter width rather than about the plumbing.
+    const std::uint32_t margin = kOutputWidth / 8;
+    for (std::uint32_t y = 0; y < kOutputHeight; ++y) {
+        for (std::uint32_t x = 0; x < kOutputWidth; ++x) {
+            const std::size_t index =
+                (static_cast<std::size_t>(y) * kOutputWidth + x) * 4;
+            const float value = FromHalf(pixels[index]);
+            if (!std::isfinite(value)) {
+                finite = false;
+            }
+            if (x + margin < kOutputWidth / 2) {
+                left += value;
+                ++leftCount;
+            } else if (x > kOutputWidth / 2 + margin) {
+                right += value;
+                ++rightCount;
+            }
+        }
+    }
+    left /= double(leftCount);
+    right /= double(rightCount);
+    std::printf("  DLSS output .... left %.4f, right %.4f\n", left, right);
+
+    CHECK(finite);
+    CHECK(right > 0.5 * kBright);
+    CHECK(left < 0.1 * kBright);
+
+    // Rebuilding must be safe: an interactive caller resizes, and a backend
+    // that leaked its feature or evaluated against a released one would fail
+    // here or in validation rather than in a session weeks later.
+    resolution.quality = ReconstructionQuality::NativeResolution;
+    resolution.renderWidth = kOutputWidth;
+    resolution.renderHeight = kOutputHeight;
+    bool rebuilt = false;
+    context.SubmitImmediate([&](VkCommandBuffer command) {
+        rebuilt = backend->Resize(command, resolution, &buildReason);
+    });
+    CHECK(rebuilt);
+    backend->ResetHistory();
+}
+
 int main()
 {
     std::printf("hdClaudeGpuTests\n");
@@ -450,6 +783,10 @@ int main()
         TestDeviceLocalCopyIsObservedOnTheDevice(*context, allocator);
         TestImageCreationChecksFormatSupport(allocator);
         TestMoveSemanticsTransferOwnership(allocator);
+        // Inside the allocator's scope, so the images this creates are
+        // destroyed before the device is -- the ordering the comment
+        // opening this block was written about.
+        TestDlssReconstructsTheFrameItIsGiven(*context, allocator);
     }
 
     TestReconstructionSupportIsAnsweredHonestly(*context);

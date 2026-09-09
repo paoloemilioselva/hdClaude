@@ -36,13 +36,40 @@ NVIDIA types never appear in a renderer-neutral or Hydra-facing header.
 class ReconstructionBackend {
 public:
     virtual ~ReconstructionBackend() = default;
-    virtual SupportInfo QuerySupport(const BackendContext&) = 0;
-    virtual void Resize(const Resolution&) = 0;
-    virtual void Evaluate(VkCommandBuffer, const GpuFrameResources&,
-                          const FrameMetadata&) = 0;
+    virtual const char* Name() const = 0;
+    virtual ReconstructionSizing QuerySizing(uint32_t outputWidth,
+                                             uint32_t outputHeight,
+                                             ReconstructionQuality) const = 0;
+    virtual bool Resize(VkCommandBuffer, const ReconstructionResolution&,
+                        std::string* reason) = 0;
+    virtual void Evaluate(VkCommandBuffer, const ReconstructionFrame&) = 0;
     virtual void ResetHistory() = 0;
 };
 ```
+
+Built in phase 12, and it differs from the sketch above it in three ways, each
+forced by what DLSS actually is rather than chosen:
+
+- **`Resize` takes a command buffer and can fail.** DLSS's feature creation is
+  *recorded*, not immediate: it initialises device state and needs somewhere to
+  put that work, and the buffer must be submitted and complete before `Evaluate`
+  is recorded against the feature. It can also decline, so it returns a reason
+  rather than nothing.
+- **`QuerySizing` replaces `QuerySupport`.** Support is answered by
+  `CreateNgxBackend` returning null with a reason, which is the same answer at
+  the moment it matters. What a caller genuinely needs from a live backend is
+  the render extent, because DLSS chooses that per quality mode and rendering at
+  a size it did not ask for either wastes work or starves its model.
+- **Vulkan types cross the boundary.** Images and command buffers are how any
+  GPU reconstruction is expressed. The rule was always about NVIDIA types, and
+  that still holds: `NVSDK_NGX_*` appears in exactly one translation unit.
+
+The image contract is stated with the interface: `color`, `depth` and `motion`
+in `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL` with `VK_IMAGE_USAGE_SAMPLED_BIT`,
+and `output` in `VK_IMAGE_LAYOUT_GENERAL` with **both**
+`VK_IMAGE_USAGE_STORAGE_BIT` and `VK_IMAGE_USAGE_TRANSFER_DST_BIT` -- the first
+because NGX refuses a read-write resource without it, the second because DLSS
+clears the output itself before writing to it.
 
 Three implementations are planned, selected at runtime:
 
