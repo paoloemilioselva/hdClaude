@@ -12,6 +12,8 @@
 #include "pxr/imaging/hd/tokens.h"
 
 #include <algorithm>
+#include <fstream>
+#include <iomanip>
 #include <cstdio>
 #include <chrono>
 #include <cmath>
@@ -460,6 +462,40 @@ void HdClaudeRenderPass::_Execute(
     HdClaudeAddMilliseconds(_renderDelegate->StageStats().traceMilliseconds,
                             milliseconds);
     _renderDelegate->RecordFrameTiming(milliseconds, _samplesCompleted);
+
+    // A line per traced frame, appended, for a session nobody can attach a
+    // script to.
+    //
+    // The teardown report is cumulative and so cannot show a renderer getting
+    // *faster as it runs*, which is the thing worth catching in an
+    // interactive session: what matters there is the shape of the sequence,
+    // not its total. Each line carries this frame's own trace time and the
+    // rays and hashes it added, so a reader can see where a cost settles and
+    // whether the answers settle with it.
+    //
+    // Opened and closed per line rather than held: an interactive session ends
+    // when someone closes a window, and a buffered stream loses the last and
+    // most interesting frames when it does.
+    if (const std::string path = TfGetenv("HDCLAUDE_FRAME_LOG");
+        !path.empty()) {
+        const std::uint64_t traced = tracer->TracedRays();
+        const std::uint64_t shadow = tracer->ShadowRays();
+        if (std::ofstream out{path, std::ios::app}; out) {
+            if (_frameLogIndex == 0) {
+                out << "# frame samples traceMs rays shadowRays hitHash "
+                    << "rayHash width height\n";
+            }
+            out << ++_frameLogIndex << ' ' << settings.samplesPerPixel
+                << ' ' << std::fixed << std::setprecision(2)
+                << milliseconds << std::defaultfloat << ' '
+                << (traced - _frameLogTracedRays) << ' '
+                << (shadow - _frameLogShadowRays) << ' '
+                << tracer->HitHash() << ' ' << tracer->RayHash() << ' '
+                << width << ' ' << height << '\n';
+        }
+        _frameLogTracedRays = traced;
+        _frameLogShadowRays = shadow;
+    }
 
     // The repeat diagnostic, decided here because this is where the image is
     // declared finished. It cannot live on the early return above: a host

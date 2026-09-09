@@ -6443,3 +6443,35 @@ warm-up visible at all, and the top-level structure reports the span of its
 instance translations under `HDCLAUDE_TRACE`, which is what ruled the snapshot
 out. The forced republish that proved the snapshots identical is removed, having
 answered its question.
+
+---
+
+## 2026-09-09 -- A frame log, because the interesting number is a sequence
+
+The teardown report is cumulative, and cumulative is the wrong shape for the
+question being asked. `traceMs`, `cameraRays`, `tracedRays`, `shadowRays` and
+every stage timing accumulate across a whole session, which answers "what did
+this cost" and cannot answer "is it getting faster as it runs" -- and the second
+is what an interactive session is showing.
+
+`HDCLAUDE_FRAME_LOG=<path>` appends a line per traced frame: the frame's own
+trace time, the rays and shadow rays *it* added rather than the running total,
+both hashes, and the extents. It is opened and closed per line rather than held
+open, because an interactive session ends when somebody closes a window and a
+buffered stream loses the last and most interesting frames when it does.
+
+It immediately showed the effect is larger than the repeat test had said. Within
+a *single* progressive render of `lab_structure01`, eight chunks of eight
+samples each, doing identical work:
+
+    1979.61  1903.95  2039.28  1918.13  1609.23  1885.22  1500.13  991.18 ms
+
+The last chunk takes **half** the time of the first, and it is still falling at
+the end. The earlier figure of 1.84x, measured between whole renders, understated
+it: the warm-up is not a first-render effect but something that continues across
+several seconds of tracing, and a session that renders for longer sees more of
+it. Paolo's report of a *huge* speedup is the better description, and the repeat
+test's number was an artefact of measuring too coarsely.
+
+The hashes on those lines also move, frame after frame, which is the same
+signature again: the renders that are slow are the renders that disagree.

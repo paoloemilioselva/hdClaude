@@ -71,6 +71,12 @@ class HDCLAUDE_API HdClaudeRenderPass final : public HdRenderPass {
     /// reports its own time rather than the running total.
     double _repeatTraceMs = 0.0;
 
+    /// Per-frame log state; see HDCLAUDE_FRAME_LOG. The ray counts are
+    /// running totals on the tracer, so a frame reports the difference.
+    std::uint64_t _frameLogIndex = 0;
+    std::uint64_t _frameLogTracedRays = 0;
+    std::uint64_t _frameLogShadowRays = 0;
+
     /// The scene revision actually uploaded to the path tracer. Advanced only
     /// after a successful upload, so a failed one is retried.
     std::uint64_t _uploadedRevision = 0;

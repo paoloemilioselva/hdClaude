@@ -51,6 +51,12 @@ IF "%~1"=="" (
   ECHO   HDCLAUDE_POISON_PATH_STATE     fill every path buffer with a known
   ECHO                                  pattern before a frame
   ECHO   HDCLAUDE_STATS_REPORT          write the render stats to this path
+  ECHO   HDCLAUDE_FRAME_LOG             append a line per traced frame to this
+  ECHO                                  path: its own trace time, the rays it
+  ECHO                                  added, and both hashes. Works in an
+  ECHO                                  interactive session, where the stats
+  ECHO                                  report is only written at exit
+  ECHO   HDCLAUDE_PROFILE_KERNELS       time each kernel of one sample
   EXIT /B 2
 )
 
