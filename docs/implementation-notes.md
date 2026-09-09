@@ -5964,3 +5964,60 @@ The depth AOV is reverted rather than shipped, for the reason that has decided
 every one of these today and one more besides: the committed hashes are the
 instrument that found this, and shipping something that makes them unstable
 would spend the instrument to buy the feature.
+
+---
+
+## 2026-09-09 -- The cause, found by taking the driver's cache away
+
+The first-trace divergence is the **driver's shader disk cache**, and the
+experiment that shows it is symmetric:
+
+    cache present     6 renders clean   (and 30 before it)
+    cache moved away  4 trials, every one divergent on the first render
+    cache restored    6 renders clean again
+
+Nothing else changed between those runs. Same binary, same scene, same settings.
+With `%LOCALAPPDATA%\NVIDIA\GLCache` emptied, the **committed** build -- the one
+that had been reproducible thirty times over -- diverges on the first render of
+every process, and putting the cache back makes it reproducible again.
+
+The mechanism follows: a pipeline the driver has not cached is compiled during
+the run, and its **first execution differs numerically from its later ones**.
+Once the compiled form is on disk it is loaded rather than built, and every
+render agrees from the first dispatch.
+
+That explains every observation this took to reach, and retires several dead
+ends:
+
+* every one of the four layout changes perturbed the renderer because a changed
+  layout is a **different cache key** -- a push constant range, a binding type,
+  an added binding, cached or not cached, the arithmetic never mattered;
+* it was always the *first* render in a process, because the second runs on a
+  pipeline the first one finished compiling;
+* poisoning path state, moving the uniform write, and reordering descriptor
+  writes all failed to change it, because none of them is where it lives;
+* `__GL_SHADER_DISK_CACHE=0` did nothing, which was read as weak evidence
+  against the cache and was really just evidence that the variable is not
+  honoured here.
+
+**hdClaude has no pipeline cache of its own.** `vkCreateComputePipelines` is
+called with `VK_NULL_HANDLE`, so the only thing standing between this renderer
+and a cold compile on every layout change is the driver's implicit cache, which
+is not ours, not portable, and -- as this experiment demonstrates -- can be
+cleared by anything on the machine.
+
+Two consequences worth stating plainly.
+
+**A baseline rendered immediately after a shader change may be a cold-cache
+render.** Every gallery regeneration today followed a build, and the ones that
+followed a *shader* build had a cold cache for the kernels that changed. That is
+very likely what several of the day's "intermittent" divergences were, and it is
+a reason to be suspicious of any baseline adopted in the same minute as a shader
+edit.
+
+**It is not the whole story, and the other half stands.** The Kitchen Set
+differs on *every* render across processes while three renders inside one
+process agree exactly -- the opposite signature, per-process rather than
+first-render, and the acceleration structure remains its explanation. There are
+two phenomena here and this experiment separates them cleanly for the first
+time: one is a compile, the other is a tree.
