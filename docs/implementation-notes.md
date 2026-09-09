@@ -6021,3 +6021,45 @@ process agree exactly -- the opposite signature, per-process rather than
 first-render, and the acceleration structure remains its explanation. There are
 two phenomena here and this experiment separates them cleanly for the first
 time: one is a compile, the other is a tree.
+
+---
+
+## 2026-09-09 -- A pipeline cache of our own, which does not fix it
+
+`vkCreateComputePipelines` was called with `VK_NULL_HANDLE` for its cache, so
+hdClaude had none and every pipeline was left to the driver's implicit one. It
+has one now: created with the device, seeded from a file, written back at
+teardown through a temporary and a rename so an interrupted run leaves the
+previous cache rather than a truncated one. The path is
+`HDCLAUDE_PIPELINE_CACHE` or a file in the system temporary directory. The blob
+is passed to the driver exactly as read, because an implementation is required
+to reject a cache from another device or driver after checking the header it
+wrote itself -- a stale file costs a recompile and nothing worse, which is why
+nothing here validates it. Failing to create one is not fatal: a cache is an
+optimisation and a renderer that cannot make one still renders.
+
+It is worth having and it is **not** the fix, which the experiment says
+directly. With the driver's `GLCache` moved aside and hdClaude's own cache warm
+-- 2.3 MB, written by the run before and loaded at startup -- the first render
+of a process still diverges, in both trials. Restore the driver's cache and
+everything is clean again.
+
+So whatever the driver keeps in `GLCache` is not what a `VkPipelineCache`
+covers. The plausible reading is that the Vulkan-level cache holds an
+intermediate form and the final machine code is produced later, on first use,
+and cached separately -- but that is a guess about a closed implementation and
+is written here as one. What is measured is the A/B, three times over now, and
+that our cache does not change it.
+
+The cache is shipped anyway. Passing null was an omission rather than a
+decision, it is standard practice, and it is behaviour-neutral where it counts:
+with the driver's cache in place the whole suite passes, the chess set renders
+at rms 0, and all three renders of a repeat give the canonical hashes.
+
+**The mitigation that might actually work** is a warm-up: a throwaway render
+before the first real one, absorbing the cold first execution of every pipeline.
+It is worth trying rather than assuming, because the divergence survives an
+entire 32-call render -- the first *image* differs, not merely the first
+dispatch -- so a token dispatch may not be enough. That is now a cheap
+experiment rather than a speculation: the fault reproduces on demand by moving
+one directory.

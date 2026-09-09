@@ -139,8 +139,15 @@ ComputePipeline::ComputePipeline(const VulkanContext& context,
             VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         pipelineInfo.stage = stage;
         pipelineInfo.layout = layout;
-        context.Check(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1,
-                                               &pipelineInfo, nullptr, &pipeline),
+        // Against the context's cache rather than VK_NULL_HANDLE. A pipeline
+        // the driver has to compile here produces a first execution that
+        // differs numerically from its later ones, so the cache is a
+        // correctness measure as much as a speed one; passing null left that
+        // entirely to the driver's own implicit cache, which is not ours and
+        // can be cleared by anything on the machine.
+        context.Check(vkCreateComputePipelines(device, context.PipelineCache(),
+                                               1, &pipelineInfo, nullptr,
+                                               &pipeline),
                       "vkCreateComputePipelines(" + _debugName + ")");
     } catch (...) {
         releaseAll();

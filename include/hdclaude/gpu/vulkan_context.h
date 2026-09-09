@@ -19,6 +19,7 @@
 #define HDCLAUDE_GPU_VULKAN_CONTEXT_H
 
 #include <atomic>
+#include <filesystem>
 #include <functional>
 #include <cstdint>
 #include <memory>
@@ -135,6 +136,17 @@ class VulkanContext {
     VkPhysicalDevice PhysicalDevice() const { return _physicalDevice; }
     VkDevice Device() const { return _device; }
     VkQueue Queue() const { return _queue; }
+
+    /// The pipeline cache every pipeline is created against, persisted between
+    /// runs. May be VK_NULL_HANDLE, which is legal to pass and simply means the
+    /// driver compiles from scratch.
+    ///
+    /// It exists for correctness as much as for speed. A pipeline the driver
+    /// compiles during a run has a first execution that differs numerically
+    /// from its later ones, so a cold compile costs a divergent first frame --
+    /// demonstrated by emptying the driver's own cache, which makes an
+    /// otherwise reproducible render diverge, and restoring it, which stops it.
+    VkPipelineCache PipelineCache() const { return _pipelineCache; }
     std::uint32_t QueueFamily() const { return _queueFamily; }
 
     const VulkanCapabilities& Capabilities() const { return _capabilities; }
@@ -218,7 +230,15 @@ class VulkanContext {
 
     VkInstance _instance = VK_NULL_HANDLE;
     VkPhysicalDevice _physicalDevice = VK_NULL_HANDLE;
+    /// Where the persisted pipeline cache lives: HDCLAUDE_PIPELINE_CACHE if
+    /// set, else a file in the system temporary directory.
+    static std::filesystem::path PipelineCachePath();
+    void CreatePipelineCache();
+    void SavePipelineCache() const;
+
     VkDevice _device = VK_NULL_HANDLE;
+    VkPipelineCache _pipelineCache = VK_NULL_HANDLE;
+    std::filesystem::path _pipelineCachePath;
     VkQueue _queue = VK_NULL_HANDLE;
     std::uint32_t _queueFamily = 0;
 

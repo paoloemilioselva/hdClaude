@@ -5,9 +5,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <mutex>
 #include <set>
 #include <sstream>
+#include <system_error>
 
 namespace hdclaude {
 namespace {
@@ -26,6 +29,26 @@ bool EnvironmentFlag(const char* name)
 #else
     const char* value = std::getenv(name);
     return value != nullptr && value[0] == '1';
+#endif
+}
+
+/// An environment variable's value, or empty. Mirrors EnvironmentFlag rather
+/// than reaching for TfGetenv: this layer does not depend on pxr and a cache
+/// path is not a reason to start.
+std::string EnvironmentValue(const char* name)
+{
+#if defined(_MSC_VER)
+    char* value = nullptr;
+    std::size_t size = 0;
+    if (_dupenv_s(&value, &size, name) != 0 || value == nullptr) {
+        return {};
+    }
+    std::string text(value);
+    std::free(value);
+    return text;
+#else
+    const char* value = std::getenv(name);
+    return value != nullptr ? std::string(value) : std::string();
 #endif
 }
 
@@ -602,6 +625,98 @@ void VulkanContext::CreateDevice(const VulkanContextOptions& options)
           "vkCreateDevice");
     volkLoadDevice(_device);
     vkGetDeviceQueue(_device, _queueFamily, 0, &_queue);
+
+    CreatePipelineCache();
+}
+
+std::filesystem::path VulkanContext::PipelineCachePath()
+{
+    const std::string override = EnvironmentValue("HDCLAUDE_PIPELINE_CACHE");
+    if (!override.empty()) {
+        return std::filesystem::path(override);
+    }
+    std::error_code error;
+    std::filesystem::path directory = std::filesystem::temp_directory_path(error);
+    if (error) {
+        return {};
+    }
+    return directory / "hdClaude.pipeline.cache";
+}
+
+void VulkanContext::CreatePipelineCache()
+{
+    // A pipeline cache of our own, persisted between runs.
+    //
+    // Without one, every pipeline is compiled by the driver during the run
+    // unless the driver's *implicit* disk cache happens to hold it -- and that
+    // cache is not ours, is keyed on things we do not control, and can be
+    // cleared by anything on the machine. It is also not a performance question
+    // only: a pipeline compiled during a run produces a first execution that
+    // differs numerically from its later ones, so a cold compile costs a
+    // divergent first frame. Emptying the driver's cache and rendering the same
+    // scene is enough to show it, and putting the cache back is enough to make
+    // it stop.
+    //
+    // The data is passed to the driver exactly as it was read. A cache blob
+    // from another device, driver or vendor is *required* to be rejected by the
+    // implementation after it checks the header it wrote, so a stale or foreign
+    // file costs a recompile rather than anything worse -- which is why no
+    // validation is attempted here beyond reading the bytes.
+    _pipelineCachePath = PipelineCachePath();
+    std::vector<char> initial;
+    if (!_pipelineCachePath.empty()) {
+        std::ifstream file(_pipelineCachePath, std::ios::binary);
+        if (file) {
+            initial.assign(std::istreambuf_iterator<char>(file),
+                           std::istreambuf_iterator<char>());
+        }
+    }
+
+    VkPipelineCacheCreateInfo info{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    info.initialDataSize = initial.size();
+    info.pInitialData = initial.empty() ? nullptr : initial.data();
+    // Not checked: a cache is an optimisation and a renderer that cannot create
+    // one still renders. Failing the device over it would trade a working image
+    // for a faster start.
+    if (vkCreatePipelineCache(_device, &info, nullptr, &_pipelineCache) !=
+        VK_SUCCESS) {
+        _pipelineCache = VK_NULL_HANDLE;
+    }
+}
+
+void VulkanContext::SavePipelineCache() const
+{
+    if (_pipelineCache == VK_NULL_HANDLE || _pipelineCachePath.empty() ||
+        IsDeviceLost()) {
+        return;
+    }
+    std::size_t size = 0;
+    if (vkGetPipelineCacheData(_device, _pipelineCache, &size, nullptr) !=
+            VK_SUCCESS ||
+        size == 0) {
+        return;
+    }
+    std::vector<char> data(size);
+    if (vkGetPipelineCacheData(_device, _pipelineCache, &size, data.data()) !=
+        VK_SUCCESS) {
+        return;
+    }
+    // Written to a temporary and renamed, so a run interrupted mid-write leaves
+    // the previous cache rather than a truncated one the driver must reject.
+    std::error_code error;
+    const std::filesystem::path temporary =
+        _pipelineCachePath.string() + ".partial";
+    {
+        std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+        if (!file) {
+            return;
+        }
+        file.write(data.data(), static_cast<std::streamsize>(size));
+        if (!file) {
+            return;
+        }
+    }
+    std::filesystem::rename(temporary, _pipelineCachePath, error);
 }
 
 VulkanContext::~VulkanContext()
@@ -626,6 +741,10 @@ VulkanContext::~VulkanContext()
         }
         if (_impl->immediatePool != VK_NULL_HANDLE) {
             vkDestroyCommandPool(_device, _impl->immediatePool, nullptr);
+        }
+        if (_pipelineCache != VK_NULL_HANDLE) {
+            SavePipelineCache();
+            vkDestroyPipelineCache(_device, _pipelineCache, nullptr);
         }
         vkDestroyDevice(_device, nullptr);
     }
