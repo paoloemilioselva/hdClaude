@@ -189,6 +189,25 @@ VulkanBuffer::VulkanBuffer(VulkanAllocator& allocator,
     _mapped = resultInfo.pMappedData;
     _generation = NextResourceGeneration();
 
+    // Where the allocation actually landed.
+    //
+    // `VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE` prefers device memory and
+    // silently accepts host memory when there is no room, which is the right
+    // behaviour for a buffer that is written once and read rarely and the
+    // wrong behaviour for geometry a ray traverses: reading it over PCIe
+    // costs about two orders of magnitude and nothing says so. A renderer
+    // that silently becomes a hundred times slower is exactly the kind of
+    // quiet degradation this project reports rather than absorbs, so the
+    // spill is counted and can be named.
+    if (description.domain == BufferDomain::DeviceLocal) {
+        VkMemoryPropertyFlags properties = 0;
+        vmaGetAllocationMemoryProperties(ToVma(allocator.Handle()),
+                                        allocation, &properties);
+        if ((properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0) {
+            allocator.NoteDeviceLocalSpill(description.size);
+        }
+    }
+
     if ((usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0) {
         VkBufferDeviceAddressInfo addressInfo{
             VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};

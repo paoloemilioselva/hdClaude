@@ -178,6 +178,23 @@ class VulkanAllocator {
     std::uint64_t DeviceLocalBytesUsed() const;
     std::uint64_t DeviceLocalBytesAvailable() const;
 
+    /// Bytes asked for as device-local that were placed somewhere else.
+    ///
+    /// VMA prefers device memory and falls back to host memory rather than
+    /// failing, which is right for a buffer written once and read rarely and
+    /// wrong for geometry a ray traverses: the read then crosses PCIe and
+    /// costs about two orders of magnitude, with nothing to say so. Counted
+    /// so a renderer that has quietly become a hundred times slower can be
+    /// asked why.
+    std::uint64_t DeviceLocalBytesSpilled() const
+    {
+        return _spilledBytes.load(std::memory_order_relaxed);
+    }
+    void NoteDeviceLocalSpill(std::uint64_t bytes)
+    {
+        _spilledBytes.fetch_add(bytes, std::memory_order_relaxed);
+    }
+
     /// Format support check against the physical device's optimal-tiling
     /// features. Called before allocation, so an unsupported usage is a clear
     /// error at creation rather than a validation message at first use.
@@ -186,6 +203,7 @@ class VulkanAllocator {
   private:
     const VulkanContext& _context;
     void* _allocator = nullptr;  // VmaAllocator
+    mutable std::atomic<std::uint64_t> _spilledBytes{0};
 };
 
 // ---------------------------------------------------------------------------

@@ -138,9 +138,12 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
             _peakDeviceBytes.load(std::memory_order_relaxed);
         const std::uint64_t available =
             _allocator ? _allocator->DeviceLocalBytesAvailable() : 0;
+        const std::uint64_t spilled =
+            _allocator ? _allocator->DeviceLocalBytesSpilled() : 0;
         if (std::ofstream out{path}; out) {
             const auto& stages = _stageStats;
-            out << "deviceBytesPeak " << peak << '\n'
+            out << "deviceBytesPeak " << peak << '\n'
+                << "deviceBytesSpilled " << spilled << '\n'
                 << "deviceBytesAvailable " << available << '\n'
                 << "ingestMs "
                 << stages.ingestMilliseconds.load(std::memory_order_relaxed)
@@ -522,6 +525,16 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         {"Exposure", _tokens->exposure,
          VtValue(float(TfGetenvDouble("HDCLAUDE_EXPOSURE", 0.0)))},
     };
+}
+
+std::uint64_t HdClaudeRenderDelegate::DeviceBytesAvailable() const
+{
+    return _allocator ? _allocator->DeviceLocalBytesAvailable() : 0;
+}
+
+std::uint64_t HdClaudeRenderDelegate::DeviceBytesSpilled() const
+{
+    return _allocator ? _allocator->DeviceLocalBytesSpilled() : 0;
 }
 
 void HdClaudeRenderDelegate::RecordFrameTiming(double milliseconds,

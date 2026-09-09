@@ -6475,3 +6475,60 @@ test's number was an artefact of measuring too coarsely.
 
 The hashes on those lines also move, frame after frame, which is the same
 signature again: the renders that are slow are the renders that disagree.
+
+---
+
+## 2026-09-09 -- Ninety times, not two, and what the log rules out
+
+Paolo instrumented an interactive session and the numbers are far larger than
+the repeat test suggested. From `debugging_frames.log`, across one toggle of the
+stage root:
+
+    frame 87   498.36 ms   1,254,130 rays    58,071 shadow
+    frame 88   167.42 ms   1,270,085 rays    73,213 shadow
+    frame 89    17.52 ms   1,301,265 rays    96,524 shadow
+
+**More rays, twenty-eight times faster, in a single frame**, and then steady near
+17 ms for the following hundred and eighty. Against the session's opening frames
+it is ninety times: 1571 ms down to 17.5 ms for the same 1.3 million rays, which
+is **1 Mrays/s becoming 76**. The earlier figure of 1.84x measured whole renders
+against each other in a quiet process and missed almost all of it.
+
+That rules out the reading in the previous entry. A gradual driver warm-up does
+not step by twenty-eight in one frame while the work *increases*, and it does not
+stay put for a hundred and eighty frames afterwards.
+
+The session totals name the other half of the cost: `publishMs 56855` and
+`meshesRefined 2345` over 339 prototypes, so each toggle re-subdivided the whole
+stage -- about seven times over -- and `blasBuilt 328, blasReused 11` says the
+last publication *rebuilt* almost every structure rather than reusing it, though
+the geometry had not changed. Deduplication by fingerprint is not surviving a
+republish, which is its own defect and worth a separate look.
+
+**Two candidates were checked and one is now measurable.** A missing wait between
+uploading geometry and building over it would produce exactly this shape -- a
+correct image with a hierarchy built over data that had not arrived -- and it is
+not that: both the upload and the build go through `SubmitImmediate`, which
+submits and waits.
+
+The second is memory residency, and it fits everything: 1 Mrays/s is about what
+traversal costs when the structure is read across PCIe rather than from device
+memory. `VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE` *prefers* device memory and
+silently accepts host memory when there is none, so the allocator now counts
+what it asked for as device-local and did not get, and reports it as
+`deviceBytesSpilled`. On this machine, rendering the same asset offline, that
+figure is **zero** -- so VMA's own fallback is not the mechanism here.
+
+What remains, and what the instrument cannot see from inside Vulkan, is the
+operating system evicting a device-local allocation to system memory when the
+card is oversubscribed. The allocation stays device-local as far as the API is
+concerned and the traversal reading it simply crosses PCIe. An interactive
+session holds a viewer's own resources on top of this renderer's 9.4 GiB, which
+is the pressure an offline render does not have -- and it is the difference
+between a session that sees ninety times and a batch render that sees two.
+
+So the frame log now carries the memory picture on every line: the high-water
+mark, what the driver says is left, and the spill. If the available figure
+collapses through the slow frames and recovers at the toggle, that is the answer;
+if it does not move at all, residency is wrong too and the search continues with
+one more candidate eliminated.

@@ -93,6 +93,16 @@ class HDCLAUDE_API HdClaudeRenderDelegate final : public HdRenderDelegate {
     /// adapters reach the same object through the render param.
     HdClaudeStageStats& StageStats() { return _stageStats; }
 
+    /// Device memory as the frame log needs it: the high-water mark, what
+    /// the driver says is left, and how much of what was asked for as
+    /// device-local was placed elsewhere.
+    std::uint64_t PeakDeviceBytes() const
+    {
+        return _peakDeviceBytes.load(std::memory_order_relaxed);
+    }
+    std::uint64_t DeviceBytesAvailable() const;
+    std::uint64_t DeviceBytesSpilled() const;
+
   private:
     void Initialize(const HdRenderSettingsMap& settingsMap);
 

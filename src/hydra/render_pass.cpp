@@ -479,11 +479,17 @@ void HdClaudeRenderPass::_Execute(
     if (const std::string path = TfGetenv("HDCLAUDE_FRAME_LOG");
         !path.empty()) {
         const std::uint64_t traced = tracer->TracedRays();
+        const std::uint64_t peak = _renderDelegate->PeakDeviceBytes();
+        const std::uint64_t available =
+            _renderDelegate->DeviceBytesAvailable();
+        const std::uint64_t spilled =
+            _renderDelegate->DeviceBytesSpilled();
         const std::uint64_t shadow = tracer->ShadowRays();
         if (std::ofstream out{path, std::ios::app}; out) {
             if (_frameLogIndex == 0) {
                 out << "# frame samples traceMs rays shadowRays hitHash "
-                    << "rayHash width height\n";
+                    << "rayHash width height deviceMiB availableMiB "
+                    << "spilledMiB\n";
             }
             out << ++_frameLogIndex << ' ' << settings.samplesPerPixel
                 << ' ' << std::fixed << std::setprecision(2)
@@ -491,7 +497,18 @@ void HdClaudeRenderPass::_Execute(
                 << (traced - _frameLogTracedRays) << ' '
                 << (shadow - _frameLogShadowRays) << ' '
                 << tracer->HitHash() << ' ' << tracer->RayHash() << ' '
-                << width << ' ' << height << '\n';
+                << width << ' ' << height << ' '
+                // The memory picture, per frame.
+                //
+                // A device-local allocation can be *evicted* to system
+                // memory by the operating system when the card is
+                // oversubscribed, and nothing in Vulkan reports that: the
+                // allocation is still device-local as far as the API is
+                // concerned, and the traversal reading it simply crosses
+                // PCIe instead. The budget is the only thing visible from
+                // here that moves when it happens, so it is on every line.
+                << (peak >> 20) << ' ' << (available >> 20) << ' '
+                << (spilled >> 20) << '\n';
         }
         _frameLogTracedRays = traced;
         _frameLogShadowRays = shadow;
