@@ -6387,3 +6387,59 @@ With it, the stoat renders its whiskers: 288 instances against 255, each strand
 Against the same render without them the image moves by an RMS of 0.0085 over
 0.53 per cent of pixels, which is what thirty-three hairs at 256 pixels should
 be. The suite passes and the gallery is unmoved.
+
+---
+
+## 2026-09-09 -- Confirmed: a render gets faster the more times you run it
+
+Paolo loaded ALab's `lab_structure01` in a viewer, found it slow, hid `/root`,
+unhid it, and found the same scene faster than it had been on load. His reading
+was that something in hdClaude's own code was involved. Reproduced here, and it
+is confirmed as an effect while being cleared of that particular cause.
+
+**It is not stale scene data.** Publishing the same stage twice in one process
+produces byte-identical snapshots -- 339 prototypes, 2074 instances, 21937256
+triangles, 902 textures both times -- and a top-level structure spanning exactly
+the same translations, `(-539.863 -81.4423 -50.1653)` to `(321.799 230.282
+412.85)`. Republishing does not make the trace faster either: 39.5 ms against
+45.4 ms for the extend kernel, which is noise in the wrong direction. Whatever
+the viewer's second look benefits from, it is not a better snapshot.
+
+**It is the render repeating.** Six renders of the identical scene in one
+process, with the same acceleration structure and the same rays:
+
+    lab_structure01   7733  7052  4366  4211  4291  4200 ms
+    chess_board        200   173   172   171   172   173 ms
+
+The first render is **1.84x slower** than the settled state on the ALab asset,
+and 1.16x on the chess set. The effect is real, it is large, and it is exactly
+what hiding and unhiding a root would expose: the second look is warm.
+
+**And the timing and the divergence are the same phenomenon.** The hashes settle
+on the very render the timing does. Renders three through six all report
+`hitHash 1997098710`; renders one and two report different values and different
+ray counts. The renders that are slow are precisely the renders that give
+different answers.
+
+That ties this to the shader-cache finding earlier today, and the two together
+now say one thing rather than two: a pipeline the driver has not finished
+optimising is **both slower and numerically different**, and once it settles the
+renderer is fast and reproducible at the same moment. It also explains why
+restoring the driver's cache fixed the divergence -- a cached pipeline starts
+optimised -- and why a warm-up of a single sample did not: the cold period here
+lasts two entire renders, not one dispatch.
+
+**A correction follows.** Every kernel profile in the previous entry was taken
+on the first sample of the first render, which is the coldest measurement
+available. Re-measured warm, the numbers move by about a tenth: extend is
+0.188 ms at subdivision 0 and **42.5 ms** at subdivision 1, against 0.249 and
+46.3 cold. The 186x collapse survives warming, so the two effects are separate
+and the traversal finding stands on its own -- but the figures in that entry are
+the cold ones and should be read as such.
+
+Two diagnostics are kept from this: the repeat report now carries each render's
+own trace time as a delta rather than the running total, which is what made the
+warm-up visible at all, and the top-level structure reports the span of its
+instance translations under `HDCLAUDE_TRACE`, which is what ruled the snapshot
+out. The forced republish that proved the snapshots identical is removed, having
+answered its question.

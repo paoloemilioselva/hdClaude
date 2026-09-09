@@ -531,6 +531,25 @@ void SceneAccelerator::Update(const Scene& scene)
         instances.push_back(entry);
     }
 
+    // DIAGNOSTIC: what the instances span, so two publications of the same
+    // stage can be compared. A tree over instances scattered far wider than
+    // the model traverses badly however good each prototype is.
+    if (std::getenv("HDCLAUDE_TRACE") != nullptr) {
+        float lo[3] = {1e30f, 1e30f, 1e30f};
+        float hi[3] = {-1e30f, -1e30f, -1e30f};
+        for (const auto& entry : instances) {
+            for (int axis = 0; axis < 3; ++axis) {
+                const float t = entry.transform.matrix[axis][3];
+                lo[axis] = std::min(lo[axis], t);
+                hi[axis] = std::max(hi[axis], t);
+            }
+        }
+        std::fprintf(stderr,
+                     "hdClaude tlas: %zu instances, translations "
+                     "(%g %g %g)-(%g %g %g)\n",
+                     instances.size(), lo[0], lo[1], lo[2], hi[0],
+                     hi[1], hi[2]);
+    }
     _tlas.Build(_context, _allocator, instances);
 }
 

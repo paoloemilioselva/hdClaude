@@ -67,6 +67,9 @@ class HDCLAUDE_API HdClaudeRenderPass final : public HdRenderPass {
     std::uint32_t _repeatsRemaining = 0;
     bool _repeatsStarted = false;
     bool _repeatsAsked = false;
+    /// Trace milliseconds at the last repeat boundary, so each repeat
+    /// reports its own time rather than the running total.
+    double _repeatTraceMs = 0.0;
 
     /// The scene revision actually uploaded to the path tracer. Advanced only
     /// after a successful upload, so a failed one is retried.

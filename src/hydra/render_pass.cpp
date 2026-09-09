@@ -488,12 +488,21 @@ void HdClaudeRenderPass::_Execute(
             // render out of the comparison this exists for. To stderr rather
             // than through Tf, because a status message is silent unless
             // something installs a delegate to print it.
+            // The trace time this render spent, taken as a delta so each
+            // repeat reports its own rather than the running total. A second
+            // render being faster than the first, with the same scene and
+            // the same structure, is the question this answers.
+            const double traceNow =
+                _renderDelegate->StageStats().traceMilliseconds.load(
+                    std::memory_order_relaxed);
+            const double traceThis = traceNow - _repeatTraceMs;
+            _repeatTraceMs = traceNow;
             std::fprintf(
                 stderr,
-                "hdClaude repeat: tracedRays %llu shadowRays %llu hitHash "
+                "hdClaude repeat: traceMs %.1f tracedRays %llu hitHash "
                 "%llu rayHash %llu\n",
+                traceThis,
                 static_cast<unsigned long long>(tracer->TracedRays()),
-                static_cast<unsigned long long>(tracer->ShadowRays()),
                 static_cast<unsigned long long>(tracer->HitHash()),
                 static_cast<unsigned long long>(tracer->RayHash()));
             if (_repeatsRemaining > 0) {
