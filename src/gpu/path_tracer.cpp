@@ -1221,9 +1221,9 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
         block.sampleIndex = settings.firstSample + sample;
         _frameUniforms.Write(&block, sizeof(block));
 
-        for (std::uint32_t bounce = 0; bounce < settings.maxBounces; ++bounce) {
         _context.SubmitImmediate([&](VkCommandBuffer command) {
-            {
+            for (std::uint32_t bounce = 0; bounce < settings.maxBounces;
+                 ++bounce) {
                 if (bounce == 0) {
                     if (sample == 0) {
                         // The accumulators measure this call, so they start it
@@ -1327,9 +1327,11 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
                                          kDispatchSlotShadow * kDispatchArgStride);
                 Barrier(command);
             }
-        });
-        }
-        _context.SubmitImmediate([&](VkCommandBuffer command) {
+
+            // The film, in the same buffer as the bounces that filled the
+            // radiance it reads. The barrier that ends the last bounce is
+            // what orders it; it used to be a submit boundary, which was a
+            // full barrier obtained by stalling the device.
             _film.Dispatch(command, filmSet, pathGroups);
         });
     }

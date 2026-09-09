@@ -86,6 +86,15 @@ struct HdClaudeStageStats {
     // --- Materials ---------------------------------------------------------
     /// Generation and SPIR-V compilation together: they are one cost from the
     /// outside and there is no moment between them worth reporting.
+    /// How long the path tracer spent tracing, summed over every progressive
+    /// call in the render.
+    ///
+    /// This is the one that was missing, and it is the largest: every other
+    /// timer here covers preparing a scene, and none of them covered rendering
+    /// it. A reader adding the stages up and comparing them with the wall time
+    /// found a gap the size of the render and no line to put it against.
+    std::atomic<double> traceMilliseconds{0.0};
+
     std::atomic<double> materialMilliseconds{0.0};
     std::atomic<std::uint64_t> materialsCompiled{0};
 
@@ -111,6 +120,7 @@ struct HdClaudeStageStats {
         shadowRays.store(0, std::memory_order_relaxed);
         hitHash.store(0, std::memory_order_relaxed);
         rayHash.store(0, std::memory_order_relaxed);
+        traceMilliseconds.store(0.0, std::memory_order_relaxed);
         materialMilliseconds.store(0.0, std::memory_order_relaxed);
         materialsCompiled.store(0, std::memory_order_relaxed);
         textureMilliseconds.store(0.0, std::memory_order_relaxed);

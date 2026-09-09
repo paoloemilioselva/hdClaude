@@ -170,6 +170,12 @@ function Write-SceneStats($item, $stages, $seconds, $device, $settings) {
     $out.Add('# stage can exceed the frame''s wall time -- that is threads working')
     $out.Add('# at once, not an error.')
     $out.Add('#')
+    $out.Add('# traceMs is the path tracing itself, summed over the progressive')
+    $out.Add('# calls. outsideSeconds is the wall time that trace, ingest and')
+    $out.Add('# publish do not claim: opening the stage, plugin discovery, the')
+    $out.Add('# scene index, writing the EXR and')
+    $out.Add('# tearing the device down, none of which the renderer can see.')
+    $out.Add('#')
     $out.Add("# Regenerate with: render_gallery.bat -Scene $($item.Key)")
     $out.Add('')
     $out.Add('[scene]')
@@ -188,11 +194,31 @@ function Write-SceneStats($item, $stages, $seconds, $device, $settings) {
     $out.Add(('{0,-22}{1}' -f 'device', $device))
     $out.Add(('{0,-22}{1}' -f 'measured', (Get-Date -Format 'yyyy-MM-dd')))
     $out.Add(('{0,-22}{1:F3}' -f 'wallSeconds', $seconds))
-    foreach ($key in @('ingestMs', 'publishMs', 'subdivideMs', 'materialMs',
-                       'textureMs')) {
+    foreach ($key in @('traceMs', 'ingestMs', 'publishMs', 'subdivideMs',
+                       'materialMs', 'textureMs')) {
         if ($stages.ContainsKey($key)) {
             $out.Add(('{0,-22}{1:F0}' -f $key, [double]$stages[$key]))
         }
+    }
+
+    # What the wall clock saw that no stage claims.
+    #
+    # Tracing, ingestion and publication are wall-clock stages of this
+    # thread and can be subtracted from a wall time. Subdivision, material
+    # and texture time cannot: they are summed across Hydra's workers and
+    # happen *inside* ingest and publish, so counting them here would
+    # subtract the same work twice. What is left is real work rather than
+    # an error:
+    # opening the stage, discovering plugins, populating the scene index,
+    # writing the EXR, and tearing the device down. Recorded so that a
+    # reader adding the stages up has somewhere to put the difference
+    # instead of wondering what the machine was doing.
+    if ($stages.ContainsKey('traceMs')) {
+        $accounted = ([double]$stages['traceMs'] +
+                      [double]$stages['ingestMs'] +
+                      [double]$stages['publishMs']) / 1000.0
+        $out.Add(('{0,-22}{1:F3}' -f 'outsideSeconds',
+                  [Math]::Max(0.0, $seconds - $accounted)))
     }
     # Written without a byte-order mark. `Set-Content -Encoding utf8` on
     # Windows PowerShell writes one, and a committed text file that begins with
@@ -418,6 +444,8 @@ foreach ($item in $selected) {
             [double]$stages['materialMs'], [uint64]$stages['materialsCompiled'],
             [double]$stages['textureMs'], [uint64]$stages['texturesLoaded'],
             (Format-Bytes ([uint64]$stages['textureBytes'])))
+        Write-Host ("  trace:    {0:F0} ms tracing" -f
+                    [double]$stages['traceMs'])
         Write-Host (("  rays:     {0:N0} from the camera, {1:N0} traced, " +
                      "{2:N0} shadow") -f
                     [uint64]$stages['cameraRays'], [uint64]$stages['tracedRays'],

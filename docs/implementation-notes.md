@@ -5593,3 +5593,70 @@ The consequence to expect: those two scenes will report a moved hit hash on
 every gallery run, forever, until the cause changes. That is signal and not
 noise -- they genuinely do not reproduce across processes -- and it is the
 reason the comparison reports rather than throws.
+
+---
+
+## 2026-09-09 -- The batching lands, and the timer that was never there
+
+**The batching is re-landed and this time verified.** One command buffer per
+sample holding every bounce and the film, in place of one per bounce plus one
+for the film -- 288 submits per call at the gallery's 32 samples and 8 bounces,
+down to 32. Every `SubmitImmediate` allocates a command buffer and a fence,
+submits, and *waits for the device to go idle*, so the GPU drained 288 times a
+frame for nothing: no host reads anything between two bounces. The barriers were
+always there; a submit boundary was simply a free full barrier obtained by
+stalling, and the explicit ones now carry the weight.
+
+Measured back to back on the same machine, the render suite goes from
+**237.84 s to 100.33 s** -- 2.37x, and close enough to the 243/107 the earlier
+attempt reported to call it confirmed.
+
+It was reverted the first time for want of a way to verify it, and that is what
+has changed. Four things say it is sound:
+
+* the whole suite passes, including the render tests with synchronisation
+  validation enabled, which is the gate for exactly this class of change;
+* the batched build reproduces the **unbatched** build's hashes bit for bit --
+  the chess set, the glass ball and Intel Sponza all return the committed
+  `hitHash` and `rayHash` that yesterday's unbatched binary produced. A hazard
+  could not do that;
+* three renders of Sponza inside one batched process are identical in every
+  field;
+* the images are unchanged at rms 0.
+
+One render of Sponza did move, at rms 1.5e-3, with its ray counts and both
+hashes changed -- and this is precisely where the first attempt died, unable to
+tell a real regression from noise. Four further renders returned the committed
+values exactly. It was the acceleration-structure nondeterminism, which Sponza
+exhibits occasionally where the Kitchen Set exhibits it always. Its baseline is
+not adopted.
+
+**And the timing had a hole in it the size of the render.** Paolo noticed wall
+times that the split timings could not account for and asked whether the machine
+was doing something else. It was not. The stats carried `ingestMs`, `publishMs`,
+`subdivideMs`, `materialMs` and `textureMs` -- every one of them a cost of
+*preparing* a scene -- and **nothing at all for tracing it**. The render pass
+computed the duration of every trace and handed it to `RecordFrameTiming`, which
+kept the last one for the delegate's own use and never wrote it anywhere a
+reader could see. `traceMs` now accumulates it across the progressive calls.
+
+That still leaves a gap, and the gap turns out to be the interesting part. The
+chess set at gallery settings: 22.0 s of wall time, of which **8.0 s is
+tracing**. At one sample per pixel, where the trace collapses to 28 ms, the same
+scene still takes **11.85 s**. There is a fixed cost of about **ten and a half
+seconds per process** before any rendering happens -- `usdrecord` and Python
+starting, USD's plugin discovery, opening the stage, Hydra populating its scene
+index before the delegate's own ingest timer starts, then the EXR write and the
+device teardown. None of it is visible from inside the delegate, which is why no
+stage could account for it.
+
+So `outsideSeconds` is recorded explicitly, against trace plus ingest plus
+publish -- the three that are wall-clock stages of the render thread. The other
+three are summed across Hydra's workers and happen *inside* ingest and publish;
+subtracting them as well would count the same work twice.
+
+The consequence for reading the gallery's table: **wall time is a poor measure
+of renderer cost for a cheap scene.** The New Zealand height map's nine seconds
+are almost entirely process startup, and comparing it with the Kitchen Set's
+three minutes compares two things that are mostly not the same quantity.
+`traceMs` is the column that means what the table was always taken to mean.

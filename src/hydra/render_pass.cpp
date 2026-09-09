@@ -438,6 +438,8 @@ void HdClaudeRenderPass::_Execute(
         stages.rayHash.store(tracer->RayHash(), std::memory_order_relaxed);
     }
 
+    HdClaudeAddMilliseconds(_renderDelegate->StageStats().traceMilliseconds,
+                            milliseconds);
     _renderDelegate->RecordFrameTiming(milliseconds, _samplesCompleted);
 
     // The repeat diagnostic, decided here because this is where the image is

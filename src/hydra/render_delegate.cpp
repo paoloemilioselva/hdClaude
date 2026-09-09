@@ -156,6 +156,9 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
                 << stages.hitHash.load(std::memory_order_relaxed) << '\n'
                 << "rayHash "
                 << stages.rayHash.load(std::memory_order_relaxed) << '\n'
+                << "traceMs "
+                << stages.traceMilliseconds.load(std::memory_order_relaxed)
+                << '\n'
                 << "subdivideMs "
                 << stages.subdivideMilliseconds.load(std::memory_order_relaxed)
                 << '\n'
@@ -549,6 +552,8 @@ VtDictionary HdClaudeRenderDelegate::GetRenderStats() const
         hash << _stageStats.rayHash.load(std::memory_order_relaxed);
         stats["rayHash"] = VtValue(hash.str());
     }
+    stats["traceMs"] =
+        VtValue(_stageStats.traceMilliseconds.load(std::memory_order_relaxed));
     stats["subdivideMs"] =
         VtValue(_stageStats.subdivideMilliseconds.load(std::memory_order_relaxed));
     stats["meshesRefined"] =
