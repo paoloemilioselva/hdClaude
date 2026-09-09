@@ -146,6 +146,12 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
                 << stages.instances.load(std::memory_order_relaxed) << '\n'
                 << "triangles "
                 << stages.triangles.load(std::memory_order_relaxed) << '\n'
+                << "blasBuilt "
+                << stages.blasBuilt.load(std::memory_order_relaxed)
+                << '\n'
+                << "blasReused "
+                << stages.blasReused.load(std::memory_order_relaxed)
+                << '\n'
                 << "cameraRays "
                 << stages.cameraRays.load(std::memory_order_relaxed) << '\n'
                 << "tracedRays "
@@ -531,6 +537,10 @@ VtDictionary HdClaudeRenderDelegate::GetRenderStats() const
         VtValue(double(_stageStats.instances.load(std::memory_order_relaxed)));
     stats["triangles"] =
         VtValue(double(_stageStats.triangles.load(std::memory_order_relaxed)));
+    stats["blasBuilt"] =
+        VtValue(double(_stageStats.blasBuilt.load(std::memory_order_relaxed)));
+    stats["blasReused"] =
+        VtValue(double(_stageStats.blasReused.load(std::memory_order_relaxed)));
     stats["cameraRays"] =
         VtValue(double(_stageStats.cameraRays.load(std::memory_order_relaxed)));
     stats["tracedRays"] =

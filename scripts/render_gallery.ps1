@@ -140,7 +140,8 @@ function Write-SceneStats($item, $stages, $seconds, $device, $settings) {
             }
         }
         $moved = [Collections.Generic.List[string]]::new()
-        foreach ($key in @('instances', 'triangles', 'meshesRefined',
+        foreach ($key in @('instances', 'triangles', 'blasBuilt',
+                           'blasReused', 'meshesRefined',
                            'subdivideInputPoints', 'subdivideOutputPoints',
                            'materialsCompiled', 'texturesLoaded',
                            'textureBytes', 'cameraRays', 'tracedRays',
@@ -180,7 +181,8 @@ function Write-SceneStats($item, $stages, $seconds, $device, $settings) {
     $out.Add('')
     $out.Add('[scene]')
     $out.Add(('{0,-22}{1}' -f 'settings', $settings))
-    foreach ($key in @('instances', 'triangles', 'meshesRefined',
+    foreach ($key in @('instances', 'triangles', 'blasBuilt', 'blasReused',
+                       'meshesRefined',
                        'subdivideInputPoints', 'subdivideOutputPoints',
                        'materialsCompiled', 'texturesLoaded', 'textureBytes',
                        'cameraRays', 'tracedRays', 'shadowRays', 'rayHash', 'hitHash',

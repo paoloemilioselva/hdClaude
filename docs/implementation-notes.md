@@ -6159,3 +6159,60 @@ This belongs with hdClaude's standing refusal to substitute something plausible
 for what a scene authored. Rendering the proxy while the stage asks for render
 geometry is that same error wearing a different hat -- except that here the
 input is perfectly valid and the renderer is choosing the wrong half of it.
+
+---
+
+## 2026-09-09 -- Profiling ALab's lab_structure01, and what it is not
+
+The question was whether the acceleration structure needs work. On this evidence
+it does not, and the instrument that says so is two counters that already
+existed and were never reported.
+
+`SceneAccelerator` has kept `_lastBuilt` and `_lastReused` since prototypes were
+first deduplicated by geometry fingerprint, and nothing ever read them. They are
+in the stats now, because the ratio is the difference between instancing and the
+appearance of it: a stage of two thousand instances over a handful of distinct
+prototypes should build a handful of structures, and building two thousand would
+mean the deduplication is not seeing what it should. The chess set reports 8
+built and 13 reused -- twenty-one prototypes collapsing to eight structures.
+
+**The scene is slow in tracing, and it is not the structure.** At the settings
+that matter, `lab_structure01` spends 133 s of 170 s wall inside the trace, at
+**1.12 Mrays/s** against 398 for a simple gallery scene. Subdivision is what
+moves it, and the shape of that is the interesting part:
+
+    subdiv 0    5,483,056 triangles    trace   9.2 s   16.2 Mrays/s
+    subdiv 1   21,937,256 triangles    trace 134.6 s    1.11 Mrays/s
+    subdiv 2   87,749,024 triangles    trace 133.3 s    1.12 Mrays/s
+
+Four times the triangles costs **fourteen and a half times** the trace, and then
+four times more costs nothing at all. That is a cliff followed by saturation, not
+a scaling curve, and a bounding-volume hierarchy does not behave that way.
+
+Four candidates are eliminated by measurement rather than argument. It is not
+**deduplication**: 335 structures built and 4 reused at *both* levels, identical.
+It is not **memory**: the peak moves from 7.31 to 9.11 GiB with between 3.4 and
+5.2 GiB still free, so nothing is spilling. It is not **more work**: the ray
+counts are 149.8 M and 149.5 M, the same rays costing more each. And it is not
+**shading setup**: both levels compile 93 materials, load 902 textures and emit
+character-for-character identical warnings.
+
+What is left is the cost of a ray, which rose by an order of magnitude when the
+geometry was refined and then stopped caring how much geometry there was. That
+is the signature of a per-ray bottleneck rather than a per-triangle one, and the
+honest answer is that **`traceMs` cannot distinguish traversal from shading**,
+because it covers extend, sort, shade, shadow and film together. Splitting it
+with GPU timestamps per kernel is the next instrument, and until it exists any
+claim about which half is slow is a guess.
+
+One other figure deserves attention on its own account: **902 textures weighing
+6.84 GiB**, loaded in about 14 s. That is a fixed cost paid before a single ray
+is traced, it dominates a low-sample render outright, and for a full ALab layout
+rather than one entity it will not fit.
+
+**And the curves.** `stoat01` carries 33 `NurbsCurves` totalling 260 control
+points at a constant width of 0.014 -- whiskers, not a coat. Only `mesh` is in
+`kSupportedRprimTypes`, so Hydra never creates them and they are absent rather
+than wrong. Supporting them is a real piece of phase 3 work (a curve primitive,
+its acceleration-structure geometry type, and a shading frame for a swept
+curve), but this asset sets the bar low enough to be a reasonable first case.

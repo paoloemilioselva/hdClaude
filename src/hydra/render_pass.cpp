@@ -235,6 +235,10 @@ void HdClaudeRenderPass::_Execute(
                 std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - publishStart)
                     .count());
+            stages.blasBuilt.store(tracer->BlasBuilt(),
+                                   std::memory_order_relaxed);
+            stages.blasReused.store(tracer->BlasReused(),
+                                    std::memory_order_relaxed);
             HdClaudeTrace("scene published");
             _uploadedRevision = framing.sceneRevision;
             _hasUploaded = true;

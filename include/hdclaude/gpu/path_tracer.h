@@ -308,6 +308,23 @@ class PathTracer {
     /// disagreeing ray hash puts it upstream of traversal.
     std::uint64_t RayHash() const { return _rayHash; }
 
+    /// How many bottom-level structures the last publication built, and how
+    /// many it reused because another prototype had identical geometry.
+    ///
+    /// Reported because the ratio is the difference between instancing and the
+    /// appearance of it. A stage of two thousand instances over seven distinct
+    /// prototypes should build seven; building two thousand means the
+    /// deduplication is not seeing what it should, and the traversal cost of
+    /// those two answers is not comparable.
+    std::uint32_t BlasBuilt() const
+    {
+        return _accelerator ? _accelerator->LastBuiltCount() : 0;
+    }
+    std::uint32_t BlasReused() const
+    {
+        return _accelerator ? _accelerator->LastReusedCount() : 0;
+    }
+
     /// Start the counters and both hashes over. Called between two renders of
     /// the same image in one process, so each is described by its own numbers
     /// rather than by the sum of itself and everything before it.
