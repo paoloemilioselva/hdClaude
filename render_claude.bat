@@ -52,6 +52,9 @@ IF "%~1"=="" (
   ECHO                                  balanced, performance, ultraperformance
   ECHO   HDCLAUDE_RECONSTRUCTION_PRESET default. default, stable ^(DLSS preset
   ECHO                                  F^), transformer ^(K^), transformer-alt ^(J^)
+  ECHO   HDCLAUDE_DLSS_AUTO_EXPOSURE    let DLSS estimate the frame's exposure
+  ECHO                                  instead of being told it. Off; the
+  ECHO                                  measured value is reported per frame
   ECHO   HDCLAUDE_DLSS_RUNTIME_DIR      directory holding nvngx_dlss.dll, to put
   ECHO                                  a different DLSS runtime in front of the
   ECHO                                  renderer. The version is reported with

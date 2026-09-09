@@ -1250,6 +1250,7 @@ bool PathTracer::EnsureReconstructionImages(
         add(3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, "colorImage");
         add(4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, "depthImage");
         add(5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, "motionImage");
+        add(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, "partials");
 
         const std::string source =
             LoadKernel(_shaderDirectory, "reconstruct_inputs.comp.glsl");
@@ -1268,6 +1269,40 @@ bool PathTracer::EnsureReconstructionImages(
         _reconstructSet = _reconstructPack.AllocateSet();
     }
 
+    // The kernel that finishes the exposure reduction, compiled alongside it
+    // and on the same terms: never in a run that reconstructs nothing.
+    if (!_reconstructExposure.Valid()) {
+        std::vector<BindingDescription> exposureBindings;
+        BindingDescription partialsBinding;
+        partialsBinding.binding = 0;
+        partialsBinding.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        partialsBinding.debugName = "partials";
+        exposureBindings.push_back(partialsBinding);
+        BindingDescription exposureBinding;
+        exposureBinding.binding = 1;
+        exposureBinding.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        exposureBinding.debugName = "exposureImage";
+        exposureBindings.push_back(exposureBinding);
+
+        const std::string exposureSource =
+            LoadKernel(_shaderDirectory, "reconstruct_exposure.comp.glsl");
+        GlslCompileOptions exposureOptions;
+        exposureOptions.moduleName = "reconstruct_exposure.comp.glsl";
+        const GlslCompileResult exposureCompiled =
+            _compiler.Compile(exposureSource, exposureOptions);
+        if (!exposureCompiled.ok) {
+            if (reason != nullptr) {
+                *reason = "reconstruct_exposure.comp.glsl failed:" +
+                          exposureCompiled.log;
+            }
+            return false;
+        }
+        _reconstructExposure = ComputePipeline(
+            _context, exposureCompiled.spirv, exposureBindings,
+            sizeof(std::uint32_t) * 2, "reconstruct_exposure");
+        _reconstructExposureSet = _reconstructExposure.AllocateSet();
+    }
+
     // Storage support on every format the kernel writes, asked of the device
     // rather than assumed. Vulkan requires it of R16G16B16A16_SFLOAT and of
     // neither of the others, so a device that cannot should say so here rather
@@ -1281,7 +1316,7 @@ bool PathTracer::EnsureReconstructionImages(
     };
     for (const VkFormat format :
          {VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R32_SFLOAT,
-          VK_FORMAT_R16G16_SFLOAT}) {
+          VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R16_SFLOAT}) {
         if (!storageSupported(format)) {
             if (reason != nullptr) {
                 *reason = "device supports no storage image in Vulkan format " +
@@ -1336,9 +1371,42 @@ bool PathTracer::EnsureReconstructionImages(
     readback.debugName = "reconstruct.readback";
     _reconstructReadback = VulkanBuffer(_allocator, readback);
 
+    // One float per workgroup of the packing kernel, which is what decides the
+    // size: the reduction's first stage leaves exactly that many partials.
+    const std::uint32_t packGroupsX = (resolution.renderWidth + 7) / 8;
+    const std::uint32_t packGroupsY = (resolution.renderHeight + 7) / 8;
+    BufferDescription luminance;
+    luminance.size = static_cast<VkDeviceSize>(packGroupsX) * packGroupsY *
+                     sizeof(float);
+    luminance.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    luminance.domain = BufferDomain::DeviceLocal;
+    luminance.debugName = "reconstruct.luminance";
+    _reconstructLuminance = VulkanBuffer(_allocator, luminance);
+
+    BufferDescription exposureReadback;
+    exposureReadback.size = sizeof(std::uint16_t);
+    exposureReadback.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    exposureReadback.domain = BufferDomain::HostReadback;
+    exposureReadback.debugName = "reconstruct.exposureReadback";
+    _reconstructExposureReadback = VulkanBuffer(_allocator, exposureReadback);
+
+    // Sampled because DLSS reads it, storage because the reduction writes it.
+    // One texel, which is the shape the guide specifies (3.9).
+    // Transfer-source as well as the usual pair, because the value is copied
+    // back so it can be reported. Believing a number was delivered is not the
+    // same as knowing it, and this is a single texel.
+    _reconstructExposureImage = makeImage(
+        1, 1, VK_FORMAT_R16_SFLOAT,
+        kInputUsage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, "reconstruct.exposure");
+
     _reconstructPack.WriteStorageImage(_reconstructSet, 3, _reconstructColor);
     _reconstructPack.WriteStorageImage(_reconstructSet, 4, _reconstructDepth);
     _reconstructPack.WriteStorageImage(_reconstructSet, 5, _reconstructMotion);
+    _reconstructPack.WriteBuffer(_reconstructSet, 6, _reconstructLuminance);
+    _reconstructExposure.WriteBuffer(_reconstructExposureSet, 0,
+                                     _reconstructLuminance);
+    _reconstructExposure.WriteStorageImage(_reconstructExposureSet, 1,
+                                           _reconstructExposureImage);
 
     // The backend's own feature, built with a command buffer because DLSS's
     // creation is recorded rather than immediate, and submitted on its own: the
@@ -1397,6 +1465,9 @@ std::vector<float> PathTracer::Reconstruct(
     frame.depth = describe(_reconstructDepth);
     frame.motion = describe(_reconstructMotion);
     frame.output = describe(_reconstructOutput);
+    if (resolution.exposure == ReconstructionExposure::Measured) {
+        frame.exposure = describe(_reconstructExposureImage);
+    }
     frame.jitterX = settings.jitter[0];
     frame.jitterY = settings.jitter[1];
     // The film is linear HDR with nothing folded into it: hdClaude applies
@@ -1410,7 +1481,8 @@ std::vector<float> PathTracer::Reconstruct(
         // kernel reads -- to general, which is the layout a storage image is
         // written in.
         for (const VulkanImage* image :
-             {&_reconstructColor, &_reconstructDepth, &_reconstructMotion}) {
+             {&_reconstructColor, &_reconstructDepth, &_reconstructMotion,
+              &_reconstructExposureImage}) {
             image->RecordBarrier(command, VK_IMAGE_LAYOUT_UNDEFINED,
                                  VK_IMAGE_LAYOUT_GENERAL,
                                  VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
@@ -1425,11 +1497,34 @@ std::vector<float> PathTracer::Reconstruct(
         _reconstructPack.Dispatch(command, _reconstructSet, groupsX, groupsY, 1,
                                   extent, sizeof(extent));
 
+        // The reduction's second stage. It reads what the pass above wrote, and
+        // a dispatch does not order itself against the one before it, so the
+        // partials need a barrier of their own -- the images below get theirs
+        // for the backend, and this is the same statement about the buffer.
+        VkMemoryBarrier2 partialsBarrier{};
+        partialsBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        partialsBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        partialsBarrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        partialsBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        partialsBarrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+        VkDependencyInfo dependency{};
+        dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dependency.memoryBarrierCount = 1;
+        dependency.pMemoryBarriers = &partialsBarrier;
+        vkCmdPipelineBarrier2(command, &dependency);
+
+        const std::uint32_t reduction[2] = {groupsX * groupsY,
+                                            resolution.renderWidth *
+                                                resolution.renderHeight};
+        _reconstructExposure.Dispatch(command, _reconstructExposureSet, 1, 1, 1,
+                                      reduction, sizeof(reduction));
+
         // Written by a compute shader here, read by whatever the backend does
         // with them there, which this side of the boundary knows nothing about
         // and so names every stage.
         for (const VulkanImage* image :
-             {&_reconstructColor, &_reconstructDepth, &_reconstructMotion}) {
+             {&_reconstructColor, &_reconstructDepth, &_reconstructMotion,
+              &_reconstructExposureImage}) {
             image->RecordBarrier(command, VK_IMAGE_LAYOUT_GENERAL,
                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1437,6 +1532,31 @@ std::vector<float> PathTracer::Reconstruct(
                                  VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                                  VK_ACCESS_2_MEMORY_READ_BIT);
         }
+
+        // What the backend was told the exposure was, copied back so it can be
+        // reported rather than assumed. One texel; it costs nothing and it is
+        // the difference between believing a value was delivered and knowing
+        // it.
+        _reconstructExposureImage.RecordBarrier(
+            command, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+        VkBufferImageCopy exposureRegion{};
+        exposureRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        exposureRegion.imageSubresource.layerCount = 1;
+        exposureRegion.imageExtent.width = 1;
+        exposureRegion.imageExtent.height = 1;
+        exposureRegion.imageExtent.depth = 1;
+        vkCmdCopyImageToBuffer(command, _reconstructExposureImage.Handle(),
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               _reconstructExposureReadback.Handle(), 1,
+                               &exposureRegion);
+        _reconstructExposureImage.RecordBarrier(
+            command, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COPY_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            VK_ACCESS_2_TRANSFER_READ_BIT, VK_ACCESS_2_MEMORY_READ_BIT);
 
         _reconstruction->Evaluate(command, frame);
 
@@ -1455,6 +1575,13 @@ std::vector<float> PathTracer::Reconstruct(
                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                _reconstructReadback.Handle(), 1, &region);
     });
+
+    {
+        std::uint16_t stored = 0;
+        std::memcpy(&stored, _reconstructExposureReadback.MappedData(),
+                    sizeof(stored));
+        _lastExposure = HalfToFloat(stored);
+    }
 
     const std::size_t pixels =
         static_cast<std::size_t>(resolution.outputWidth) * resolution.outputHeight;

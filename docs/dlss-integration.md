@@ -289,27 +289,78 @@ one into the other reads a correct buffer at the wrong stride. The guide is real
 and correct, it is simply not an AOV at that size. DLAA traces at the output
 extent and is unaffected.
 
+### The exposure a backend is told
+
+DLSS processing HDR wants the frame's exposure: "the value which when multiplied
+to the input color values brings middle gray to an expected level", supplied as
+a 1x1 texture in `pInExposureTexture`, and the guide is imperative about it --
+"the renderer **must** provide" it (3.9). The alternative, its own estimate
+behind `NVSDK_NGX_DLSS_Feature_Flags_AutoExposure`, is what 3.10 offers for
+"some situations" while calling the parameter the preferred method. hdClaude
+took the fallback as its default and passed no exposure at all.
+
+It now measures one, by the guide's formula:
+
+    ExposureValue = MidGray / (AverageLuma * (1 - MidGray))
+
+with MidGray 0.18. `reconstruct_inputs.comp.glsl` was already reading every
+pixel to pack the images, so it also reduces the frame's luminance to one
+partial per workgroup, and `reconstruct_exposure.comp.glsl` finishes the
+reduction and writes the single texel. Two stages because a reduction cannot
+finish inside the pass that produces its inputs, and because at 4K a serial walk
+over 130,000 partials on one lane is milliseconds of an interactive frame.
+`HDCLAUDE_DLSS_AUTO_EXPOSURE=1` puts the flag back.
+
+The value travels back off the device and is reported with the frame, because
+believing a number was delivered is not the same as knowing it -- which turned
+out to matter (below).
+
+**It did not fix what it was written to fix**, and that is worth stating
+plainly. The hypothesis was that a dark frame with a very bright emitter in it
+was defeating DLSS's own estimate. Measured on collectiveproject001 frame 1080,
+a shot lit only by the character's emissive eye, a correctly measured exposure
+of 12.5 produces output byte-identical to auto-exposure -- mean 0.00730509 and
+maximum 6.22266 either way. DLSS's estimate was already the same number, which
+in hindsight is what "the average luminance of this frame" ought to give twice.
+The change stays because the guide requires it and because a backend should not
+have to guess what the renderer already knows, not because it repaired
+anything.
+
+The instrument that proved DLSS *does* read the texture was a sentinel: an
+exposure of 1234 moves the frame's mean from 0.00731 to 0.00834. Without that
+check the correct conclusion and the broken-plumbing conclusion are the same
+observation.
+
 ### What it costs to feed DLSS a path tracer
 
-Measured on the gallery's gold shader ball at 512 px, and asserted in
-`hdClaudeRenderTests`:
+Measured, all against the same reference rendered with reconstruction off:
 
-| Input | Mean of the reference | Mean reconstructed | Energy kept |
-|---|---|---|---|
-| 1 sample a frame, 32 frames | 0.4398 | 0.3093 | 70% |
-| 64 samples a frame, 8 frames | 0.4397 | 0.4267 | 97% |
+| Scene | Samples a frame | Energy kept |
+|---|---|---|
+| Gold shader ball, 512 px | 1 | 70% |
+| Gold shader ball, 512 px | 8 | 91.5% |
+| Gold shader ball, 256 px (test suite) | 128 | 99.8% |
+| collectiveproject001 f1080, 256 px | 8 | 26.3% |
+| collectiveproject001 f1080, 256 px | 128 | 32.5% |
 
-The loss tracks the **variance of the input**, not the reconstruction. DLSS
-rejects outliers against a neighbourhood, and a one-sample path trace is largely
-outliers, so a third of the light is thrown away with the fireflies — the image
-maximum falls from 15.8 to 8.8 in the same measurement. This is not a defect in
-the plumbing, and the test that says so is the near-converged case: at 128
-samples a frame the reconstruction keeps 99.8% of the converged mean, which
-nothing dropping a pre-exposure or scaling a copy could do.
+On the shader ball the loss is variance: DLSS rejects outliers against a
+neighbourhood, a one-sample path trace is largely outliers, and giving it more
+samples a frame removes the disagreement almost entirely.
 
-It is, however, the sharpest argument for Ray Reconstruction (phase 14), which
-is trained on exactly this input. Until then, DLAA over a path-traced sequence
-should be read as an anti-aliaser that also dims what it cannot resolve.
+**On collectiveproject001 frame 1080 that explanation fails.** Sixty-seven per
+cent of the light is gone at 128 samples a frame, where the same measurement on
+the shader ball loses two parts in a thousand, and raising the sample count from
+8 to 128 recovers only six points. Whatever is happening there is not the
+estimator's noise and is not the exposure. It is open, and it is the thing to
+chase next; it was found because a scene lit only by an emissive shader makes it
+unmissable.
+
+One defect found by reading while chasing it, not yet fixed and not yet shown to
+be the cause: `extend.comp.glsl` encodes a camera ray that hits an analytic
+light as `record.x = -2 - light`, which is negative, and `guides.comp.glsl`
+treats every negative record as a miss -- far-plane depth and zero motion. A
+camera-visible `UsdLux` light is therefore handed to a reconstructor as
+background. collectiveproject001 has three rect lights.
 
 ## 6. Reference mode is untouched
 

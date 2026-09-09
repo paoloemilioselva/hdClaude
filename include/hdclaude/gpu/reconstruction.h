@@ -181,6 +181,27 @@ enum class ReconstructionPreset {
 /// have. `Default` already means "whatever NVIDIA currently ships for this
 /// mode", which is the closest thing that actually exists.
 
+/// Where a backend gets the frame's exposure from.
+///
+/// `Measured` is the renderer telling it: the frame's own average luminance,
+/// reduced on the device and handed over as a value. `Automatic` is the backend
+/// estimating it for itself from the image it was given.
+///
+/// Measured is the default because it is what the DLSS guide asks for -- the
+/// exposure parameter is "the preferred method" and auto-exposure is for "some
+/// situations" (3.9, 3.10) -- and because the difference is not subtle on the
+/// kind of frame a path tracer produces. A scene lit only by a small, very
+/// bright emitter kept 58% of its light through auto-exposed DLAA where a
+/// well-exposed scene kept 92%, and "too dark" is the first symptom the guide
+/// lists for an exposure it was not told (docs/dlss-integration.md 5b).
+///
+/// It is a build-time choice rather than a per-frame one because DLSS decides
+/// between them with a feature-creation flag.
+enum class ReconstructionExposure {
+    Measured,
+    Automatic,
+};
+
 /// The extents a backend is being built for, and the model to build.
 ///
 /// The preset belongs here rather than on the frame because DLSS reads it when
@@ -193,6 +214,7 @@ struct ReconstructionResolution {
     std::uint32_t outputHeight = 0;
     ReconstructionQuality quality = ReconstructionQuality::NativeResolution;
     ReconstructionPreset preset = ReconstructionPreset::Default;
+    ReconstructionExposure exposure = ReconstructionExposure::Measured;
 };
 
 /// One image a backend reads or writes. Owned by the caller throughout.
@@ -246,6 +268,17 @@ struct ReconstructionFrame {
     ReconstructionTexture depth;
     ReconstructionTexture motion;
     ReconstructionTexture output;
+
+    /// The frame's exposure, as a 1x1 image: the factor that brings this
+    /// frame's middle grey where the backend expects it, by the DLSS guide's
+    /// `MidGray / (AverageLuma * (1 - MidGray))` (3.9). A 1x1 *image* rather
+    /// than a float because that is the shape DLSS takes it in, so that a
+    /// renderer computing it on the device never has to read it back.
+    ///
+    /// Invalid when the backend was built for `ReconstructionExposure::
+    /// Automatic`, and a backend that is handed nothing must estimate its own
+    /// rather than assume one.
+    ReconstructionTexture exposure;
 
     float jitterX = 0.0f;
     float jitterY = 0.0f;

@@ -34,7 +34,8 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (upAxis)
                          (exposure)
                          (reconstruction)
-                         (reconstructionPreset));
+                         (reconstructionPreset)
+                         (reconstructionAutoExposure));
 
 /// The reconstruction setting, parsed.
 ///
@@ -441,6 +442,9 @@ void HdClaudeRenderPass::_Execute(
     settings.reconstruct = reconstruction.on;
     settings.reconstructionQuality = reconstruction.quality;
     settings.reconstructionPreset = preset;
+    settings.reconstructionAutoExposure =
+        _renderDelegate->GetRenderSetting<bool>(
+            _tokens->reconstructionAutoExposure, false);
 
     HdClaudeTrace("tracing %ux%u, samples %u..%u of %u, %u bounces", width,
                   height, settings.firstSample,
@@ -557,13 +561,17 @@ void HdClaudeRenderPass::_Execute(
     // distinct answer.
     if (reconstruction.on) {
         if (frame.reconstructed) {
-            char described[256];
+            char described[320];
             std::snprintf(described, sizeof(described),
-                          "%s, %s, %ux%u -> %ux%u, preset \"%s\"",
+                          "%s, %s, %ux%u -> %ux%u, preset \"%s\", exposure "
+                          "%.4g (0 means the backend measures its own)",
                           frame.reconstructionBackend.c_str(),
                           reconstructionName.c_str(), frame.renderWidth,
                           frame.renderHeight, frame.width, frame.height,
-                          presetName.c_str());
+                          presetName.c_str(),
+                          settings.reconstructionAutoExposure
+                              ? 0.0
+                              : double(tracer->LastReconstructionExposure()));
             if (_reportedBackend != described) {
                 _reportedBackend = described;
                 TF_STATUS("hdClaude: reconstructing with %s", described);

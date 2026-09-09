@@ -210,6 +210,8 @@ reversed.
 | 2026-09-10 | The DLSS runtime directory is an environment variable, and the version is part of the backend's name | The model *is* the DLL: which DLSS produced a picture is a question about which `nvngx_dlss.dll` was loaded, and NGX has no call that reports it, so the answer is read off the file. Comparing two runtimes is otherwise not something the renderer can even describe |
 | 2026-09-10 | The depth AOV is withheld while reconstruction upscales, rather than resampled | The guide is written at the render extent and the buffer is at the output extent, so writing one into the other reads a correct buffer at the wrong stride. The guide is real and correct and simply not an AOV at that size; stretching it into place would invent depths no ray measured |
 | 2026-09-10 | DLSS loses a third of a one-sample path trace's energy, and that is the input rather than the plumbing | Measured on the gold shader ball: 70% of the converged mean survives at one sample a frame and 97% at sixty-four, with the image maximum falling 15.8 to 8.8. DLSS rejects outliers against a neighbourhood and a one-sample path trace is largely outliers. The near-converged case is the test that separates this from a defect -- at 128 samples a frame the reconstruction keeps 99.8% of the converged mean, which nothing dropping a pre-exposure could do. It is the sharpest argument for Ray Reconstruction ([dlss-integration.md](dlss-integration.md) 5a) |
+| 2026-09-10 | The frame's exposure is measured and handed to the backend, not left to it | The DLSS guide is imperative -- the renderer "must provide" it in a 1x1 texture (3.9) -- and calls the parameter the preferred method against its own estimate (3.10). It did *not* fix the emissive-scene energy loss it was written for: a measured 12.5 and auto-exposure produce byte-identical output on collectiveproject001 frame 1080. It stays because the specification requires it and a backend should not guess what the renderer already knows ([dlss-integration.md](dlss-integration.md) 5a) |
+| 2026-09-10 | A value handed to a backend is read back and reported, not assumed delivered | Three separate experiments on the exposure were invalidated by a stale installed shader, and every one of them read as "DLSS ignores this input" -- which is the same observation as "the plumbing is broken". A sentinel of 1234 moved the frame's mean and settled it. The exposure now travels back off the device and is printed with the frame |
 | 2026-09-05 | The pbrlib override set is all-or-nothing | MaterialX resolves `#include` relative to the including file, so mixing one upstream closure with one hdClaude closure emits `struct ClosureData` twice. The set is exactly the 22 pbrlib files that include `mx_closure_type.glsl`; no stdlib file does |
 
 ## Open questions
@@ -224,6 +226,17 @@ Tracked here rather than decided prematurely.
 3. **Displacement residency.** GPU displacement (phase 16) multiplies vertex
    memory by the refinement level. Whether to cache displaced positions or
    re-evaluate per BLAS build is a memory/time trade to measure.
-4. **Volume rendering.** MaterialX VDFs are declared and generated; hdClaude
+4. **Where two thirds of an emissive scene's light goes under DLSS.**
+   collectiveproject001 frame 1080, lit only by the character's emissive eye,
+   keeps 32.5% of the reference's mean through DLAA at 128 samples a frame,
+   where the gold shader ball keeps 99.8% at the same setting. It is not the
+   estimator's variance -- raising samples a frame from 8 to 128 recovers six
+   points, not sixty -- and it is not the exposure, which was measured, supplied
+   and shown to change nothing. Candidates not yet excluded: the analytic-light
+   guide defect below, the depth guide's distribution on a stage authored at
+   `metersPerUnit = 0.01`, and DLSS's handling of thin bright curve geometry
+   (Programming Guide 3.6.4). Chase it with the same instrument that found it: a
+   scene whose only light is an emissive shader ([dlss-integration.md](dlss-integration.md) 5a).
+5. **Volume rendering.** MaterialX VDFs are declared and generated; hdClaude
    currently plans homogeneous interior media only. Heterogeneous volumes
    (`UsdVol`) are not scheduled.

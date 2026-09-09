@@ -39,7 +39,8 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (upAxis)
                          (exposure)
                          (reconstruction)
-                         (reconstructionPreset));
+                         (reconstructionPreset)
+                         (reconstructionAutoExposure));
 
 namespace {
 
@@ -565,6 +566,13 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         {"Reconstruction preset", _tokens->reconstructionPreset,
          VtValue(std::string(TfGetenv("HDCLAUDE_RECONSTRUCTION_PRESET",
                                       "default")))},
+
+        // Let DLSS estimate the frame's exposure rather than being told it.
+        // Off, because being told is what its own guide asks for, and because
+        // on a path-traced frame the estimate costs a measurable fraction of
+        // the image's light; on, to reproduce that comparison.
+        {"Reconstruction auto-exposure", _tokens->reconstructionAutoExposure,
+         VtValue(TfGetenvBool("HDCLAUDE_DLSS_AUTO_EXPOSURE", false))},
     };
 }
 

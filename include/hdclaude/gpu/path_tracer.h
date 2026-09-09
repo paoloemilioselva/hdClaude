@@ -169,6 +169,18 @@ struct RenderSettings {
     /// driver or model update; naming one is what makes a comparison between
     /// two of them reproducible.
     ReconstructionPreset reconstructionPreset = ReconstructionPreset::Default;
+
+    /// Let the backend estimate the frame's exposure instead of being told it.
+    ///
+    /// Off, because the DLSS guide calls the exposure parameter the preferred
+    /// method and its own estimate a thing for "some situations" (3.9, 3.10),
+    /// and because a path-traced frame is the situation where the estimate is
+    /// worst: a dark scene with a handful of very bright pixels in it lost 42%
+    /// of its light to an auto-exposed DLAA pass. Kept as a setting because it
+    /// is the comparison that establishes that, and because it is the only way
+    /// back if a backend's own estimate is ever the better one
+    /// (docs/dlss-integration.md 5b).
+    bool reconstructionAutoExposure = false;
 };
 
 /// A material ready to shade with: the SPIR-V of its generated MaterialX
@@ -388,6 +400,10 @@ class PathTracer {
     std::vector<float> Render(std::uint32_t width, std::uint32_t height,
                               const RenderCamera& camera,
                               const RenderSettings& settings);
+
+    /// The exposure value the backend was handed for the last reconstructed
+    /// frame, read back off the device. Zero when nothing was reconstructed.
+    float LastReconstructionExposure() const { return _lastExposure; }
 
     /// The reconstruction backend's name, or an empty string when there is
     /// none.
@@ -651,6 +667,14 @@ class PathTracer {
     ComputePipeline _reconstructPack;
     VkDescriptorSet _reconstructSet = VK_NULL_HANDLE;
 
+    /// The second half of the exposure reduction: the packing kernel leaves one
+    /// luminance partial per workgroup and this turns them into the single value
+    /// DLSS is told (docs/dlss-integration.md 5b). A separate dispatch because
+    /// a reduction cannot finish inside the pass that produces its inputs --
+    /// there is no barrier between workgroups.
+    ComputePipeline _reconstructExposure;
+    VkDescriptorSet _reconstructExposureSet = VK_NULL_HANDLE;
+
     std::unique_ptr<ReconstructionBackend> _reconstruction;
     /// Whether creating one has been attempted. The attempt is made once:
     /// NGX's answer does not change within a process, and retrying it every
@@ -666,6 +690,13 @@ class PathTracer {
     VulkanImage _reconstructMotion;
     VulkanImage _reconstructOutput;
     VulkanBuffer _reconstructReadback;
+    /// One luminance partial per workgroup of the packing kernel, and the 1x1
+    /// image carrying the exposure they reduce to.
+    VulkanBuffer _reconstructLuminance;
+    VulkanImage _reconstructExposureImage;
+    VulkanBuffer _reconstructExposureReadback;
+    /// The exposure the backend was told, read back rather than assumed.
+    float _lastExposure = 0.0f;
     /// What the images and the backend's feature were built for. A frame whose
     /// plan differs rebuilds both.
     ReconstructionResolution _reconstructionResolution;

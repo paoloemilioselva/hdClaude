@@ -471,8 +471,17 @@ class NgxBackend final : public ReconstructionBackend {
         // Sharpening is not set because the SDK has deprecated it.
         create.InFeatureCreateFlags =
             NVSDK_NGX_DLSS_Feature_Flags_IsHDR |
-            NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
-            NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
+            NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
+        // AutoExposure only when the caller has no exposure to give. The guide
+        // calls the exposure parameter "the preferred method" and auto-exposure
+        // a thing for "some situations" (3.9, 3.10), and on a path-traced frame
+        // -- a dark scene with a handful of very bright pixels in it -- the
+        // estimate DLSS makes for itself is far enough out to cost 42% of the
+        // image's light.
+        if (resolution.exposure == ReconstructionExposure::Automatic) {
+            create.InFeatureCreateFlags |=
+                NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
+        }
 
         const NVSDK_NGX_Result result = NGX_VULKAN_CREATE_DLSS_EXT1(
             _context.Device(), command, 1, 1, &_feature, _parameters, &create);
@@ -533,6 +542,14 @@ class NgxBackend final : public ReconstructionBackend {
         // which way is up, only that everything it is given agrees.
         eval.InJitterOffsetX = -frame.jitterX;
         eval.InJitterOffsetY = -frame.jitterY;
+        // The frame's exposure, when the caller measured one. DLSS samples only
+        // the first channel of this image, and the feature was built without
+        // the auto-exposure flag precisely so that it reads this instead.
+        NVSDK_NGX_Resource_VK exposure{};
+        if (frame.exposure.Valid()) {
+            exposure = ToNgx(frame.exposure, false);
+            eval.pInExposureTexture = &exposure;
+        }
         eval.InRenderSubrectDimensions.Width = frame.color.width;
         eval.InRenderSubrectDimensions.Height = frame.color.height;
         eval.InReset = (frame.reset || _reset) ? 1 : 0;
