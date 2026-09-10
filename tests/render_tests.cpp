@@ -3540,6 +3540,94 @@ int main()
             CHECK(!tracer.EndFrame(hdclaude::FrameHandle{}).Valid());
         }
 
+        // --- A chain of segments is the capsule it describes -----------------
+        //
+        // Four segments laid end to end along one line, with one radius
+        // throughout, describe exactly the same solid as a single segment
+        // spanning the whole of it. So the two must render the same surface,
+        // and the depth AOV is where to ask: it is geometry with no lighting in
+        // it, so a difference here cannot be blamed on a normal or a shadow.
+        //
+        // This exists because the implicit curve path draws a crescent at every
+        // joint (roadmap open question 5) and the argument about whether that
+        // is geometry or shading needs an instrument rather than a picture.
+        {
+            constexpr std::uint32_t kSize = 192;
+            constexpr float kRadius = 0.25f;
+
+            const auto depthOf = [&](const std::vector<float>& segments,
+                                     std::uint64_t revision) {
+                Scene scene;
+                MeshPrototype strand;
+                strand.debugName = "chain";
+                strand.segments = segments;
+                scene.prototypes.push_back(strand);
+                scene.instances.push_back({0, Transform3x4{}, 0, true});
+                tracer.SetScene(scene, {materials[1]});
+
+                hdclaude::FrameDescription frame;
+                frame.width = kSize;
+                frame.height = kSize;
+                frame.camera = LookDownZWithClip(4.0f, 0.1f, 100.0f);
+                frame.mode = hdclaude::RenderMode::Reference;
+                frame.sceneRevision = revision;
+                frame.settings.samplesPerPixel = 1;
+                frame.settings.maxBounces = 1;
+                return tracer.EndFrame(tracer.BeginFrame(frame)).depth;
+            };
+
+            // One segment from y = -1 to y = 1.
+            const std::vector<float> single = {
+                0.0f, -1.0f, 0.0f, kRadius, 0.0f,
+                0.0f,  1.0f, 0.0f, kRadius, 1.0f,
+            };
+            // The same span in four, joined end to end.
+            std::vector<float> chain;
+            for (int i = 0; i < 4; ++i) {
+                const float y0 = -1.0f + 0.5f * float(i);
+                const float y1 = y0 + 0.5f;
+                const float v0 = 0.25f * float(i);
+                chain.insert(chain.end(),
+                             {0.0f, y0, 0.0f, kRadius, v0,
+                              0.0f, y1, 0.0f, kRadius, v0 + 0.25f});
+            }
+
+            const std::vector<float> one = depthOf(single, 51);
+            const std::vector<float> four = depthOf(chain, 52);
+            CHECK_EQ(one.size(), std::size_t(kSize) * kSize);
+            CHECK_EQ(four.size(), one.size());
+
+            std::size_t differing = 0;
+            double worst = 0.0;
+            for (std::size_t i = 0; i < one.size(); ++i) {
+                const double delta = std::abs(double(one[i]) - double(four[i]));
+                if (delta > 1.0e-5) {
+                    ++differing;
+                    worst = std::max(worst, delta);
+                }
+            }
+            std::printf("  curve chain: %zu of %zu depths differ, worst %.6f\n",
+                        differing, one.size(), worst);
+            // Deliberately *not* asserted, and the absence is the point.
+            //
+            // The right assertion is that nothing differs: the two descriptions
+            // are of one solid, so a ray either reaches the same surface in
+            // both or the segments are not the capsule they claim. Today 656 of
+            // 36,864 differ, worst 0.00163, concentrated at the joints -- the
+            // defect behind roadmap open question 5, and the reason implicit
+            // curves are not the default. Asserting zero would leave a red
+            // suite; asserting the number that passes today would be a
+            // tolerance invented to hide it, which is worse. So the measurement
+            // is printed and the assertion is owed.
+            //
+            // What *is* asserted is that this stays an artefact rather than
+            // becoming a hole: the two must still describe the same solid over
+            // the great majority of it, so a change that made the two
+            // descriptions wholly different would fail here rather than pass
+            // quietly.
+            CHECK(differing < one.size() / 8);
+        }
+
         // --- A curve is intersected, not tessellated -------------------------
         //
         // The whole implicit path end to end: an acceleration structure of

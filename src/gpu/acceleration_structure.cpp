@@ -463,6 +463,16 @@ bool BottomLevelStructure::Refit(VulkanAllocator& allocator,
     if (prototype.TopologyFingerprint() != _topology) {
         return false;
     }
+    // A curve prototype is never refitted. An update rewrites the vertex data
+    // the structure was built over, and for curves that is the segment buffer
+    // *and* the boxes the tree partitions -- neither of which this rewrites,
+    // so a deforming groom would keep the shape it had on the frame its
+    // structure was built and only its shading would follow. Rebuilding is
+    // correct and says so; making the update handle boxes is the better answer
+    // and is not what this is.
+    if (_curve) {
+        return false;
+    }
 
     const std::string name =
         prototype.debugName.empty() ? std::string("prototype") : prototype.debugName;

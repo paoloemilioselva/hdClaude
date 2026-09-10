@@ -287,6 +287,27 @@ Tracked here rather than decided prematurely.
    distance means the same thing in the world ray's parameterisation as in the
    object ray's when the two are handed to different kernels.
 
+
+   **Narrowed since.** It is geometry, not shading: a chain of four segments
+   describing one capsule renders 656 of 36,864 *depths* different from the
+   single segment describing the same solid, worst 0.00163, and depth carries no
+   lighting. `tests/render_tests.cpp` measures exactly that and prints it.
+
+   Three further things are excluded. It is not the algorithm -- a host
+   transcription in double precision agrees exactly with the single capsule on
+   the very rays that differ on the device. It is not conditioning -- rewriting
+   the quadratic with cross products, which removes the cancellation in
+   `|ba|^2|oa|^2 - (ba.oa)^2`, and rewriting the root in the numerically stable
+   form both leave the result bit-identical. Taking the far root when the near
+   one falls outside the segment makes it *worse* (719, 0.00314), because that
+   root is where the ray leaves the solid.
+
+   What did move it: growing every AABB threefold takes it from 656 to 599. So
+   part of this is boxes rejecting a grazing hit that the surface inside them
+   would have answered, after which an interior sphere -- which a single capsule
+   does not have -- supplies a farther hit instead of none. That is a lead
+   rather than the answer, since padding removed only a tenth of it.
+
 6. **Volume rendering.** MaterialX VDFs are declared and generated; hdClaude
    currently plans homogeneous interior media only. Heterogeneous volumes
    (`UsdVol`) are not scheduled.
