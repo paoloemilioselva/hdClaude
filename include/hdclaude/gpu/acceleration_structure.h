@@ -33,8 +33,15 @@ namespace hdclaude {
 class BottomLevelStructure {
   public:
     BottomLevelStructure() = default;
+    /// Build. `allowUpdate` asks for a structure that can later be refitted.
+    ///
+    /// Not the default, because it is not free: a structure built to be
+    /// updatable is a little larger and traverses a little slower, and most
+    /// prototypes in most scenes never move. The accelerator asks for it the
+    /// *second* time it sees a topology, which is the first moment there is
+    /// evidence that this geometry deforms.
     BottomLevelStructure(const VulkanContext& context, VulkanAllocator& allocator,
-                         const MeshPrototype& prototype);
+                         const MeshPrototype& prototype, bool allowUpdate = false);
     ~BottomLevelStructure();
 
     BottomLevelStructure(BottomLevelStructure&&) noexcept;
@@ -46,6 +53,30 @@ class BottomLevelStructure {
     VkAccelerationStructureKHR Handle() const { return _structure; }
     VkDeviceAddress DeviceAddress() const { return _address; }
     std::uint64_t Fingerprint() const { return _fingerprint; }
+    std::uint64_t Topology() const { return _topology; }
+    /// Whether this structure was built so that `Refit` can work on it.
+    bool Updatable() const { return _updatable; }
+
+    /// Move the vertices without rebuilding.
+    ///
+    /// A Vulkan acceleration-structure update keeps the tree it already has and
+    /// moves its bounds to follow the new positions, which is what makes it
+    /// cheap: the topology is unchanged by definition, so nothing has to be
+    /// partitioned again. The vertex, normal and UV buffers are overwritten in
+    /// place rather than reallocated -- a second copy of a deforming groom is
+    /// exactly the allocation that pushes a frame past the device's memory and
+    /// into host-visible spill.
+    ///
+    /// Returns false, having changed nothing, when this structure was not built
+    /// updatable or the prototype is not the same topology. A caller that gets
+    /// false rebuilds.
+    ///
+    /// The cost is BVH quality: refitting only moves bounds, so a mesh that
+    /// deforms far from the shape it was built around traverses more slowly
+    /// each time. hdClaude refits for as long as the topology holds and does not
+    /// yet rebuild on a quality measure; what that measure should be is not
+    /// something to invent without one.
+    bool Refit(VulkanAllocator& allocator, const MeshPrototype& prototype);
 
     const VulkanBuffer& Positions() const { return _positions; }
     const VulkanBuffer& Indices() const { return _indices; }
@@ -65,7 +96,11 @@ class BottomLevelStructure {
     VulkanBuffer _normals;
     VulkanBuffer _uvs;
     std::uint32_t _triangleCount = 0;
+    std::uint32_t _vertexCount = 0;
     std::uint64_t _fingerprint = 0;
+    std::uint64_t _topology = 0;
+    bool _updatable = false;
+    OpacityClass _opacity = OpacityClass::Opaque;
 };
 
 /// The instance-level structure.
@@ -123,6 +158,8 @@ class SceneAccelerator {
     /// performance defect invisible in an image.
     std::uint32_t LastBuiltCount() const { return _lastBuilt; }
     std::uint32_t LastReusedCount() const { return _lastReused; }
+    /// How many kept their tree and moved its bounds to follow new vertices.
+    std::uint32_t LastRefitCount() const { return _lastRefit; }
 
   private:
     const VulkanContext& _context;
@@ -134,6 +171,7 @@ class SceneAccelerator {
     std::vector<std::uint64_t> _prototypeFingerprints;
     std::uint32_t _lastBuilt = 0;
     std::uint32_t _lastReused = 0;
+    std::uint32_t _lastRefit = 0;
 };
 
 }  // namespace hdclaude

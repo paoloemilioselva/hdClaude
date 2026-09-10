@@ -365,6 +365,8 @@ void HdClaudeRenderPass::_Execute(
                                    std::memory_order_relaxed);
             stages.blasReused.store(tracer->BlasReused(),
                                     std::memory_order_relaxed);
+            stages.blasRefit.store(tracer->BlasRefit(),
+                                   std::memory_order_relaxed);
             HdClaudeTrace("scene published");
             _uploadedRevision = framing.sceneRevision;
             _hasUploaded = true;

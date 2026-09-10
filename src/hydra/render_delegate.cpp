@@ -162,6 +162,9 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
                 << "blasBuilt "
                 << stages.blasBuilt.load(std::memory_order_relaxed)
                 << '\n'
+                << "blasRefit "
+                << stages.blasRefit.load(std::memory_order_relaxed)
+                << '\n'
                 << "blasReused "
                 << stages.blasReused.load(std::memory_order_relaxed)
                 << '\n'
@@ -662,6 +665,8 @@ VtDictionary HdClaudeRenderDelegate::GetRenderStats() const
         VtValue(double(_stageStats.blasBuilt.load(std::memory_order_relaxed)));
     stats["blasReused"] =
         VtValue(double(_stageStats.blasReused.load(std::memory_order_relaxed)));
+    stats["blasRefit"] =
+        VtValue(double(_stageStats.blasRefit.load(std::memory_order_relaxed)));
     stats["cameraRays"] =
         VtValue(double(_stageStats.cameraRays.load(std::memory_order_relaxed)));
     stats["tracedRays"] =

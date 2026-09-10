@@ -70,6 +70,7 @@ struct HdClaudeStageStats {
     /// geometry matched one already held. See PathTracer::BlasBuilt.
     std::atomic<std::uint64_t> blasBuilt{0};
     std::atomic<std::uint64_t> blasReused{0};
+    std::atomic<std::uint64_t> blasRefit{0};
 
     std::atomic<std::uint64_t> cameraRays{0};
     /// One per active path per bounce, and one per shadow ray shading asked
@@ -133,6 +134,7 @@ struct HdClaudeStageStats {
         triangles.store(0, std::memory_order_relaxed);
         blasBuilt.store(0, std::memory_order_relaxed);
         blasReused.store(0, std::memory_order_relaxed);
+        blasRefit.store(0, std::memory_order_relaxed);
         cameraRays.store(0, std::memory_order_relaxed);
         tracedRays.store(0, std::memory_order_relaxed);
         shadowRays.store(0, std::memory_order_relaxed);

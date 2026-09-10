@@ -282,6 +282,82 @@ void TestIdenticalGeometryReusesOneStructure(const VulkanContext& context,
     CHECK_EQ(accelerator.Tlas().InstanceCount(), std::uint32_t(2));
 }
 
+/// A deforming mesh keeps its structure and moves its bounds.
+///
+/// Two claims, and the second is the one that matters. The counters must say a
+/// refit happened -- a refit that silently turns into a rebuild is a
+/// performance defect with no trace in the image, which is the same reason the
+/// reuse counters exist. And the refit must actually move the geometry: an
+/// update that wrote new vertices but left the tree describing the old ones
+/// would still report a hit, at the place the mesh used to be, and every
+/// counter would look right.
+void TestDeformationRefitsRatherThanRebuilds(Tracer& tracer,
+                                             const VulkanContext& context,
+                                             VulkanAllocator& allocator)
+{
+    Scene scene;
+    scene.prototypes.push_back(MakeQuad("deforming"));
+    scene.instances.push_back({0, Transform3x4{}, 0, true});
+
+    SceneAccelerator accelerator(context, allocator);
+    accelerator.Update(scene);
+    CHECK_EQ(accelerator.LastBuiltCount(), std::uint32_t(1));
+    CHECK_EQ(accelerator.LastRefitCount(), std::uint32_t(0));
+
+    // The same mesh at a later moment: the vertices move, the topology does
+    // not. Nothing holds an updatable structure for it yet -- the first build
+    // had no evidence this geometry deforms -- so this rebuilds, and asks for
+    // one, which is what makes the frame after it cheap.
+    const auto shift = [&scene](float by) {
+        for (std::size_t i = 0; i < scene.prototypes[0].positions.size(); i += 3) {
+            scene.prototypes[0].positions[i] += by;
+        }
+    };
+
+    shift(2.0f);
+    accelerator.Update(scene);
+    CHECK_EQ(accelerator.LastBuiltCount(), std::uint32_t(1));
+    CHECK_EQ(accelerator.LastRefitCount(), std::uint32_t(0));
+
+    // Moved again. Now there is an updatable structure of this topology, and
+    // the tree is kept.
+    shift(-2.0f);
+    accelerator.Update(scene);
+    CHECK_EQ(accelerator.LastBuiltCount(), std::uint32_t(0));
+    CHECK_EQ(accelerator.LastRefitCount(), std::uint32_t(1));
+    CHECK_EQ(accelerator.LastReusedCount(), std::uint32_t(0));
+
+    // Back at the origin, which is where the last shift put it. The view spans
+    // x in [-4, 4], so the quad's own two units are around the middle.
+    {
+        const std::vector<Hit> hits = tracer.Trace(accelerator.Tlas(), 4.0f, 5.0f);
+        CHECK_EQ(At(hits, 0.5f, 0.5f).instance, 0);
+        CHECK_EQ(At(hits, 0.8f, 0.5f).instance, -1);
+    }
+
+    // And now the assertion the counters cannot make: refit once more, to a
+    // place the quad has never been, and look. A tree still describing the old
+    // bounds answers at 0.5 and misses at 0.75.
+    shift(2.0f);
+    accelerator.Update(scene);
+    CHECK_EQ(accelerator.LastRefitCount(), std::uint32_t(1));
+    {
+        const std::vector<Hit> hits = tracer.Trace(accelerator.Tlas(), 4.0f, 5.0f);
+        CHECK_EQ(At(hits, 0.75f, 0.5f).instance, 0);
+        CHECK_EQ(At(hits, 0.5f, 0.5f).instance, -1);
+    }
+
+    // A topology change is not refittable and must rebuild: the tree partitions
+    // primitives, and there is no sense in which a different set of them is the
+    // same tree moved.
+    scene.prototypes[0].indices = {0, 1, 2};
+    accelerator.Update(scene);
+    CHECK_EQ(accelerator.LastBuiltCount(), std::uint32_t(1));
+    CHECK_EQ(accelerator.LastRefitCount(), std::uint32_t(0));
+
+    std::printf("  deformation refits, and the refit moves the geometry\n");
+}
+
 void TestUnchangedSceneRebuildsNothing(const VulkanContext& context,
                                        VulkanAllocator& allocator)
 {
@@ -366,6 +442,7 @@ int main()
             TestSingleQuadIsHitEverywhere(tracer, *context, allocator);
             TestViewportLargerThanQuadMissesOutside(tracer, *context, allocator);
             TestInstanceTransformsArePlaced(tracer, *context, allocator);
+            TestDeformationRefitsRatherThanRebuilds(tracer, *context, allocator);
         }
         TestIdenticalGeometryReusesOneStructure(*context, allocator);
         TestUnchangedSceneRebuildsNothing(*context, allocator);

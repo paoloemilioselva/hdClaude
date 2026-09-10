@@ -143,6 +143,64 @@ std::uint64_t MeshPrototype::Fingerprint() const
     return hash;
 }
 
+/// Overwrite a device-local buffer that already exists and is the right size.
+///
+/// The point of it is what it does *not* do: allocate. A refit re-uploads the
+/// positions of a deforming mesh every frame, and allocating a second copy to
+/// do it is how a groom that fits in device memory stops fitting.
+template <typename T>
+void OverwriteDeviceLocal(const VulkanContext& context,
+                          VulkanAllocator& allocator, VulkanBuffer& destination,
+                          const std::vector<T>& data, const char* name)
+{
+    if (data.empty() || !destination.Valid()) {
+        return;
+    }
+    const VkDeviceSize size = data.size() * sizeof(T);
+
+    BufferDescription stagingDescription;
+    stagingDescription.size = size;
+    stagingDescription.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    stagingDescription.domain = BufferDomain::HostUpload;
+    stagingDescription.debugName = std::string(name) + ".staging";
+    VulkanBuffer staging(allocator, stagingDescription);
+    staging.Write(data.data(), size);
+
+    context.SubmitImmediate([&](VkCommandBuffer command) {
+        VkBufferCopy region{};
+        region.size = size;
+        vkCmdCopyBuffer(command, staging.Handle(), destination.Handle(), 1,
+                        &region);
+    });
+}
+
+std::uint64_t MeshPrototype::TopologyFingerprint() const
+{
+    std::uint64_t hash = 0x9e3779b97f4a7c15ULL;
+    if (!indices.empty()) {
+        hash = Fnv1a64(indices.data(), indices.size() * sizeof(std::uint32_t),
+                       hash);
+    }
+    // The vertex count, because `maxVertex` is part of what the structure was
+    // built with; and the sizes of the shading arrays, because a refit reuses
+    // their buffers and cannot resize them.
+    const std::uint64_t counts[4] = {
+        static_cast<std::uint64_t>(positions.size()),
+        static_cast<std::uint64_t>(normals.size()),
+        static_cast<std::uint64_t>(uvs.size()),
+        static_cast<std::uint64_t>(triangleMaterials.size()),
+    };
+    hash = Fnv1a64(counts, sizeof(counts), hash);
+
+    const std::uint8_t flags[3] = {
+        static_cast<std::uint8_t>(normalsPerCorner),
+        static_cast<std::uint8_t>(uvsPerCorner),
+        static_cast<std::uint8_t>(opacity),
+    };
+    hash = Fnv1a64(flags, sizeof(flags), hash);
+    return hash;
+}
+
 std::size_t Scene::TotalTriangles() const
 {
     std::size_t total = 0;
@@ -154,13 +212,31 @@ std::size_t Scene::TotalTriangles() const
     return total;
 }
 
+/// Remove the one entry of `topology` that names `fingerprint`.
+///
+/// A multimap because several structures can share a topology; by value because
+/// the one being taken is a particular structure, not any structure that
+/// happens to have the same shape.
+void EraseTopology(std::unordered_multimap<std::uint64_t, std::uint64_t>& index,
+                   std::uint64_t topology, std::uint64_t fingerprint)
+{
+    auto range = index.equal_range(topology);
+    for (auto it = range.first; it != range.second; ++it) {
+        if (it->second == fingerprint) {
+            index.erase(it);
+            return;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // BottomLevelStructure
 // ---------------------------------------------------------------------------
 
 BottomLevelStructure::BottomLevelStructure(const VulkanContext& context,
                                            VulkanAllocator& allocator,
-                                           const MeshPrototype& prototype)
+                                           const MeshPrototype& prototype,
+                                           bool allowUpdate)
     : _context(&context)
 {
     context.RequireLive("BottomLevelStructure");
@@ -171,7 +247,11 @@ BottomLevelStructure::BottomLevelStructure(const VulkanContext& context,
     }
 
     _fingerprint = prototype.Fingerprint();
+    _topology = prototype.TopologyFingerprint();
+    _updatable = allowUpdate;
+    _opacity = prototype.opacity;
     _triangleCount = static_cast<std::uint32_t>(prototype.TriangleCount());
+    _vertexCount = static_cast<std::uint32_t>(prototype.VertexCount());
 
     const std::string name =
         prototype.debugName.empty() ? std::string("prototype") : prototype.debugName;
@@ -221,6 +301,9 @@ BottomLevelStructure::BottomLevelStructure(const VulkanContext& context,
     // for the life of the scene, and reuse means even a deforming mesh rebuilds
     // rarely.
     buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    if (allowUpdate) {
+        buildInfo.flags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+    }
     buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     buildInfo.geometryCount = 1;
     buildInfo.pGeometries = &geometry;
@@ -280,7 +363,88 @@ void BottomLevelStructure::Reset()
     _uvs.Reset();
     _context = nullptr;
     _triangleCount = 0;
+    _vertexCount = 0;
     _fingerprint = 0;
+    _topology = 0;
+    _updatable = false;
+}
+
+bool BottomLevelStructure::Refit(VulkanAllocator& allocator,
+                                 const MeshPrototype& prototype)
+{
+    if (!_updatable || _structure == VK_NULL_HANDLE || _context == nullptr) {
+        return false;
+    }
+    if (prototype.TopologyFingerprint() != _topology) {
+        return false;
+    }
+
+    const std::string name =
+        prototype.debugName.empty() ? std::string("prototype") : prototype.debugName;
+
+    // The buffers keep their allocations and take new contents. The index
+    // buffer is not touched: an update may not change it, and the topology
+    // fingerprint above is what guarantees it has not.
+    OverwriteDeviceLocal(*_context, allocator, _positions, prototype.positions,
+                         (name + ".positions").c_str());
+    OverwriteDeviceLocal(*_context, allocator, _normals, prototype.normals,
+                         (name + ".normals").c_str());
+    OverwriteDeviceLocal(*_context, allocator, _uvs, prototype.uvs,
+                         (name + ".uvs").c_str());
+
+    VkAccelerationStructureGeometryKHR geometry{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+    geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+    geometry.flags = _opacity == OpacityClass::Opaque ? VK_GEOMETRY_OPAQUE_BIT_KHR
+                                                      : VkGeometryFlagsKHR{0};
+
+    VkAccelerationStructureGeometryTrianglesDataKHR& triangles =
+        geometry.geometry.triangles;
+    triangles.sType =
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+    triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+    triangles.vertexData.deviceAddress = _positions.DeviceAddress();
+    triangles.vertexStride = 3 * sizeof(float);
+    triangles.maxVertex = _vertexCount > 0 ? _vertexCount - 1 : 0;
+    triangles.indexType = VK_INDEX_TYPE_UINT32;
+    triangles.indexData.deviceAddress = _indices.DeviceAddress();
+    triangles.transformData.deviceAddress = 0;
+
+    VkAccelerationStructureBuildGeometryInfoKHR buildInfo{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+    buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    // The same flags the structure was built with, which an update requires.
+    buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
+                      VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+    buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+    buildInfo.geometryCount = 1;
+    buildInfo.pGeometries = &geometry;
+
+    VkAccelerationStructureBuildSizesInfoKHR sizes{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+    vkGetAccelerationStructureBuildSizesKHR(
+        _context->Device(), VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+        &buildInfo, &_triangleCount, &sizes);
+
+    const AlignedScratch scratch = MakeScratch(
+        *_context, allocator, sizes.updateScratchSize, name + ".refit");
+
+    // Updated in place: source and destination are the same structure, which is
+    // what the update mode is for and what keeps a second copy from existing.
+    buildInfo.srcAccelerationStructure = _structure;
+    buildInfo.dstAccelerationStructure = _structure;
+    buildInfo.scratchData.deviceAddress = scratch.address;
+
+    VkAccelerationStructureBuildRangeInfoKHR range{};
+    range.primitiveCount = _triangleCount;
+    const VkAccelerationStructureBuildRangeInfoKHR* ranges = &range;
+
+    _context->SubmitImmediate([&](VkCommandBuffer command) {
+        vkCmdBuildAccelerationStructuresKHR(command, 1, &buildInfo, &ranges);
+    });
+
+    _fingerprint = prototype.Fingerprint();
+    return true;
 }
 
 BottomLevelStructure::~BottomLevelStructure() { Reset(); }
@@ -295,7 +459,11 @@ BottomLevelStructure::BottomLevelStructure(BottomLevelStructure&& other) noexcep
       _normals(std::move(other._normals)),
       _uvs(std::move(other._uvs)),
       _triangleCount(std::exchange(other._triangleCount, 0)),
-      _fingerprint(std::exchange(other._fingerprint, 0))
+      _fingerprint(std::exchange(other._fingerprint, 0)),
+      _topology(std::exchange(other._topology, 0)),
+      _updatable(std::exchange(other._updatable, false)),
+      _opacity(other._opacity),
+      _vertexCount(std::exchange(other._vertexCount, 0))
 {
 }
 
@@ -314,6 +482,10 @@ BottomLevelStructure& BottomLevelStructure::operator=(
         _uvs = std::move(other._uvs);
         _triangleCount = std::exchange(other._triangleCount, 0);
         _fingerprint = std::exchange(other._fingerprint, 0);
+        _topology = std::exchange(other._topology, 0);
+        _updatable = std::exchange(other._updatable, false);
+        _opacity = other._opacity;
+        _vertexCount = std::exchange(other._vertexCount, 0);
     }
     return *this;
 }
@@ -469,11 +641,22 @@ void SceneAccelerator::Update(const Scene& scene)
 
     _lastBuilt = 0;
     _lastReused = 0;
+    _lastRefit = 0;
 
     // Build any prototype we do not already hold, keyed by geometry rather than
     // by index: a publication that reorders prototypes reuses everything.
     _prototypeFingerprints.assign(scene.prototypes.size(), 0);
     std::unordered_map<std::uint64_t, BottomLevelStructure> retained;
+
+    // What is held, indexed by the part of a prototype an update may keep. A
+    // deforming mesh arrives with a fingerprint nothing matches and a topology
+    // that matches its own previous frame, and this is where the two meet.
+    // Several structures can share a topology -- two characters wearing the
+    // same coat -- so each is handed out once and removed as it goes.
+    std::unordered_multimap<std::uint64_t, std::uint64_t> byTopology;
+    for (const auto& entry : _byFingerprint) {
+        byTopology.emplace(entry.second.Topology(), entry.first);
+    }
 
     for (std::size_t i = 0; i < scene.prototypes.size(); ++i) {
         const MeshPrototype& prototype = scene.prototypes[i];
@@ -491,14 +674,47 @@ void SceneAccelerator::Update(const Scene& scene)
 
         auto existing = _byFingerprint.find(fingerprint);
         if (existing != _byFingerprint.end()) {
+            const std::uint64_t topology = existing->second.Topology();
             retained.emplace(fingerprint, std::move(existing->second));
             _byFingerprint.erase(existing);
+            EraseTopology(byTopology, topology, fingerprint);
             ++_lastReused;
-        } else {
-            retained.emplace(fingerprint, BottomLevelStructure(_context, _allocator,
-                                                               prototype));
-            ++_lastBuilt;
+            continue;
         }
+
+        // Nothing has this geometry. Something may still have its *topology*,
+        // which is the same mesh at a different moment of an animation.
+        const std::uint64_t topology = prototype.TopologyFingerprint();
+        auto candidate = byTopology.find(topology);
+        if (candidate != byTopology.end()) {
+            const std::uint64_t previous = candidate->second;
+            byTopology.erase(candidate);
+            auto held = _byFingerprint.find(previous);
+            if (held != _byFingerprint.end()) {
+                BottomLevelStructure structure = std::move(held->second);
+                _byFingerprint.erase(held);
+                if (structure.Refit(_allocator, prototype)) {
+                    retained.emplace(fingerprint, std::move(structure));
+                    ++_lastRefit;
+                    continue;
+                }
+                // Built before there was any evidence this geometry moves, so
+                // it cannot be updated. Rebuilt now *asking* to be, which makes
+                // the frame after this one a refit. The old structure is
+                // released first so its memory is available to the new one --
+                // holding both is what a deforming groom cannot afford.
+                structure.Reset();
+                retained.emplace(fingerprint,
+                                 BottomLevelStructure(_context, _allocator,
+                                                      prototype, true));
+                ++_lastBuilt;
+                continue;
+            }
+        }
+
+        retained.emplace(fingerprint,
+                         BottomLevelStructure(_context, _allocator, prototype));
+        ++_lastBuilt;
     }
 
     // Anything left in the old map is no longer referenced and is released here.

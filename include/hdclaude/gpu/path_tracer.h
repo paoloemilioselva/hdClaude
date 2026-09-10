@@ -530,6 +530,16 @@ class PathTracer {
         return _accelerator ? _accelerator->LastReusedCount() : 0;
     }
 
+    /// How many kept their tree and moved its bounds to follow new vertices.
+    ///
+    /// The number that says whether a deforming scene is paying to be rebuilt
+    /// every frame. A groom that refits and one that rebuilds render the same
+    /// image, so nothing in the picture distinguishes them.
+    std::uint32_t BlasRefit() const
+    {
+        return _accelerator ? _accelerator->LastRefitCount() : 0;
+    }
+
     /// Start the counters and both hashes over. Called between two renders of
     /// the same image in one process, so each is described by its own numbers
     /// rather than by the sum of itself and everything before it.

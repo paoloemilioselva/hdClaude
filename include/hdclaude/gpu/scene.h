@@ -87,6 +87,22 @@ struct MeshPrototype {
     /// A fingerprint collision costs a wrong reuse, so this is a 64-bit hash of
     /// the actual bytes rather than of a summary.
     std::uint64_t Fingerprint() const;
+
+    /// The part of the identity a Vulkan acceleration-structure *update* is
+    /// allowed to keep.
+    ///
+    /// An update may change where the vertices are and nothing else: the
+    /// primitive count, the index data, the formats and the geometry flags all
+    /// have to be what the structure was built with. So this hashes exactly
+    /// those, and deliberately not the positions -- two frames of the same
+    /// deforming mesh differ in `Fingerprint` and agree here, which is what
+    /// distinguishes a refit from a rebuild.
+    ///
+    /// The sizes of the shading arrays are included, not their contents. A
+    /// prototype that gained or lost normals needs different buffers and cannot
+    /// be refitted; one whose normals merely moved with the vertices can, and
+    /// the refit re-uploads them.
+    std::uint64_t TopologyFingerprint() const;
 };
 
 /// One placement of a prototype.
