@@ -25,7 +25,52 @@ void main()
                           gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
                           0xFF, ray.origin, 1.0e-4, ray.direction,
                           ray.maxDistance);
-    while (rayQueryProceedEXT(query)) { }
+    while (rayQueryProceedEXT(query))
+    {
+        // A box is only ever a *candidate*. Triangle geometry is committed
+        // by the implementation; a curve's box says "the segment inside me
+        // might be hit", and this is where that question is answered.
+        if (rayQueryGetIntersectionTypeEXT(query, false) ==
+            gl_RayQueryCandidateIntersectionAABBEXT)
+        {
+            int candidateInstance =
+                rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
+            InstanceGeometry candidateGeometry =
+                instances.values[candidateInstance];
+            if (candidateGeometry.segments != 0ul)
+            {
+                int candidateSegment =
+                    rayQueryGetIntersectionPrimitiveIndexEXT(query, false);
+                SegmentBuffer curveSegments =
+                    SegmentBuffer(candidateGeometry.segments);
+                uint base = uint(candidateSegment) * 10u;
+                vec3 pa = vec3(curveSegments.values[base + 0u],
+                               curveSegments.values[base + 1u],
+                               curveSegments.values[base + 2u]);
+                float ra = curveSegments.values[base + 3u];
+                vec3 pb = vec3(curveSegments.values[base + 5u],
+                               curveSegments.values[base + 6u],
+                               curveSegments.values[base + 7u]);
+                float rb = curveSegments.values[base + 8u];
+
+                // The object-space ray, which is the space the segments are
+                // in. Asking the query for it rather than transforming the
+                // world ray keeps the two from disagreeing about a
+                // non-uniform scale.
+                vec3 candidateOrigin =
+                    rayQueryGetIntersectionObjectRayOriginEXT(query, false);
+                vec3 candidateDirection =
+                    rayQueryGetIntersectionObjectRayDirectionEXT(query, false);
+
+                float hit = hdclaude_intersect_segment(
+                    candidateOrigin, candidateDirection, pa, ra, pb, rb);
+                if (hit > 0.0)
+                {
+                    rayQueryGenerateIntersectionEXT(query, hit);
+                }
+            }
+        }
+    }
 
     if (rayQueryGetIntersectionTypeEXT(query, true) ==
         gl_RayQueryCommittedIntersectionNoneEXT)

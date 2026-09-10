@@ -220,6 +220,10 @@ reversed.
 | 2026-09-10 | A deforming prototype refits its acceleration structure rather than rebuilding it | A Vulkan update keeps the tree and moves its bounds to follow new vertices, which is exactly what a mesh at a later moment of an animation needs: the topology is unchanged by definition, so nothing has to be partitioned again. Reuse gains a second key -- a topology fingerprint hashing the indices, the counts and the flags but *not* the positions -- because a deforming mesh arrives with a geometry fingerprint nothing matches and a topology that matches its own previous frame. Measured on ALab: publish falls from 86 s a frame to 11.8 s |
 | 2026-09-10 | Updatable structures are asked for on the *second* sight of a topology, not the first | `VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR` is not free -- the structure is larger and traverses slower -- and most prototypes in most scenes never move. The first build has no evidence the geometry deforms; the second sight of the same topology is the first moment there is any. So a static scene pays nothing and an animation pays one extra rebuild before every later frame is a refit |
 | 2026-09-10 | A refit overwrites its buffers in place rather than reallocating them | The vertex, normal and UV buffers keep their allocations and take new contents. A second copy of a deforming groom is precisely the allocation that pushed ALab past the device: three frames spilled 12.4 GiB to host memory before this and spill nothing after it, which is most of where the seven-fold speed-up comes from |
+| 2026-09-10 | Curves are intersected as segments, not swept to triangles | A swept tube is `sides` facets a span -- about five hundred bytes -- and approximates a circle; a segment is two positions, two radii and two strand parameters, and *is* the circle. ALab's stoat and Remi fall from 122,126,052 triangles and 14.2 GiB to 9,103,872 triangles and 4.6 GiB, and publish from 23.1 s to 2.9 s. `sides` stops existing for curves: there is nothing to choose because nothing is being approximated. `HDCLAUDE_CURVE_GEOMETRY=swept` keeps the old path, which is what makes the two comparable on one scene |
+| 2026-09-10 | A segment is a round cone, not a cylinder | A strand's two ends have different widths, so the surface is a truncated cone; the sphere at each end is what makes consecutive segments join without a gap or a crease, which a bare cone leaves wherever the curve bends. The visible difference from a swept tube is exactly that -- rounded ends and an exact silhouette instead of flat ends and six facets |
+| 2026-09-10 | The strand parameter is carried on the segment, not derived from it | A curve's texture coordinate runs root to tip of the whole curve. A segment that measured only itself would hand every strand a sawtooth instead of a gradient, so each end carries how far along it is -- the same `v` `SweepCurves` writes, so a material reads the same thing whichever way the curve is drawn |
+| 2026-09-10 | Procedural geometry needs no shader binding table, because traversal is a ray *query* | An AABB is only ever a candidate: `rayQueryProceedEXT` hands it to the kernel, which intersects the cone and calls `rayQueryGenerateIntersectionEXT`. That is the same loop in `extend` and in `shadow` and costs no new pipeline stage, which is a dividend of the 2026-09-05 decision to use `VK_KHR_ray_query` in compute rather than a ray-tracing pipeline |
 | 2026-09-05 | The pbrlib override set is all-or-nothing | MaterialX resolves `#include` relative to the including file, so mixing one upstream closure with one hdClaude closure emits `struct ClosureData` twice. The set is exactly the 22 pbrlib files that include `mx_closure_type.glsl`; no stdlib file does |
 
 ## Open questions
@@ -245,15 +249,6 @@ Tracked here rather than decided prematurely.
    `metersPerUnit = 0.01`, and DLSS's handling of thin bright curve geometry
    (Programming Guide 3.6.4). Chase it with the same instrument that found it: a
    scene whose only light is an emissive shader ([dlss-integration.md](dlss-integration.md) 5a).
-5. **What a head of fur costs as triangles.** ALab's stoat and Remi alone
-   reach 122,126,052 swept triangles and 14.2 GiB of device memory at one span
-   per cubic segment and six sides round each tube -- and that is the cheapest
-   setting the evaluator offers. Sweeping reuses the triangle path whole, which
-   is why curves work at all, but a production groom is where that trade stops
-   paying: the honest answer is procedural AABB geometry with the swept cone
-   intersected in `extend`, which `curve_sweep.h` already names as what a hair
-   renderer eventually wants. Not scheduled; the number is recorded so the day
-   it is scheduled the case is already made.
-6. **Volume rendering.** MaterialX VDFs are declared and generated; hdClaude
+5. **Volume rendering.** MaterialX VDFs are declared and generated; hdClaude
    currently plans homogeneous interior media only. Heterogeneous volumes
    (`UsdVol`) are not scheduled.

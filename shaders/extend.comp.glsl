@@ -218,15 +218,67 @@ void main()
         rayQueryEXT query;
         rayQueryInitializeEXT(query, sceneTlas, gl_RayFlagsOpaqueEXT, 0xFF,
                               origin, 0.0, direction, 1.0e30);
-        while (rayQueryProceedEXT(query)) { }
+        while (rayQueryProceedEXT(query))
+        {
+            // A box is only ever a *candidate*. Triangle geometry is committed
+            // by the implementation; a curve's box says "the segment inside me
+            // might be hit", and this is where that question is answered.
+            if (rayQueryGetIntersectionTypeEXT(query, false) ==
+                gl_RayQueryCandidateIntersectionAABBEXT)
+            {
+                int candidateInstance =
+                    rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
+                InstanceGeometry candidateGeometry =
+                    instances.values[candidateInstance];
+                if (candidateGeometry.segments != 0ul)
+                {
+                    int candidateSegment =
+                        rayQueryGetIntersectionPrimitiveIndexEXT(query, false);
+                    SegmentBuffer curveSegments =
+                        SegmentBuffer(candidateGeometry.segments);
+                    uint base = uint(candidateSegment) * 10u;
+                    vec3 pa = vec3(curveSegments.values[base + 0u],
+                                   curveSegments.values[base + 1u],
+                                   curveSegments.values[base + 2u]);
+                    float ra = curveSegments.values[base + 3u];
+                    vec3 pb = vec3(curveSegments.values[base + 5u],
+                                   curveSegments.values[base + 6u],
+                                   curveSegments.values[base + 7u]);
+                    float rb = curveSegments.values[base + 8u];
 
-        hitGeometry = rayQueryGetIntersectionTypeEXT(query, true) ==
-                      gl_RayQueryCommittedIntersectionTriangleEXT;
+                    // The object-space ray, which is the space the segments are
+                    // in. Asking the query for it rather than transforming the
+                    // world ray keeps the two from disagreeing about a
+                    // non-uniform scale.
+                    vec3 candidateOrigin =
+                        rayQueryGetIntersectionObjectRayOriginEXT(query, false);
+                    vec3 candidateDirection =
+                        rayQueryGetIntersectionObjectRayDirectionEXT(query, false);
+
+                    float hit = hdclaude_intersect_segment(
+                        candidateOrigin, candidateDirection, pa, ra, pb, rb);
+                    if (hit > 0.0)
+                    {
+                        rayQueryGenerateIntersectionEXT(query, hit);
+                    }
+                }
+            }
+        }
+
+        // Either kind of committed intersection is a surface. A curve reports
+        // no barycentrics -- there is no triangle to have any -- and the shade
+        // kernel rebuilds its geometry from the segment and the hit point.
+        uint committed = rayQueryGetIntersectionTypeEXT(query, true);
+        hitGeometry = committed == gl_RayQueryCommittedIntersectionTriangleEXT ||
+                      committed == gl_RayQueryCommittedIntersectionGeneratedEXT;
         tGeometry = hitGeometry ? rayQueryGetIntersectionTEXT(query, true)
                                 : 1.0e30;
         if (hitGeometry)
         {
-            barycentrics = rayQueryGetIntersectionBarycentricsEXT(query, true);
+            barycentrics =
+                committed == gl_RayQueryCommittedIntersectionTriangleEXT
+                    ? rayQueryGetIntersectionBarycentricsEXT(query, true)
+                    : vec2(0.0);
             instance = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
             primitive = rayQueryGetIntersectionPrimitiveIndexEXT(query, true);
         }

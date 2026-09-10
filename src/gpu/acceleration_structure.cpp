@@ -132,6 +132,13 @@ std::uint64_t MeshPrototype::Fingerprint() const
         const auto perCorner = static_cast<std::uint8_t>(uvsPerCorner);
         hash = Fnv1a64(&perCorner, sizeof(perCorner), hash);
     }
+    if (!segments.empty()) {
+        hash = Fnv1a64(segments.data(), segments.size() * sizeof(float), hash);
+    }
+    if (!segmentMaterials.empty()) {
+        hash = Fnv1a64(segmentMaterials.data(),
+                       segmentMaterials.size() * sizeof(std::uint32_t), hash);
+    }
     if (!triangleMaterials.empty()) {
         hash = Fnv1a64(triangleMaterials.data(),
                        triangleMaterials.size() * sizeof(std::uint32_t), hash);
@@ -174,6 +181,33 @@ void OverwriteDeviceLocal(const VulkanContext& context,
     });
 }
 
+/// One axis-aligned box per curve segment, big enough for the round cone.
+///
+/// The cone's surface never leaves the union of the two end spheres and the
+/// truncated cone between them, so the box of the two centres grown by the
+/// larger radius contains it. Tighter boxes are possible -- the exact bound of
+/// a round cone is a little smaller off-axis -- and are not worth the
+/// arithmetic here: a hair segment's radius is a fraction of its length, so the
+/// slack is a fraction of an already small box.
+std::vector<VkAabbPositionsKHR> CurveBounds(const MeshPrototype& prototype)
+{
+    std::vector<VkAabbPositionsKHR> boxes;
+    boxes.reserve(prototype.SegmentCount());
+    for (std::size_t i = 0; i < prototype.SegmentCount(); ++i) {
+        const float* segment = prototype.segments.data() + i * 10;
+        const float radius = std::max(std::max(segment[3], segment[8]), 0.0f);
+        VkAabbPositionsKHR box{};
+        box.minX = std::min(segment[0], segment[5]) - radius;
+        box.minY = std::min(segment[1], segment[6]) - radius;
+        box.minZ = std::min(segment[2], segment[7]) - radius;
+        box.maxX = std::max(segment[0], segment[5]) + radius;
+        box.maxY = std::max(segment[1], segment[6]) + radius;
+        box.maxZ = std::max(segment[2], segment[7]) + radius;
+        boxes.push_back(box);
+    }
+    return boxes;
+}
+
 std::uint64_t MeshPrototype::TopologyFingerprint() const
 {
     std::uint64_t hash = 0x9e3779b97f4a7c15ULL;
@@ -184,11 +218,13 @@ std::uint64_t MeshPrototype::TopologyFingerprint() const
     // The vertex count, because `maxVertex` is part of what the structure was
     // built with; and the sizes of the shading arrays, because a refit reuses
     // their buffers and cannot resize them.
-    const std::uint64_t counts[4] = {
+    const std::uint64_t counts[6] = {
         static_cast<std::uint64_t>(positions.size()),
         static_cast<std::uint64_t>(normals.size()),
         static_cast<std::uint64_t>(uvs.size()),
         static_cast<std::uint64_t>(triangleMaterials.size()),
+        static_cast<std::uint64_t>(segments.size()),
+        static_cast<std::uint64_t>(segmentMaterials.size()),
     };
     hash = Fnv1a64(counts, sizeof(counts), hash);
 
@@ -206,7 +242,13 @@ std::size_t Scene::TotalTriangles() const
     std::size_t total = 0;
     for (const MeshInstance& instance : instances) {
         if (instance.prototype < prototypes.size()) {
-            total += prototypes[instance.prototype].TriangleCount();
+            const MeshPrototype& prototype = prototypes[instance.prototype];
+            // A curve prototype has no triangles at all now that its segments
+            // are intersected directly, so it contributes none. The figure is
+            // what a scene costs as triangles, and counting segments in it
+            // would make the two representations look comparable when the whole
+            // point is that they are not.
+            total += prototype.IsCurve() ? 0 : prototype.TriangleCount();
         }
     }
     return total;
@@ -241,7 +283,8 @@ BottomLevelStructure::BottomLevelStructure(const VulkanContext& context,
 {
     context.RequireLive("BottomLevelStructure");
 
-    if (prototype.indices.empty() || prototype.positions.empty()) {
+    const bool curve = prototype.IsCurve();
+    if (!curve && (prototype.indices.empty() || prototype.positions.empty())) {
         throw VulkanError(VK_ERROR_INITIALIZATION_FAILED,
                           "Empty prototype: " + prototype.debugName);
     }
@@ -250,22 +293,47 @@ BottomLevelStructure::BottomLevelStructure(const VulkanContext& context,
     _topology = prototype.TopologyFingerprint();
     _updatable = allowUpdate;
     _opacity = prototype.opacity;
-    _triangleCount = static_cast<std::uint32_t>(prototype.TriangleCount());
+    _curve = curve;
+    // The count the structure is built over, whichever kind it is. A curve
+    // prototype has no triangles; the name is kept because everything that
+    // reads it wants "how many primitives does this structure hold".
+    _triangleCount = static_cast<std::uint32_t>(prototype.PrimitiveCount());
     _vertexCount = static_cast<std::uint32_t>(prototype.VertexCount());
 
     const std::string name =
         prototype.debugName.empty() ? std::string("prototype") : prototype.debugName;
 
-    _positions = UploadDeviceLocal(context, allocator, prototype.positions,
-                                   kBuildInputUsage, (name + ".positions").c_str());
-    _indices = UploadDeviceLocal(context, allocator, prototype.indices,
-                                 kBuildInputUsage, (name + ".indices").c_str());
-    if (!prototype.normals.empty()) {
+    if (curve) {
+        // The segments themselves, read by the traversal kernel to intersect
+        // the cone, and the boxes the structure is partitioned over. Two
+        // buffers rather than one because the acceleration structure requires a
+        // particular layout for the boxes and the kernel wants the geometry.
+        _segments = UploadDeviceLocal(context, allocator, prototype.segments,
+                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                      (name + ".segments").c_str());
+        _aabbs = UploadDeviceLocal(context, allocator,
+                                   CurveBounds(prototype), kBuildInputUsage,
+                                   (name + ".aabbs").c_str());
+        if (!prototype.segmentMaterials.empty()) {
+            _segmentMaterials = UploadDeviceLocal(
+                context, allocator, prototype.segmentMaterials,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                (name + ".segmentMaterials").c_str());
+        }
+    } else {
+        _positions = UploadDeviceLocal(context, allocator, prototype.positions,
+                                       kBuildInputUsage,
+                                       (name + ".positions").c_str());
+        _indices = UploadDeviceLocal(context, allocator, prototype.indices,
+                                     kBuildInputUsage,
+                                     (name + ".indices").c_str());
+    }
+    if (!curve && !prototype.normals.empty()) {
         _normals = UploadDeviceLocal(context, allocator, prototype.normals,
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                                      (name + ".normals").c_str());
     }
-    if (!prototype.uvs.empty()) {
+    if (!curve && !prototype.uvs.empty()) {
         _uvs = UploadDeviceLocal(context, allocator, prototype.uvs,
                                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                                  (name + ".uvs").c_str());
@@ -274,25 +342,38 @@ BottomLevelStructure::BottomLevelStructure(const VulkanContext& context,
     // --- Describe the geometry ----------------------------------------------
     VkAccelerationStructureGeometryKHR geometry{
         VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
-    geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
     // Opaque geometry lets the driver skip any-hit evaluation entirely, which
     // is the single largest traversal win available and costs nothing when the
-    // mesh genuinely has no cutouts.
+    // mesh genuinely has no cutouts. It does not make a procedural box opaque:
+    // an AABB is always a *candidate*, and the kernel that intersects the cone
+    // inside it is what decides whether there is a hit at all.
     geometry.flags = prototype.opacity == OpacityClass::Opaque
                          ? VK_GEOMETRY_OPAQUE_BIT_KHR
                          : VkGeometryFlagsKHR{0};
 
-    VkAccelerationStructureGeometryTrianglesDataKHR& triangles =
-        geometry.geometry.triangles;
-    triangles.sType =
-        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
-    triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-    triangles.vertexData.deviceAddress = _positions.DeviceAddress();
-    triangles.vertexStride = 3 * sizeof(float);
-    triangles.maxVertex = static_cast<std::uint32_t>(prototype.VertexCount() - 1);
-    triangles.indexType = VK_INDEX_TYPE_UINT32;
-    triangles.indexData.deviceAddress = _indices.DeviceAddress();
-    triangles.transformData.deviceAddress = 0;
+    if (curve) {
+        geometry.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
+        VkAccelerationStructureGeometryAabbsDataKHR& boxes =
+            geometry.geometry.aabbs;
+        boxes.sType =
+            VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR;
+        boxes.data.deviceAddress = _aabbs.DeviceAddress();
+        boxes.stride = sizeof(VkAabbPositionsKHR);
+    } else {
+        geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+        VkAccelerationStructureGeometryTrianglesDataKHR& triangles =
+            geometry.geometry.triangles;
+        triangles.sType =
+            VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+        triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+        triangles.vertexData.deviceAddress = _positions.DeviceAddress();
+        triangles.vertexStride = 3 * sizeof(float);
+        triangles.maxVertex =
+            static_cast<std::uint32_t>(prototype.VertexCount() - 1);
+        triangles.indexType = VK_INDEX_TYPE_UINT32;
+        triangles.indexData.deviceAddress = _indices.DeviceAddress();
+        triangles.transformData.deviceAddress = 0;
+    }
 
     VkAccelerationStructureBuildGeometryInfoKHR buildInfo{
         VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
@@ -361,6 +442,10 @@ void BottomLevelStructure::Reset()
     _indices.Reset();
     _normals.Reset();
     _uvs.Reset();
+    _segments.Reset();
+    _segmentMaterials.Reset();
+    _aabbs.Reset();
+    _curve = false;
     _context = nullptr;
     _triangleCount = 0;
     _vertexCount = 0;
@@ -458,6 +543,10 @@ BottomLevelStructure::BottomLevelStructure(BottomLevelStructure&& other) noexcep
       _indices(std::move(other._indices)),
       _normals(std::move(other._normals)),
       _uvs(std::move(other._uvs)),
+      _segments(std::move(other._segments)),
+      _segmentMaterials(std::move(other._segmentMaterials)),
+      _aabbs(std::move(other._aabbs)),
+      _curve(std::exchange(other._curve, false)),
       _triangleCount(std::exchange(other._triangleCount, 0)),
       _fingerprint(std::exchange(other._fingerprint, 0)),
       _topology(std::exchange(other._topology, 0)),
@@ -480,6 +569,10 @@ BottomLevelStructure& BottomLevelStructure::operator=(
         _indices = std::move(other._indices);
         _normals = std::move(other._normals);
         _uvs = std::move(other._uvs);
+        _segments = std::move(other._segments);
+        _segmentMaterials = std::move(other._segmentMaterials);
+        _aabbs = std::move(other._aabbs);
+        _curve = std::exchange(other._curve, false);
         _triangleCount = std::exchange(other._triangleCount, 0);
         _fingerprint = std::exchange(other._fingerprint, 0);
         _topology = std::exchange(other._topology, 0);
@@ -660,7 +753,9 @@ void SceneAccelerator::Update(const Scene& scene)
 
     for (std::size_t i = 0; i < scene.prototypes.size(); ++i) {
         const MeshPrototype& prototype = scene.prototypes[i];
-        if (prototype.indices.empty()) {
+        // A curve prototype has no indices at all -- its segments are the
+        // primitives -- so "has nothing to build" is a question about both.
+        if (prototype.indices.empty() && prototype.segments.empty()) {
             continue;
         }
         const std::uint64_t fingerprint = prototype.Fingerprint();

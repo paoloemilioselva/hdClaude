@@ -320,6 +320,7 @@ layout(set = 0, binding = 12, scalar) buffer Accumulation { vec4 values[]; } acc
 layout(set = 0, binding = 13) uniform accelerationStructureEXT sceneTlas;
 
 layout(buffer_reference, scalar) readonly buffer PositionBuffer { vec3 values[]; };
+layout(buffer_reference, scalar) readonly buffer SegmentBuffer  { float values[]; };
 layout(buffer_reference, scalar) readonly buffer IndexBuffer    { uint values[]; };
 layout(buffer_reference, scalar) readonly buffer NormalBuffer   { vec3 values[]; };
 layout(buffer_reference, scalar) readonly buffer UvBuffer       { vec2 values[]; };
@@ -330,6 +331,11 @@ layout(buffer_reference, scalar) readonly buffer TriMaterialBuffer { uint values
 struct InstanceGeometry {
     uint64_t positions;
     uint64_t indices;
+    /// Curve segments, eight floats each: start xyz, start radius, end xyz, end
+    /// radius. Non-zero exactly when this instance is a curve set, which is how
+    /// every kernel tells the two kinds of geometry apart -- there is no flag,
+    /// because the buffer's presence *is* the fact.
+    uint64_t segments;
     uint64_t normals;   // zero if the mesh has no normals at all
     uint64_t uvs;       // zero if the mesh has no texture coordinates
     // Per-triangle material, from GeomSubsets. Zero when every triangle uses
@@ -1432,6 +1438,120 @@ int hdclaude_nearest_light(vec3 origin, vec3 direction, float tMax,
         }
     }
     return nearest;
+}
+
+/// Any unit vector perpendicular to `n`, for a frame that has no other
+/// constraint on where it points.
+vec3 hdclaude_any_perpendicular(vec3 n)
+{
+    vec3 other = abs(n.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+    return normalize(cross(n, other));
+}
+
+/// Ray against one curve segment: a cone with a sphere at each end.
+///
+/// The shape a swept tube approximates, intersected exactly instead. A hair
+/// segment is a truncated cone because its two ends have different widths, and
+/// the spheres are what make consecutive segments join without a gap or a
+/// crease -- a bare cone would leave both wherever the curve bends.
+///
+/// Returns the nearest positive distance, or -1 when the ray misses. `pa`, `ra`
+/// and `pb`, `rb` are the two ends; the ray is in the same space as they are,
+/// which for this renderer is the instance's object space.
+///
+/// The algebra is the standard one: the cone's surface is where the distance
+/// from the axis equals the linearly interpolated radius, which after squaring
+/// is a quadratic in t. `d2` is the squared axis length reduced by the radius
+/// difference, and it is what makes the slanted surface rather than a cylinder.
+/// The caps are two spheres, tried only when the quadratic's root falls outside
+/// the truncated part -- which is exactly where the surface *is* a cap.
+float hdclaude_intersect_segment(vec3 origin, vec3 direction, vec3 pa, float ra,
+                                 vec3 pb, float rb)
+{
+    vec3 ba = pb - pa;
+    vec3 oa = origin - pa;
+    vec3 ob = origin - pb;
+    float rr = ra - rb;
+    float m0 = dot(ba, ba);
+    float m1 = dot(ba, oa);
+    float m2 = dot(ba, direction);
+    float m3 = dot(direction, oa);
+    float m5 = dot(oa, oa);
+    float m6 = dot(ob, direction);
+    float m7 = dot(ob, ob);
+
+    float d2 = m0 - rr * rr;
+
+    float k2 = d2 - m2 * m2;
+    float k1 = d2 * m3 - m1 * m2 + m2 * rr * ra;
+    float k0 = d2 * m5 - m1 * m1 + m1 * rr * ra * 2.0 - m0 * ra * ra;
+
+    float h = k1 * k1 - k0 * k2;
+    if (h >= 0.0 && abs(k2) > 1.0e-20)
+    {
+        float t = (-sqrt(h) - k1) / k2;
+        float y = m1 - ra * rr + t * m2;
+        // Between the two ends: the hit is on the slanted surface itself.
+        if (y > 0.0 && y < d2 && t > 0.0)
+        {
+            return t;
+        }
+    }
+
+    // Otherwise it is on one of the end spheres, if it is anywhere.
+    float h1 = m3 * m3 - m5 + ra * ra;
+    float h2 = m6 * m6 - m7 + rb * rb;
+    float best = -1.0;
+    if (h1 > 0.0)
+    {
+        float t = -m3 - sqrt(h1);
+        if (t > 0.0)
+        {
+            best = t;
+        }
+    }
+    if (h2 > 0.0)
+    {
+        float t = -m6 - sqrt(h2);
+        if (t > 0.0 && (best < 0.0 || t < best))
+        {
+            best = t;
+        }
+    }
+    return best;
+}
+
+/// The outward normal at a point on a segment, and how far along it that point
+/// is.
+///
+/// Recomputed from the position rather than carried out of the traversal
+/// kernel, because the position is already there and a second channel through
+/// the hit record is a second thing to keep in step. `along` comes back in
+/// [0, 1] and is the v of the curve's texture coordinate.
+vec3 hdclaude_segment_normal(vec3 point, vec3 pa, float ra, vec3 pb, float rb,
+                             out float along)
+{
+    vec3 ba = pb - pa;
+    vec3 oa = point - pa;
+    float rr = ra - rb;
+    float m0 = dot(ba, ba);
+    float d2 = m0 - rr * rr;
+    float y = dot(ba, oa) - ra * rr;
+
+    if (y > 0.0 && y < d2 && d2 > 0.0)
+    {
+        along = clamp(y / d2, 0.0, 1.0);
+        return normalize(d2 * oa - ba * y);
+    }
+    // A cap: the normal is the sphere's, and the point is at one end or the
+    // other.
+    if (dot(oa, oa) * (rb * rb) < dot(point - pb, point - pb) * (ra * ra))
+    {
+        along = 0.0;
+        return normalize(oa);
+    }
+    along = 1.0;
+    return normalize(point - pb);
 }
 
 /// The solid-angle density with which next-event estimation would have chosen

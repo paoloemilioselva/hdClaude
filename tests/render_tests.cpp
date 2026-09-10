@@ -3540,6 +3540,82 @@ int main()
             CHECK(!tracer.EndFrame(hdclaude::FrameHandle{}).Valid());
         }
 
+        // --- A curve is intersected, not tessellated -------------------------
+        //
+        // The whole implicit path end to end: an acceleration structure of
+        // boxes, a candidate handled in the traversal kernel, a round cone
+        // intersected there, and a surface rebuilt from the segment in `shade`.
+        // Every one of those can fail by simply producing no hit, and the scene
+        // then renders as though the curve were not there -- which is exactly
+        // what it did until the structure's move constructor was taught to
+        // carry the segment buffer.
+        //
+        // Measured on the depth AOV rather than on the image, because the claim
+        // is about where the geometry *is*: a shading difference could hide a
+        // silhouette that is the wrong width, and a depth of less than one is a
+        // ray that hit something whatever it was shaded as.
+        //
+        // The closed form is the silhouette: a cylinder of radius r seen
+        // side-on covers exactly 2r of a view 2 * distance * tanHalfFov wide.
+        // An intersector with the radius squared, halved or ignored lands
+        // nowhere near it.
+        {
+            constexpr std::uint32_t kSize = 128;
+            constexpr float kRadius = 0.25f;
+            constexpr float kDistance = 4.0f;
+
+            Scene curves;
+            MeshPrototype strand;
+            strand.debugName = "capsule";
+            // One vertical segment through the origin with equal radii, so the
+            // round cone is a cylinder and the closed form is exact.
+            strand.segments = {
+                0.0f, -1.0f, 0.0f, kRadius, 0.0f,
+                0.0f,  1.0f, 0.0f, kRadius, 1.0f,
+            };
+            curves.prototypes.push_back(strand);
+            curves.instances.push_back({0, Transform3x4{}, 0, true});
+            tracer.SetScene(curves, {materials[1]});
+
+            hdclaude::FrameDescription frame;
+            frame.width = kSize;
+            frame.height = kSize;
+            frame.camera = LookDownZWithClip(kDistance, 0.1f, 100.0f);
+            frame.mode = hdclaude::RenderMode::Reference;
+            frame.sceneRevision = 41;
+            frame.settings.samplesPerPixel = 1;
+            frame.settings.maxBounces = 1;
+            const hdclaude::FrameResult result =
+                tracer.EndFrame(tracer.BeginFrame(frame));
+            CHECK(result.Valid());
+            CHECK_EQ(result.depth.size(), std::size_t(kSize) * kSize);
+
+            const std::size_t row = kSize / 2;
+            std::size_t covered = 0;
+            for (std::size_t x = 0; x < kSize; ++x) {
+                if (result.depth[row * kSize + x] < 1.0f) {
+                    ++covered;
+                }
+            }
+
+            const double halfExtent = kDistance * 0.5;  // LookDownZ's tanHalfFov
+            const double expected =
+                double(kSize) * (2.0 * kRadius) / (2.0 * halfExtent);
+            std::printf("  implicit curve: %zu of %u pixels across, closed "
+                        "form %.1f\n",
+                        covered, kSize, expected);
+            CHECK(covered > 0);
+            CHECK(double(covered) > expected - 2.0);
+            CHECK(double(covered) < expected + 2.0);
+
+            // And nothing at the edges: a box reported as a hit without the
+            // cone being tested would still be only its own width, so this is
+            // about the structure holding what it should rather than the
+            // intersector.
+            CHECK_EQ(result.depth[row * kSize + 2], 1.0f);
+            CHECK_EQ(result.depth[row * kSize + kSize - 3], 1.0f);
+        }
+
         // --- Light geometry, and what turning it off may not cost -------------
         //
         // Two claims, because the setting makes two promises and only one of

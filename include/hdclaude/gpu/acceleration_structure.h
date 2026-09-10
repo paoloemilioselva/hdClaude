@@ -82,6 +82,11 @@ class BottomLevelStructure {
     const VulkanBuffer& Indices() const { return _indices; }
     const VulkanBuffer& Normals() const { return _normals; }
     const VulkanBuffer& Uvs() const { return _uvs; }
+    /// Curve segments, eight floats each. Empty for a triangle prototype.
+    const VulkanBuffer& Segments() const { return _segments; }
+    const VulkanBuffer& SegmentMaterials() const { return _segmentMaterials; }
+    bool IsCurve() const { return _curve; }
+    /// How many primitives the structure holds: triangles, or segments.
     std::uint32_t TriangleCount() const { return _triangleCount; }
 
     void Reset();
@@ -95,6 +100,12 @@ class BottomLevelStructure {
     VulkanBuffer _indices;
     VulkanBuffer _normals;
     VulkanBuffer _uvs;
+    VulkanBuffer _segments;
+    VulkanBuffer _segmentMaterials;
+    /// The boxes the structure is partitioned over. Held because the structure
+    /// references them and a refit rewrites them.
+    VulkanBuffer _aabbs;
+    bool _curve = false;
     std::uint32_t _triangleCount = 0;
     std::uint32_t _vertexCount = 0;
     std::uint64_t _fingerprint = 0;

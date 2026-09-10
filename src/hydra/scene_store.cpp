@@ -99,7 +99,8 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
 
     scene.prototypes.reserve(_meshes.size());
     for (const auto& [path, mesh] : _meshes) {
-        if (mesh.prototype.indices.empty() || !mesh.visible) {
+        if ((mesh.prototype.indices.empty() && mesh.prototype.segments.empty()) ||
+            !mesh.visible) {
             continue;
         }
         auto resolve = [&](const SdfPath& binding) -> std::uint32_t {

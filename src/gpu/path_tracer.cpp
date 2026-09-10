@@ -198,6 +198,9 @@ constexpr std::uint32_t kSortScatter = 1;
 struct InstanceGeometry {
     std::uint64_t positions;
     std::uint64_t indices;
+    /// Curve segments, eight floats each. Non-zero exactly when this instance
+    /// is a curve set.
+    std::uint64_t segments;
     std::uint64_t normals;
     std::uint64_t uvs;
     std::uint64_t triangleMaterials;
@@ -653,13 +656,19 @@ void PathTracer::SetScene(const Scene& scene,
                                                      std::size_t(-1));
     for (std::size_t i = 0; i < scene.prototypes.size(); ++i) {
         const MeshPrototype& prototype = scene.prototypes[i];
-        if (prototype.triangleMaterials.empty()) {
+        // Per-primitive materials, whichever kind of primitive this prototype
+        // has. A curve's are per segment and a mesh's per triangle, and the
+        // buffer, the offsets and the shader's indexing are the same either
+        // way: the primitive index a ray query reports is what indexes it.
+        const std::vector<std::uint32_t>& perPrimitive =
+            prototype.IsCurve() ? prototype.segmentMaterials
+                                : prototype.triangleMaterials;
+        if (perPrimitive.empty()) {
             continue;
         }
         prototypeMaterialOffset[i] = triangleMaterials.size();
-        triangleMaterials.insert(triangleMaterials.end(),
-                                 prototype.triangleMaterials.begin(),
-                                 prototype.triangleMaterials.end());
+        triangleMaterials.insert(triangleMaterials.end(), perPrimitive.begin(),
+                                 perPrimitive.end());
     }
 
     _triangleMaterials = VulkanBuffer();
@@ -693,6 +702,8 @@ void PathTracer::SetScene(const Scene& scene,
         InstanceGeometry entry{};
         entry.positions = blas->Positions().DeviceAddress();
         entry.indices = blas->Indices().DeviceAddress();
+        entry.segments =
+            blas->Segments().Valid() ? blas->Segments().DeviceAddress() : 0;
         entry.normals = blas->Normals().Valid() ? blas->Normals().DeviceAddress() : 0;
         entry.uvs = blas->Uvs().Valid() ? blas->Uvs().DeviceAddress() : 0;
 

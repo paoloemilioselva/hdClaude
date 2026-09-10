@@ -99,6 +99,78 @@ SurfacePoint hdclaude_reconstruct(ivec4 record, vec3 rayDirection, vec3 hitPosit
     SurfacePoint point;
     InstanceGeometry geometry = instances.values[record.x];
 
+    // A curve has no triangle to interpolate over. Its surface is the segment
+    // itself, and everything the shading needs -- the normal, the frame, the
+    // texture coordinate -- follows from where on that segment the ray landed.
+    if (geometry.segments != 0ul)
+    {
+        SegmentBuffer curveSegments = SegmentBuffer(geometry.segments);
+        uint base = uint(record.y) * 10u;
+        vec3 pa = vec3(curveSegments.values[base + 0u],
+                       curveSegments.values[base + 1u],
+                       curveSegments.values[base + 2u]);
+        float ra = curveSegments.values[base + 3u];
+        vec3 pb = vec3(curveSegments.values[base + 5u],
+                       curveSegments.values[base + 6u],
+                       curveSegments.values[base + 7u]);
+        float rb = curveSegments.values[base + 8u];
+        // How far along the whole strand each end of this segment is. Carried
+        // on the segment because it cannot be recovered from one: a curve's
+        // texture coordinate runs root to tip, and a segment measuring only
+        // itself would give every strand a sawtooth.
+        float va = curveSegments.values[base + 4u];
+        float vb = curveSegments.values[base + 9u];
+
+        // The hit in object space, which is the space the segments are in.
+        vec3 objectPoint = vec4(hitPosition, 1.0) * geometry.worldToObject;
+
+        float along = 0.0;
+        vec3 objectNormal =
+            hdclaude_segment_normal(objectPoint, pa, ra, pb, rb, along);
+
+        mat3 normalMatrix = transpose(hdclaude_linear(geometry.worldToObject));
+        point.position = hitPosition;
+        point.geometricNormal = normalize(normalMatrix * objectNormal);
+        // A curve carries no authored shading normal: the tube *is* the
+        // surface, so the geometric normal is the shading normal. Nothing is
+        // being approximated away here, unlike a swept tube whose facets each
+        // carried a normal of their own.
+        point.shadingNormal = point.geometricNormal;
+        point.frontGeometricNormal =
+            dot(point.geometricNormal, rayDirection) > 0.0
+                ? -point.geometricNormal
+                : point.geometricNormal;
+
+        // The axis is the tangent, which is what a hair shading model wants:
+        // an anisotropic closure orients along the strand rather than around
+        // it.
+        vec3 objectAxis = pb - pa;
+        vec3 worldAxis = hdclaude_linear(geometry.objectToWorld) * objectAxis;
+        point.tangent = normalize(
+            dot(worldAxis, worldAxis) > 1.0e-20
+                ? worldAxis - point.shadingNormal *
+                                  dot(point.shadingNormal, worldAxis)
+                : hdclaude_any_perpendicular(point.shadingNormal));
+        point.bitangent = normalize(cross(point.shadingNormal, point.tangent));
+
+        // v runs along the strand and u around it, which is the convention the
+        // swept tube used and so the one any material already authored against
+        // expects.
+        vec3 around = objectPoint - mix(pa, pb, along);
+        vec3 axis = normalize(objectAxis);
+        vec3 side, up;
+        hdclaude_light_basis(axis, side, up);
+        float angle = atan(dot(around, up), dot(around, side));
+        point.uv = vec2(angle * (0.5 / 3.14159265358979323846) + 0.5,
+                        mix(va, vb, along));
+
+        point.objectPosition = objectPoint;
+        point.objectNormal = objectNormal;
+        point.objectTangent = normalize(objectAxis);
+        point.objectBitangent = normalize(cross(objectNormal, objectAxis));
+        return point;
+    }
+
     IndexBuffer indices = IndexBuffer(geometry.indices);
     PositionBuffer positions = PositionBuffer(geometry.positions);
 

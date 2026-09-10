@@ -71,11 +71,49 @@ struct MeshPrototype {
     /// case every triangle uses the instance's material.
     std::vector<std::uint32_t> triangleMaterials;
 
+    /// Curve segments, ten floats each: start xyz, start radius, start v, end
+    /// xyz, end radius, end v. When this is non-empty the prototype is a
+    /// *curve* set and the triangle arrays above are ignored.
+    ///
+    /// The `v` is how far along its own strand each end is, and it is carried
+    /// rather than derived because a segment does not otherwise know: the
+    /// texture coordinate a curve material reads runs from root to tip of the
+    /// whole curve, and a segment that measured only itself would hand every
+    /// strand a sawtooth instead of a gradient. That is not a subtle
+    /// difference -- it is what turned ALab's knitted sweater from red to
+    /// white.
+    ///
+    /// A segment is a round cone -- a truncated cone with a sphere at each end
+    /// -- which is the shape a swept tube approximates and the shape a hair
+    /// renderer intersects directly. Carrying it as geometry rather than as
+    /// triangles is the difference between about 32 bytes a segment and about
+    /// 500: ALab's stoat and Remi are 122 million triangles and 14.2 GiB swept,
+    /// and 7.5 million segments implicit.
+    ///
+    /// The renderer builds these into an acceleration structure of axis-aligned
+    /// boxes and intersects the cone itself in the traversal kernel, so nothing
+    /// here is an approximation of the curve's cross-section and there is no
+    /// `sides` to choose.
+    std::vector<float> segments;
+    /// Per-segment material index. May be empty, in which case every segment
+    /// uses the instance's material. The curve counterpart of
+    /// `triangleMaterials`.
+    std::vector<std::uint32_t> segmentMaterials;
+
     OpacityClass opacity = OpacityClass::Opaque;
     std::string debugName;
 
     std::size_t VertexCount() const { return positions.size() / 3; }
     std::size_t TriangleCount() const { return indices.size() / 3; }
+    /// Ten floats a segment: two positions, two radii, two strand parameters.
+    std::size_t SegmentCount() const { return segments.size() / 10; }
+    /// Whether this prototype is curve segments rather than triangles.
+    bool IsCurve() const { return !segments.empty(); }
+    /// What the acceleration structure will be built over, either way.
+    std::size_t PrimitiveCount() const
+    {
+        return IsCurve() ? SegmentCount() : TriangleCount();
+    }
 
     /// Identity for acceleration-structure reuse.
     ///

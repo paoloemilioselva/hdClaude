@@ -119,6 +119,30 @@ struct CurvePolylines {
 ///
 /// Returns an empty result, and sets `reason`, when the input cannot be
 /// evaluated.
+/// Curves as segments, for a renderer that intersects them directly.
+///
+/// The alternative to `SweepCurves`, and the whole difference is what a ray is
+/// asked to hit. A swept tube is `sides` facets a span, so a span costs about
+/// five hundred bytes and approximates a circle; a segment is two positions and
+/// two radii, thirty-two bytes, and *is* the circle. On ALab's stoat and Remi
+/// that is 122 million triangles against 7.5 million segments.
+///
+/// Ten floats a segment: start xyz, start radius, start v, end xyz, end radius,
+/// end v. The radius is half the width, because a width is a diameter -- the
+/// one conversion in here, and the one worth saying out loud. The `v` is how
+/// far along the whole strand that end is, which is the same parameter
+/// `SweepCurves` writes as its texture coordinate, so a material reads the same
+/// gradient whichever way the curve is drawn.
+///
+/// `widths` is read the same way `SweepCurves` reads it: empty, one for the
+/// whole set, one per curve, or one per point, decided by how many there are.
+/// `periodic` closes each curve back onto its first point.
+std::vector<float> CurveSegments(const std::vector<int>& vertexCounts,
+                                 const std::vector<float>& points,
+                                 const std::vector<float>& widths,
+                                 float fallbackWidth, bool periodic,
+                                 std::string* reason);
+
 CurvePolylines EvaluateCurves(const std::vector<int>& vertexCounts,
                               const std::vector<float>& points,
                               const std::vector<float>& widths,

@@ -220,6 +220,106 @@ CurveMesh SweepCurves(const std::vector<int>& vertexCounts,
     return mesh;
 }
 
+std::vector<float> CurveSegments(const std::vector<int>& vertexCounts,
+                                 const std::vector<float>& points,
+                                 const std::vector<float>& widths,
+                                 float fallbackWidth, bool periodic,
+                                 std::string* reason)
+{
+    const auto fail = [&](const std::string& what) {
+        if (reason != nullptr) {
+            *reason = what;
+        }
+        return std::vector<float>{};
+    };
+
+    if (vertexCounts.empty()) {
+        return fail("no curves");
+    }
+    if (points.size() % 3 != 0) {
+        return fail("point array is not a whole number of xyz triples");
+    }
+    const std::size_t pointCount = points.size() / 3;
+
+    std::size_t declared = 0;
+    for (const int count : vertexCounts) {
+        if (count < 2) {
+            return fail("a curve has fewer than two points");
+        }
+        declared += static_cast<std::size_t>(count);
+    }
+    if (declared != pointCount) {
+        return fail("vertex counts describe " + std::to_string(declared) +
+                    " points but " + std::to_string(pointCount) + " were given");
+    }
+
+    // The same rule `SweepCurves` uses: how many widths there are is what says
+    // what they mean.
+    const bool perPoint = widths.size() == pointCount;
+    const bool perCurve = widths.size() == vertexCounts.size();
+    const bool constant = widths.size() == 1;
+
+    std::vector<float> segments;
+    std::size_t spans = 0;
+    for (const int count : vertexCounts) {
+        spans += static_cast<std::size_t>(periodic ? count : count - 1);
+    }
+    segments.reserve(spans * 10);
+
+    std::size_t base = 0;
+    for (std::size_t curve = 0; curve < vertexCounts.size(); ++curve) {
+        const auto count = static_cast<std::size_t>(vertexCounts[curve]);
+        const std::size_t spanCount = periodic ? count : count - 1;
+
+        for (std::size_t span = 0; span < spanCount; ++span) {
+            const std::size_t first = base + span;
+            const std::size_t second = base + (span + 1) % count;
+
+            const auto radius = [&](std::size_t point, std::size_t local) {
+                float width = fallbackWidth;
+                if (perPoint) {
+                    width = widths[point];
+                } else if (perCurve) {
+                    width = widths[curve];
+                } else if (constant) {
+                    width = widths[0];
+                }
+                (void)local;
+                // A width is a diameter and a radius is half of it. A negative
+                // one is not a thin curve, it is bad data, and a cone of
+                // negative radius is inside out.
+                return width > 0.0f ? width * 0.5f : 0.0f;
+            };
+
+            // How far along its own strand each end is. The same parameter
+            // `SweepCurves` writes as the v of its texture coordinate -- a
+            // fraction of the whole curve, not of this segment -- so a material
+            // reads the same gradient either way the curve is drawn.
+            const float v0 = static_cast<float>(span) /
+                             static_cast<float>(spanCount);
+            const float v1 = static_cast<float>(span + 1) /
+                             static_cast<float>(spanCount);
+
+            segments.push_back(points[first * 3 + 0]);
+            segments.push_back(points[first * 3 + 1]);
+            segments.push_back(points[first * 3 + 2]);
+            segments.push_back(radius(first, span));
+            segments.push_back(v0);
+            segments.push_back(points[second * 3 + 0]);
+            segments.push_back(points[second * 3 + 1]);
+            segments.push_back(points[second * 3 + 2]);
+            segments.push_back(radius(second, span + 1));
+            segments.push_back(v1);
+        }
+        base += count;
+    }
+
+    if (segments.empty()) {
+        return fail("the curves describe no segments");
+    }
+    return segments;
+}
+
 // --- Cubic bases -----------------------------------------------------------
 
 namespace {

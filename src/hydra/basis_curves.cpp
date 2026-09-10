@@ -239,27 +239,45 @@ void HdClaudeBasisCurves::Sync(HdSceneDelegate* sceneDelegate,
         return;
     }
 
-    const hdclaude::CurveMesh swept = hdclaude::SweepCurves(
-        evaluated.vertexCounts, evaluated.points, evaluated.widths,
-        kDefaultWidth, param->CurveSides(), periodic, &reason);
-    if (!swept.Valid()) {
-        // Reported by name and dropped, rather than drawn as something else. A
-        // curve hdClaude cannot sweep is a curve the scene should hear about.
-        TF_WARN("hdClaude: curves <%s> were not swept: %s", id.GetText(),
-                reason.c_str());
-        param->SceneStore()->RemoveMesh(id);
-        *dirtyBits = HdChangeTracker::Clean;
-        return;
-    }
-
     HdClaudeMeshEntry entry;
     entry.prototype.debugName = id.GetString();
-    entry.prototype.positions = swept.positions;
-    entry.prototype.indices = swept.indices;
-    entry.prototype.normals = swept.normals;
-    entry.prototype.normalsPerCorner = false;
-    entry.prototype.uvs = swept.uvs;
-    entry.prototype.uvsPerCorner = false;
+
+    if (param->ImplicitCurves()) {
+        // The segments themselves, intersected in the traversal kernel: no
+        // triangles, no `sides`, and no facets. A strand is a cone with a
+        // sphere at each end and the renderer hits that shape rather than an
+        // approximation of it.
+        entry.prototype.segments = hdclaude::CurveSegments(
+            evaluated.vertexCounts, evaluated.points, evaluated.widths,
+            kDefaultWidth, periodic, &reason);
+        if (entry.prototype.segments.empty()) {
+            TF_WARN("hdClaude: curves <%s> produced no segments: %s",
+                    id.GetText(), reason.c_str());
+            param->SceneStore()->RemoveMesh(id);
+            *dirtyBits = HdChangeTracker::Clean;
+            return;
+        }
+    } else {
+        const hdclaude::CurveMesh swept = hdclaude::SweepCurves(
+            evaluated.vertexCounts, evaluated.points, evaluated.widths,
+            kDefaultWidth, param->CurveSides(), periodic, &reason);
+        if (!swept.Valid()) {
+            // Reported by name and dropped, rather than drawn as something
+            // else. A curve hdClaude cannot sweep is a curve the scene should
+            // hear about.
+            TF_WARN("hdClaude: curves <%s> were not swept: %s", id.GetText(),
+                    reason.c_str());
+            param->SceneStore()->RemoveMesh(id);
+            *dirtyBits = HdChangeTracker::Clean;
+            return;
+        }
+        entry.prototype.positions = swept.positions;
+        entry.prototype.indices = swept.indices;
+        entry.prototype.normals = swept.normals;
+        entry.prototype.normalsPerCorner = false;
+        entry.prototype.uvs = swept.uvs;
+        entry.prototype.uvsPerCorner = false;
+    }
     entry.prototype.opacity = hdclaude::OpacityClass::Opaque;
     entry.visible = sceneDelegate->GetVisible(id);
     entry.material = GetMaterialId();

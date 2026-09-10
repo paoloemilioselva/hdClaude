@@ -22,7 +22,7 @@ class HdClaudeRenderParam final : public HdRenderParam {
                         HdClaudeMaterialCompiler* materialCompiler,
                         HdClaudeTexturePool* texturePool,
                         int subdivisionLevel, int curveSides,
-                        int curveSegmentSamples,
+                        int curveSegmentSamples, bool implicitCurves,
                         HdClaudeStageStats* stageStats)
         : _store(store),
           _materialCompiler(materialCompiler),
@@ -30,6 +30,7 @@ class HdClaudeRenderParam final : public HdRenderParam {
           _subdivisionLevel(subdivisionLevel),
           _curveSides(curveSides),
           _curveSegmentSamples(curveSegmentSamples),
+          _implicitCurves(implicitCurves),
           _stageStats(stageStats)
     {
     }
@@ -60,6 +61,9 @@ class HdClaudeRenderParam final : public HdRenderParam {
     /// How many straight spans each cubic curve segment becomes.
     int CurveSegmentSamples() const { return _curveSegmentSamples; }
 
+    /// Whether curves are intersected as segments rather than swept to tubes.
+    bool ImplicitCurves() const { return _implicitCurves; }
+
   private:
     HdClaudeSceneStore* _store;
     HdClaudeMaterialCompiler* _materialCompiler;
@@ -68,6 +72,7 @@ class HdClaudeRenderParam final : public HdRenderParam {
     int _subdivisionLevel = 0;
     int _curveSides = 6;
     int _curveSegmentSamples = 1;
+    bool _implicitCurves = true;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

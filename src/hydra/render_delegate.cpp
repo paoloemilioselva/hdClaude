@@ -336,9 +336,19 @@ void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
     const int curveSegmentSamples =
         std::clamp(TfGetenvInt("HDCLAUDE_CURVE_SEGMENT_SAMPLES", 1), 1, 32);
 
+    // Curves as segments the traversal kernel intersects, rather than as tubes
+    // of triangles. On by default: it is the exact shape rather than a faceted
+    // approximation of it, and it costs about thirty-two bytes a segment
+    // against five hundred. `HDCLAUDE_CURVE_GEOMETRY=swept` puts the tubes back,
+    // which is what makes the two comparable on the same scene.
+    const std::string curveGeometry =
+        TfGetenv("HDCLAUDE_CURVE_GEOMETRY", "implicit");
+    const bool implicitCurves = curveGeometry != "swept";
+
     _renderParam = std::make_unique<HdClaudeRenderParam>(
         _store.get(), _materialCompiler.get(), _texturePool.get(),
-        subdivisionLevel, curveSides, curveSegmentSamples, &_stageStats);
+        subdivisionLevel, curveSides, curveSegmentSamples, implicitCurves,
+        &_stageStats);
 }
 
 const TfTokenVector& HdClaudeRenderDelegate::GetSupportedRprimTypes() const
