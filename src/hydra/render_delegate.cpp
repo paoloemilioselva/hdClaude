@@ -41,7 +41,11 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (reconstruction)
                          (reconstructionPreset)
                          (reconstructionAutoExposure)
-                         (lightGeometry));
+                         (lightGeometry)
+                         (curveGeometry)
+                         (curveSides)
+                         (curveSegmentSamples)
+                         (subdivisionLevel));
 
 namespace {
 
@@ -572,6 +576,26 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         // control is quietly scaling the lighting instead.
         {"Exposure", _tokens->exposure,
          VtValue(float(TfGetenvDouble("HDCLAUDE_EXPOSURE", 0.0)))},
+
+        // What the geometry *is*, rather than how a frame of it is traced.
+        //
+        // These four rebuild rprims when they change rather than taking effect
+        // on the next frame, which is why the render pass resyncs the stage
+        // when it sees one of them move. They are settings and not only
+        // environment variables because the interesting thing to do with them
+        // is flip one in a viewport and look: swept against implicit on a real
+        // groom is a comparison no still frame makes for you.
+        //
+        // Accepted: swept, implicit. Swept while the implicit path has a known
+        // artefact at segment joints (roadmap open question 5).
+        {"Curve geometry", _tokens->curveGeometry,
+         VtValue(std::string(TfGetenv("HDCLAUDE_CURVE_GEOMETRY", "swept")))},
+        {"Curve sides", _tokens->curveSides,
+         VtValue(TfGetenvInt("HDCLAUDE_CURVE_SIDES", 6))},
+        {"Curve segment samples", _tokens->curveSegmentSamples,
+         VtValue(TfGetenvInt("HDCLAUDE_CURVE_SEGMENT_SAMPLES", 1))},
+        {"Subdivision level", _tokens->subdivisionLevel,
+         VtValue(TfGetenvInt("HDCLAUDE_SUBDIVISION_LEVEL", 2))},
 
         // Whether a light's own shape is rendered.
         //

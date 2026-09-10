@@ -3,11 +3,14 @@
 #include "camera.h"
 #include "render_buffer.h"
 #include "render_delegate.h"
+#include "render_param.h"
 #include "scene_store.h"
 #include "trace.h"
 
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/tf/getenv.h"
+#include "pxr/imaging/hd/changeTracker.h"
+#include "pxr/imaging/hd/renderIndex.h"
 #include "pxr/imaging/hd/renderPassState.h"
 #include "pxr/imaging/hd/tokens.h"
 
@@ -36,7 +39,11 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (reconstruction)
                          (reconstructionPreset)
                          (reconstructionAutoExposure)
-                         (lightGeometry));
+                         (lightGeometry)
+                         (curveGeometry)
+                         (curveSides)
+                         (curveSegmentSamples)
+                         (subdivisionLevel));
 
 /// The reconstruction setting, parsed.
 ///
@@ -234,6 +241,49 @@ void HdClaudeRenderPass::_Execute(
     const std::uint32_t samplesPerFrame = static_cast<std::uint32_t>(std::clamp(
         _renderDelegate->GetRenderSetting<int>(_tokens->samplesPerFrame, 4), 1,
         4096));
+
+    // --- Geometry settings ----------------------------------------------------
+    //
+    // These decide what an rprim *is*, so a change to one cannot take effect on
+    // the next frame the way a sample count can: the prototypes were built the
+    // old way during Sync and have to be built again. This is the only part of
+    // the delegate holding a render index, so this is where that happens.
+    //
+    // Every rprim is marked rather than only the curves. Subdivision belongs to
+    // meshes and curve geometry to curves, and separating them would mean
+    // asking the index what type each prim is to save work in a case that
+    // happens when somebody moves a slider.
+    {
+        const std::string curveGeometry =
+            _renderDelegate->GetRenderSetting<std::string>(
+                _tokens->curveGeometry, std::string("swept"));
+        const int curveSides = std::clamp(
+            _renderDelegate->GetRenderSetting<int>(_tokens->curveSides, 6), 3,
+            64);
+        const int curveSegmentSamples = std::clamp(
+            _renderDelegate->GetRenderSetting<int>(_tokens->curveSegmentSamples,
+                                                   1),
+            1, 32);
+        const int subdivision = std::clamp(
+            _renderDelegate->GetRenderSetting<int>(_tokens->subdivisionLevel, 2),
+            0, 6);
+
+        auto* param = static_cast<HdClaudeRenderParam*>(
+            _renderDelegate->GetRenderParam());
+        if (param != nullptr &&
+            param->SetGeometrySettings(curveGeometry == "implicit", curveSides,
+                                       curveSegmentSamples, subdivision) &&
+            GetRenderIndex() != nullptr) {
+            HdChangeTracker& tracker = GetRenderIndex()->GetChangeTracker();
+            for (const SdfPath& rprim : GetRenderIndex()->GetRprimIds()) {
+                tracker.MarkRprimDirty(rprim, HdChangeTracker::DirtyTopology |
+                                                  HdChangeTracker::DirtyPoints |
+                                                  HdChangeTracker::DirtyWidths);
+            }
+            HdClaudeTrace("geometry settings changed; resyncing %zu rprims",
+                          GetRenderIndex()->GetRprimIds().size());
+        }
+    }
 
     // --- Reconstruction -------------------------------------------------------
     //

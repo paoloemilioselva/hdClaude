@@ -64,6 +64,30 @@ class HdClaudeRenderParam final : public HdRenderParam {
     /// Whether curves are intersected as segments rather than swept to tubes.
     bool ImplicitCurves() const { return _implicitCurves; }
 
+    /// The settings that decide what geometry an rprim *is*, rather than how a
+    /// frame of it is traced.
+    ///
+    /// Changing one of these cannot take effect on the next frame the way an
+    /// exposure or a sample count can: the prototype was already built one way
+    /// during Sync, so the rprims that depend on it have to be resynced. The
+    /// render pass owns that -- it is the only part of the delegate holding a
+    /// render index -- and these setters exist for it to call. Returns true
+    /// when something actually moved, because marking every rprim dirty for a
+    /// setting that did not change would resync the stage once a frame.
+    bool SetGeometrySettings(bool implicitCurves, int curveSides,
+                             int curveSegmentSamples, int subdivisionLevel)
+    {
+        const bool changed = implicitCurves != _implicitCurves ||
+                             curveSides != _curveSides ||
+                             curveSegmentSamples != _curveSegmentSamples ||
+                             subdivisionLevel != _subdivisionLevel;
+        _implicitCurves = implicitCurves;
+        _curveSides = curveSides;
+        _curveSegmentSamples = curveSegmentSamples;
+        _subdivisionLevel = subdivisionLevel;
+        return changed;
+    }
+
   private:
     HdClaudeSceneStore* _store;
     HdClaudeMaterialCompiler* _materialCompiler;
