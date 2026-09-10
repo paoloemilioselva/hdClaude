@@ -489,7 +489,7 @@ UsdSkel deformation through Hydra `extComputation`, and per-face material
 subsets. The scene that exercises in-place BLAS update under deformation.
 
 ```cmd
-render_claude.bat --imageWidth 1024 --colorCorrectionMode disabled --purposes render --camera mono gallery\collectiveproject001.usda build\gallery-linear\collectiveproject001.exr
+render_claude.bat --imageWidth 1024 --colorCorrectionMode disabled --purposes render --camera mono --frames 1246 C:\Users\paolo\Desktop\code\collectiveproject001\shots\s001_001\index.usda build\gallery-linear\collectiveproject001.exr
 ```
 
 **Current state.** Renders: the skinned character deforms through its
