@@ -76,7 +76,7 @@ $scenes = @(
     [pscustomobject]@{ Key = 'shader_ball_bubblegum'; Title = 'StandardShaderBall BubbleGum'; Camera = 'camera';            Purposes = $null;   Subdivision = 2; UpAxis = 'Y' },
     [pscustomobject]@{ Key = 'shader_ball_honey';      Title = 'StandardShaderBall Honey';     Camera = 'camera';            Purposes = $null;   Subdivision = 2; UpAxis = 'Y' },
     [pscustomobject]@{ Key = 'pixar_kitchen';         Title = "Pixar's KitchenSet";           Camera = 'renderCam';         Purposes = $null;   Subdivision = 2; UpAxis = 'Z' },
-    [pscustomobject]@{ Key = 'collectiveproject001';  Title = 'Collective Project 001';       Camera = 'mono';              Purposes = 'render'; Subdivision = 2; UpAxis = 'Y' },
+    [pscustomobject]@{ Key = 'collectiveproject001';  Title = 'Collective Project 001';       Camera = 'mono';              Purposes = 'render'; Subdivision = 2; UpAxis = 'Y'; Stage = 'C:\Users\paolo\Desktop\code\collectiveproject001\shots\s001_001\index.usda'; Frame = 1246 },
     [pscustomobject]@{ Key = 'openpbr_playground';    Title = 'OpenPBR Playground';           Camera = 'renderCam_mainCU';  Purposes = 'render'; Subdivision = 2; UpAxis = 'Y' },
     [pscustomobject]@{ Key = 'subdivision_features';  Title = 'Subdivision Feature Matrix';   Camera = 'camera';            Purposes = $null;   Subdivision = 2; UpAxis = 'Y' },
     [pscustomobject]@{ Key = 'newzealand_heightmap';  Title = 'New Zealand Height Map';       Camera = 'camera';            Purposes = $null;   Subdivision = 6; UpAxis = 'Y' }
@@ -372,7 +372,18 @@ foreach ($item in $selected) {
     $env:HDCLAUDE_SUBDIVISION_LEVEL = [string]$item.Subdivision
     $env:HDCLAUDE_UP_AXIS = [string]$item.UpAxis
 
-    $scenePath = Join-Path $galleryRoot ($item.Key + '.usda')
+    # The stage, which is gallery/<key>.usda unless the entry names one.
+    #
+    # An entry points outside the gallery when the wrapper would carry nothing
+    # but a sublayer of the real asset: Collective Project 001 renders its shot's
+    # own index.usda directly. Its baseline is one frame of an animated stage, so
+    # the entry names that frame too -- without it usdrecord renders its default
+    # time and the gate compares two different moments of the same shot.
+    $scenePath = if ($item.PSObject.Properties['Stage'] -and $item.Stage) {
+        $item.Stage
+    } else {
+        Join-Path $galleryRoot ($item.Key + '.usda')
+    }
     $linearPath = Join-Path $linearRoot ($item.Key + '.exr')
     $candidatePath = Join-Path $displayRoot ($item.Key + '.jpg')
     $baselinePath = Join-Path $galleryRoot ($item.Key + '.jpg')
@@ -389,7 +400,24 @@ foreach ($item in $selected) {
     # No --purposes here: render_claude.bat requests the render purpose for
     # every caller, because a stage's real geometry lives there and the
     # default purpose quietly renders the proxy instead.
-    $arguments += @('--camera', $item.Camera, $scenePath, $linearPath)
+    # usdrecord refuses --frames unless the output names a frame placeholder,
+    # so a stage rendered at a named time writes through one and the single file
+    # it produces is moved to the path the gate compares. The alternative -- a
+    # placeholder in every committed baseline's name -- would put a frame number
+    # into the whole gallery for the sake of one animated stage.
+    $recordPath = $linearPath
+    $framedPath = $null
+    if ($item.PSObject.Properties['Frame'] -and $item.Frame) {
+        $arguments += @('--frames', [string]$item.Frame)
+        $stem = Join-Path (Split-Path -Parent $linearPath) `
+                          ([System.IO.Path]::GetFileNameWithoutExtension($linearPath))
+        $recordPath = $stem + '.####.exr'
+        $framedPath = $stem + ('.{0:D4}.exr' -f [int]$item.Frame)
+        if (Test-Path -LiteralPath $framedPath) {
+            Remove-Item -LiteralPath $framedPath -Force
+        }
+    }
+    $arguments += @('--camera', $item.Camera, $scenePath, $recordPath)
 
     Write-Host "Rendering $($item.Title)..."
     if (Test-Path -LiteralPath $linearPath) { Remove-Item -LiteralPath $linearPath -Force }
@@ -412,6 +440,14 @@ foreach ($item in $selected) {
     Remove-Item Env:\HDCLAUDE_STATS_REPORT -ErrorAction SilentlyContinue
     if ($renderExit -ne 0) {
         throw "Render failed for $($item.Key) with exit code $renderExit"
+    }
+    # A framed render wrote through a placeholder; move its one file to the path
+    # the gate compares.
+    if ($framedPath) {
+        if (!(Test-Path -LiteralPath $framedPath)) {
+            throw "Expected $framedPath from a framed render of $($item.Key)"
+        }
+        Move-Item -LiteralPath $framedPath -Destination $linearPath -Force
     }
     if (!(Test-Path -LiteralPath $linearPath)) {
         throw "Render produced no image for $($item.Key): $linearPath"

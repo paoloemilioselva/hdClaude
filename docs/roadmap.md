@@ -214,6 +214,9 @@ reversed.
 | 2026-09-10 | A value handed to a backend is read back and reported, not assumed delivered | Three separate experiments on the exposure were invalidated by a stale installed shader, and every one of them read as "DLSS ignores this input" -- which is the same observation as "the plumbing is broken". A sentinel of 1234 moved the frame's mean and settled it. The exposure now travels back off the device and is printed with the frame |
 | 2026-09-10 | Light geometry is a render setting, off by default, and it can only take geometry away | A `UsdLux` light usually stands in for a fixture the asset also models, and rendering the bare rectangle beside the lamp it represents puts a shape in the picture nothing meant to show. Off overrides whatever a light authored rather than combining with it, so a scene cannot put geometry into a render that asked for none; on hands the choice back per light. **UsdLux defines no per-light camera-visibility attribute** -- the only per-light visibility USD has is `UsdGeomImageable`'s, and an invisible light prim is removed entirely rather than kept as an invisible emitter -- so `Light::visibleGeometry` is one for every light today and exists to keep the override separable for the day USD names one |
 | 2026-09-10 | A light whose geometry is hidden takes its next-event contribution whole | It cannot be found by a scattered ray, so there is no second strategy to share with and the balance heuristic would give away a share to a sampling event that can no longer happen -- every hidden light too dark by exactly that much. It is the treatment the stand-in sun already had, for the same reason. Asserted: a surface lit by an out-of-frame light reads a ratio of 1.0012 between the two settings, where leaving the weight alone read 0.14 |
+| 2026-09-10 | Cubic curves are evaluated to polylines and swept, not refused | A B-spline passes through none of its control points -- it begins a sixth of the way into its own control polygon -- so sweeping the control cage would draw a curve the asset did not author, which is why they were refused rather than approximated. The three bases UsdGeomBasisCurves names are now evaluated with its own segment rules: a segment is four consecutive control points, the stride is the basis's vstep (3 for Bezier, 1 for bspline and catmullRom), and a vertex count that does not describe whole segments is reported rather than truncated. `pinned` wrap stays refused by name: it repeats phantom control points at both ends, which changes the segment count and every index, and drawing it as nonperiodic would leave the curve short at both ends |
+| 2026-09-10 | Widths ride the same basis as the positions | They are `vertex` interpolation in every ALab curve set, so a per-point width is an attribute of the curve exactly as the position is and is evaluated with it. A constant or per-curve width means the same thing before and after and is carried through untouched. The evaluated width is clamped at zero because a cubic combination can undershoot where authored widths change sharply, and a negative radius sweeps the tube inside out |
+| 2026-09-10 | A cubic segment becomes one straight span by default | One is not the same as not evaluating: it puts both ends of every segment *on* the curve, which for a B-spline is nowhere near the control polygon. Hair is authored at several segments a strand and is thinner than a pixel at any sane distance, so the spans are already shorter than the geometry they approximate, and `HDCLAUDE_CURVE_SEGMENT_SAMPLES` multiplies the swept triangle count by exactly its own value. ALab's stoat and Remi reach 122,126,052 triangles and 14.2 GiB at one sample and six sides |
 | 2026-09-05 | The pbrlib override set is all-or-nothing | MaterialX resolves `#include` relative to the including file, so mixing one upstream closure with one hdClaude closure emits `struct ClosureData` twice. The set is exactly the 22 pbrlib files that include `mx_closure_type.glsl`; no stdlib file does |
 
 ## Open questions
@@ -239,6 +242,15 @@ Tracked here rather than decided prematurely.
    `metersPerUnit = 0.01`, and DLSS's handling of thin bright curve geometry
    (Programming Guide 3.6.4). Chase it with the same instrument that found it: a
    scene whose only light is an emissive shader ([dlss-integration.md](dlss-integration.md) 5a).
-5. **Volume rendering.** MaterialX VDFs are declared and generated; hdClaude
+5. **What a head of fur costs as triangles.** ALab's stoat and Remi alone
+   reach 122,126,052 swept triangles and 14.2 GiB of device memory at one span
+   per cubic segment and six sides round each tube -- and that is the cheapest
+   setting the evaluator offers. Sweeping reuses the triangle path whole, which
+   is why curves work at all, but a production groom is where that trade stops
+   paying: the honest answer is procedural AABB geometry with the swept cone
+   intersected in `extend`, which `curve_sweep.h` already names as what a hair
+   renderer eventually wants. Not scheduled; the number is recorded so the day
+   it is scheduled the case is already made.
+6. **Volume rendering.** MaterialX VDFs are declared and generated; hdClaude
    currently plans homogeneous interior media only. Heterogeneous volumes
    (`UsdVol`) are not scheduled.

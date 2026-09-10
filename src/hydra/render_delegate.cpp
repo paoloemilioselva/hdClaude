@@ -321,10 +321,21 @@ void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
     // answer depends on how close the camera gets.
     const int curveSides =
         std::clamp(TfGetenvInt("HDCLAUDE_CURVE_SIDES", 6), 3, 64);
+    // How many straight spans a cubic curve segment becomes.
+    //
+    // One, and one is not the same as not evaluating: it puts both ends of
+    // every segment on the actual curve, which for a B-spline is nowhere near
+    // its control polygon. Hair is authored at several segments a strand and is
+    // thinner than a pixel at any sane distance, so the spans are already
+    // shorter than the geometry they approximate; raising this multiplies the
+    // swept triangle count by exactly the same factor, and a head of fur is
+    // measured in millions of segments before it starts.
+    const int curveSegmentSamples =
+        std::clamp(TfGetenvInt("HDCLAUDE_CURVE_SEGMENT_SAMPLES", 1), 1, 32);
 
     _renderParam = std::make_unique<HdClaudeRenderParam>(
         _store.get(), _materialCompiler.get(), _texturePool.get(),
-        subdivisionLevel, curveSides, &_stageStats);
+        subdivisionLevel, curveSides, curveSegmentSamples, &_stageStats);
 }
 
 const TfTokenVector& HdClaudeRenderDelegate::GetSupportedRprimTypes() const

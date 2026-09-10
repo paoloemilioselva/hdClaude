@@ -174,29 +174,74 @@ void HdClaudeBasisCurves::Sync(HdSceneDelegate* sceneDelegate,
     // schema says it has rather than at one chosen here.
     constexpr float kDefaultWidth = 1.0f;
 
-    // Only the linear basis is swept. UsdImaging's NURBS adapter reports
-    // linear/linear/nonperiodic and draws the control cage rather than the
-    // evaluated curve, so a NurbsCurves prim reaches every Hydra renderer as a
-    // polyline; a cubic basis needs its basis matrices evaluated to a polyline
-    // first, which is separate work and is refused by name rather than swept as
-    // though it were linear.
+    // Which interpolation the vertices are authored for.
+    //
+    // UsdImaging's NURBS adapter reports linear/linear/nonperiodic and draws the
+    // control cage rather than the evaluated curve, so a NurbsCurves prim
+    // reaches every Hydra renderer as a polyline and needs no evaluation. A
+    // cubic set does: its control points are not on the curve, and a B-spline's
+    // are not even close to it -- a strand of hair starts a sixth of the way
+    // into its own control polygon.
+    hdclaude::CurveBasis basis = hdclaude::CurveBasis::Linear;
     if (topology.GetCurveType() != HdTokens->linear) {
-        TF_WARN("hdClaude: curves <%s> use a cubic basis, which is not "
-                "evaluated yet; they are not drawn",
+        const TfToken& authored = topology.GetCurveBasis();
+        if (authored == HdTokens->bSpline) {
+            basis = hdclaude::CurveBasis::BSpline;
+        } else if (authored == HdTokens->catmullRom) {
+            basis = hdclaude::CurveBasis::CatmullRom;
+        } else if (authored == HdTokens->bezier) {
+            basis = hdclaude::CurveBasis::Bezier;
+        } else {
+            // Named rather than guessed at. A basis this renderer does not know
+            // is not one of the three UsdGeomBasisCurves defines, and sweeping
+            // it as though it were would put a curve in the picture that the
+            // asset did not author.
+            TF_WARN("hdClaude: curves <%s> use basis '%s', which hdClaude does "
+                    "not evaluate; they are not drawn",
+                    id.GetText(), authored.GetText());
+            param->SceneStore()->RemoveMesh(id);
+            *dirtyBits = HdChangeTracker::Clean;
+            return;
+        }
+    }
+
+    const VtIntArray counts = topology.GetCurveVertexCounts();
+    const std::vector<int> vertexCounts(counts.begin(), counts.end());
+    const TfToken& wrap = topology.GetCurveWrap();
+    const bool periodic = wrap == HdTokens->periodic;
+
+    // `pinned` is a third wrap mode, and it is not periodic with a different
+    // name: it repeats phantom control points at each end so the curve reaches
+    // its first and last vertex, which changes the segment count and the
+    // indices every segment reads. Refused by name until it is implemented,
+    // rather than drawn as a nonperiodic curve that would be short at both ends.
+    if (basis != hdclaude::CurveBasis::Linear && wrap == HdTokens->pinned) {
+        TF_WARN("hdClaude: curves <%s> are pinned, which hdClaude does not "
+                "evaluate yet; they are not drawn",
                 id.GetText());
         param->SceneStore()->RemoveMesh(id);
         *dirtyBits = HdChangeTracker::Clean;
         return;
     }
 
-    const VtIntArray counts = topology.GetCurveVertexCounts();
-    const std::vector<int> vertexCounts(counts.begin(), counts.end());
-    const bool periodic = topology.GetCurveWrap() == HdTokens->periodic;
-
     std::string reason;
-    const hdclaude::CurveMesh swept =
-        hdclaude::SweepCurves(vertexCounts, points, widths, kDefaultWidth,
-                              param->CurveSides(), periodic, &reason);
+
+    // The cubic bases evaluated to polylines, which is what the sweep takes.
+    // A linear set passes through untouched, so this is unconditional.
+    const hdclaude::CurvePolylines evaluated = hdclaude::EvaluateCurves(
+        vertexCounts, points, widths, basis, periodic,
+        param->CurveSegmentSamples(), &reason);
+    if (!evaluated.Valid()) {
+        TF_WARN("hdClaude: curves <%s> were not evaluated: %s", id.GetText(),
+                reason.c_str());
+        param->SceneStore()->RemoveMesh(id);
+        *dirtyBits = HdChangeTracker::Clean;
+        return;
+    }
+
+    const hdclaude::CurveMesh swept = hdclaude::SweepCurves(
+        evaluated.vertexCounts, evaluated.points, evaluated.widths,
+        kDefaultWidth, param->CurveSides(), periodic, &reason);
     if (!swept.Valid()) {
         // Reported by name and dropped, rather than drawn as something else. A
         // curve hdClaude cannot sweep is a curve the scene should hear about.

@@ -38,6 +38,10 @@ IF "%~1"=="" (
   ECHO   HDCLAUDE_SAMPLES_PER_FRAME     default 4     samples per progressive update
   ECHO   HDCLAUDE_MAX_BOUNCES           default 8     path length
   ECHO   HDCLAUDE_SUBDIVISION_LEVEL     0-6, default 2, 0 disables refinement
+  ECHO   HDCLAUDE_CURVE_SIDES           3-64, default 6, faces round a tube
+  ECHO   HDCLAUDE_CURVE_SEGMENT_SAMPLES 1-32, default 1, straight spans per
+  ECHO                                  cubic curve segment. Multiplies the
+  ECHO                                  swept triangle count by its own value
   ECHO   HDCLAUDE_EXPOSURE              default 0     stops, applied after resolve
   ECHO   HDCLAUDE_ENVIRONMENT_INTENSITY default 1     stand-in sky, unlit stages
   ECHO   HDCLAUDE_SUN_INTENSITY         default 1     stand-in sun, unlit stages

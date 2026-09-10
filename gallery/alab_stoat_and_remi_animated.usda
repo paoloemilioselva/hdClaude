@@ -1,0 +1,31 @@
+#usda 1.0
+(
+    startTimeCode = 1004
+    endTimeCode = 1057
+    framesPerSecond = 24
+    metersPerUnit = 1
+    subLayers = [
+        @C:\Users\paolo\Desktop\openusd\ALab-2.3.0\ALab\entry.usda@,
+    ]
+    timeCodesPerSecond = 24
+    upAxis = "Y"
+)
+
+over "root"
+{
+    over "alab_set01" (
+        active = false
+    )
+    {
+    }
+    over "dmp_skydome_alab01" (
+        active = false
+    )
+    {
+    }
+    over "lightrig01" (
+        active = false
+    )
+    {
+    }
+}

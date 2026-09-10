@@ -67,4 +67,62 @@ CurveMesh SweepCurves(const std::vector<int>& vertexCounts,
                       const std::vector<float>& widths, float fallbackWidth,
                       int sides, bool periodic, std::string* reason);
 
+// --- Cubic bases -----------------------------------------------------------
+
+/// The interpolation a curve set's vertices are authored for.
+///
+/// `Linear` needs no evaluation: its control points *are* the polyline. The
+/// three cubic bases are the ones UsdGeomBasisCurves names, and each carries a
+/// `vstep` -- the stride from one segment's first control point to the next's --
+/// which is what decides how many segments a vertex count describes.
+enum class CurveBasis {
+    Linear,
+    BSpline,
+    CatmullRom,
+    Bezier,
+};
+
+/// A curve set reduced to polylines, ready for `SweepCurves`.
+struct CurvePolylines {
+    std::vector<int> vertexCounts;
+    /// Interleaved xyz.
+    std::vector<float> points;
+    /// Per point when the input had per-point widths, otherwise carried through
+    /// unchanged: a constant or per-curve width means the same thing before and
+    /// after evaluation, and only a per-vertex one has to be evaluated with the
+    /// positions.
+    std::vector<float> widths;
+
+    bool Valid() const { return !vertexCounts.empty(); }
+};
+
+/// Evaluate a cubic curve set into polylines.
+///
+/// The segment rules are UsdGeomBasisCurves', not this renderer's: a segment is
+/// four consecutive control points, the stride between segments is the basis's
+/// `vstep` (3 for Bezier, 1 for the other two), and a nonperiodic curve of `n`
+/// vertices therefore has `(n - 4) / vstep + 1` segments while a periodic one
+/// has `n / vstep`. A vertex count that does not satisfy the basis's divisibility
+/// rule is refused by name rather than rounded down to one that does, because a
+/// curve set that does not describe whole segments is an authoring error and
+/// silently dropping its tail would hide it.
+///
+/// `samplesPerSegment` is how many straight spans each cubic segment becomes,
+/// clamped to at least one. One is not a degenerate choice: it evaluates the
+/// basis at both ends of every segment, which already differs from the control
+/// cage -- a B-spline passes through none of its control points -- and for hair
+/// authored at a few segments per strand it is often enough. It is a setting for
+/// the same reason `sides` is.
+///
+/// A `Linear` basis is returned unchanged, so a caller may hand every curve set
+/// through this without asking which it has.
+///
+/// Returns an empty result, and sets `reason`, when the input cannot be
+/// evaluated.
+CurvePolylines EvaluateCurves(const std::vector<int>& vertexCounts,
+                              const std::vector<float>& points,
+                              const std::vector<float>& widths,
+                              CurveBasis basis, bool periodic,
+                              int samplesPerSegment, std::string* reason);
+
 }  // namespace hdclaude

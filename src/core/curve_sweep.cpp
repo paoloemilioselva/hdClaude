@@ -220,4 +220,214 @@ CurveMesh SweepCurves(const std::vector<int>& vertexCounts,
     return mesh;
 }
 
+// --- Cubic bases -----------------------------------------------------------
+
+namespace {
+
+/// The stride from one segment's first control point to the next's.
+///
+/// UsdGeomBasisCurves' table: Bezier 3, bspline 1, catmullRom 1. It is what
+/// makes a Bezier curve of seven vertices two segments where a B-spline of
+/// seven is four.
+int VertexStep(CurveBasis basis)
+{
+    return basis == CurveBasis::Bezier ? 3 : 1;
+}
+
+/// The four basis weights at `t` in [0, 1], in control-point order.
+///
+/// Each set sums to one at every t, which is what makes the result an affine
+/// combination of the control points and so independent of where the origin is.
+void BasisWeights(CurveBasis basis, double t, double weight[4])
+{
+    const double t2 = t * t;
+    const double t3 = t2 * t;
+    switch (basis) {
+        case CurveBasis::BSpline:
+            // The uniform cubic B-spline. It interpolates none of its control
+            // points -- it starts at (P0 + 4 P1 + P2) / 6 -- and that is the
+            // basis's defining behaviour rather than an error to correct: hair
+            // authored as a B-spline is authored expecting it.
+            weight[0] = (-t3 + 3.0 * t2 - 3.0 * t + 1.0) / 6.0;
+            weight[1] = (3.0 * t3 - 6.0 * t2 + 4.0) / 6.0;
+            weight[2] = (-3.0 * t3 + 3.0 * t2 + 3.0 * t + 1.0) / 6.0;
+            weight[3] = t3 / 6.0;
+            return;
+        case CurveBasis::CatmullRom:
+            // Passes through P1 at t = 0 and P2 at t = 1, which is what makes a
+            // Catmull-Rom curve go through its control points and a B-spline
+            // not.
+            weight[0] = 0.5 * (-t3 + 2.0 * t2 - t);
+            weight[1] = 0.5 * (3.0 * t3 - 5.0 * t2 + 2.0);
+            weight[2] = 0.5 * (-3.0 * t3 + 4.0 * t2 + t);
+            weight[3] = 0.5 * (t3 - t2);
+            return;
+        case CurveBasis::Bezier: {
+            const double u = 1.0 - t;
+            weight[0] = u * u * u;
+            weight[1] = 3.0 * t * u * u;
+            weight[2] = 3.0 * t2 * u;
+            weight[3] = t3;
+            return;
+        }
+        case CurveBasis::Linear:
+            break;
+    }
+    weight[0] = 0.0;
+    weight[1] = 1.0 - t;
+    weight[2] = t;
+    weight[3] = 0.0;
+}
+
+const char* BasisName(CurveBasis basis)
+{
+    switch (basis) {
+        case CurveBasis::Linear: return "linear";
+        case CurveBasis::BSpline: return "bspline";
+        case CurveBasis::CatmullRom: return "catmullRom";
+        case CurveBasis::Bezier: return "bezier";
+    }
+    return "unknown";
+}
+
+}  // namespace
+
+CurvePolylines EvaluateCurves(const std::vector<int>& vertexCounts,
+                              const std::vector<float>& points,
+                              const std::vector<float>& widths,
+                              CurveBasis basis, bool periodic,
+                              int samplesPerSegment, std::string* reason)
+{
+    const auto fail = [&](const std::string& what) {
+        if (reason != nullptr) {
+            *reason = what;
+        }
+        return CurvePolylines{};
+    };
+
+    if (vertexCounts.empty()) {
+        return fail("no curves");
+    }
+    if (points.size() % 3 != 0) {
+        return fail("point array is not a whole number of xyz triples");
+    }
+    const std::size_t pointCount = points.size() / 3;
+
+    std::size_t declared = 0;
+    for (const int count : vertexCounts) {
+        if (count < 0) {
+            return fail("a curve has a negative vertex count");
+        }
+        declared += static_cast<std::size_t>(count);
+    }
+    if (declared != pointCount) {
+        return fail("vertex counts describe " + std::to_string(declared) +
+                    " points but " + std::to_string(pointCount) + " were given");
+    }
+
+    // A linear set is already a polyline. Returned rather than refused so a
+    // caller can hand every set through without first asking which basis it is.
+    if (basis == CurveBasis::Linear) {
+        CurvePolylines through;
+        through.vertexCounts = vertexCounts;
+        through.points = points;
+        through.widths = widths;
+        return through;
+    }
+
+    // Per-point widths are the only layout that has to be evaluated: a constant
+    // or a per-curve width means the same thing before and after.
+    const bool widthsPerPoint = widths.size() == pointCount;
+
+    const int step = VertexStep(basis);
+    const int samples = samplesPerSegment > 1 ? samplesPerSegment : 1;
+
+    CurvePolylines result;
+    result.vertexCounts.reserve(vertexCounts.size());
+
+    std::size_t base = 0;
+    for (std::size_t curve = 0; curve < vertexCounts.size(); ++curve) {
+        const int count = vertexCounts[curve];
+
+        // UsdGeomBasisCurves' validity rules, applied as written. A count that
+        // does not describe whole segments is reported rather than truncated.
+        int segments = 0;
+        if (periodic) {
+            if (count < 4 || count % step != 0) {
+                return fail(std::string("curve ") + std::to_string(curve) +
+                            " has " + std::to_string(count) +
+                            " vertices, which is not a whole number of " +
+                            BasisName(basis) + " segments for a periodic curve");
+            }
+            segments = count / step;
+        } else {
+            if (count < 4 || (count - 4) % step != 0) {
+                return fail(std::string("curve ") + std::to_string(curve) +
+                            " has " + std::to_string(count) +
+                            " vertices, which is not a whole number of " +
+                            BasisName(basis) + " segments");
+            }
+            segments = (count - 4) / step + 1;
+        }
+
+        // A nonperiodic curve carries the last sample of its last segment; a
+        // periodic one does not, because that sample is its first point again
+        // and `SweepCurves` closes the ring itself.
+        const int emitted =
+            periodic ? segments * samples : segments * samples + 1;
+        result.vertexCounts.push_back(emitted);
+
+        for (int segment = 0; segment < segments; ++segment) {
+            const int last =
+                (!periodic && segment + 1 == segments) ? samples : samples - 1;
+            for (int sample = 0; sample <= last; ++sample) {
+                const double t =
+                    static_cast<double>(sample) / static_cast<double>(samples);
+                double weight[4];
+                BasisWeights(basis, t, weight);
+
+                double x = 0.0;
+                double y = 0.0;
+                double z = 0.0;
+                double width = 0.0;
+                for (int control = 0; control < 4; ++control) {
+                    std::size_t index =
+                        static_cast<std::size_t>(segment * step + control);
+                    // Only a periodic curve wraps; a nonperiodic one cannot
+                    // reach past its last vertex, which the segment count above
+                    // already guarantees.
+                    if (periodic) {
+                        index %= static_cast<std::size_t>(count);
+                    }
+                    const std::size_t at = base + index;
+                    x += weight[control] * points[at * 3 + 0];
+                    y += weight[control] * points[at * 3 + 1];
+                    z += weight[control] * points[at * 3 + 2];
+                    if (widthsPerPoint) {
+                        width += weight[control] * widths[at];
+                    }
+                }
+
+                result.points.push_back(static_cast<float>(x));
+                result.points.push_back(static_cast<float>(y));
+                result.points.push_back(static_cast<float>(z));
+                if (widthsPerPoint) {
+                    // A width is a distance and cannot be negative. A
+                    // Catmull-Rom or B-spline combination can undershoot below
+                    // zero where authored widths change sharply, and a negative
+                    // radius sweeps the tube inside out.
+                    result.widths.push_back(
+                        static_cast<float>(width > 0.0 ? width : 0.0));
+                }
+            }
+        }
+        base += static_cast<std::size_t>(count);
+    }
+
+    if (!widthsPerPoint) {
+        result.widths = widths;
+    }
+    return result;
+}
+
 }  // namespace hdclaude

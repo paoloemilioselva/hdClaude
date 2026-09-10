@@ -1044,6 +1044,210 @@ void TestShiftEstimatorRecoversAKnownDisplacement()
     CHECK(!hdclaude::EstimateShift(flat.data(), flat.data(), kSize, kSize).valid);
 }
 
+/// The cubic bases against what each one is defined to do.
+///
+/// A basis matrix is four polynomials, and a transposed or misordered one still
+/// produces a smooth curve near the control points -- which is exactly why this
+/// cannot be checked by looking at a render. Each basis has a property that
+/// pins it: where the curve starts, whether it touches its control points, and
+/// that adjacent segments meet. Those are what is asserted.
+void TestCubicCurveBasesMatchTheirDefinitions()
+{
+    // Six control points in a line, evenly spaced along x, so every closed form
+    // below is a number rather than a shape.
+    std::vector<float> points;
+    for (int i = 0; i < 6; ++i) {
+        points.push_back(float(i));
+        points.push_back(0.0f);
+        points.push_back(0.0f);
+    }
+    const std::vector<int> counts = {6};
+    const std::vector<float> widths;
+
+    // --- Segment counts, which are UsdGeomBasisCurves' rules ----------------
+    //
+    // Six vertices is three B-spline segments ((6-4)/1+1) and refuses to be a
+    // whole number of Bezier ones ((6-4) % 3 != 0). Getting this wrong is how a
+    // curve set loses its tail without saying so.
+    {
+        std::string reason;
+        const hdclaude::CurvePolylines spline = hdclaude::EvaluateCurves(
+            counts, points, widths, hdclaude::CurveBasis::BSpline, false, 1,
+            &reason);
+        CHECK(spline.Valid());
+        CHECK_EQ(spline.vertexCounts.size(), std::size_t(1));
+        // Three segments at one sample each, plus the final endpoint.
+        CHECK_EQ(spline.vertexCounts[0], 4);
+
+        std::string bezierReason;
+        const hdclaude::CurvePolylines bezier = hdclaude::EvaluateCurves(
+            counts, points, widths, hdclaude::CurveBasis::Bezier, false, 1,
+            &bezierReason);
+        CHECK(!bezier.Valid());
+        CHECK(!bezierReason.empty());
+        std::printf("  curve basis refuses 6 vertices of bezier: %s\n",
+                    bezierReason.c_str());
+    }
+
+    // --- B-spline: interpolates nothing, and its start is a closed form -----
+    //
+    // A uniform cubic B-spline begins at (P0 + 4 P1 + P2) / 6, which for
+    // collinear unit-spaced points is x = (0 + 4 + 2) / 6 = 1. If the weights
+    // were reversed it would begin at (P1 + 4 P2 + P3) / 6 = 2, so this single
+    // number separates the two orderings that a smooth-looking curve cannot.
+    {
+        std::string reason;
+        const hdclaude::CurvePolylines spline = hdclaude::EvaluateCurves(
+            counts, points, widths, hdclaude::CurveBasis::BSpline, false, 4,
+            &reason);
+        CHECK(spline.Valid());
+        CHECK_NEAR(spline.points[0], 1.0, 1e-5);
+        // And it ends at (P3 + 4 P4 + P5) / 6 = (3 + 16 + 5) / 6 = 4.
+        const std::size_t last = spline.points.size() / 3 - 1;
+        CHECK_NEAR(spline.points[last * 3 + 0], 4.0, 1e-5);
+        // Collinear control points give a straight curve: nothing leaves the
+        // axis, whatever the weights do along it.
+        for (std::size_t i = 0; i < spline.points.size() / 3; ++i) {
+            CHECK_NEAR(spline.points[i * 3 + 1], 0.0, 1e-6);
+            CHECK_NEAR(spline.points[i * 3 + 2], 0.0, 1e-6);
+        }
+        std::printf("  bspline over 6 collinear points: starts %.4f, ends "
+                    "%.4f (closed form 1 and 4)\n",
+                    spline.points[0], spline.points[last * 3 + 0]);
+    }
+
+    // --- Catmull-Rom: passes through its interior control points ------------
+    //
+    // The property that distinguishes it from the B-spline, and the one an
+    // artist relies on. It starts at P1 and ends at P4 for six vertices.
+    {
+        std::string reason;
+        const hdclaude::CurvePolylines rom = hdclaude::EvaluateCurves(
+            counts, points, widths, hdclaude::CurveBasis::CatmullRom, false, 3,
+            &reason);
+        CHECK(rom.Valid());
+        CHECK_NEAR(rom.points[0], 1.0, 1e-5);
+        const std::size_t last = rom.points.size() / 3 - 1;
+        CHECK_NEAR(rom.points[last * 3 + 0], 4.0, 1e-5);
+        // Every segment boundary lands on a control point: with three samples a
+        // segment, index 3 is the joint between the first and second segments
+        // and must be exactly P2.
+        CHECK_NEAR(rom.points[3 * 3 + 0], 2.0, 1e-5);
+    }
+
+    // --- Bezier: interpolates its ends -------------------------------------
+    {
+        const std::vector<int> seven = {7};
+        std::vector<float> control;
+        for (int i = 0; i < 7; ++i) {
+            control.push_back(float(i));
+            control.push_back(0.0f);
+            control.push_back(0.0f);
+        }
+        std::string reason;
+        const hdclaude::CurvePolylines bezier = hdclaude::EvaluateCurves(
+            seven, control, widths, hdclaude::CurveBasis::Bezier, false, 2,
+            &reason);
+        CHECK(bezier.Valid());
+        // Seven vertices, vstep 3: two segments, so four spans and five points.
+        CHECK_EQ(bezier.vertexCounts[0], 5);
+        CHECK_NEAR(bezier.points[0], 0.0, 1e-5);
+        const std::size_t last = bezier.points.size() / 3 - 1;
+        CHECK_NEAR(bezier.points[last * 3 + 0], 6.0, 1e-5);
+        // The joint between the two segments is the shared control point P3.
+        CHECK_NEAR(bezier.points[2 * 3 + 0], 3.0, 1e-5);
+    }
+
+    // --- Adjacent segments meet ---------------------------------------------
+    //
+    // The check that would catch a stride error. A B-spline segment ends where
+    // the next begins, so a polyline sampled from several segments has no jump
+    // in it; a wrong vstep would step past a control point and leave one.
+    {
+        // Points on a circle, so the curve genuinely bends and a discontinuity
+        // would show up as a length rather than cancelling along an axis.
+        std::vector<float> ring;
+        for (int i = 0; i < 8; ++i) {
+            const double angle = 2.0 * 3.14159265358979323846 * i / 8.0;
+            ring.push_back(float(std::cos(angle)));
+            ring.push_back(float(std::sin(angle)));
+            ring.push_back(0.0f);
+        }
+        std::string reason;
+        const hdclaude::CurvePolylines spline = hdclaude::EvaluateCurves(
+            {8}, ring, widths, hdclaude::CurveBasis::BSpline, false, 2,
+            &reason);
+        CHECK(spline.Valid());
+        double longest = 0.0;
+        const std::size_t n = spline.points.size() / 3;
+        for (std::size_t i = 1; i < n; ++i) {
+            const double dx = spline.points[i * 3 + 0] - spline.points[(i - 1) * 3 + 0];
+            const double dy = spline.points[i * 3 + 1] - spline.points[(i - 1) * 3 + 1];
+            const double dz = spline.points[i * 3 + 2] - spline.points[(i - 1) * 3 + 2];
+            longest = std::max(longest, std::sqrt(dx * dx + dy * dy + dz * dz));
+        }
+        // The bound comes from the two answers, not from the measurement. Eight
+        // control points on a unit circle are 2 sin(pi/8) = 0.765 apart, so a
+        // missed joint leaves a span of about that. The curve itself lies
+        // inside the control polygon at radius about 0.9 and each segment
+        // sampled twice covers 22.5 degrees of it, a chord of about 0.35. A
+        // half separates the two with room on both sides and sits at neither.
+        std::printf("  bspline joints: longest span %.4f over a unit ring "
+                    "(0.35 correct, 0.77 if a joint were missed)\n",
+                    longest);
+        CHECK(longest < 0.5);
+    }
+
+    // --- Widths ride the same basis -----------------------------------------
+    //
+    // They are `vertex` interpolation in every ALab curve set, so they are
+    // evaluated with the positions rather than carried across. A constant or
+    // per-curve width means the same before and after and is passed through.
+    {
+        std::vector<float> perPoint(6, 0.5f);
+        std::string reason;
+        const hdclaude::CurvePolylines spline = hdclaude::EvaluateCurves(
+            counts, points, perPoint, hdclaude::CurveBasis::BSpline, false, 2,
+            &reason);
+        CHECK(spline.Valid());
+        CHECK_EQ(spline.widths.size(), spline.points.size() / 3);
+        // A constant width stays constant through any affine basis, because the
+        // weights sum to one.
+        for (const float width : spline.widths) {
+            CHECK_NEAR(width, 0.5, 1e-6);
+        }
+
+        const std::vector<float> one = {0.25f};
+        const hdclaude::CurvePolylines carried = hdclaude::EvaluateCurves(
+            counts, points, one, hdclaude::CurveBasis::BSpline, false, 2,
+            &reason);
+        CHECK(carried.Valid());
+        CHECK_EQ(carried.widths.size(), std::size_t(1));
+        CHECK_EQ(carried.widths[0], 0.25f);
+    }
+
+    // --- Linear passes through untouched ------------------------------------
+    {
+        std::string reason;
+        const hdclaude::CurvePolylines linear = hdclaude::EvaluateCurves(
+            counts, points, widths, hdclaude::CurveBasis::Linear, false, 4,
+            &reason);
+        CHECK(linear.Valid());
+        CHECK_EQ(linear.points.size(), points.size());
+        CHECK_EQ(linear.vertexCounts[0], 6);
+    }
+
+    // --- A mismatch is reported, not absorbed -------------------------------
+    {
+        std::string reason;
+        const hdclaude::CurvePolylines wrong = hdclaude::EvaluateCurves(
+            {5}, points, widths, hdclaude::CurveBasis::BSpline, false, 1,
+            &reason);
+        CHECK(!wrong.Valid());
+        CHECK(!reason.empty());
+    }
+}
+
 }  // namespace
 
 int main()
@@ -1075,6 +1279,7 @@ int main()
     TestCurveSweepIsARadiusFromItsAxis();
     TestCurveSweepIndicesAreInRange();
     TestCurveSweepRefusesWhatItCannotSweep();
+    TestCubicCurveBasesMatchTheirDefinitions();
     TestSsimMatchesItsDefinition();
     TestTemporalInstabilityMeasuresFlicker();
     TestShiftEstimatorRecoversAKnownDisplacement();

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // What a prim's Sync() needs in order to publish.
 //
@@ -22,12 +22,14 @@ class HdClaudeRenderParam final : public HdRenderParam {
                         HdClaudeMaterialCompiler* materialCompiler,
                         HdClaudeTexturePool* texturePool,
                         int subdivisionLevel, int curveSides,
+                        int curveSegmentSamples,
                         HdClaudeStageStats* stageStats)
         : _store(store),
           _materialCompiler(materialCompiler),
           _texturePool(texturePool),
           _subdivisionLevel(subdivisionLevel),
           _curveSides(curveSides),
+          _curveSegmentSamples(curveSegmentSamples),
           _stageStats(stageStats)
     {
     }
@@ -55,6 +57,9 @@ class HdClaudeRenderParam final : public HdRenderParam {
     /// not how that geometry is drawn.
     int CurveSides() const { return _curveSides; }
 
+    /// How many straight spans each cubic curve segment becomes.
+    int CurveSegmentSamples() const { return _curveSegmentSamples; }
+
   private:
     HdClaudeSceneStore* _store;
     HdClaudeMaterialCompiler* _materialCompiler;
@@ -62,6 +67,7 @@ class HdClaudeRenderParam final : public HdRenderParam {
     HdClaudeStageStats* _stageStats = nullptr;
     int _subdivisionLevel = 0;
     int _curveSides = 6;
+    int _curveSegmentSamples = 1;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE
