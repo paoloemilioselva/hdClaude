@@ -41,6 +41,11 @@ IF "%~1"=="" (
   ECHO   HDCLAUDE_EXPOSURE              default 0     stops, applied after resolve
   ECHO   HDCLAUDE_ENVIRONMENT_INTENSITY default 1     stand-in sky, unlit stages
   ECHO   HDCLAUDE_SUN_INTENSITY         default 1     stand-in sun, unlit stages
+  ECHO   HDCLAUDE_LIGHT_GEOMETRY        default off. Off removes every light's
+  ECHO                                  own shape whatever the asset authored;
+  ECHO                                  on hands the choice back to each light.
+  ECHO                                  Off changes what is in the picture, not
+  ECHO                                  how much light is in it
   ECHO   HDCLAUDE_DEVICE                substring of the GPU to select
   ECHO.
   ECHO Reconstruction. Off renders the progressive reference this delegate has

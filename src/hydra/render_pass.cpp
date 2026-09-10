@@ -35,7 +35,8 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (exposure)
                          (reconstruction)
                          (reconstructionPreset)
-                         (reconstructionAutoExposure));
+                         (reconstructionAutoExposure)
+                         (lightGeometry));
 
 /// The reconstruction setting, parsed.
 ///
@@ -442,6 +443,8 @@ void HdClaudeRenderPass::_Execute(
     settings.reconstruct = reconstruction.on;
     settings.reconstructionQuality = reconstruction.quality;
     settings.reconstructionPreset = preset;
+    settings.lightGeometry = _renderDelegate->GetRenderSetting<bool>(
+        _tokens->lightGeometry, false);
     settings.reconstructionAutoExposure =
         _renderDelegate->GetRenderSetting<bool>(
             _tokens->reconstructionAutoExposure, false);

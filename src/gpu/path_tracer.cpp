@@ -151,7 +151,9 @@ struct FrameBlock {
     /// than drawing one per sample.
     float jitter[2];
     std::uint32_t useFixedJitter;
-    std::uint32_t jitterPad;
+    /// Whether light geometry is in the scene at all. Takes the slot a pad
+    /// held, so the block's layout is unchanged.
+    std::uint32_t lightGeometry;
 };
 
 /// The radical inverse of `index` in `base`, one coordinate of a Halton
@@ -1891,7 +1893,7 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     block.jitter[0] = settings.jitter[0];
     block.jitter[1] = settings.jitter[1];
     block.useFixedJitter = settings.fixedJitter ? 1u : 0u;
-    block.jitterPad = 0;
+    block.lightGeometry = settings.lightGeometry ? 1u : 0u;
 
     const std::uint32_t pathGroups = (paths + 63) / 64;
     const std::uint32_t pixelGroupsX = (width + 7) / 8;

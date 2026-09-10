@@ -40,7 +40,8 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (exposure)
                          (reconstruction)
                          (reconstructionPreset)
-                         (reconstructionAutoExposure));
+                         (reconstructionAutoExposure)
+                         (lightGeometry));
 
 namespace {
 
@@ -541,6 +542,17 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         // control is quietly scaling the lighting instead.
         {"Exposure", _tokens->exposure,
          VtValue(float(TfGetenvDouble("HDCLAUDE_EXPOSURE", 0.0)))},
+
+        // Whether a light's own shape is rendered.
+        //
+        // Off, because a `UsdLux` light usually stands in for a fixture the
+        // asset also models, and the bare rectangle beside the lamp it
+        // represents is a shape nothing in the scene meant to show. Off
+        // overrides whatever the asset authored per light rather than combining
+        // with it, so a scene cannot put geometry into a render that asked for
+        // none; on hands the choice back to each light.
+        {"Light geometry", _tokens->lightGeometry,
+         VtValue(TfGetenvBool("HDCLAUDE_LIGHT_GEOMETRY", false))},
 
         // Reconstruction, and which model reconstructs.
         //

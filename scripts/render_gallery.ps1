@@ -356,6 +356,16 @@ $device = Get-SelectedDevice
 $env:HDCLAUDE_SAMPLES_PER_PIXEL = [string]$samplesPerPixel
 $env:HDCLAUDE_SAMPLES_PER_FRAME = [string]$samplesPerFrame
 if (!$env:HDCLAUDE_MAX_BOUNCES) { $env:HDCLAUDE_MAX_BOUNCES = '8' }
+# Light geometry on, deliberately, against a renderer that ships it off.
+#
+# The gallery is the correctness record, and one of the things it records is
+# that an analytic light is an emitter a ray can reach: the gold shader ball's
+# key light is visible in it only by being hit, because a near-specular lobe has
+# no other way to find one. Rendering the gallery at the product default would
+# retire that coverage and change 38% of that image's pixels for a reason that
+# is a preference rather than a defect. A user's default stays off; see
+# RenderSettings::lightGeometry.
+if (!$env:HDCLAUDE_LIGHT_GEOMETRY) { $env:HDCLAUDE_LIGHT_GEOMETRY = '1' }
 if (!$env:HDCLAUDE_GALLERY_EXPOSURE) { $env:HDCLAUDE_GALLERY_EXPOSURE = '0' }
 
 foreach ($item in $selected) {

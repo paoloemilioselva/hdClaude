@@ -181,6 +181,31 @@ struct RenderSettings {
     /// back if a backend's own estimate is ever the better one
     /// (docs/dlss-integration.md 5b).
     bool reconstructionAutoExposure = false;
+
+    /// Whether a light's own shape is part of the scene.
+    ///
+    /// Off, and the default is the point of it: a `UsdLux` light is usually
+    /// standing in for a fixture that the asset also models, and rendering the
+    /// bare rectangle beside the lamp it represents puts a shape in the picture
+    /// that nothing in the scene is meant to show. Off removes every light's
+    /// geometry **however the asset was authored** -- it overrides
+    /// `Light::visibleGeometry` rather than combining with it as a preference,
+    /// so a scene cannot surprise a render that asked for none. On hands the
+    /// choice back to each light.
+    ///
+    /// It changes what is in the picture, never how much light is in it. A
+    /// hidden light is still sampled by next-event estimation; what it loses is
+    /// the second sampling strategy, so its next-event contribution stops being
+    /// weighted against a ray that can no longer find it and is taken in full
+    /// (shaders/shade.comp.glsl). A furnace lit by a hidden light reads exactly
+    /// one.
+    ///
+    /// What does disappear is a light's *reflection*: with no geometry to hit,
+    /// a mirror and a glass ball have nothing to show, because a delta closure
+    /// skips next-event estimation entirely and hitting the light was its only
+    /// way to find one. That is the correct consequence of the shape not being
+    /// there, and it is the reason this is a setting rather than a fix.
+    bool lightGeometry = false;
 };
 
 /// A material ready to shade with: the SPIR-V of its generated MaterialX

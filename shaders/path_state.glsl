@@ -78,7 +78,11 @@ layout(set = 0, binding = 0, scalar) uniform FrameBlock {
     // instead of drawing one per sample. See RenderSettings::jitter.
     vec2  jitter;
     uint  useFixedJitter;
-    uint  jitterPad;
+    // Whether a light's own geometry is in the scene at all: 1 renders the
+    // shapes, 0 removes every one of them however the asset was authored. See
+    // RenderSettings::lightGeometry. It takes the slot a pad held, so the
+    // block's scalar layout is unchanged.
+    uint  lightGeometry;
 } frame;
 
 // --- Path state -------------------------------------------------------------
@@ -422,7 +426,11 @@ struct Light {
     /// Equates the peak-normalised blackbody's luminous power with the default
     /// illuminant's, so a temperature tints without brightening.
     float temperatureScale;
-    float pad0;
+    /// Whether *this* light's shape is rendered, as the asset asked. Ignored
+    /// when `frame.lightGeometry` is 0, which removes every light's geometry
+    /// regardless: the global setting can only take geometry away, never add
+    /// it back. Takes the slot a pad held.
+    uint  visibleGeometry;
     float pad1;
 };
 layout(set = 0, binding = 15, scalar) readonly buffer LightTable {
@@ -1381,6 +1389,25 @@ float hdclaude_intersect_light(Light light, vec3 origin, vec3 direction,
 }
 
 /// The nearest light along a ray closer than `tMax`, or -1.
+/// Whether a ray can hit this light's shape.
+///
+/// Both halves must agree: the render setting removes every light's geometry
+/// when it is off, and the light's own flag is what the asset asked for. There
+/// is deliberately no way for a light to force its shape back into a frame that
+/// asked for none -- a light fixture is usually a modelled asset, and the
+/// stand-in rectangle is not wanted beside it.
+///
+/// A light whose geometry is invisible still *lights*: it is sampled by
+/// next-event estimation exactly as before. What changes is that no ray can
+/// find it, so it has no second sampling strategy and next-event estimation
+/// takes the whole contribution rather than a balance-heuristic share of it
+/// (shade.comp.glsl). That is the same treatment the stand-in sun has always
+/// had, for the same reason.
+bool hdclaude_light_geometry_visible(Light light)
+{
+    return frame.lightGeometry != 0u && light.visibleGeometry != 0u;
+}
+
 int hdclaude_nearest_light(vec3 origin, vec3 direction, float tMax,
                            out float tHit, out vec3 normalHit)
 {
@@ -1390,6 +1417,10 @@ int hdclaude_nearest_light(vec3 origin, vec3 direction, float tMax,
 
     for (uint i = 0u; i < frame.lightCount; ++i)
     {
+        if (!hdclaude_light_geometry_visible(lights.values[i]))
+        {
+            continue;
+        }
         vec3 normal;
         float t = hdclaude_intersect_light(lights.values[i], origin, direction,
                                            normal);

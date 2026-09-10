@@ -201,7 +201,21 @@ struct Light {
     /// Multiplies the peak-normalised blackbody so it carries the same luminous
     /// power as the default illuminant. `BlackbodyLuminousScale`.
     float temperatureScale = 1.0f;
-    float pad0 = 0.0f;
+
+    /// Whether this light's own shape is rendered, as the asset asked for it.
+    ///
+    /// One for every light today, and that is a statement about USD rather than
+    /// a placeholder: **UsdLux defines no per-light camera-visibility
+    /// attribute**. The only per-light visibility USD has is
+    /// `UsdGeomImageable`'s, and an invisible light prim is removed from the
+    /// scene entirely rather than kept as an invisible emitter -- which is what
+    /// hdClaude already does. The field exists because the render setting's
+    /// semantics are an override of a per-light choice, and writing that as
+    /// `global && perLight` keeps the two separable for the day USD names one.
+    ///
+    /// `RenderSettings::lightGeometry` can only take geometry away. A light
+    /// cannot force its shape into a frame that asked for none.
+    std::uint32_t visibleGeometry = 1;
     float pad1 = 0.0f;
 };
 

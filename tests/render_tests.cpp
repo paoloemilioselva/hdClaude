@@ -1035,6 +1035,9 @@ int main()
         }
 
         RenderSettings settings;
+        // Lights are probed through their geometry here, and read through a
+        // mirror in several of these; the render default is off.
+        settings.lightGeometry = true;
         settings.samplesPerPixel = 32;
         settings.maxBounces = 3;
 
@@ -1117,6 +1120,9 @@ int main()
             tracer.SetScene(scene, materials);
 
             RenderSettings single;
+            // Lights are probed through their geometry here, and read through a
+            // mirror in several of these; the render default is off.
+            single.lightGeometry = true;
             single.samplesPerPixel = 1;
             single.maxBounces = 1;
             const std::vector<float> image =
@@ -1202,6 +1208,9 @@ int main()
                 {0, Transform(1.0f, 2.0f, 1.0f, 1.0f, 0.0f, 0.0f), 1, true});
 
             RenderSettings timed;
+            // Lights are probed through their geometry here, and read through a
+            // mirror in several of these; the render default is off.
+            timed.lightGeometry = true;
             timed.samplesPerPixel = 8;
             timed.maxBounces = 1;
 
@@ -1407,6 +1416,9 @@ int main()
             tracer.SetScene(scene, {materials[0]});   // albedo 0.8, grey
 
             RenderSettings furnace;
+            // Lights are probed through their geometry here, and read through a
+            // mirror in several of these; the render default is off.
+            furnace.lightGeometry = true;
             furnace.samplesPerPixel = 256;
             furnace.maxBounces = 2;
             // A white sky and no sun, so the only light in the scene is the one
@@ -1468,6 +1480,9 @@ int main()
                 tracer.SetScene(scene, {dielectric});
 
                 RenderSettings mirror;
+                // Lights are probed through their geometry here, and read through a
+                // mirror in several of these; the render default is off.
+                mirror.lightGeometry = true;
                 mirror.samplesPerPixel = 64;
                 mirror.maxBounces = 2;
                 // A uniform white sky and nothing else, so the reflected
@@ -1578,6 +1593,9 @@ int main()
                 tracer.SetScene(scene, {mirror});
 
                 RenderSettings glossy;
+                // Lights are probed through their geometry here, and read through a
+                // mirror in several of these; the render default is off.
+                glossy.lightGeometry = true;
                 glossy.samplesPerPixel = 512;
                 glossy.maxBounces = 2;
                 for (int i = 0; i < 3; ++i) {
@@ -1664,6 +1682,9 @@ int main()
                 tracer.SetScene(scene, {medium});
 
                 RenderSettings beam;
+                // Lights are probed through their geometry here, and read through a
+                // mirror in several of these; the render default is off.
+                beam.lightGeometry = true;
                 beam.samplesPerPixel = 512;
                 beam.maxBounces = 12;
                 for (int i = 0; i < 3; ++i) {
@@ -1747,6 +1768,9 @@ int main()
                 tracer.SetScene(scene, {glass});
 
                 RenderSettings through;
+                // Lights are probed through their geometry here, and read through a
+                // mirror in several of these; the render default is off.
+                through.lightGeometry = true;
                 through.samplesPerPixel = 512;
                 through.maxBounces = 3;
                 for (int i = 0; i < 3; ++i) {
@@ -1833,6 +1857,9 @@ int main()
                 tracer.SetScene(scene, {material});
 
                 RenderSettings tinted;
+                // Lights are probed through their geometry here, and read through a
+                // mirror in several of these; the render default is off.
+                tinted.lightGeometry = true;
                 tinted.samplesPerPixel = 512;
                 tinted.maxBounces = 3;
                 for (int i = 0; i < 3; ++i) {
@@ -1893,6 +1920,9 @@ int main()
                 tracer.SetScene(scene, {material});
 
                 RenderSettings box;
+                // Lights are probed through their geometry here, and read through a
+                // mirror in several of these; the render default is off.
+                box.lightGeometry = true;
                 box.samplesPerPixel = 512;
                 box.maxBounces = 16;
                 for (int i = 0; i < 3; ++i) {
@@ -1928,6 +1958,9 @@ int main()
                 tracer.SetScene(scene, {material});
 
                 RenderSettings box;
+                // Lights are probed through their geometry here, and read through a
+                // mirror in several of these; the render default is off.
+                box.lightGeometry = true;
                 // Half the slab furnace's samples over a window four times its
                 // area: a sphere fills the frame where two quads fill a patch
                 // of it, so the same number of paths reaches the measurement.
@@ -2337,6 +2370,9 @@ int main()
 
                 for (const std::uint32_t bounces : {8u, 16u, 32u, 64u}) {
                     RenderSettings deep;
+                    // Lights are probed through their geometry here, and read through a
+                    // mirror in several of these; the render default is off.
+                    deep.lightGeometry = true;
                     deep.samplesPerPixel = 256;
                     deep.maxBounces = bounces;
                     for (int i = 0; i < 3; ++i) {
@@ -2441,6 +2477,9 @@ int main()
                 tracer.SetScene(scene, {material});
 
                 RenderSettings settings;
+                // Lights are probed through their geometry here, and read through a
+                // mirror in several of these; the render default is off.
+                settings.lightGeometry = true;
                 // Many times the samples the same measurement needs without
                 // dispersion, because a collapsed packet carries one lane where
                 // it used to carry four, and because sRGB red is a difference of
@@ -2597,6 +2636,9 @@ int main()
             tracer.SetScene(scene, {materials[0]});   // albedo 0.8, grey
 
             RenderSettings lit;
+            // Lights are probed through their geometry here, and read through a
+            // mirror in several of these; the render default is off.
+            lit.lightGeometry = true;
             lit.samplesPerPixel = 512;
             lit.maxBounces = 2;
             for (int i = 0; i < 3; ++i) {
@@ -2662,6 +2704,9 @@ int main()
             tracer.SetScene(scene, {materials[0]});
 
             RenderSettings lit;
+            // Lights are probed through their geometry here, and read through a
+            // mirror in several of these; the render default is off.
+            lit.lightGeometry = true;
             lit.samplesPerPixel = 64;
             lit.maxBounces = 2;
             for (int i = 0; i < 3; ++i) {
@@ -2704,6 +2749,9 @@ int main()
             tracer.SetScene(scene, {materials[0]});   // albedo 0.8, grey
 
             RenderSettings furnace;
+            // Lights are probed through their geometry here, and read through a
+            // mirror in several of these; the render default is off.
+            furnace.lightGeometry = true;
             furnace.samplesPerPixel = 256;
             furnace.maxBounces = 2;
             furnace.environmentColor[0] = 1.0f;
@@ -2748,6 +2796,9 @@ int main()
             tracer.SetScene(scene, {materials[0]});
 
             RenderSettings half;
+            // Lights are probed through their geometry here, and read through a
+            // mirror in several of these; the render default is off.
+            half.lightGeometry = true;
             half.samplesPerPixel = 512;
             // Two, not one. Both halves of a multiple-importance estimate
             // have to actually run: at one bounce the scattered ray is
@@ -2818,6 +2869,9 @@ int main()
             distant.castsShadows = 0;
 
             RenderSettings lit;
+            // Lights are probed through their geometry here, and read through a
+            // mirror in several of these; the render default is off.
+            lit.lightGeometry = true;
             lit.samplesPerPixel = 256;
             lit.maxBounces = 2;
             // Nothing else may light the quad, or it would dilute the shift
@@ -3486,6 +3540,151 @@ int main()
             CHECK(!tracer.EndFrame(hdclaude::FrameHandle{}).Valid());
         }
 
+        // --- Light geometry, and what turning it off may not cost -------------
+        //
+        // Two claims, because the setting makes two promises and only one of
+        // them is about the picture.
+        //
+        // The shape goes: with a light facing the camera and nothing else in
+        // the scene, the frame is exactly black when its geometry is off and is
+        // not when it is on. Exactly black, not nearly: there is no other
+        // emitter, the environment is zero, and a single sample that found the
+        // light would show.
+        //
+        // The light does not go: a surface lit by that light reads the same
+        // whether or not the shape is rendered. This is the claim that would
+        // fail if the mixture density had been left alone. A hidden light
+        // cannot be found by a scattered ray, so next-event estimation is the
+        // only strategy left and must take the contribution whole; weighting it
+        // against a ray that can no longer arrive would make every hidden light
+        // too dark by exactly the share it gave away.
+        {
+            constexpr std::uint32_t kSize = 96;
+
+            // A rect light square to the camera, four units ahead of it.
+            Light facing;
+            facing.type = static_cast<std::uint32_t>(LightType::Rect);
+            facing.position[0] = 0.0f;
+            facing.position[1] = 0.0f;
+            facing.position[2] = 0.0f;
+            facing.direction[0] = 0.0f;
+            facing.direction[1] = 0.0f;
+            facing.direction[2] = 1.0f;
+            facing.uAxis[0] = 1.0f; facing.uAxis[1] = 0.0f; facing.uAxis[2] = 0.0f;
+            facing.vAxis[0] = 0.0f; facing.vAxis[1] = 1.0f; facing.vAxis[2] = 0.0f;
+            facing.area = 4.0f;
+            facing.radiance[0] = 3.0f;
+            facing.radiance[1] = 3.0f;
+            facing.radiance[2] = 3.0f;
+            facing.castsShadows = 1;
+
+            const auto meanOfImage = [](const std::vector<float>& image) {
+                double total = 0.0;
+                const std::size_t pixels = image.size() / 4;
+                for (std::size_t i = 0; i < pixels; ++i) {
+                    total += 0.2126 * image[i * 4 + 0] +
+                             0.7152 * image[i * 4 + 1] +
+                             0.0722 * image[i * 4 + 2];
+                }
+                return pixels > 0 ? total / double(pixels) : 0.0;
+            };
+
+            // Nothing but the light, and a black sky, so the only thing a ray
+            // can find is the shape under test.
+            {
+                Scene empty;
+                empty.lights.push_back(facing);
+                empty.environmentColor[0] = 0.0f;
+                empty.environmentColor[1] = 0.0f;
+                empty.environmentColor[2] = 0.0f;
+                tracer.SetScene(empty, {});
+
+                RenderSettings shown;
+                shown.samplesPerPixel = 8;
+                shown.maxBounces = 1;
+                shown.environmentColor[0] = 0.0f;
+                shown.environmentColor[1] = 0.0f;
+                shown.environmentColor[2] = 0.0f;
+                shown.lightGeometry = true;
+                const std::vector<float> visible =
+                    tracer.Render(kSize, kSize, LookDownZ(4.0f), shown);
+
+                RenderSettings hidden = shown;
+                hidden.lightGeometry = false;
+                const std::vector<float> gone =
+                    tracer.Render(kSize, kSize, LookDownZ(4.0f), hidden);
+
+                const double withShape = meanOfImage(visible);
+                const double withoutShape = meanOfImage(gone);
+                std::printf("  light geometry: on %.4f, off %.6f\n", withShape,
+                            withoutShape);
+                CHECK(withShape > 0.0);
+                CHECK_EQ(withoutShape, 0.0);
+            }
+
+            // And now the half that is about transport rather than the picture.
+            // The light is turned to face a diffuse quad and moved out of the
+            // frame, so the only thing either render can show is the surface it
+            // lights.
+            {
+                Scene lit;
+                lit.prototypes.push_back(MakeQuad());
+                lit.instances.push_back({0, Transform3x4{}, 0, true});
+                // Off to the side and out of the frame, still square to the
+                // quad so it lights it well. The camera is at z = 3 with a
+                // half-angle whose tangent is 0.414, so the frustum is 0.62
+                // wide at z = 1.5 and this light -- spanning x from 1.5 to 3.5
+                // -- is entirely outside it. That matters: a light *in* frame
+                // would put its own pixels into the comparison and the
+                // measurement would be about the shape rather than about the
+                // light, which is exactly the mistake this comment exists to
+                // stop being made again.
+                Light aside = facing;
+                aside.position[0] = 2.5f;
+                aside.position[1] = 0.0f;
+                aside.position[2] = 1.5f;
+                aside.direction[0] = 0.0f;
+                aside.direction[1] = 0.0f;
+                aside.direction[2] = -1.0f;
+                aside.radiance[0] = 6.0f;
+                aside.radiance[1] = 6.0f;
+                aside.radiance[2] = 6.0f;
+                lit.lights.push_back(aside);
+                lit.environmentColor[0] = 0.0f;
+                lit.environmentColor[1] = 0.0f;
+                lit.environmentColor[2] = 0.0f;
+                tracer.SetScene(lit, {materials[1]});
+
+                RenderSettings shown;
+                shown.samplesPerPixel = 256;
+                shown.maxBounces = 2;
+                shown.environmentColor[0] = 0.0f;
+                shown.environmentColor[1] = 0.0f;
+                shown.environmentColor[2] = 0.0f;
+                shown.lightGeometry = true;
+                const std::vector<float> visible =
+                    tracer.Render(kSize, kSize, LookDownZ(3.0f), shown);
+
+                RenderSettings hidden = shown;
+                hidden.lightGeometry = false;
+                const std::vector<float> gone =
+                    tracer.Render(kSize, kSize, LookDownZ(3.0f), hidden);
+
+                const double withShape = meanOfImage(visible);
+                const double withoutShape = meanOfImage(gone);
+                const double ratio =
+                    withShape > 0.0 ? withoutShape / withShape : 0.0;
+                std::printf("  light geometry, lit surface: on %.4f, off %.4f "
+                            "(ratio %.4f)\n",
+                            withShape, withoutShape, ratio);
+                CHECK(withShape > 0.0);
+                // Two per cent, which is the two estimators' own disagreement
+                // at this sample count and nothing like the share the balance
+                // heuristic would have taken.
+                CHECK_NEAR(ratio, 1.0, 0.02);
+            }
+        }
+
         // --- DLAA against the converged reference ----------------------------
         //
         // The other half of phase 13's gate, and the half that says whether the
@@ -3867,6 +4066,9 @@ int main()
 
             const auto renderProgressively = [&]() {
                 RenderSettings chunk;
+                // Lights are probed through their geometry here, and read through a
+                // mirror in several of these; the render default is off.
+                chunk.lightGeometry = true;
                 chunk.maxBounces = 6;
                 chunk.samplesPerPixel = kChunkSamples;
                 std::vector<float> image;

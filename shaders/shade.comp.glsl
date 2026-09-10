@@ -474,8 +474,23 @@ void main()
                 // at this direction. That is the environment and, since the
                 // lights became opaque emitters intersected in closed form,
                 // the analytic lights as well.
+                //
+                // A light whose geometry is not rendered is in the same
+                // position as the stand-in sun: no scattered ray can find it,
+                // so there is no second strategy to share with and next-event
+                // estimation takes the whole contribution. Weighting it anyway
+                // would throw away the share of a strategy that cannot happen,
+                // and every hidden light would be too dark by exactly that
+                // share.
+                bool hittable = !sunSample;
+                if (hittable && emitter < frame.lightCount)
+                {
+                    hittable =
+                        hdclaude_light_geometry_visible(lights.values[emitter]);
+                }
+
                 float weight = 1.0;
-                if (!sunSample)
+                if (hittable)
                 {
                     weight = hdclaude_mis_weight(lightSample.pdf * selectionPdf,
                                                  hdclaude_bsdf.pdf);
