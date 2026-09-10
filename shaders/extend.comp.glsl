@@ -257,7 +257,21 @@ void main()
 
                     float hit = hdclaude_intersect_segment(
                         candidateOrigin, candidateDirection, pa, ra, pb, rb);
-                    if (hit > 0.0)
+                    // Inside the ray's own interval. A triangle hit is tested
+                    // against tMin by the implementation; a *generated* one is
+                    // whatever the shader says it is, so the shader owes the
+                    // check. Without it an offset ray could be stopped by the
+                    // surface it just left, which at a curve joint is a second
+                    // segment coincident with the first.
+                    //
+                    // This is correctness rather than a repair: it was written
+                    // while chasing the crescent that appears at every segment
+                    // joint and it did not fix it -- the render is unchanged to
+                    // the last bit either way. It stays because a generated
+                    // intersection outside the ray's interval is undefined, and
+                    // relying on a driver to be forgiving about it is not a
+                    // thing to leave in.
+                    if (hit >= rayQueryGetRayTMinEXT(query))
                     {
                         rayQueryGenerateIntersectionEXT(query, hit);
                     }

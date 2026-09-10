@@ -224,6 +224,7 @@ reversed.
 | 2026-09-10 | A segment is a round cone, not a cylinder | A strand's two ends have different widths, so the surface is a truncated cone; the sphere at each end is what makes consecutive segments join without a gap or a crease, which a bare cone leaves wherever the curve bends. The visible difference from a swept tube is exactly that -- rounded ends and an exact silhouette instead of flat ends and six facets |
 | 2026-09-10 | The strand parameter is carried on the segment, not derived from it | A curve's texture coordinate runs root to tip of the whole curve. A segment that measured only itself would hand every strand a sawtooth instead of a gradient, so each end carries how far along it is -- the same `v` `SweepCurves` writes, so a material reads the same thing whichever way the curve is drawn |
 | 2026-09-10 | Procedural geometry needs no shader binding table, because traversal is a ray *query* | An AABB is only ever a candidate: `rayQueryProceedEXT` hands it to the kernel, which intersects the cone and calls `rayQueryGenerateIntersectionEXT`. That is the same loop in `extend` and in `shadow` and costs no new pipeline stage, which is a dividend of the 2026-09-05 decision to use `VK_KHR_ray_query` in compute rather than a ray-tracing pipeline |
+| 2026-09-10 | Curve geometry defaults to swept again while the implicit path has a known artefact | The implicit path is the better representation by every measure that was taken -- exact shape, a third of the memory, an eighth of the publish time -- and it draws a crescent at every segment joint. A known visual defect should not be what a render does by default, whatever else is true of it. It stays one environment variable away, which is also what makes the two comparable on one scene |
 | 2026-09-05 | The pbrlib override set is all-or-nothing | MaterialX resolves `#include` relative to the including file, so mixing one upstream closure with one hdClaude closure emits `struct ClosureData` twice. The set is exactly the 22 pbrlib files that include `mx_closure_type.glsl`; no stdlib file does |
 
 ## Open questions
@@ -249,6 +250,42 @@ Tracked here rather than decided prematurely.
    `metersPerUnit = 0.01`, and DLSS's handling of thin bright curve geometry
    (Programming Guide 3.6.4). Chase it with the same instrument that found it: a
    scene whose only light is an emissive shader ([dlss-integration.md](dlss-integration.md) 5a).
-5. **Volume rendering.** MaterialX VDFs are declared and generated; hdClaude
+5. **A crescent at every joint of an implicit curve.** Reported from usdview as
+   circular patterns scattered through ALab's fur, and reproduced: a straight,
+   constant-radius chain of segments renders with a dark crescent at each joint,
+   where the same capsule described as *one* segment renders perfectly smooth
+   (rms 0.0089 between the two descriptions, 0.56% of pixels, all of it at the
+   seams). `HDCLAUDE_CURVE_GEOMETRY` therefore defaults to `swept` until this is
+   found.
+
+   What has been excluded, each with the install verified afterwards -- several
+   early attempts were run against a stale installed shader and are void:
+
+   * **Not the caps.** Removing the end spheres from the intersector changes
+     nothing.
+   * **Not the shading normal.** Forcing it to a constant leaves the crescent
+     exactly where it was.
+   * **Not shadow rays from curves.** Making curves cast no shadow at all is
+     bit-identical (rms 0).
+   * **Not the light's shadows.** Disabling them on the light leaves it.
+   * **Not the geometric normal's branch.** Forcing the cone normal everywhere
+     changes the image but not the crescent -- though this *did* find a real
+     latent fault: `hdclaude_segment_normal` extrapolates its cap branch for a
+     point beyond the segment's end and returns a normal up to 31 degrees off
+     radial. Nothing is known to ask it that today.
+   * **Not the intersector's arithmetic.** A host transcription of
+     `hdclaude_intersect_segment` agrees to 1e-6 between a four-segment chain
+     and the single capsule it describes, over rays from the real camera
+     straddling a joint.
+
+   What is known: it needs the rect light (uniform illumination renders the same
+   geometry perfectly smooth), it survives that light's shadows being switched
+   off, and it survives a constant shading normal -- which together say the
+   variation is not in the normal and not in occlusion. The next thing to look
+   at is `point.position` itself, and whether a generated intersection's
+   distance means the same thing in the world ray's parameterisation as in the
+   object ray's when the two are handed to different kernels.
+
+6. **Volume rendering.** MaterialX VDFs are declared and generated; hdClaude
    currently plans homogeneous interior media only. Heterogeneous volumes
    (`UsdVol`) are not scheduled.

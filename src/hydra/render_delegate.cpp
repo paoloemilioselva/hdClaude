@@ -336,14 +336,20 @@ void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
     const int curveSegmentSamples =
         std::clamp(TfGetenvInt("HDCLAUDE_CURVE_SEGMENT_SAMPLES", 1), 1, 32);
 
-    // Curves as segments the traversal kernel intersects, rather than as tubes
-    // of triangles. On by default: it is the exact shape rather than a faceted
-    // approximation of it, and it costs about thirty-two bytes a segment
-    // against five hundred. `HDCLAUDE_CURVE_GEOMETRY=swept` puts the tubes back,
-    // which is what makes the two comparable on the same scene.
+    // Curves as segments the traversal kernel intersects, or as tubes of
+    // triangles.
+    //
+    // Swept by default, and that is a retreat rather than a preference. The
+    // implicit path is the exact shape and costs about thirty-two bytes a
+    // segment against five hundred, but it draws a visible artefact at every
+    // joint between two segments -- a crescent that follows the seam, which on
+    // a groom reads as circular patterns scattered through the fur. A known
+    // artefact should not be what a render does by default, so it is not, until
+    // the cause is found. `HDCLAUDE_CURVE_GEOMETRY=implicit` selects it, which
+    // is also how the two are compared on one scene (roadmap open question 5).
     const std::string curveGeometry =
-        TfGetenv("HDCLAUDE_CURVE_GEOMETRY", "implicit");
-    const bool implicitCurves = curveGeometry != "swept";
+        TfGetenv("HDCLAUDE_CURVE_GEOMETRY", "swept");
+    const bool implicitCurves = curveGeometry == "implicit";
 
     _renderParam = std::make_unique<HdClaudeRenderParam>(
         _store.get(), _materialCompiler.get(), _texturePool.get(),
