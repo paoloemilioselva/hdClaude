@@ -375,6 +375,16 @@ struct FrameResult {
     /// on a frame with no previous one.
     std::vector<float> motion;
 
+    /// The primary surface's reconstruction guides, per pixel of the *render*
+    /// extent in the same row order as the image, with NVIDIA's definitions
+    /// (docs/dlss-integration.md 4). `normalRoughness` is four floats per
+    /// pixel -- the world-space shading normal and the linear roughness, the
+    /// square root of GGX alpha -- and each albedo three. Where nothing was
+    /// hit: no normal, no roughness, diffuse albedo one half, no specular.
+    std::vector<float> normalRoughness;
+    std::vector<float> diffuseAlbedo;
+    std::vector<float> specularAlbedo;
+
     bool Valid() const { return width != 0 && height != 0 && !image.empty(); }
 };
 
@@ -773,6 +783,9 @@ class PathTracer {
     /// caller of the plain `Render` would otherwise have to carry.
     std::vector<float> _lastDepth;
     std::vector<float> _lastMotion;
+    std::vector<float> _lastNormalRoughness;
+    std::vector<float> _lastDiffuseAlbedo;
+    std::vector<float> _lastSpecularAlbedo;
 
     /// The world-to-clip the previous frame was rendered with, and whether
     /// there was one. Motion is measured against this.
@@ -838,8 +851,12 @@ class PathTracer {
         /// the host.
         VulkanBuffer guideDepth;
         VulkanBuffer guideMotion;
+        /// Normal and roughness, diffuse albedo, specular albedo: three vec4
+        /// per pixel.
+        VulkanBuffer guideSurface;
         VulkanBuffer guideReadback;
         VulkanBuffer motionReadback;
+        VulkanBuffer surfaceReadback;
         VulkanBuffer readback;
         VulkanBuffer rayReadback;
 

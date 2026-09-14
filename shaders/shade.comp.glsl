@@ -424,6 +424,45 @@ void main()
         pathHeroOnly.values[path] = 1u;
     }
 
+    // --- Reconstruction guides ----------------------------------------------
+    //
+    // The primary surface's, so only on the first bounce, and asked for in a
+    // pass of their own: the closures publish their guides whichever pass runs,
+    // but the scattering pass below does not run at all on the last bounce, and
+    // a render of one bounce would then have none. The sample value is fixed
+    // rather than drawn, so this consumes no random numbers, and running it
+    // changes nothing downstream: with this block compiled in but never taken,
+    // the subdivision scene's ray hash equals the hash with it taken. Both
+    // differ from the kernel before the block existed, which is the driver
+    // compiling a different program -- the floating-point bits of unrelated
+    // expressions move when the code around them does -- and not this pass.
+    if (shadeParams.bounce == 0u)
+    {
+        hdclaude_sample_u = vec3(0.5);
+        ClosureData guideData = ClosureData(CLOSURE_TYPE_PT_SAMPLE, vec3(0.0), V,
+                                            point.shadingNormal, point.position,
+                                            1.0);
+        hdclaude_material_shade(guideData);
+
+        // The closures' shading normal, which is where a normal map lands. A
+        // material with no scattering lobe -- an emitter alone -- reports none,
+        // and its surface's normal is then the interpolated one, turned to face
+        // the viewer as every closure turns its own.
+        vec3 normal = hdclaude_bsdf.guideNormal;
+        normal = dot(normal, normal) > 1.0e-12
+                     ? normalize(normal)
+                     : faceforward(point.shadingNormal, rayDirection,
+                                   point.shadingNormal);
+        float roughness = sqrt(clamp(hdclaude_bsdf.guideRoughness, 0.0, 1.0));
+
+        uint pixel = pathPixel.values[path];
+        guideSurface.values[3u * pixel] = vec4(normal, roughness);
+        guideSurface.values[3u * pixel + 1u] =
+            vec4(max(hdclaude_bsdf.guideDiffuse, vec3(0.0)), 0.0);
+        guideSurface.values[3u * pixel + 2u] =
+            vec4(max(hdclaude_bsdf.guideSpecular, vec3(0.0)), 0.0);
+    }
+
     // --- Emission -----------------------------------------------------------
     ClosureData emissionData = ClosureData(CLOSURE_TYPE_EMISSION, vec3(0.0), V,
                                            point.shadingNormal, point.position, 1.0);

@@ -3636,6 +3636,99 @@ int main()
             CHECK_EQ(differing, std::size_t(0));
         }
 
+        // --- The primary surface's reconstruction guides ----------------------
+        //
+        // What the integrator writes for Ray Reconstruction, checked against
+        // what is known without rendering: a quad turned 0.6 rad about Y has
+        // the normal (sin 0.6, 0, cos 0.6); white diffuse reports its colour as
+        // diffuse albedo, no specular albedo and a roughness of one; a
+        // dielectric of alpha 0.3 reports no diffuse albedo, some specular
+        // albedo and a linear roughness of sqrt(0.3); and a pixel that misses
+        // holds NVIDIA's sky defaults. One bounce, deliberately: that is the
+        // render in which the scattering pass never runs, so a guide read from
+        // it would be missing.
+        {
+            constexpr std::uint32_t kSize = 64;
+            const float angle = 0.6f;
+            const float c = std::cos(angle);
+            const float s = std::sin(angle);
+            Transform3x4 rotation;
+            rotation.m[0] = c;  rotation.m[2] = s;
+            rotation.m[8] = -s; rotation.m[10] = c;
+
+            const CompiledMaterial glossy = MakeDielectricMaterial(
+                libraries, compiler, tracer.ShadeKernelSource(), 1.5f,
+                "guide.glossy", 0.3f);
+            CHECK(!glossy.spirv.empty());
+
+            const auto guidesOf = [&](const CompiledMaterial& material,
+                                      std::uint64_t revision) {
+                Scene scene;
+                scene.prototypes.push_back(MakeQuad());
+                scene.instances.push_back({0, rotation, 0, true});
+                tracer.SetScene(scene, {material});
+
+                hdclaude::FrameDescription frame;
+                frame.width = kSize;
+                frame.height = kSize;
+                frame.camera = LookDownZWithClip(4.0f, 0.1f, 100.0f);
+                frame.mode = hdclaude::RenderMode::Reference;
+                frame.sceneRevision = revision;
+                frame.settings.samplesPerPixel = 1;
+                frame.settings.maxBounces = 1;
+                return tracer.EndFrame(tracer.BeginFrame(frame));
+            };
+
+            const std::size_t centre = (kSize / 2) * kSize + kSize / 2;
+            const std::size_t corner = 0;
+
+            const hdclaude::FrameResult diffuse = guidesOf(materials[0], 61);
+            CHECK_EQ(diffuse.normalRoughness.size(), std::size_t(kSize) * kSize * 4);
+            CHECK_EQ(diffuse.diffuseAlbedo.size(), std::size_t(kSize) * kSize * 3);
+            CHECK_EQ(diffuse.specularAlbedo.size(), std::size_t(kSize) * kSize * 3);
+            if (diffuse.normalRoughness.size() == std::size_t(kSize) * kSize * 4) {
+                const float* n = &diffuse.normalRoughness[centre * 4];
+                std::printf("  guides, diffuse: normal (%.5f, %.5f, %.5f) against"
+                            " (%.5f, 0, %.5f), roughness %.3f, albedo %.3f / %.3f\n",
+                            n[0], n[1], n[2], s, c, n[3],
+                            diffuse.diffuseAlbedo[centre * 3],
+                            diffuse.specularAlbedo[centre * 3]);
+                CHECK_NEAR(n[0], s, 1.0e-4);
+                CHECK_NEAR(n[1], 0.0f, 1.0e-4);
+                CHECK_NEAR(n[2], c, 1.0e-4);
+                CHECK_NEAR(n[3], 1.0f, 1.0e-6);
+                for (int k = 0; k < 3; ++k) {
+                    CHECK_NEAR(diffuse.diffuseAlbedo[centre * 3 + k], 0.8f, 1.0e-5);
+                    CHECK_EQ(diffuse.specularAlbedo[centre * 3 + k], 0.0f);
+                }
+
+                const float* sky = &diffuse.normalRoughness[corner * 4];
+                CHECK_EQ(sky[0], 0.0f);
+                CHECK_EQ(sky[1], 0.0f);
+                CHECK_EQ(sky[2], 0.0f);
+                CHECK_EQ(sky[3], 0.0f);
+                for (int k = 0; k < 3; ++k) {
+                    CHECK_EQ(diffuse.diffuseAlbedo[corner * 3 + k], 0.5f);
+                    CHECK_EQ(diffuse.specularAlbedo[corner * 3 + k], 0.0f);
+                }
+            }
+
+            const hdclaude::FrameResult shiny = guidesOf(glossy, 62);
+            if (shiny.normalRoughness.size() == std::size_t(kSize) * kSize * 4) {
+                const float* n = &shiny.normalRoughness[centre * 4];
+                std::printf("  guides, dielectric: roughness %.4f against %.4f,"
+                            " albedo %.4f / %.4f\n",
+                            n[3], std::sqrt(0.3), shiny.diffuseAlbedo[centre * 3],
+                            shiny.specularAlbedo[centre * 3]);
+                CHECK_NEAR(n[0], s, 1.0e-4);
+                CHECK_NEAR(n[2], c, 1.0e-4);
+                CHECK_NEAR(n[3], std::sqrt(0.3f), 1.0e-5);
+                CHECK_EQ(shiny.diffuseAlbedo[centre * 3], 0.0f);
+                CHECK(shiny.specularAlbedo[centre * 3] > 0.0f);
+                CHECK(shiny.specularAlbedo[centre * 3] < 1.0f);
+            }
+        }
+
         // --- A shadow ray is not stopped by a curve beyond its light ----------
         //
         // The other half of the same fault. A shadow ray runs from a surface to

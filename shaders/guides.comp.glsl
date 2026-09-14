@@ -37,6 +37,12 @@ void main()
         // motion. A reconstructor reprojecting the background uses the camera's
         // own motion, which it already knows.
         guideMotion.values[index] = vec2(0.0);
+        // NVIDIA's sky defaults (DLSS-RR Integration Guide 3.4.1-3.4.4). An
+        // analytic light is not geometry a material describes, so it keeps
+        // them too.
+        guideSurface.values[3u * index] = vec4(0.0);
+        guideSurface.values[3u * index + 1u] = vec4(0.5, 0.5, 0.5, 0.0);
+        guideSurface.values[3u * index + 2u] = vec4(0.0);
         return;
     }
 
@@ -64,6 +70,13 @@ void main()
     // Rigid only: a mesh whose points changed moved in a way no matrix
     // describes, and this reports the rigid part rather than pretending to the
     // rest.
+    // Cleared for a hit as for a miss: `shade` overwrites it for a hit whose
+    // material it runs, and a pixel it never reaches is not left holding a
+    // previous frame's surface.
+    guideSurface.values[3u * index] = vec4(0.0);
+    guideSurface.values[3u * index + 1u] = vec4(0.5, 0.5, 0.5, 0.0);
+    guideSurface.values[3u * index + 2u] = vec4(0.0);
+
     InstanceGeometry geometry = instances.values[record.x];
     vec3 objectPoint = vec4(hitWorld, 1.0) * geometry.worldToObject;
     vec3 previousWorld = vec4(objectPoint, 1.0) * geometry.previousObjectToWorld;

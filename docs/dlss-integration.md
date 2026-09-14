@@ -174,6 +174,14 @@ Guides are written before a closure's branch dispatch, so the sampling pass and
 every evaluation pass publish the same values, and the closure suite asserts
 they are bit-identical.
 
+The integrator reads them on the first bounce in a pass of its own -- the
+scattering pass does not run on a path's last bounce, so a render of one bounce
+would otherwise have none -- and writes them to `guideSurface`, three `vec4` per
+pixel: normal and roughness, diffuse albedo, specular albedo. A material with no
+scattering lobe reports no normal, and the interpolated shading normal turned
+to the viewer stands in for it. They reach the host as
+`FrameResult::normalRoughness`, `diffuseAlbedo` and `specularAlbedo`.
+
 Guides describe the **primary visible surface** -- the same surface depth and
 motion describe. An earlier version of this section had normal and albedo taken
 from the first non-delta surface behind a perfect mirror, so that a mirror would

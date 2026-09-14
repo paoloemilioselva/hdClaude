@@ -82,6 +82,7 @@ std::vector<BindingDescription> KernelBindings()
     bindings.push_back(storage(26, "pathHeroOnly"));
     bindings.push_back(storage(27, "guideDepth"));
     bindings.push_back(storage(28, "guideMotion"));
+    bindings.push_back(storage(29, "guideSurface"));
     bindings.push_back(storage(22, "environmentDistribution"));
     bindings.push_back(storage(23, "pathWavelengths"));
     bindings.push_back(storage(24, "spectralTables"));
@@ -941,6 +942,10 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
             MakeStorage(_allocator, paths * 4, "guide.depth");
         VulkanBuffer guideMotion =
             MakeStorage(_allocator, paths * 8, "guide.motion");
+        // Three vec4 per pixel: normal and roughness, diffuse albedo, specular
+        // albedo.
+        VulkanBuffer guideSurface =
+            MakeStorage(_allocator, paths * 48, "guide.surface");
         // Eight uints: activeCount, nextActiveCount, shadowCount, a pad, the two
         // ray accumulators, and the two hashes -- over what the rays were and over
         // what they hit. Everything past byte 16 is per call rather than per
@@ -983,6 +988,11 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
         motionReadbackDescription.debugName = "guide.motionReadback";
         VulkanBuffer motionReadback(_allocator, motionReadbackDescription);
 
+        BufferDescription surfaceReadbackDescription = guideReadbackDescription;
+        surfaceReadbackDescription.size = paths * 48;
+        surfaceReadbackDescription.debugName = "guide.surfaceReadback";
+        VulkanBuffer surfaceReadback(_allocator, surfaceReadbackDescription);
+
         BufferDescription readbackDescription;
         readbackDescription.size = paths * 16;
         readbackDescription.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -1003,6 +1013,7 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
         slot.hits = std::move(hits);
         slot.guideDepth = std::move(guideDepth);
         slot.guideMotion = std::move(guideMotion);
+        slot.guideSurface = std::move(guideSurface);
         slot.counters = std::move(counters);
         slot.rayReadback = std::move(rayReadback);
         slot.activeQueue = std::move(activeQueue);
@@ -1013,6 +1024,7 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
         slot.readback = std::move(readback);
         slot.guideReadback = std::move(guideReadback);
         slot.motionReadback = std::move(motionReadback);
+        slot.surfaceReadback = std::move(surfaceReadback);
         }
 
     // The film is shared, so it is built once outside the loop.
@@ -1076,6 +1088,7 @@ void PathTracer::WriteDescriptors(VkDescriptorSet set,
     pipeline.WriteBuffer(set, 26, slot.heroOnly);
     pipeline.WriteBuffer(set, 27, slot.guideDepth);
     pipeline.WriteBuffer(set, 28, slot.guideMotion);
+    pipeline.WriteBuffer(set, 29, slot.guideSurface);
     pipeline.WriteBuffer(set, 22, _environmentDistribution);
     pipeline.WriteBuffer(set, 23, slot.wavelengths);
     pipeline.WriteBuffer(set, 24, _spectralTables);
@@ -1696,6 +1709,9 @@ FrameHandle PathTracer::BeginFrame(const FrameDescription& description)
         Trace(traced.width, traced.height, description.camera, settings);
     _pendingFrame.depth = std::move(_lastDepth);
     _pendingFrame.motion = std::move(_lastMotion);
+    _pendingFrame.normalRoughness = std::move(_lastNormalRoughness);
+    _pendingFrame.diffuseAlbedo = std::move(_lastDiffuseAlbedo);
+    _pendingFrame.specularAlbedo = std::move(_lastSpecularAlbedo);
 
     if (plan.active) {
         // The traced image is what the backend is *given*, by way of the film
@@ -2211,6 +2227,11 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
         vkCmdCopyBuffer(command, slot.guideMotion.Handle(),
                         slot.motionReadback.Handle(), 1, &motion);
 
+        VkBufferCopy surface{};
+        surface.size = static_cast<VkDeviceSize>(paths) * 48;
+        vkCmdCopyBuffer(command, slot.guideSurface.Handle(),
+                        slot.surfaceReadback.Handle(), 1, &surface);
+
         VkBufferCopy rays{};
         rays.srcOffset = 16;
         rays.size = 16;
@@ -2233,6 +2254,23 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     _lastMotion.assign(static_cast<std::size_t>(paths) * 2, 0.0f);
     std::memcpy(_lastMotion.data(), slot.motionReadback.MappedData(),
                 _lastMotion.size() * sizeof(float));
+
+    // Split into the three guides a consumer asks for by name, rather than
+    // handed on in the buffer's own stride.
+    {
+        const std::size_t pixels = static_cast<std::size_t>(paths);
+        const auto* surface =
+            static_cast<const float*>(slot.surfaceReadback.MappedData());
+        _lastNormalRoughness.assign(pixels * 4, 0.0f);
+        _lastDiffuseAlbedo.assign(pixels * 3, 0.0f);
+        _lastSpecularAlbedo.assign(pixels * 3, 0.0f);
+        for (std::size_t i = 0; i < pixels; ++i) {
+            const float* s = surface + i * 12;
+            std::memcpy(&_lastNormalRoughness[i * 4], s, 4 * sizeof(float));
+            std::memcpy(&_lastDiffuseAlbedo[i * 3], s + 4, 3 * sizeof(float));
+            std::memcpy(&_lastSpecularAlbedo[i * 3], s + 8, 3 * sizeof(float));
+        }
+    }
 
     // This frame becomes the next frame's past.
     std::memcpy(_previousWorldToClip, camera.worldToClip,

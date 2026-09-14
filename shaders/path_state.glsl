@@ -169,6 +169,18 @@ layout(set = 0, binding = 27, scalar) buffer GuideDepth { float values[]; } guid
 // previous one.
 layout(set = 0, binding = 28, scalar) buffer GuideMotion { vec2 values[]; } guideMotion;
 
+// The primary surface's reconstruction guides, three vec4 per pixel.
+//
+//   [3i]    world-space shading normal, and linear roughness in w
+//   [3i+1]  diffuse albedo
+//   [3i+2]  specular albedo
+//
+// Definitions are NVIDIA's (docs/dlss-integration.md 4) and the values are what
+// the MaterialX closures report. Like depth, every sample writes them and the
+// last one wins. A miss holds NVIDIA's sky defaults: no normal, no roughness,
+// a diffuse albedo of one half and no specular albedo.
+layout(set = 0, binding = 29, scalar) buffer GuideSurface { vec4 values[]; } guideSurface;
+
 
 
 // Hit record written by `extend` and read by `shade`.
