@@ -26,11 +26,13 @@ void mx_add_bsdf(ClosureData closureData, BSDF in1, BSDF in2, out BSDF result)
 
     // Guides are combined by relative albedo rather than added, because a
     // demodulation albedo above one has no meaning to a reconstruction backend.
-    float w1 = mx_pt_luminance_weight(in1.guideAlbedo);
-    float w2 = mx_pt_luminance_weight(in2.guideAlbedo);
+    float w1 = mx_pt_luminance_weight(in1.guideDiffuse + in1.guideSpecular);
+    float w2 = mx_pt_luminance_weight(in2.guideDiffuse + in2.guideSpecular);
     float total = w1 + w2;
     float blend = total > 0.0 ? w2 / total : 0.5;
-    result.guideAlbedo = min(in1.guideAlbedo + in2.guideAlbedo, vec3(1.0));
+    result.guideDiffuse = min(in1.guideDiffuse + in2.guideDiffuse, vec3(1.0));
+    result.guideSpecular = min(in1.guideSpecular + in2.guideSpecular, vec3(1.0));
+    result.guideNormal = mix(in1.guideNormal, in2.guideNormal, blend);
     result.guideRoughness = mix(in1.guideRoughness, in2.guideRoughness, blend);
 
     if (closureData.closureType == CLOSURE_TYPE_PT_SAMPLE)

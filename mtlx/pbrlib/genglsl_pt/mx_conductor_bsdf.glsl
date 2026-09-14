@@ -71,6 +71,23 @@ void mx_conductor_bsdf(ClosureData closureData, float weight, vec3 ior_n, vec3 i
     vec3 Xa = normalize(X - dot(X, N) * N);
     vec3 Ya = cross(N, Xa);
 
+    // ---- hdClaude: reconstruction guides -----------------------------------
+    // Properties of the surface and the view alone, so they are written before
+    // the branch dispatch and every pass -- sampling included -- publishes the
+    // same values (docs/dlss-integration.md 4).
+    // Specular albedo is the lobe's average reflectivity for this view --
+    // NVIDIA's definition -- which MaterialX's directional albedo is.
+    bsdf.guideDiffuse = vec3(0.0);
+    // With the energy compensation the response carries, so the guide is the
+    // reflectivity of the lobe as it is rendered: without it the guide read
+    // 0.601 against an integrated albedo of 0.677.
+    vec3 guideFresnel = mx_compute_fresnel(NdotV, fd);
+    bsdf.guideSpecular =
+        mx_ggx_dir_albedo(NdotV, avgAlpha, guideFresnel, vec3(1.0)) *
+        mx_ggx_energy_compensation(NdotV, avgAlpha, guideFresnel) * weight;
+    bsdf.guideNormal = N;
+    bsdf.guideRoughness = avgAlpha;
+
     // ---- hdClaude: importance sampling -------------------------------------
     // Returns only a direction. The density comes from the evaluation branch,
     // for the reason in lib/mx_closure_type.glsl.
@@ -122,8 +139,5 @@ void mx_conductor_bsdf(ClosureData closureData, float weight, vec3 ior_n, vec3 i
         // The closure reports its own albedo. No surface-model name is
         // consulted, which is what lets reconstruction guides work for an
         // arbitrary authored nodegraph (docs/dlss-integration.md 4).
-        vec3 Fv = mx_compute_fresnel(NdotV, fd);
-        bsdf.guideAlbedo = mx_ggx_dir_albedo(NdotV, avgAlpha, Fv, vec3(1.0)) * weight;
-        bsdf.guideRoughness = avgAlpha;
     }
 }

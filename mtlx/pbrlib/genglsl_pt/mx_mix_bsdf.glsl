@@ -41,7 +41,9 @@ void mx_mix_bsdf(ClosureData closureData, BSDF fg, BSDF bg, float mixValue, out 
 
     // Guides follow the mixture too, so a reconstruction backend sees the
     // albedo of what is actually visible rather than of one arbitrary lobe.
-    result.guideAlbedo = mix(bg.guideAlbedo, fg.guideAlbedo, w);
+    result.guideDiffuse = mix(bg.guideDiffuse, fg.guideDiffuse, w);
+    result.guideSpecular = mix(bg.guideSpecular, fg.guideSpecular, w);
+    result.guideNormal = mix(bg.guideNormal, fg.guideNormal, w);
     result.guideRoughness = mix(bg.guideRoughness, fg.guideRoughness, w);
 
     if (closureData.closureType == CLOSURE_TYPE_PT_SAMPLE)

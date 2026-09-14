@@ -40,7 +40,9 @@ void mx_anisotropic_vdf(ClosureData closureData, vec3 absorption, vec3 scatterin
     bsdf.sampledL = vec3(0.0);
     bsdf.pdf = 0.0;
     bsdf.isDelta = 0.0;
-    bsdf.guideAlbedo = vec3(0.0);
+    bsdf.guideDiffuse = vec3(0.0);
+    bsdf.guideSpecular = vec3(0.0);
+    bsdf.guideNormal = vec3(0.0);
     bsdf.guideRoughness = 0.0;
 
     hdclaude_publish_medium(bsdf, absorption, scattering, anisotropy);

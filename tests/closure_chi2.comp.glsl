@@ -99,6 +99,42 @@ void main()
     hdclaude_geometric_normal = N;
     hdclaude_inside_medium = params.viewTheta > 1.5707963 ? 1.0 : 0.0;
 
+    // mode 2  guides. Slots 0-9 hold the reconstruction guides as the
+    //         sampling pass publishes them -- diffuse, specular, normal,
+    //         roughness -- and slots 10-19 the same read from an evaluation
+    //         pass, since a guide is a property of the surface and the view and
+    //         must not depend on which pass asked.
+    if (params.mode == 2u)
+    {
+        if (index != 0u)
+        {
+            return;
+        }
+        hdclaude_sample_u = vec3(0.5);
+        ClosureData sampleData =
+            ClosureData(CLOSURE_TYPE_PT_SAMPLE, vec3(0.0), V, N, P, 1.0);
+        hdclaude_material_shade(sampleData);
+        BSDF sampled = hdclaude_bsdf;
+        evaluateAt(normalize(vec3(-V.x, -V.y, V.z)), V, N, P);
+        BSDF evaluated = hdclaude_bsdf;
+        BSDF pair[2] = BSDF[2](sampled, evaluated);
+        for (uint k = 0u; k < 2u; ++k)
+        {
+            uint base = 10u * k;
+            results.values[base + 0u] = pair[k].guideDiffuse.x;
+            results.values[base + 1u] = pair[k].guideDiffuse.y;
+            results.values[base + 2u] = pair[k].guideDiffuse.z;
+            results.values[base + 3u] = pair[k].guideSpecular.x;
+            results.values[base + 4u] = pair[k].guideSpecular.y;
+            results.values[base + 5u] = pair[k].guideSpecular.z;
+            results.values[base + 6u] = pair[k].guideNormal.x;
+            results.values[base + 7u] = pair[k].guideNormal.y;
+            results.values[base + 8u] = pair[k].guideNormal.z;
+            results.values[base + 9u] = pair[k].guideRoughness;
+        }
+        return;
+    }
+
     if (params.mode == 0u)
     {
         uint rng = params.seed + index * 9781u;

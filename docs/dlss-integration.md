@@ -139,9 +139,9 @@ says no is reported rather than left to fail at the first dispatch.
 
 ## 4. Guide buffers
 
-Ray Reconstruction needs more than colour. Every guide below is produced by the
-`film` and `shade` kernels from values the **MaterialX closures themselves**
-report — `guideAlbedo` and `guideRoughness` on the `BSDF` struct (see
+Ray Reconstruction needs more than colour. Every guide below is produced from
+values the **MaterialX closures themselves** report -- `guideDiffuse`,
+`guideSpecular`, `guideNormal` and `guideRoughness` on the `BSDF` struct (see
 [materialx-codegen.md](materialx-codegen.md) §2). No guide is derived from a
 surface-model name; that is a stated non-goal, and it is also the only way
 guides can work for an arbitrary authored nodegraph.
@@ -151,14 +151,37 @@ guides can work for an arbitrary authored nodegraph.
 | Noisy colour | `R16G16B16A16_SFLOAT` | linear RGB, HDR, current frame only, pre-exposure applied |
 | Depth | `R32_SFLOAT` | non-linear device depth matching the supplied projection |
 | Motion | `R16G16_SFLOAT` | pixel-space, current-to-previous, jitter handled per SDK contract |
-| Normal + roughness | `R16G16B16A16_SFLOAT` | world-space normal, linear perceptual roughness |
-| Diffuse albedo | `R16G16B16A16_SFLOAT` | demodulation albedo of the diffuse lobes |
-| Specular albedo | `R16G16B16A16_SFLOAT` | demodulation albedo of the specular lobes |
+| Normal + roughness | `R16G16B16A16_SFLOAT` | world-space shading normal; linear roughness, sqrt of GGX alpha |
+| Diffuse albedo | `R16G16B16A16_SFLOAT` | the diffuse component of reflectance; sky (0.5, 0.5, 0.5) |
+| Specular albedo | `R16G16B16A16_SFLOAT` | the specular reflectivity for this view; sky (0, 0, 0) |
 
-Guides describe the **primary visible surface**. For a path that starts on a
-perfect mirror, the first non-delta surface is the one that carries the guide —
-otherwise a mirror reconstructs as a flat colour. This is a real subtlety and is
-handled explicitly in `shade`, not left to chance.
+The definitions are NVIDIA's, from the DLSS-RR Integration Guide (August 2026,
+3.4.1-3.4.4 and the appendix). Diffuse albedo is "the diffuse component of
+Reflectance material", which each diffuse lobe reports as its colour times its
+weight. Specular albedo is "the average specular reflectivity given a view
+direction", which is a directional albedo: NVIDIA's appendix approximates it by a
+fit, and a MaterialX lobe already computes it in its own model, so each specular
+lobe reports MaterialX's directional albedo with the energy compensation its
+response carries. For an isotropic reflection lobe that agrees with the albedo
+integrated from the response to within 0.5%, and the closure suite asserts it.
+Transmission counts as specular -- what comes through glass depends on the view
+-- and is reported at the tint. Roughness is "linear roughness" with alpha its
+square, so the buffer takes the square root of the alpha a closure reports.
+Sheen and hair are specular in this sense; subsurface and diffuse transmission
+are diffuse. Combinators combine the guides as they combine responses.
+
+Guides are written before a closure's branch dispatch, so the sampling pass and
+every evaluation pass publish the same values, and the closure suite asserts
+they are bit-identical.
+
+Guides describe the **primary visible surface** -- the same surface depth and
+motion describe. An earlier version of this section had normal and albedo taken
+from the first non-delta surface behind a perfect mirror, so that a mirror would
+not reconstruct as a flat colour. NVIDIA's guide asks instead that depth, normal
+and specular hit distance describe one surface consistently, and a mirror is
+already told apart by its guides: it reports its reflectance as specular albedo
+and no diffuse albedo, which is exactly the signal a reconstructor separates
+reflections by.
 
 The colour handed to a backend is linear RGB, never CIE XYZ and never
 display-encoded. The spectral-to-XYZ-to-linear-sRGB conversion happens in `film`

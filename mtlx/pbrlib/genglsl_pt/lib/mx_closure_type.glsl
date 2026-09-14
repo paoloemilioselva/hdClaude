@@ -266,8 +266,10 @@ float hdclaude_dispersed_ior(float ior, float abbe, float lambda)
 //       vec3  sampledL;        // PT_SAMPLE output direction
 //       float pdf;             // solid-angle density, from the eval types
 //       float isDelta;         // specular: skip NEE, MIS weight is one
-//       vec3  guideAlbedo;     // demodulation albedo for reconstruction
-//       float guideRoughness;  // representative roughness for reconstruction
+//       vec3  guideDiffuse;    // diffuse albedo, for demodulation
+//       vec3  guideSpecular;   // specular albedo: reflectivity for this view
+//       vec3  guideNormal;     // shading normal the lobes answer to
+//       float guideRoughness;  // GGX alpha; a guide buffer takes sqrt(alpha)
 //       vec3  mediumExtinction;  // interior sigma_t, of the selected lobe
 //       vec3  mediumAlbedo;      // its albedo, read per mediumKind
 //       float mediumAnisotropy;  // interior Henyey-Greenstein g

@@ -18,7 +18,9 @@ void mx_multiply_bsdf_color3(ClosureData closureData, BSDF in1, vec3 in2, out BS
     result.sampledL = in1.sampledL;
     result.isDelta = in1.isDelta;
     result.spectrum = in1.spectrum * vec4(tint, 1.0);
-    result.guideAlbedo = in1.guideAlbedo * tint;
+    result.guideDiffuse = in1.guideDiffuse * tint;
+    result.guideSpecular = in1.guideSpecular * tint;
+    result.guideNormal = in1.guideNormal;
     result.guideRoughness = in1.guideRoughness;
 
     // A tint scales what comes back; it does not change which interior a

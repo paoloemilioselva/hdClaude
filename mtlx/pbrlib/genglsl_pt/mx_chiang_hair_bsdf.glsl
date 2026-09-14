@@ -226,6 +226,16 @@ void mx_chiang_hair_bsdf(ClosureData closureData, vec3 tint_R, vec3 tint_TT, vec
 
     bsdf.throughput = vec3(0.0);
 
+    // ---- hdClaude: reconstruction guides -----------------------------------
+    // Properties of the surface and the view alone, so they are written before
+    // the branch dispatch and every pass -- sampling included -- publishes the
+    // same values (docs/dlss-integration.md 4).
+    bsdf.guideDiffuse = vec3(0.0);
+    bsdf.guideSpecular = max((tint_R + tint_TT + tint_TRT) / vec3(3.0), vec3(0.0));
+    bsdf.guideNormal = N;
+    bsdf.guideRoughness = mx_average_alpha(clamp((roughness_R + roughness_TT + roughness_TRT) / vec2(3.0), M_FLOAT_EPS, 1.0));
+
+
     // Both kinds of evaluation, because a fibre has no "far side".
     //
     // hdClaude's integrator asks REFLECTION for a direction on the view's side
@@ -310,10 +320,6 @@ void mx_chiang_hair_bsdf(ClosureData closureData, vec3 tint_R, vec3 tint_TT, vec
         // lands, this and the sampler change together or the estimator breaks.
         bsdf.pdf = mx_pt_uniform_sphere_pdf();
         bsdf.isDelta = 0.0;
-        bsdf.guideAlbedo = max((tint_R + tint_TT + tint_TRT) / vec3(3.0), vec3(0.0));
-        bsdf.guideRoughness =
-            mx_average_alpha(clamp((roughness_R + roughness_TT + roughness_TRT) /
-                                   vec2(3.0), M_FLOAT_EPS, 1.0));
     }
     // ---- hdClaude: importance sampling -------------------------------------
     // Uniform over the sphere. See the note at the top of this file: hair

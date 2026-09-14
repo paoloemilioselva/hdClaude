@@ -53,7 +53,9 @@ void mx_layer_bsdf(ClosureData closureData, BSDF top, BSDF base, out BSDF result
 
     // The visible albedo is the top layer's own plus whatever of the base's
     // survives the top layer's transmission -- the same split the response uses.
-    result.guideAlbedo = top.guideAlbedo + base.guideAlbedo * top.throughput;
+    result.guideDiffuse = top.guideDiffuse + base.guideDiffuse * top.throughput;
+    result.guideSpecular = top.guideSpecular + base.guideSpecular * top.throughput;
+    result.guideNormal = mix(base.guideNormal, top.guideNormal, pTop);
     result.guideRoughness = mix(base.guideRoughness, top.guideRoughness, pTop);
 
     if (closureData.closureType == CLOSURE_TYPE_PT_SAMPLE)

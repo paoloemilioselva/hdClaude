@@ -36,6 +36,17 @@ void mx_sheen_bsdf(ClosureData closureData, float weight, vec3 color, float roug
                           : mx_zeltner_sheen_dir_albedo(NdotV, sheenRoughness);
     bsdf.throughput = vec3(1.0 - dirAlbedo * weight);
 
+    // ---- hdClaude: reconstruction guides -----------------------------------
+    // Properties of the surface and the view alone, so they are written before
+    // the branch dispatch and every pass -- sampling included -- publishes the
+    // same values (docs/dlss-integration.md 4).
+    // Specular in the reconstruction sense: its reflectance depends on the
+    // view, which is what separates the two albedos a backend demodulates.
+    bsdf.guideDiffuse = vec3(0.0);
+    bsdf.guideSpecular = color * dirAlbedo * weight;
+    bsdf.guideNormal = N;
+    bsdf.guideRoughness = sheenRoughness;
+
     // ---- hdClaude: importance sampling -------------------------------------
     // A cosine hemisphere. Sheen's lobe is broad and grazing-weighted, so a
     // cosine proposal is imperfect but unbiased and cheap; a matched proposal
@@ -76,7 +87,5 @@ void mx_sheen_bsdf(ClosureData closureData, float weight, vec3 color, float roug
         // ---- hdClaude: density and reconstruction guides --------------------
         bsdf.pdf = dot(N, L) > 0.0 ? mx_pt_cosine_hemisphere_pdf(dot(N, L)) : 0.0;
         bsdf.isDelta = 0.0;
-        bsdf.guideAlbedo = color * dirAlbedo * weight;
-        bsdf.guideRoughness = sheenRoughness;
     }
 }

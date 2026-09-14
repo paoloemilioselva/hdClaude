@@ -128,15 +128,17 @@ struct BSDF {
     vec3  sampledL;       // PT_SAMPLE output direction
     float pdf;            // solid-angle density, written by the eval types
     float isDelta;        // specular: skip NEE, MIS weight is one
-    vec3  guideAlbedo;    // demodulation albedo for reconstruction guides
-    float guideRoughness; // representative roughness for reconstruction guides
+    vec3  guideDiffuse;   // diffuse albedo, for reconstruction
+    vec3  guideSpecular;  // specular reflectivity for this view
+    vec3  guideNormal;    // shading normal the lobes answer to
+    float guideRoughness; // GGX alpha; guide buffers take its square root
 };
 ```
 
 `isDelta` is a `float` rather than a `bool` so the struct's default-value
 expression stays a plain aggregate literal (see §5).
 
-Nothing here is a surface-model concept. `guideAlbedo` and `guideRoughness` are
+Nothing here is a surface-model concept. The four guide fields are
 produced *by the closure primitives themselves* — a `conductor_bsdf` knows its
 own albedo — never by inspecting a material's name. That is the rule in
 [architecture.md](architecture.md) §9.

@@ -26,11 +26,6 @@ void mx_generalized_schlick_bsdf(ClosureData closureData, float weight, vec3 col
         bsdf.pdf = 0.0;
         return;
     }
-    if (closureData.closureType != CLOSURE_TYPE_TRANSMISSION &&
-        closureData.closureType != CLOSURE_TYPE_PT_SAMPLE && scatter_mode == 1)
-    {
-        return;
-    }
 
     vec3 V = closureData.V;
     vec3 L = closureData.L;
@@ -103,6 +98,29 @@ void mx_generalized_schlick_bsdf(ClosureData closureData, float weight, vec3 col
     float avgDirAlbedo = dot(dirAlbedoV, vec3(1.0 / 3.0));
     bsdf.throughput = vec3(1.0 - avgDirAlbedo * weight);
 
+    // ---- hdClaude: reconstruction guides -----------------------------------
+    // Properties of the surface and the view alone, so they are written before
+    // the branch dispatch and every pass -- sampling included -- publishes the
+    // same values (docs/dlss-integration.md 4).
+    // As the dielectric, except that this lobe's transmission carries its own
+    // `1 - F`, so a transmit-only lobe returns what reflection leaves.
+    bsdf.guideDiffuse = vec3(0.0);
+    bsdf.guideSpecular = (scatter_mode == 0 ? dirAlbedoV : (scatter_mode == 1 ? vec3(1.0) - dirAlbedoV : vec3(1.0))) * weight;
+    bsdf.guideNormal = N;
+    bsdf.guideRoughness = avgAlpha;
+
+    // A transmit-only lobe has nothing to say about reflection -- but it says
+    // so only after publishing its guides, because a guide is a property of the
+    // surface and every pass has to agree on it. Returning at the top, where
+    // upstream does, left a REFLECTION pass with no guides at all, and a
+    // transmit-only lobe is exactly what `open_pbr_surface` layers its glass
+    // from.
+    if (closureData.closureType != CLOSURE_TYPE_TRANSMISSION &&
+        closureData.closureType != CLOSURE_TYPE_PT_SAMPLE && scatter_mode == 1)
+    {
+        return;
+    }
+
     // ---- hdClaude: importance sampling -------------------------------------
     if (closureData.closureType == CLOSURE_TYPE_PT_SAMPLE)
     {
@@ -169,8 +187,6 @@ void mx_generalized_schlick_bsdf(ClosureData closureData, float weight, vec3 col
                              reflectProbability
                        : 0.0;
         bsdf.isDelta = smoothSurface ? 1.0 : 0.0;
-        bsdf.guideAlbedo = dirAlbedoV * weight;
-        bsdf.guideRoughness = avgAlpha;
     }
     else if (closureData.closureType == CLOSURE_TYPE_TRANSMISSION)
     {
@@ -230,7 +246,5 @@ void mx_generalized_schlick_bsdf(ClosureData closureData, float weight, vec3 col
         bsdf.pdf = pdfH * jacobian * refractProbability;
 
         bsdf.isDelta = smoothSurface ? 1.0 : 0.0;
-        bsdf.guideAlbedo = safeColor0 * weight;
-        bsdf.guideRoughness = avgAlpha;
     }
 }

@@ -172,7 +172,8 @@ void main()
     // Consume every ABI output so nothing is optimised away.
     float keep = hdclaude_bsdf.response.x + hdclaude_bsdf.pdf +
                  hdclaude_bsdf.isDelta + hdclaude_bsdf.guideRoughness +
-                 hdclaude_bsdf.guideAlbedo.x + hdclaude_emission.x +
+                 hdclaude_bsdf.guideDiffuse.x + hdclaude_bsdf.guideSpecular.x +
+                 hdclaude_bsdf.guideNormal.x + hdclaude_emission.x +
                  hdclaude_opacity + L.x;
     if (keep < -1.0e30)
     {

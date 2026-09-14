@@ -34,6 +34,15 @@ void mx_oren_nayar_diffuse_bsdf(ClosureData closureData, float weight, vec3 colo
 
     int closureType = closureData.closureType;
 
+    // ---- hdClaude: reconstruction guides -----------------------------------
+    // Properties of the surface and the view alone, so they are written before
+    // the branch dispatch and every pass -- sampling included -- publishes the
+    // same values (docs/dlss-integration.md 4).
+    bsdf.guideDiffuse = color * weight;
+    bsdf.guideSpecular = vec3(0.0);
+    bsdf.guideNormal = N;
+    bsdf.guideRoughness = 1.0;
+
     // ---- hdClaude: importance sampling -------------------------------------
     //
     // A cosine-weighted hemisphere is the correct proposal for every
@@ -72,7 +81,5 @@ void mx_oren_nayar_diffuse_bsdf(ClosureData closureData, float weight, vec3 colo
         // produces the response and the density that MIS pairs it with.
         bsdf.pdf = dot(N, L) > 0.0 ? mx_pt_cosine_hemisphere_pdf(dot(N, L)) : 0.0;
         bsdf.isDelta = 0.0;
-        bsdf.guideAlbedo = color * weight;
-        bsdf.guideRoughness = 1.0;
     }
 }

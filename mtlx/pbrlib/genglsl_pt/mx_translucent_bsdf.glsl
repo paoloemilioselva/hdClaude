@@ -29,6 +29,17 @@ void mx_translucent_bsdf(ClosureData closureData, float weight, vec3 color, vec3
     // Invert normal since we're transmitting light from the other side
     N = -N;
 
+    // ---- hdClaude: reconstruction guides -----------------------------------
+    // Properties of the surface and the view alone, so they are written before
+    // the branch dispatch and every pass -- sampling included -- publishes the
+    // same values (docs/dlss-integration.md 4).
+    // The surface's own normal, not the inverted one this lobe scatters
+    // around: the guide describes where the surface faces.
+    bsdf.guideDiffuse = color * weight;
+    bsdf.guideSpecular = vec3(0.0);
+    bsdf.guideNormal = -N;
+    bsdf.guideRoughness = 1.0;
+
     // ---- hdClaude: importance sampling -------------------------------------
     if (closureData.closureType == CLOSURE_TYPE_PT_SAMPLE)
     {
@@ -61,7 +72,5 @@ void mx_translucent_bsdf(ClosureData closureData, float weight, vec3 color, vec3
         // Measured against the inverted normal, matching the sample above.
         bsdf.pdf = NdotL > 0.0 ? mx_pt_cosine_hemisphere_pdf(NdotL) : 0.0;
         bsdf.isDelta = 0.0;
-        bsdf.guideAlbedo = color * weight;
-        bsdf.guideRoughness = 1.0;
     }
 }

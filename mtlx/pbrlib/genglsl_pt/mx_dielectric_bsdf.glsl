@@ -28,11 +28,6 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
         bsdf.pdf = 0.0;
         return;
     }
-    if (closureData.closureType != CLOSURE_TYPE_TRANSMISSION &&
-        closureData.closureType != CLOSURE_TYPE_PT_SAMPLE && scatter_mode == 1)
-    {
-        return;
-    }
 
     vec3 V = closureData.V;
     vec3 L = closureData.L;
@@ -204,6 +199,31 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
     }
     bsdf.throughput = 1.0 - dirAlbedoV * weight;
 
+    // ---- hdClaude: reconstruction guides -----------------------------------
+    // Properties of the surface and the view alone, so they are written before
+    // the branch dispatch and every pass -- sampling included -- publishes the
+    // same values (docs/dlss-integration.md 4).
+    // Transmission counts as specular: rough or smooth, what comes through
+    // glass depends on the view. A reflect-only lobe keeps its directional
+    // albedo; one that transmits returns reflected and refracted light
+    // together, which is the tint.
+    bsdf.guideDiffuse = vec3(0.0);
+    bsdf.guideSpecular = (transmissive ? safeTint : dirAlbedoV * safeTint) * weight;
+    bsdf.guideNormal = N;
+    bsdf.guideRoughness = avgAlpha;
+
+    // A transmit-only lobe has nothing to say about reflection -- but it says
+    // so only after publishing its guides, because a guide is a property of the
+    // surface and every pass has to agree on it. Returning at the top, where
+    // upstream does, left a REFLECTION pass with no guides at all, and a
+    // transmit-only lobe is exactly what `open_pbr_surface` layers its glass
+    // from.
+    if (closureData.closureType != CLOSURE_TYPE_TRANSMISSION &&
+        closureData.closureType != CLOSURE_TYPE_PT_SAMPLE && scatter_mode == 1)
+    {
+        return;
+    }
+
     // ---- hdClaude: importance sampling -------------------------------------
     if (closureData.closureType == CLOSURE_TYPE_PT_SAMPLE)
     {
@@ -298,8 +318,6 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
                              reflectProbability
                        : 0.0;
         bsdf.isDelta = smoothSurface ? 1.0 : 0.0;
-        bsdf.guideAlbedo = dirAlbedoV * safeTint * weight;
-        bsdf.guideRoughness = avgAlpha;
     }
     else if (closureData.closureType == CLOSURE_TYPE_TRANSMISSION)
     {
@@ -385,7 +403,5 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
         bsdf.pdf = pdfH * jacobian * refractProbability;
 
         bsdf.isDelta = smoothSurface ? 1.0 : 0.0;
-        bsdf.guideAlbedo = safeTint * weight;
-        bsdf.guideRoughness = avgAlpha;
     }
 }

@@ -36,6 +36,7 @@
 #include <MaterialXGenShader/Util.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <cstdio>
@@ -169,6 +170,9 @@ struct ChiSquareHistograms {
     double sampledAlbedo = 0.0;
     double sampledAlbedoError = 0.0;
     double integratedAlbedo = 0.0;
+    /// The reconstruction guides as the sampling pass and an evaluation pass
+    /// publish them: diffuse, specular, normal, roughness, ten values each.
+    std::array<double, 20> guides{};
     std::string error;
 };
 
@@ -331,6 +335,13 @@ class Validator {
                 result.expected[c] = integral * pointArea * kSampleCount;
             }
             result.integratedAlbedo = albedo * pointArea;
+        }
+
+        {
+            const float* slots = run(2, 1, 0u);
+            for (std::size_t k = 0; k < result.guides.size(); ++k) {
+                result.guides[k] = double(slots[k]);
+            }
         }
 
         result.ok = true;
@@ -805,6 +816,62 @@ void CheckDistribution(const char* label, const ChiSquareHistograms& h,
                         h.observed[c], h.expected[c]);
         }
     }
+}
+
+enum class GuideKind { Diffuse, Specular, Mixed };
+
+/// The reconstruction guides a closure publishes (docs/dlss-integration.md 4).
+///
+/// What can be asserted exactly is asserted exactly: the sampling and
+/// evaluation passes publish the same guides, bit for bit, because a guide is a
+/// property of the surface and the view; a diffuse lobe publishes no specular
+/// albedo and a specular one no diffuse albedo; the normal is the surface's.
+/// How closely the specular albedo -- MaterialX's fitted directional albedo --
+/// matches the albedo integrated from the response is printed beside the
+/// furnace, because that is the fit's accuracy and not a property to gate on.
+void CheckGuides(const char* label, const ChiSquareHistograms& h, GuideKind kind,
+                 double closedFormDiffuse)
+{
+    if (!h.ok) return;
+    const auto& g = h.guides;
+    for (std::size_t k = 0; k < 10; ++k) {
+        CHECK_EQ(g[k], g[k + 10]);
+    }
+    const double diffuse = (g[0] + g[1] + g[2]) / 3.0;
+    const double specular = (g[3] + g[4] + g[5]) / 3.0;
+    std::printf("  %-30s guides diffuse %.4f  specular %.4f  normal (%.3f, %.3f,"
+                " %.3f)  alpha %.3f  integrated albedo %.4f\n",
+                label, diffuse, specular, g[6], g[7], g[8], g[9],
+                h.integratedAlbedo);
+    if (kind == GuideKind::Diffuse) {
+        CHECK_EQ(specular, 0.0);
+        CHECK(diffuse > 0.0);
+    } else if (kind == GuideKind::Specular) {
+        CHECK_EQ(diffuse, 0.0);
+        CHECK(specular > 0.0);
+    } else {
+        CHECK(diffuse + specular > 0.0);
+    }
+    CHECK_NEAR(g[6], 0.0, 1.0e-6);
+    CHECK_NEAR(g[7], 0.0, 1.0e-6);
+    CHECK_NEAR(g[8], 1.0, 1.0e-6);
+    if (closedFormDiffuse >= 0.0) {
+        CHECK_NEAR(diffuse, closedFormDiffuse, 1.0e-6);
+    }
+}
+
+/// The specular albedo is the reflectivity the lobe actually renders with.
+///
+/// For an isotropic GGX reflection lobe the guide is MaterialX's directional
+/// albedo with the same energy compensation the response carries, and it
+/// should then be the integrated albedo -- held to the furnace's own 0.5%.
+/// Anisotropic and transmissive lobes are not asked: MaterialX's albedo fit
+/// takes one roughness, and transmission is reported at its tint.
+void CheckSpecularAlbedo(const char* label, const ChiSquareHistograms& h)
+{
+    if (!h.ok) return;
+    const double specular = (h.guides[3] + h.guides[4] + h.guides[5]) / 3.0;
+    CHECK_NEAR(specular, h.integratedAlbedo, 0.005 * h.integratedAlbedo);
 }
 
 /// Item 2: the importance-sampled albedo is the albedo, to half a per cent.
@@ -1394,6 +1461,30 @@ int main()
                 CheckDistribution(c.label, h, significance);
                 if (c.furnace) {
                     CheckFurnace(c.label, h, c.closedForm);
+                }
+                const std::string label = c.label;
+                const auto starts = [&](const char* prefix) {
+                    return label.rfind(prefix, 0) == 0;
+                };
+                const GuideKind kind =
+                    starts("oren_nayar") || starts("burley") ||
+                            starts("translucent") || starts("subsurface")
+                        ? GuideKind::Diffuse
+                    : starts("mix(") || starts("layer(") || starts("add(")
+                        ? GuideKind::Mixed
+                        : GuideKind::Specular;
+                // White smooth Oren-Nayar and white translucent have a diffuse
+                // albedo of one, and an even mix of a conductor with white
+                // diffuse has half of it.
+                const double closedDiffuse =
+                    label == "oren_nayar (smooth)" || label == "translucent" ? 1.0
+                    : label == "mix(conductor, diffuse)"                     ? 0.5
+                                                                              : -1.0;
+                CheckGuides(c.label, h, kind, closedDiffuse);
+                if (label == "conductor (0.3)" ||
+                    label == "generalized_schlick R (0.3)" ||
+                    label == "multiply(conductor, 0.5)") {
+                    CheckSpecularAlbedo(c.label, h);
                 }
             }
         }

@@ -147,6 +147,15 @@ void mx_subsurface_bsdf(ClosureData closureData, float weight, vec3 color, vec3 
     // slight, and the two to four per cent above.
     vec3 side = walks ? -N : N;
 
+    // ---- hdClaude: reconstruction guides -----------------------------------
+    // Properties of the surface and the view alone, so they are written before
+    // the branch dispatch and every pass -- sampling included -- publishes the
+    // same values (docs/dlss-integration.md 4).
+    bsdf.guideDiffuse = reflectance * weight;
+    bsdf.guideSpecular = vec3(0.0);
+    bsdf.guideNormal = N;
+    bsdf.guideRoughness = 1.0;
+
     if (closureData.closureType == CLOSURE_TYPE_PT_SAMPLE)
     {
         vec3 X, Y;
@@ -186,6 +195,4 @@ void mx_subsurface_bsdf(ClosureData closureData, float weight, vec3 color, vec3 
 
     bsdf.pdf = mx_pt_cosine_hemisphere_pdf(NdotL);
     bsdf.isDelta = 0.0;
-    bsdf.guideAlbedo = reflectance * weight;
-    bsdf.guideRoughness = 1.0;
 }

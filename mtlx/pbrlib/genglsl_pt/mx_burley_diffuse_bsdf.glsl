@@ -25,6 +25,15 @@ void mx_burley_diffuse_bsdf(ClosureData closureData, float weight, vec3 color, f
     N = mx_forward_facing_normal(N, V);
     float NdotV = clamp(dot(N, V), M_FLOAT_EPS, 1.0);
 
+    // ---- hdClaude: reconstruction guides -----------------------------------
+    // Properties of the surface and the view alone, so they are written before
+    // the branch dispatch and every pass -- sampling included -- publishes the
+    // same values (docs/dlss-integration.md 4).
+    bsdf.guideDiffuse = color * weight;
+    bsdf.guideSpecular = vec3(0.0);
+    bsdf.guideNormal = N;
+    bsdf.guideRoughness = 1.0;
+
     // ---- hdClaude: importance sampling -------------------------------------
     // Cosine-weighted, as for Oren-Nayar: Burley's retroreflective term
     // modulates the cosine distribution without moving its support, so a
@@ -51,7 +60,5 @@ void mx_burley_diffuse_bsdf(ClosureData closureData, float weight, vec3 color, f
         // ---- hdClaude: density and reconstruction guides --------------------
         bsdf.pdf = dot(N, L) > 0.0 ? mx_pt_cosine_hemisphere_pdf(dot(N, L)) : 0.0;
         bsdf.isDelta = 0.0;
-        bsdf.guideAlbedo = color * weight;
-        bsdf.guideRoughness = 1.0;
     }
 }
