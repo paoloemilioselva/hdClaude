@@ -219,11 +219,23 @@ void VulkanContext::RequireLive(const char* context) const
     }
 }
 
+namespace {
+
+std::atomic<std::uint64_t> g_deviceWaitsIssued{0};
+
+}  // namespace
+
+std::uint64_t VulkanContext::DeviceWaitsIssuedForTesting()
+{
+    return g_deviceWaitsIssued.load(std::memory_order_relaxed);
+}
+
 void VulkanContext::WaitIdle() const
 {
     if (_device == VK_NULL_HANDLE || IsDeviceLost()) {
         return;
     }
+    g_deviceWaitsIssued.fetch_add(1, std::memory_order_relaxed);
     Check(vkDeviceWaitIdle(_device), "vkDeviceWaitIdle");
 }
 
@@ -305,6 +317,7 @@ VulkanContext::VulkanContext(const VulkanContextOptions& options)
         }
         layerSettingsAvailable =
             HasExtension(layerExtensions, VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
+        _synchronisationValidationEnabled = layerSettingsAvailable;
         if (layerSettingsAvailable) {
             instanceExtensions.push_back(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
         } else {
@@ -744,6 +757,7 @@ VulkanContext::~VulkanContext()
 
     if (_device != VK_NULL_HANDLE) {
         if (!lost) {
+            g_deviceWaitsIssued.fetch_add(1, std::memory_order_relaxed);
             vkDeviceWaitIdle(_device);
         }
         if (_impl->immediatePool != VK_NULL_HANDLE) {

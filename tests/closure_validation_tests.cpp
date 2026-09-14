@@ -418,6 +418,19 @@ int main()
         return 1;
     }
 
+    // Core validation alone is not the gate. Synchronisation validation is what
+    // reports a buffer one kernel writes that the next cannot yet see, and it
+    // can be off with the layer present, so a clean count would say nothing.
+    if (!context->SynchronisationValidationEnabled()) {
+        std::fprintf(stderr,
+                     "FAIL: the validation layer is running without "
+                     "synchronisation validation (it lacks "
+                     "VK_EXT_layer_settings), so the validation gate would "
+                     "pass without checking kernel hazards; see "
+                     "docs/building.md\n");
+        return 1;
+    }
+
     const GlslCompiler compiler;
     {
         VulkanAllocator allocator(*context);

@@ -194,6 +194,18 @@ class VulkanContext {
 
     bool ValidationEnabled() const { return _validationEnabled; }
 
+    /// Whether synchronisation validation is on as well as core validation.
+    ///
+    /// Separate because it can be off while the layer is present: it is asked
+    /// for through `VK_EXT_layer_settings`, and a layer without that extension
+    /// runs core validation only. A gate that counted errors without asking
+    /// this would pass with the half of validation that matters most to a
+    /// wavefront integrator silently missing.
+    bool SynchronisationValidationEnabled() const
+    {
+        return _synchronisationValidationEnabled;
+    }
+
     /// Validation messages seen at ERROR severity. A test with validation
     /// enabled must fail on a nonzero count; printing alone is not a gate.
     std::uint64_t ValidationErrorCount() const
@@ -228,6 +240,15 @@ class VulkanContext {
         _deviceLost.store(true, std::memory_order_release);
     }
 
+    /// How many `vkDeviceWaitIdle` calls every context in this process has
+    /// issued, including from destructors.
+    ///
+    /// Process-wide because the call that matters is the one a destructor
+    /// makes, and nothing can be asked of an object after it has gone. It is
+    /// how the device-loss test asserts that teardown of a lost device issues
+    /// no wait, rather than hoping that one would crash.
+    static std::uint64_t DeviceWaitsIssuedForTesting();
+
   private:
     void SelectPhysicalDevice(const VulkanContextOptions& options);
     void CreateDevice(const VulkanContextOptions& options);
@@ -253,6 +274,7 @@ class VulkanContext {
     VkPhysicalDeviceMemoryProperties _memoryProperties{};
 
     bool _validationEnabled = false;
+    bool _synchronisationValidationEnabled = false;
     mutable std::atomic<bool> _deviceLost{false};
     mutable std::atomic<std::uint64_t> _validationErrors{0};
     mutable std::atomic<std::uint64_t> _validationWarnings{0};

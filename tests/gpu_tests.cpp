@@ -311,9 +311,32 @@ void TestDeviceLossLatchRefusesWork()
     context.WaitIdle();
     CHECK(context.IsDeviceLost());
 
-    // Destruction now runs the lost-device teardown path. If it issues waits or
-    // per-object destroys against the latched device, this test crashes or
-    // trips validation, which is the point.
+    // Destruction runs the lost-device teardown path, and the gate is that it
+    // issues no wait. Counted rather than trusted to crash: a simulated loss
+    // leaves a healthy device underneath, so a wait issued anyway would
+    // succeed and nothing would crash at all.
+    const std::uint64_t waitsBefore = VulkanContext::DeviceWaitsIssuedForTesting();
+    {
+        VulkanContext lost(TestOptions());
+        lost.SimulateDeviceLossForTesting();
+    }
+    CHECK_EQ(VulkanContext::DeviceWaitsIssuedForTesting(), waitsBefore);
+
+    // Destruction of `context` below still runs that path a second time, with
+    // every refusal above having happened first. If it issues per-object
+    // destroys incorrectly this test crashes or trips validation.
+}
+
+void TestLiveTeardownWaitsForTheDevice()
+{
+    // The control. Without it the count above would pass just as well if the
+    // counter were never incremented at all.
+    std::uint64_t waitsBefore = 0;
+    {
+        VulkanContext context(TestOptions());
+        waitsBefore = VulkanContext::DeviceWaitsIssuedForTesting();
+    }
+    CHECK_EQ(VulkanContext::DeviceWaitsIssuedForTesting(), waitsBefore + 1);
 }
 
 }  // namespace
@@ -765,6 +788,19 @@ int main()
         return 1;
     }
 
+    // Core validation alone is not the gate. Synchronisation validation is what
+    // reports a buffer one kernel writes that the next cannot yet see, and it
+    // can be off with the layer present, so a clean count would say nothing.
+    if (!context->SynchronisationValidationEnabled()) {
+        std::fprintf(stderr,
+                     "FAIL: the validation layer is running without "
+                     "synchronisation validation (it lacks "
+                     "VK_EXT_layer_settings), so the validation gate would "
+                     "pass without checking kernel hazards; see "
+                     "docs/building.md\n");
+        return 1;
+    }
+
     TestContextSelectsACapableDevice(*context);
 
     // Scoped so the allocator and every resource it owns are destroyed before
@@ -810,6 +846,7 @@ int main()
     context.reset();
 
     TestDeviceLossLatchRefusesWork();
+    TestLiveTeardownWaitsForTheDevice();
 
     return hdclaude_test::Summarize("hdClaudeGpuTests");
 }
