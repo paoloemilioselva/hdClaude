@@ -343,19 +343,16 @@ void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
     // Curves as segments the traversal kernel intersects, or as tubes of
     // triangles.
     //
-    // Implicit by default, chosen knowing what it costs.
+    // Implicit by default. It is the exact shape rather than a faceted
+    // approximation, about thirty-two bytes a segment against five hundred, and
+    // on ALab's groom it is 4.6 GiB against 14.2 and 2.9 s of publish against
+    // 23.1 -- on an asset whose swept form does not fit on the card, the
+    // difference between a render and none.
     //
-    // It is the exact shape rather than a faceted approximation, about
-    // thirty-two bytes a segment against five hundred, and on ALab's groom it
-    // is 4.6 GiB against 14.2 and 2.9 s of publish against 23.1. It also draws
-    // a crescent at every joint between two segments, which on fur reads as
-    // circular patterns scattered through it (roadmap open question 5).
-    //
-    // The artefact is a defect and is not fixed. Paolo asked for the lighter
-    // path as the default anyway, and on an asset whose swept form does not fit
-    // on the card that is the difference between a render and no render. This
-    // comment is here so the choice stays visible: `swept` is one setting away
-    // and is what the joint artefact is compared against.
+    // It was the default for a while with a crescent at every segment joint,
+    // which beaded ALab's knitted yarn and patterned its fur. That was the
+    // traversal kernel committing a farther generated hit over a nearer one,
+    // and is fixed (roadmap open question 5). `swept` stays one setting away.
     const std::string curveGeometry =
         TfGetenv("HDCLAUDE_CURVE_GEOMETRY", "implicit");
     const bool implicitCurves = curveGeometry != "swept";
@@ -591,9 +588,8 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         // is flip one in a viewport and look: swept against implicit on a real
         // groom is a comparison no still frame makes for you.
         //
-        // Accepted: swept, implicit. Implicit is the default: it is far
-        // lighter, and it draws a known artefact at segment joints (roadmap
-        // open question 5).
+        // Accepted: swept, implicit. Implicit is the default: it is exact and
+        // far lighter.
         {"Curve geometry", _tokens->curveGeometry,
          VtValue(std::string(TfGetenv("HDCLAUDE_CURVE_GEOMETRY", "implicit")))},
         {"Curve sides", _tokens->curveSides,

@@ -3548,9 +3548,9 @@ int main()
         // and the depth AOV is where to ask: it is geometry with no lighting in
         // it, so a difference here cannot be blamed on a normal or a shadow.
         //
-        // This exists because the implicit curve path draws a crescent at every
-        // joint (roadmap open question 5) and the argument about whether that
-        // is geometry or shading needs an instrument rather than a picture.
+        // This exists because the implicit curve path drew a crescent at every
+        // joint (roadmap open question 5), and the argument about whether that
+        // was geometry or shading needed an instrument rather than a picture.
         {
             constexpr std::uint32_t kSize = 192;
             constexpr float kRadius = 0.25f;
@@ -3608,24 +3608,125 @@ int main()
             }
             std::printf("  curve chain: %zu of %zu depths differ, worst %.6f\n",
                         differing, one.size(), worst);
-            // Deliberately *not* asserted, and the absence is the point.
+            // Exactly nothing, because the two descriptions are of one solid.
             //
-            // The right assertion is that nothing differs: the two descriptions
-            // are of one solid, so a ray either reaches the same surface in
-            // both or the segments are not the capsule they claim. Today 656 of
-            // 36,864 differ, worst 0.00163, concentrated at the joints -- the
-            // defect behind roadmap open question 5, and the reason implicit
-            // curves are not the default. Asserting zero would leave a red
-            // suite; asserting the number that passes today would be a
-            // tolerance invented to hide it, which is worse. So the measurement
-            // is printed and the assertion is owed.
-            //
-            // What *is* asserted is that this stays an artefact rather than
-            // becoming a hole: the two must still describe the same solid over
-            // the great majority of it, so a change that made the two
-            // descriptions wholly different would fail here rather than pass
-            // quietly.
-            CHECK(differing < one.size() / 8);
+            // This was 656 of 36,864, worst 0.00163, from the day curves were
+            // intersected, and was the crescent at every joint (roadmap open
+            // question 5). The cause was that `extend` generated a hit without
+            // asking whether it was nearer than the one already committed. At a
+            // joint a ray meets the neighbouring segment's end sphere *behind*
+            // the surface it already found, and the driver committed that
+            // farther hit whenever its box was visited later. Vulkan's closest
+            // hit determination says a confirmed hit with t > t_max is dropped;
+            // this driver did not, and the kernel now makes the comparison
+            // itself. Reverting that check brings back exactly 656.
+            CHECK_EQ(differing, std::size_t(0));
+        }
+
+        // --- A shadow ray is not stopped by a curve beyond its light ----------
+        //
+        // The other half of the same fault. A shadow ray runs from a surface to
+        // a point on the light and ends there, so a curve beyond the light
+        // cannot shade the surface -- but its box can begin before the light,
+        // and then the traversal hands it over as a candidate whose real hit
+        // lies past the end of the ray. Generating that hit is outside the
+        // ray's interval, which the driver shown above does not reliably drop.
+        //
+        // The geometry is chosen so that the claim is exact rather than
+        // approximate. A diffuse quad at z = 0 is lit by a rect light off to
+        // its side at z = 1.5, and every shadow ray therefore ends on the plane
+        // z = 1.5, inside the bundle x in [-1 + 5z/3, 1 + 5z/3]. The comb's
+        // teeth descend from (2, y, 2.8) to (4, y, 1.2): below z = 1.5 they are
+        // at x > 3.6, where no shadow ray is, so no ray can truly meet them --
+        // yet each tooth's box reaches down to z = 1.185, across the rays'
+        // path. With the ray's interval honoured the comb changes nothing.
+        //
+        // The control is what stops this passing vacuously: a grate of the same
+        // teeth laid flat across the bundle at z = 1.2 must darken the quad,
+        // so a renderer whose curves cast no shadow at all fails here. Both
+        // are outside the camera's view, which at z >= 1.2 is under a unit
+        // wide, so only the quad's lighting is measured.
+        {
+            constexpr std::uint32_t kSize = 64;
+            constexpr float kTooth = 0.015f;
+
+            Light aside;
+            aside.type = static_cast<std::uint32_t>(LightType::Rect);
+            aside.position[0] = 2.5f;
+            aside.position[1] = 0.0f;
+            aside.position[2] = 1.5f;
+            aside.direction[0] = 0.0f;
+            aside.direction[1] = 0.0f;
+            aside.direction[2] = -1.0f;
+            aside.uAxis[0] = 1.0f; aside.uAxis[1] = 0.0f; aside.uAxis[2] = 0.0f;
+            aside.vAxis[0] = 0.0f; aside.vAxis[1] = 1.0f; aside.vAxis[2] = 0.0f;
+            aside.area = 4.0f;
+            aside.radiance[0] = 6.0f;
+            aside.radiance[1] = 6.0f;
+            aside.radiance[2] = 6.0f;
+            aside.castsShadows = 1;
+
+            const auto meanLit = [&](const std::vector<float>& segments) {
+                Scene lit;
+                lit.prototypes.push_back(MakeQuad());
+                lit.instances.push_back({0, Transform3x4{}, 0, true});
+                if (!segments.empty()) {
+                    MeshPrototype teeth;
+                    teeth.debugName = "comb";
+                    teeth.segments = segments;
+                    lit.prototypes.push_back(teeth);
+                    lit.instances.push_back({1, Transform3x4{}, 0, true});
+                }
+                lit.lights.push_back(aside);
+                lit.environmentColor[0] = 0.0f;
+                lit.environmentColor[1] = 0.0f;
+                lit.environmentColor[2] = 0.0f;
+                tracer.SetScene(lit, {materials[1]});
+
+                RenderSettings settings;
+                settings.samplesPerPixel = 64;
+                settings.maxBounces = 1;
+                settings.environmentColor[0] = 0.0f;
+                settings.environmentColor[1] = 0.0f;
+                settings.environmentColor[2] = 0.0f;
+                settings.lightGeometry = false;
+                const std::vector<float> image =
+                    tracer.Render(kSize, kSize, LookDownZ(3.0f), settings);
+                double total = 0.0;
+                const std::size_t pixels = image.size() / 4;
+                for (std::size_t i = 0; i < pixels; ++i) {
+                    total += 0.2126 * image[i * 4 + 0] +
+                             0.7152 * image[i * 4 + 1] +
+                             0.0722 * image[i * 4 + 2];
+                }
+                return pixels > 0 ? total / double(pixels) : 0.0;
+            };
+
+            std::vector<float> beyond;
+            std::vector<float> across;
+            for (int i = 0; i <= 60; ++i) {
+                const float y = -1.2f + 0.04f * float(i);
+                beyond.insert(beyond.end(), {2.0f, y, 2.8f, kTooth, 0.0f,
+                                             4.0f, y, 1.2f, kTooth, 1.0f});
+            }
+            for (int i = 0; i <= 50; ++i) {
+                const float x = 1.0f + 0.04f * float(i);
+                across.insert(across.end(), {x, -1.5f, 1.2f, kTooth, 0.0f,
+                                             x,  1.5f, 1.2f, kTooth, 1.0f});
+            }
+
+            const double open = meanLit({});
+            const double behind = meanLit(beyond);
+            const double blocked = meanLit(across);
+            std::printf("  curve beyond a light: open %.4f, comb beyond %.4f "
+                        "(ratio %.4f), grate across %.4f (ratio %.4f)\n",
+                        open, behind, open > 0.0 ? behind / open : 0.0, blocked,
+                        open > 0.0 ? blocked / open : 0.0);
+            CHECK(open > 0.0);
+            // Two per cent is the estimator's own disagreement between two
+            // renders at this sample count; without the guard this read 0.9105.
+            CHECK_NEAR(behind / open, 1.0, 0.02);
+            CHECK(blocked / open < 0.5);
         }
 
         // --- A curve is intersected, not tessellated -------------------------

@@ -228,6 +228,7 @@ reversed.
 | 2026-09-10 | Geometry settings are render settings too, and changing one resyncs the stage | Curve geometry, curve sides, curve segment samples and the subdivision level decide what an rprim *is*, so unlike a sample count they cannot take effect on the next frame -- the prototypes were built the old way during Sync. The render pass is the only part of the delegate holding a render index, so it compares them each execute and marks every rprim dirty when one moves. They are settings and not only environment variables because the interesting thing to do with them is flip one in a viewport and look, which is how swept and implicit curves are judged against each other on a real groom |
 | 2026-09-14 | Curve geometry defaults to implicit, reversing the entry above, with the joint artefact still unfixed | Paolo asked for the lighter path as the default. On ALab it is 4.6 GiB against 14.2 and 2.9 s of publish against 23.1, and on an asset whose swept form does not fit on the card that is the difference between a render and none. The crescent at segment joints remains a known defect (open question 5), and `swept` stays one setting away as what it is compared against. The delegate's descriptor and the render pass share the one default -- a pass that read an unset setting as swept rebuilt every curve on its first frame -- and a value that is neither `implicit` nor `swept` renders implicit and is reported once by name |
 | 2026-09-14 | Structures a publication cannot use are released *before* its new ones are built | Building into a second map and freeing the old one afterwards holds both at once, and for a scene whose geometry has wholly changed that is two complete copies on the device: switching ALab's groom from swept to implicit asked for 14.2 GiB and 4.6 GiB together and the frame died. What survives is any structure whose geometry fingerprint is asked for again, or whose topology fingerprint is, since those are what a deforming prototype refits onto |
+| 2026-09-14 | A generated intersection is compared against the ray's interval *and* the committed hit in the kernel, not left to the implementation | Vulkan's closest hit determination drops a confirmed hit with t > t_max, and the driver this renderer runs on did not: `extend` committed a farther curve hit over a nearer one, which was the crescent at every segment joint, and `shadow` let a curve beyond a light occlude it. A comparison the implementation is also meant to make costs one read of the committed t, and makes the kernel correct whichever way an implementation behaves. Measured both ways on one build: 656 differing depths without it and 0 with it; a curve beyond a light at 0.9105 of the light without it and 1.0000 with it |
 | 2026-09-14 | DLSS SDK moves from 310.3.0 to 310.9.1, and the pinned tag is the one that gets built | Every NGX call hdClaude makes is unchanged, and on the RTX 5060 Ti the runtime reports `NVIDIA DLSS 310.9.1.0` through all seven suites. Preset F -- `stable` -- is now marked deprecated but still present, so it is honoured and reported once rather than removed or remapped. The upgrade found why the pin had never been able to move: `setup_usd_env.bat` pointed `HDCLAUDE_DLSS_SDK` at FetchContent's own checkout, which made CMake treat it as a hand-supplied SDK and stop updating it, and the tag was a cache default a build tree kept anyway. The first rebuild after editing the tag printed the new version and linked the old SDK. The script no longer sets it, the override is cleared when the variable is unset, and the tag is a plain variable |
 | 2026-09-05 | The pbrlib override set is all-or-nothing | MaterialX resolves `#include` relative to the including file, so mixing one upstream closure with one hdClaude closure emits `struct ClosureData` twice. The set is exactly the 22 pbrlib files that include `mx_closure_type.glsl`; no stdlib file does |
 
@@ -254,14 +255,32 @@ Tracked here rather than decided prematurely.
    `metersPerUnit = 0.01`, and DLSS's handling of thin bright curve geometry
    (Programming Guide 3.6.4). Chase it with the same instrument that found it: a
    scene whose only light is an emissive shader ([dlss-integration.md](dlss-integration.md) 5a).
-5. **A crescent at every joint of an implicit curve.** Reported from usdview as
+5. **Resolved 2026-09-14: a crescent at every joint of an implicit curve.**
+   *Cause:* `extend` generated a curve hit after checking only `tMin`, never
+   that it was nearer than the hit already committed. At a joint, a ray that
+   has found the surface also meets the neighbouring segment's end sphere
+   behind it, inside the solid, and the driver (RTX 5060 Ti, 616.92) committed
+   that farther hit whenever its box was visited later. Vulkan's ray closest
+   hit determination says a confirmed hit with t > t_max is dropped, so this
+   is the driver not doing what the specification says; comparing against the
+   committed t in the kernel is correct under either behaviour. With the
+   comparison, the four-segment chain and the single capsule agree at every one
+   of 36,864 depths, and the test now asserts exactly zero; reverting it on the
+   same build brings back exactly 656. The shadow kernel had the same gap at
+   the far end -- a hit beyond `maxDistance` was generated -- and a comb of
+   curves lying wholly beyond a light took 9% of that light off the surface
+   below it (ratio 0.9105, now 1.0000), which is asserted too. On ALab's stoat
+   at frame 1004, the knitted jumper's yarn rendered as strings of beads, one
+   bulge a joint, and renders as continuous strands after.
+
+   What follows is the investigation as it stood, kept because the exclusions
+   are still true. Reported from usdview as
    circular patterns scattered through ALab's fur, and reproduced: a straight,
    constant-radius chain of segments renders with a dark crescent at each joint,
    where the same capsule described as *one* segment renders perfectly smooth
    (rms 0.0089 between the two descriptions, 0.56% of pixels, all of it at the
    seams). `HDCLAUDE_CURVE_GEOMETRY` defaulted to `swept` while this was open, and
-   defaults to `implicit` since 2026-09-14 at Paolo's request, with the defect
-   still unfixed -- see the decision log.
+   defaults to `implicit` since 2026-09-14 at Paolo's request.
 
    What has been excluded, each with the install verified afterwards -- several
    early attempts were run against a stale installed shader and are void:

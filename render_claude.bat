@@ -39,10 +39,8 @@ IF "%~1"=="" (
   ECHO   HDCLAUDE_MAX_BOUNCES           default 8     path length
   ECHO   HDCLAUDE_SUBDIVISION_LEVEL     0-6, default 2, 0 disables refinement
   ECHO   HDCLAUDE_CURVE_GEOMETRY        implicit ^(default^) or swept. Implicit
-  ECHO                                  intersects each segment as a round cone
-  ECHO                                  and is far cheaper, but draws an
-  ECHO                                  artefact at segment joints; see the
-  ECHO                                  roadmap open questions
+  ECHO                                  intersects each segment as a round cone,
+  ECHO                                  exactly, and is far cheaper
   ECHO   HDCLAUDE_CURVE_SIDES           3-64, default 6, faces round a swept
   ECHO                                  tube. Unused when curves are implicit
   ECHO   HDCLAUDE_CURVE_SEGMENT_SAMPLES 1-32, default 1, straight spans per
