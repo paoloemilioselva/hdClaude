@@ -254,17 +254,39 @@ Tracked here rather than decided prematurely.
 3. **Displacement residency.** GPU displacement (phase 16) multiplies vertex
    memory by the refinement level. Whether to cache displaced positions or
    re-evaluate per BLAS build is a memory/time trade to measure.
-4. **Where two thirds of an emissive scene's light goes under DLSS.**
-   collectiveproject001 frame 1080, lit only by the character's emissive eye,
-   keeps 32.5% of the reference's mean through DLAA at 128 samples a frame,
-   where the gold shader ball keeps 99.8% at the same setting. It is not the
-   estimator's variance -- raising samples a frame from 8 to 128 recovers six
-   points, not sixty -- and it is not the exposure, which was measured, supplied
-   and shown to change nothing. Candidates not yet excluded: the analytic-light
-   guide defect below, the depth guide's distribution on a stage authored at
-   `metersPerUnit = 0.01`, and DLSS's handling of thin bright curve geometry
-   (Programming Guide 3.6.4). Chase it with the same instrument that found it: a
-   scene whose only light is an emissive shader ([dlss-integration.md](dlss-integration.md) 5a).
+4. **Resolved 2026-09-15: where two thirds of an emissive scene's light goes
+   under DLSS.** collectiveproject001 frame 1080, lit only by the character's
+   emissive eye, keeps 32.5% of the reference's mean through DLAA at 128 samples
+   a frame, where the gold shader ball keeps 99.8%.
+
+   *Answer:* both DLSS models attenuate very high-contrast features only a few
+   pixels across, and hdClaude's inputs are correct. `hdClaudeImageDiff
+   --energy` bands a reference's pixels by luminance and reports what a
+   candidate kept in each, and it put 92% of the frame's light in 227 pixels:
+   the eye itself, thin bright rings two or three pixels thick at 256 px. Every
+   measurement below is those pixels, at 256 px unless stated.
+
+   | | Emitter light kept |
+   | --- | --- |
+   | the frame handed to DLSS, 128 samples, unreconstructed | 94.0% (98.1% of the frame) |
+   | Super Resolution, 8 frames of 128 | 32.2% |
+   | Ray Reconstruction, 8 frames of 128 | 82.7% |
+   | Super Resolution / Ray Reconstruction, 64 frames of 128 | 33.1% / 81.2% |
+   | emission scaled by 0.01 | 32.2% / 87.8% |
+   | clipping range (0.1, 10000) changed to (100, 2000) | 32.2% / 82.7% |
+   | eye's base 0, and base 1 white (Ray Reconstruction) | 83.3%, 82.7% |
+   | **1024 px** | **77.3% / 92.9%** |
+
+   So it is not the estimator (the input keeps the light), not the length of
+   the history, not the magnitude of the highlight, not the depth guide's
+   distribution on a stage in centimetres, not the albedo guide, and not the
+   analytic-light guide defect once suspected here (with light geometry off,
+   the default, the camera cannot see a light). It moves with the feature's size
+   in pixels and nothing else tested. That is a property of NVIDIA's models, not
+   something hdClaude can supply a better input for; Ray Reconstruction, the
+   model built for path-traced input, loses a sixth of it at 256 px and a
+   fourteenth at 1024.
+
 5. **Resolved 2026-09-14: a crescent at every joint of an implicit curve.**
    *Cause:* `extend` generated a curve hit after checking only `tMin`, never
    that it was nearer than the hit already committed. At a joint, a ray that

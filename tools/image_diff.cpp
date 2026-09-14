@@ -62,7 +62,8 @@ int Usage()
     std::cerr << "Usage: hdClaudeImageDiff <baseline> <candidate> "
                  "[--rms <value>] [--worst <value>] "
                  "[--failed-fraction <value>] [--per-pixel <value>]\n"
-                 "       hdClaudeImageDiff --scan <image>\n";
+                 "       hdClaudeImageDiff --scan <image>\n"
+                 "       hdClaudeImageDiff --energy <reference> <candidate>\n";
     return 2;
 }
 
@@ -252,12 +253,87 @@ int Scan(const char* path)
     return pass ? 0 : 1;
 }
 
+/// Where a candidate's light went, against a reference of the same frame.
+///
+/// A diagnostic, not a gate, and it answers a question the gate cannot: a
+/// reconstruction that keeps a third of an image's light could be losing it in
+/// the highlights it clamps or across the dim frame around them, and those are
+/// different defects. So the reference's pixels are banded by their own
+/// luminance, a decade a band, and each band reports its share of the
+/// reference's light and how much of that the candidate kept at the same
+/// pixels. Rec.709 luminance of the linear values, and signed, so a gamut's
+/// negative components count as they are.
+int Energy(const char* referencePath, const char* candidatePath)
+{
+    Image reference;
+    Image candidate;
+    if (!Read(referencePath, &reference) || !Read(candidatePath, &candidate)) {
+        return 1;
+    }
+    if (reference.width != candidate.width ||
+        reference.height != candidate.height) {
+        std::cerr << "Resolution differs\n";
+        return 1;
+    }
+    const auto count =
+        static_cast<std::size_t>(reference.width) * reference.height;
+    const auto luminance = [](const Image& image, std::size_t pixel) {
+        const float* p = &image.pixels[pixel * 4];
+        return 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+    };
+
+    constexpr int kBands = 6;
+    const char* names[kBands] = {"below 0.001", "0.001 to 0.01", "0.01 to 0.1",
+                                 "0.1 to 1",    "1 to 10",       "10 and above"};
+    double referenceBand[kBands] = {};
+    double candidateBand[kBands] = {};
+    std::size_t pixelsBand[kBands] = {};
+    double referenceTotal = 0.0;
+    double candidateTotal = 0.0;
+    for (std::size_t pixel = 0; pixel < count; ++pixel) {
+        const double r = luminance(reference, pixel);
+        const double c = luminance(candidate, pixel);
+        if (!std::isfinite(r) || !std::isfinite(c)) {
+            continue;
+        }
+        int band = 0;
+        for (double edge = 0.001; band < kBands - 1 && r >= edge; edge *= 10.0) {
+            ++band;
+        }
+        referenceBand[band] += r;
+        candidateBand[band] += c;
+        ++pixelsBand[band];
+        referenceTotal += r;
+        candidateTotal += c;
+    }
+
+    std::cout << "  energy: candidate keeps "
+              << 100.0 * candidateTotal / std::max(referenceTotal, 1.0e-30)
+              << "% of the reference's light\n";
+    for (int band = 0; band < kBands; ++band) {
+        if (pixelsBand[band] == 0) {
+            continue;
+        }
+        std::cout << "    reference " << names[band] << ": " << pixelsBand[band]
+                  << " pixels, "
+                  << 100.0 * referenceBand[band] / std::max(referenceTotal, 1.0e-30)
+                  << "% of its light, kept "
+                  << 100.0 * candidateBand[band] /
+                         std::max(std::abs(referenceBand[band]), 1.0e-30)
+                  << "%\n";
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
 try {
     if (argc == 3 && std::string(argv[1]) == "--scan") {
         return Scan(argv[2]);
+    }
+    if (argc == 4 && std::string(argv[1]) == "--energy") {
+        return Energy(argv[2], argv[3]);
     }
     if (argc < 3) {
         return Usage();

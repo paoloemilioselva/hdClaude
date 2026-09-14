@@ -709,17 +709,30 @@ void HdClaudeRenderPass::_Execute(
     // distinct answer.
     if (reconstruction.on) {
         if (frame.reconstructed) {
-            char described[320];
+            // Which model ran, and the exposure only where it is an input:
+            // Ray Reconstruction takes none (Integration Guide 3.7), so a
+            // measured value printed beside it would describe nothing it read.
+            char exposure[96];
+            if (model == hdclaude::ReconstructionModel::RayReconstruction) {
+                std::snprintf(exposure, sizeof(exposure), "no exposure input");
+            } else {
+                std::snprintf(exposure, sizeof(exposure),
+                              "exposure %.4g (0 means the backend measures its "
+                              "own)",
+                              settings.reconstructionAutoExposure
+                                  ? 0.0
+                                  : double(tracer->LastReconstructionExposure()));
+            }
+            char described[360];
             std::snprintf(described, sizeof(described),
-                          "%s, %s, %ux%u -> %ux%u, preset \"%s\", exposure "
-                          "%.4g (0 means the backend measures its own)",
+                          "%s %s, %s, %ux%u -> %ux%u, preset \"%s\", %s",
                           frame.reconstructionBackend.c_str(),
+                          model == hdclaude::ReconstructionModel::RayReconstruction
+                              ? "Ray Reconstruction"
+                              : "Super Resolution",
                           reconstructionName.c_str(), frame.renderWidth,
                           frame.renderHeight, frame.width, frame.height,
-                          presetName.c_str(),
-                          settings.reconstructionAutoExposure
-                              ? 0.0
-                              : double(tracer->LastReconstructionExposure()));
+                          presetName.c_str(), exposure);
             if (_reportedBackend != described) {
                 _reportedBackend = described;
                 TF_STATUS("hdClaude: reconstructing with %s", described);

@@ -407,20 +407,18 @@ On the shader ball the loss is variance: DLSS rejects outliers against a
 neighbourhood, a one-sample path trace is largely outliers, and giving it more
 samples a frame removes the disagreement almost entirely.
 
-**On collectiveproject001 frame 1080 that explanation fails.** Sixty-seven per
-cent of the light is gone at 128 samples a frame, where the same measurement on
-the shader ball loses two parts in a thousand, and raising the sample count from
-8 to 128 recovers only six points. Whatever is happening there is not the
-estimator's noise and is not the exposure. It is open, and it is the thing to
-chase next; it was found because a scene lit only by an emissive shader makes it
-unmissable.
+**On collectiveproject001 frame 1080 that explanation fails**, and the loss is
+now located. Ninety-two per cent of that frame's light is in the character's
+emissive eye, thin rings two or three pixels thick at 256 px, and the frame
+handed to DLSS keeps 94% of those pixels' light. Super Resolution keeps 32% of
+it and Ray Reconstruction 83%; neither moves with 64 frames of history, with the
+emission scaled by a hundredth, with a clipping range that spreads the depth
+guide, or with the eye's albedo guide, and both recover at 1024 px, to 77% and
+93%. Both models attenuate very high-contrast features a few pixels across, and
+the fraction grows with the feature's size in pixels (roadmap, open question 4).
 
-One defect found by reading while chasing it, not yet fixed and not yet shown to
-be the cause: `extend.comp.glsl` encodes a camera ray that hits an analytic
-light as `record.x = -2 - light`, which is negative, and `guides.comp.glsl`
-treats every negative record as a miss -- far-plane depth and zero motion. A
-camera-visible `UsdLux` light is therefore handed to a reconstructor as
-background. collectiveproject001 has three rect lights.
+The analytic-light guide defect once listed here does not apply by default:
+with light geometry off, a camera ray cannot hit a `UsdLux` light at all.
 
 ## 6. Reference mode is untouched
 
