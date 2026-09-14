@@ -289,7 +289,8 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
         // Scaled by the same probability the sampler selects reflection with,
         // so that f/pdf is the correct one-sample estimator of the combined
         // reflect/refract lobe rather than of the reflection lobe alone.
-        float G1V = mx_ggx_smith_G1(NdotV, avgAlpha);
+        float G1V = mx_pt_ggx_smith_G1_anisotropic(
+            vec3(dot(V, Xa), dot(V, Ya), NdotV), safeAlpha);
         float reflectProbability =
             choosesLobe ? clamp(mx_pt_luminance_weight(F), 0.0, 1.0) : 1.0;
         bsdf.pdf = dot(N, L) > 0.0
@@ -373,7 +374,8 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
         bsdf.response = fresnelWeight * btdf * safeTint * weight;
 
         // ---- hdClaude: density -----------------------------------------------
-        float G1V = mx_ggx_smith_G1(NdotV, avgAlpha);
+        float G1V = mx_pt_ggx_smith_G1_anisotropic(
+            vec3(dot(V, Xa), dot(V, Ya), NdotV), safeAlpha);
         float pdfH = mx_ggx_NDF(Hlocal, safeAlpha) * G1V * abs(VdotH) /
                      max(NdotV, M_FLOAT_EPS);
         float jacobian = mx_pt_refraction_jacobian(VdotH, LdotH, etaInv);

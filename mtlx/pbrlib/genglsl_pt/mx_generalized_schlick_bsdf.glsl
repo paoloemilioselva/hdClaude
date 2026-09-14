@@ -160,7 +160,8 @@ void mx_generalized_schlick_bsdf(ClosureData closureData, float weight, vec3 col
         bsdf.response = D * F * G * comp * closureData.occlusion * weight / (4.0 * NdotV);
 
         // ---- hdClaude: density and reconstruction guides --------------------
-        float G1V = mx_ggx_smith_G1(NdotV, avgAlpha);
+        float G1V = mx_pt_ggx_smith_G1_anisotropic(
+            vec3(dot(V, Xa), dot(V, Ya), NdotV), safeAlpha);
         float reflectProbability =
             transmissive ? clamp(mx_pt_luminance_weight(F), 0.05, 0.95) : 1.0;
         bsdf.pdf = dot(N, L) > 0.0
@@ -219,7 +220,8 @@ void mx_generalized_schlick_bsdf(ClosureData closureData, float weight, vec3 col
 
         bsdf.response = (vec3(1.0) - F) * btdf * weight;
 
-        float G1V = mx_ggx_smith_G1(NdotV, avgAlpha);
+        float G1V = mx_pt_ggx_smith_G1_anisotropic(
+            vec3(dot(V, Xa), dot(V, Ya), NdotV), safeAlpha);
         float pdfH = mx_ggx_NDF(Hlocal, safeAlpha) * G1V * abs(VdotH) /
                      max(NdotV, M_FLOAT_EPS);
         float jacobian = mx_pt_refraction_jacobian(VdotH, LdotH, etaInv);

@@ -93,6 +93,32 @@ float mx_pt_uniform_sphere_pdf()
 //
 // Expressed in terms of MaterialX's own mx_ggx_NDF and mx_ggx_smith_G1, so it
 // cannot disagree with the distribution the sampler actually draws from.
+// Smith's masking G1 for the view, for the anisotropic distribution the
+// visible-normal sampler actually draws from.
+//
+// The density of a VNDF sample is D_V(H) = G1(V) max(0, V.H) D(H) / N.V (Heitz
+// 2018), and G1 there has to be the masking of *that* distribution. MaterialX's
+// `mx_ggx_smith_G1(NdotV, alpha)` takes one roughness, and the closures passed
+// it the geometric mean of the two; the sampler, meanwhile, stretches by each
+// axis separately. For an isotropic lobe the two are the same formula. For an
+// anisotropic one they are not: at 34 degrees along the smooth axis of a 0.2 by
+// 0.6 lobe, 0.9953 against 0.9863, so every reported density was 0.9% short of
+// the sampler's, every weight 0.9% high, and the furnace measured exactly that.
+//
+// `V` is in the tangent frame the sampler uses: x along the tangent, z along
+// the normal. The response keeps MaterialX's own masking-shadowing, which is
+// the model; only the density has to be the sampler's.
+float mx_pt_ggx_smith_G1_anisotropic(vec3 V, vec2 alpha)
+{
+    float cos2 = V.z * V.z;
+    if (cos2 <= 0.0)
+    {
+        return 0.0;
+    }
+    float a2tan2 = (alpha.x * alpha.x * V.x * V.x + alpha.y * alpha.y * V.y * V.y) / cos2;
+    return 2.0 / (1.0 + sqrt(1.0 + a2tan2));
+}
+
 float mx_ggx_VNDF_reflection_PDF(vec3 H, vec2 alpha, float G1V, float NdotV)
 {
     return mx_ggx_NDF(H, alpha) * G1V / (4.0 * NdotV);

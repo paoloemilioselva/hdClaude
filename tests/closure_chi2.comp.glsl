@@ -1,24 +1,37 @@
-// Chi-squared harness for a generated MaterialX material.
+// Distribution and furnace harness for a generated MaterialX material.
 //
 // Appended to a generated material module, like closure_validation.comp.glsl,
-// and answering the one question that harness cannot: whether the directions a
-// closure *samples* are distributed as the density it *reports*. The furnace
-// and the density integral are both satisfied by a sampler and a density that
-// agree on totals and disagree about where the mass is; a chi-squared test over
-// the sphere is not (docs/materialx-codegen.md 8).
+// and answering the two questions that harness cannot put exactly.
 //
-// No accumulation happens here. Each invocation writes only its own slot, so
-// there is nothing to race, nothing to overflow, and the host does the binning
-// and the statistics in double precision.
+// Chi-squared: whether the directions a closure *samples* are distributed as the
+// density it *reports*. The old furnace and density integral are both satisfied
+// by a sampler and a density that agree on totals and disagree about where the
+// mass is; a test over cells of the sphere is not (docs/materialx-codegen.md 8,
+// item 3).
 //
-// mode 0  sample. Slot i gets the sampled direction and whether the renderer
-//         would keep it: values[4i..4i+2] = L, values[4i+3] = 1 if the density
-//         at L is finite and positive, else 0. A kept sample is exactly one
-//         `shade` would weight by f/pdf; the rest are the ones it discards.
+// Furnace: whether the importance-sampled estimate of the directional albedo is
+// the albedo -- the integral of the response over the sphere, which the same
+// pass evaluates by quadrature (item 2). The two agree only if the weights are
+// right *and* nothing the closure responds to lies outside what the renderer
+// keeps, which is the half chi-squared cannot see: a lobe that discards
+// directions it responds in has a sampler and density in perfect agreement and
+// loses the light anyway.
 //
-// mode 1  density. Slot i is one quadrature point inside one (theta, phi)
-//         cell: values[i] = pdf(L) * sin(theta), which the host multiplies by
-//         the point's share of the cell's parameter area.
+// No accumulation happens here. Each invocation writes only its own slots, so
+// there is nothing to race, nothing to overflow and nothing quantised, and the
+// host does the binning and the statistics in double precision. The older
+// harness accumulates in 1/512 fixed point, which truncates every sample and is
+// a bias of about a tenth of a per cent: too close to a 0.5% gate.
+//
+// mode 0  sample. Stride 5: values[5i..5i+2] = L; values[5i+3] = 1 if the
+//         density at L is finite and positive, else 0 -- a kept sample is
+//         exactly one `shade` would weight, and the rest are the ones it
+//         discards; values[5i+4] = the weight f / pdf of a kept sample, the
+//         mean of the response's three lanes, else 0.
+//
+// mode 1  quadrature. Stride 2, one entry per point inside one (theta, phi)
+//         cell: values[2i] = pdf(L) sin(theta), values[2i+1] = f(L) sin(theta),
+//         each multiplied by the host by the point's share of the cell's area.
 
 layout(local_size_x = 64) in;
 
@@ -50,15 +63,21 @@ float randomFloat(inout uint state)
     return float(pcg(state)) * (1.0 / 4294967296.0);
 }
 
-// The density at `L`, asked the way `shade` asks it: a direction on the view's
-// side of the surface is a reflection and anything else a transmission.
-float densityAt(vec3 L, vec3 V, vec3 N, vec3 P)
+// Evaluate the closure at `L` the way `shade` asks -- a direction on the view's
+// side of the surface is a reflection and anything else a transmission -- and
+// return the density; the response is left in `hdclaude_bsdf`.
+float evaluateAt(vec3 L, vec3 V, vec3 N, vec3 P)
 {
     int closure = dot(L, N) * dot(V, N) > 0.0 ? CLOSURE_TYPE_REFLECTION
                                                : CLOSURE_TYPE_TRANSMISSION;
     ClosureData data = ClosureData(closure, L, V, N, P, 1.0);
     hdclaude_material_shade(data);
     return hdclaude_bsdf.pdf;
+}
+
+bool usable(float value)
+{
+    return !isnan(value) && !isinf(value);
 }
 
 void main()
@@ -93,25 +112,29 @@ void main()
         hdclaude_material_shade(sampleData);
         vec3 L = hdclaude_bsdf.sampledL;
 
-        uint base = index * 4u;
+        uint base = index * 5u;
         results.values[base + 3u] = 0.0;
+        results.values[base + 4u] = 0.0;
         if (dot(L, L) > 0.5)
         {
             L = normalize(L);
-            float pdf = densityAt(L, V, N, P);
+            float pdf = evaluateAt(L, V, N, P);
+            vec3 f = hdclaude_bsdf.response;
             results.values[base + 0u] = L.x;
             results.values[base + 1u] = L.y;
             results.values[base + 2u] = L.z;
-            if (!isnan(pdf) && !isinf(pdf) && pdf > 0.0)
+            if (usable(pdf) && pdf > 0.0)
             {
                 results.values[base + 3u] = 1.0;
+                float weight = (f.x + f.y + f.z) / (3.0 * pdf);
+                results.values[base + 4u] = usable(weight) ? weight : 0.0;
             }
         }
         return;
     }
 
-    // Density at one quadrature point: a regular sub-grid inside each cell,
-    // at the centres of its sub-cells.
+    // One quadrature point: a regular sub-grid inside each cell, at the centres
+    // of its sub-cells.
     uint perCell = params.subdivisions * params.subdivisions;
     uint cell = index / perCell;
     uint point = index % perCell;
@@ -128,7 +151,9 @@ void main()
     float s = sin(theta);
     vec3 L = vec3(s * cos(phi), s * sin(phi), cos(theta));
 
-    float pdf = densityAt(L, V, N, P);
-    results.values[index] =
-        (!isnan(pdf) && !isinf(pdf) && pdf > 0.0) ? pdf * s : 0.0;
+    float pdf = evaluateAt(L, V, N, P);
+    vec3 f = hdclaude_bsdf.response;
+    float response = (f.x + f.y + f.z) / 3.0;
+    results.values[2u * index] = (usable(pdf) && pdf > 0.0) ? pdf * s : 0.0;
+    results.values[2u * index + 1u] = usable(response) ? response * s : 0.0;
 }

@@ -163,6 +163,12 @@ struct ChiSquareHistograms {
     std::vector<double> observed;
     std::vector<double> expected;
     std::uint32_t kept = 0;
+    /// The directional albedo two ways: the importance-sampled mean of f / pdf
+    /// over every sample, with its standard error, and the response integrated
+    /// by the same quadrature as the density.
+    double sampledAlbedo = 0.0;
+    double sampledAlbedoError = 0.0;
+    double integratedAlbedo = 0.0;
     std::string error;
 };
 
@@ -194,7 +200,8 @@ class Validator {
     /// density, so the two agree in every cell, not only in total.
     ChiSquareHistograms MeasureDistribution(mx::DocumentPtr doc,
                                             const std::string& name,
-                                            float viewTheta)
+                                            float viewTheta,
+                                            std::uint32_t furnaceBatches = 1)
     {
         ChiSquareHistograms result;
 
@@ -206,11 +213,12 @@ class Validator {
         const std::uint32_t cells = kChiThetaBins * kChiPhiBins;
         const std::uint32_t densityPoints =
             cells * kChiSubdivisions * kChiSubdivisions;
-        const std::uint32_t sampleSlots = kSampleCount * 4;
+        const std::uint32_t sampleSlots = kSampleCount * 5;
+        const std::uint32_t densitySlots = densityPoints * 2;
 
         BufferDescription description;
         description.size =
-            std::uint64_t(std::max(sampleSlots, densityPoints)) * sizeof(float);
+            std::uint64_t(std::max(sampleSlots, densitySlots)) * sizeof(float);
         description.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         description.domain = BufferDomain::HostReadback;
         description.debugName = "chi2.values";
@@ -240,10 +248,11 @@ class Validator {
         pipeline.WriteBuffer(set, 1, materialUniforms,
                              VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
 
-        const auto run = [&](std::uint32_t mode, std::uint32_t count) {
+        const auto run = [&](std::uint32_t mode, std::uint32_t count,
+                             std::uint32_t seed) {
             std::memset(values.MappedData(), 0,
                         static_cast<std::size_t>(description.size));
-            ChiSquareParams push{count,         0x2545F491u,  viewTheta,
+            ChiSquareParams push{count,         seed,          viewTheta,
                                  mode,          kChiThetaBins, kChiPhiBins,
                                  kChiSubdivisions, 0u};
             const std::uint32_t groups = (count + 63) / 64;
@@ -260,40 +269,68 @@ class Validator {
         // --- Observed ---------------------------------------------------------
         result.observed.assign(cells, 0.0);
         {
-            const float* slots = run(0, kSampleCount);
-            for (std::uint32_t i = 0; i < kSampleCount; ++i) {
-                const float* s = slots + std::size_t(i) * 4;
-                if (s[3] == 0.0f) {
+            // Batch 0 is the chi-squared sample and every batch feeds the
+            // furnace, which a low-albedo lobe needs more of than the
+            // histogram does to resolve half a per cent.
+            double weightSum = 0.0;
+            double weightSquares = 0.0;
+            for (std::uint32_t batch = 0; batch < furnaceBatches; ++batch) {
+                const float* slots =
+                    run(0, kSampleCount, 0x2545F491u + batch * 0x9E3779B9u);
+                // Every sample counts toward the furnace's mean, discarded ones
+                // as zero, which is what they contribute to a render.
+                for (std::uint32_t i = 0; i < kSampleCount; ++i) {
+                    const double weight = double(slots[std::size_t(i) * 5 + 4]);
+                    weightSum += weight;
+                    weightSquares += weight * weight;
+                }
+                if (batch != 0) {
                     continue;
                 }
-                const double z = std::clamp(double(s[2]), -1.0, 1.0);
-                const double theta = std::acos(z);
-                double phi = std::atan2(double(s[1]), double(s[0]));
-                if (phi < 0.0) {
-                    phi += 2.0 * kPi;
+                for (std::uint32_t i = 0; i < kSampleCount; ++i) {
+                    const float* s = slots + std::size_t(i) * 5;
+                    if (s[3] == 0.0f) {
+                        continue;
+                    }
+                    const double z = std::clamp(double(s[2]), -1.0, 1.0);
+                    const double theta = std::acos(z);
+                    double phi = std::atan2(double(s[1]), double(s[0]));
+                    if (phi < 0.0) {
+                        phi += 2.0 * kPi;
+                    }
+                    const std::uint32_t t = std::min(
+                        std::uint32_t(theta / thetaStep), kChiThetaBins - 1);
+                    const std::uint32_t p =
+                        std::min(std::uint32_t(phi / phiStep), kChiPhiBins - 1);
+                    result.observed[t * kChiPhiBins + p] += 1.0;
+                    ++result.kept;
                 }
-                const std::uint32_t t = std::min(
-                    std::uint32_t(theta / thetaStep), kChiThetaBins - 1);
-                const std::uint32_t p =
-                    std::min(std::uint32_t(phi / phiStep), kChiPhiBins - 1);
-                result.observed[t * kChiPhiBins + p] += 1.0;
-                ++result.kept;
             }
+            const double n = double(kSampleCount) * furnaceBatches;
+            result.sampledAlbedo = weightSum / n;
+            result.sampledAlbedoError = std::sqrt(
+                std::max(0.0, weightSquares / n -
+                                  result.sampledAlbedo * result.sampledAlbedo) /
+                n);
         }
 
         // --- Expected ---------------------------------------------------------
         result.expected.assign(cells, 0.0);
         {
-            const float* slots = run(1, densityPoints);
+            const float* slots = run(1, densityPoints, 0u);
             const std::uint32_t perCell = kChiSubdivisions * kChiSubdivisions;
             const double pointArea = thetaStep * phiStep / perCell;
+            double albedo = 0.0;
             for (std::uint32_t c = 0; c < cells; ++c) {
                 double integral = 0.0;
                 for (std::uint32_t k = 0; k < perCell; ++k) {
-                    integral += double(slots[std::size_t(c) * perCell + k]);
+                    const std::size_t point = std::size_t(c) * perCell + k;
+                    integral += double(slots[2 * point]);
+                    albedo += double(slots[2 * point + 1]);
                 }
                 result.expected[c] = integral * pointArea * kSampleCount;
             }
+            result.integratedAlbedo = albedo * pointArea;
         }
 
         result.ok = true;
@@ -770,6 +807,40 @@ void CheckDistribution(const char* label, const ChiSquareHistograms& h,
     }
 }
 
+/// Item 2: the importance-sampled albedo is the albedo, to half a per cent.
+///
+/// The reference is the response itself integrated over the sphere by
+/// quadrature -- the model as MaterialX defines it, energy compensation and
+/// all, evaluated by the same generated code rather than a second transcription
+/// that could disagree with it for reasons of its own. Where a closed form
+/// exists it checks that reference too, so the instrument is not trusted on its
+/// own word.
+///
+/// The measurement has to be able to resolve the gate before it can pass it,
+/// so the sampled estimate's standard error is held to a sixth of the
+/// tolerance first. A noisier estimate is a failure of the test, not a pass.
+void CheckFurnace(const char* label, const ChiSquareHistograms& h,
+                  double closedForm)
+{
+    if (!h.ok) return;
+    constexpr double kTolerance = 0.005;
+
+    const double reference = h.integratedAlbedo;
+    const double difference = h.sampledAlbedo - reference;
+    std::printf("  %-30s furnace %.5f +- %.5f  integrated %.5f  (%+.3f%%)\n",
+                label, h.sampledAlbedo, h.sampledAlbedoError, reference,
+                reference > 0.0 ? 100.0 * difference / reference : 0.0);
+
+    CHECK(reference > 0.0);
+    if (!(reference > 0.0)) return;
+    CHECK(3.0 * h.sampledAlbedoError <= 0.5 * kTolerance * reference);
+    CHECK(std::abs(difference) <= kTolerance * reference);
+    if (closedForm >= 0.0) {
+        CHECK_NEAR(reference, closedForm, kTolerance * closedForm);
+        CHECK_NEAR(h.sampledAlbedo, closedForm, kTolerance * closedForm);
+    }
+}
+
 }  // namespace
 
 int main()
@@ -1143,10 +1214,16 @@ int main()
         CHECK_NEAR(RegularizedGammaQ(50.0, 0.5 * 124.342113), 0.05, 1.0e-5);
         {
             using Builder = std::function<mx::NodePtr(mx::DocumentPtr)>;
+            constexpr double kNoClosedForm = -1.0;
             struct Case {
                 const char* label;
                 float viewTheta;
                 Builder build;
+                // Whether the furnace is held to 0.5% (item 2), and an albedo
+                // known without measuring anything, where there is one.
+                bool furnace = true;
+                double closedForm = kNoClosedForm;
+                std::uint32_t furnaceBatches = 1;
             };
             const auto diffuse = [](mx::DocumentPtr doc, const char* name,
                                     float grey) {
@@ -1174,6 +1251,13 @@ int main()
             };
 
             const Case cases[] = {
+                {"oren_nayar (smooth)", 0.6f,
+                 [&](mx::DocumentPtr doc) {
+                     mx::NodePtr n = diffuse(doc, "xOs", 1.0f);
+                     SetValue(n, "roughness", 0.0f);
+                     return n;
+                 },
+                 true, 1.0},
                 {"oren_nayar (rough 0.5)", 0.6f,
                  [&](mx::DocumentPtr doc) {
                      mx::NodePtr n = diffuse(doc, "xOn", 1.0f);
@@ -1212,7 +1296,11 @@ int main()
                      SetValue(n, "color", mx::Color3(1.0f, 1.0f, 1.0f));
                      SetValue(n, "roughness", 0.3f);
                      return n;
-                 }},
+                 },
+                 // Cosine-sampled under a lobe that reflects a tenth of the
+                 // light, so a single batch leaves a standard error of a tenth
+                 // of a per cent; eight bring it inside what 0.5% can resolve.
+                 true, kNoClosedForm, 8},
                 {"mix(conductor, diffuse)", 0.6f,
                  [&](mx::DocumentPtr doc) {
                      mx::NodePtr m = AddNode(doc, "mix", "xMix", "BSDF");
@@ -1272,18 +1360,26 @@ int main()
                      SetValue(n, "weight", 1.0f);
                      SetValue(n, "color", mx::Color3(1.0f, 1.0f, 1.0f));
                      return n;
-                 }},
+                 },
+                 true, 1.0},
                 {"subsurface", 0.6f,
                  [&](mx::DocumentPtr doc) {
                      mx::NodePtr n = AddNode(doc, "subsurface_bsdf", "xSs", "BSDF");
                      SetValue(n, "weight", 1.0f);
                      SetValue(n, "color", mx::Color3(0.8f, 0.8f, 0.8f));
                      return n;
-                 }},
+                 },
+                 // Not in item 2's list, and not a furnace in the same sense:
+                 // this lobe is the entry into a medium whose walk decides the
+                 // albedo, which the render suite's sphere furnaces measure.
+                 false},
                 {"chiang_hair", 0.6f,
                  [&](mx::DocumentPtr doc) {
                      return AddNode(doc, "chiang_hair_bsdf", "xHa", "BSDF");
-                 }},
+                 },
+                 // Not in item 2's list. Sampled uniformly over the sphere, so
+                 // its estimate is too noisy at this count to resolve 0.5%.
+                 false},
             };
 
             // One per cent over the whole set, shared between the cases.
@@ -1292,11 +1388,13 @@ int main()
             for (const Case& c : cases) {
                 mx::DocumentPtr doc = validator.NewDocument();
                 mx::NodePtr bsdf = c.build(doc);
-                CheckDistribution(
-                    c.label,
-                    validator.MeasureDistribution(WrapInMaterial(doc, bsdf),
-                                                  "vChi2", c.viewTheta),
-                    significance);
+                const ChiSquareHistograms h = validator.MeasureDistribution(
+                    WrapInMaterial(doc, bsdf), "vChi2", c.viewTheta,
+                    c.furnaceBatches);
+                CheckDistribution(c.label, h, significance);
+                if (c.furnace) {
+                    CheckFurnace(c.label, h, c.closedForm);
+                }
             }
         }
 

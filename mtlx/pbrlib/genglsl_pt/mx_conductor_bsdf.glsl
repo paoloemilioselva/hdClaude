@@ -112,7 +112,8 @@ void mx_conductor_bsdf(ClosureData closureData, float weight, vec3 ior_n, vec3 i
         // The density is evaluated on the same microfacet normal and the same
         // tangent frame the response above used, from MaterialX's own NDF and
         // shadowing term. That is what keeps sampling and shading in agreement.
-        float G1V = mx_ggx_smith_G1(NdotV, avgAlpha);
+        float G1V = mx_pt_ggx_smith_G1_anisotropic(
+            vec3(dot(V, Xa), dot(V, Ya), NdotV), safeAlpha);
         bsdf.pdf = dot(N, L) > 0.0
                        ? mx_ggx_VNDF_reflection_PDF(Ht, safeAlpha, G1V, NdotV)
                        : 0.0;
