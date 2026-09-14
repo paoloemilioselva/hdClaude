@@ -170,6 +170,11 @@ struct RenderSettings {
     /// two of them reproducible.
     ReconstructionPreset reconstructionPreset = ReconstructionPreset::Default;
 
+    /// Which reconstruction runs: Super Resolution, or Ray Reconstruction,
+    /// which denoises as it upscales and reads the reconstruction guides.
+    /// Chosen when the backend is built, so changing it rebuilds.
+    ReconstructionModel reconstructionModel = ReconstructionModel::SuperResolution;
+
     /// Let the backend estimate the frame's exposure instead of being told it.
     ///
     /// Off, because the DLSS guide calls the exposure parameter the preferred
@@ -733,6 +738,9 @@ class PathTracer {
     VulkanImage _reconstructColor;
     VulkanImage _reconstructDepth;
     VulkanImage _reconstructMotion;
+    VulkanImage _reconstructNormalRoughness;
+    VulkanImage _reconstructDiffuseAlbedo;
+    VulkanImage _reconstructSpecularAlbedo;
     VulkanImage _reconstructOutput;
     VulkanBuffer _reconstructReadback;
     /// One luminance partial per workgroup of the packing kernel, and the 1x1
@@ -750,6 +758,9 @@ class PathTracer {
     /// reconstruction on or off changes what the extents mean, which is a
     /// history reset even when nothing else moved.
     bool _previousReconstructed = false;
+    /// What the previous frame's reconstruction was built as, so a rebuild at an
+    /// unchanged extent is still reported as a history reset.
+    ReconstructionResolution _previousReconstructionResolution;
 
     // Path state, sized to the current resolution.
     VulkanBuffer _rayReadback;

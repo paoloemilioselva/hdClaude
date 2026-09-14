@@ -1199,6 +1199,7 @@ PathTracer::ReconstructionPlan PathTracer::PlanReconstruction(
     plan.resolution.outputHeight = description.height;
     plan.resolution.quality = description.settings.reconstructionQuality;
     plan.resolution.preset = description.settings.reconstructionPreset;
+    plan.resolution.model = description.settings.reconstructionModel;
 
     // Reference frames never reach a backend, and the test is here rather than
     // at the call site so there is one place it can be read from
@@ -1228,7 +1229,8 @@ PathTracer::ReconstructionPlan PathTracer::PlanReconstruction(
     // for either wastes work or hands its model less than it expects.
     const ReconstructionSizing sizing = _reconstruction->QuerySizing(
         description.width, description.height,
-        description.settings.reconstructionQuality);
+        description.settings.reconstructionQuality,
+        description.settings.reconstructionModel);
     if (!sizing.valid || sizing.renderWidth == 0 || sizing.renderHeight == 0) {
         _reconstructionUnavailable = sizing.reason.empty()
                                          ? "backend declined these extents"
@@ -1253,7 +1255,8 @@ bool PathTracer::EnsureReconstructionImages(
         _reconstructionResolution.outputWidth == resolution.outputWidth &&
         _reconstructionResolution.outputHeight == resolution.outputHeight &&
         _reconstructionResolution.quality == resolution.quality &&
-        _reconstructionResolution.preset == resolution.preset;
+        _reconstructionResolution.preset == resolution.preset &&
+        _reconstructionResolution.model == resolution.model;
     if (unchanged) {
         return true;
     }
@@ -1277,6 +1280,10 @@ bool PathTracer::EnsureReconstructionImages(
         add(4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, "depthImage");
         add(5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, "motionImage");
         add(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, "partials");
+        add(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, "guideSurface");
+        add(8, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, "normalRoughnessImage");
+        add(9, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, "diffuseAlbedoImage");
+        add(10, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, "specularAlbedoImage");
 
         const std::string source =
             LoadKernel(_shaderDirectory, "reconstruct_inputs.comp.glsl");
@@ -1377,6 +1384,15 @@ bool PathTracer::EnsureReconstructionImages(
     _reconstructMotion =
         makeImage(resolution.renderWidth, resolution.renderHeight,
                   VK_FORMAT_R16G16_SFLOAT, kInputUsage, "reconstruct.motion");
+    _reconstructNormalRoughness = makeImage(
+        resolution.renderWidth, resolution.renderHeight,
+        VK_FORMAT_R16G16B16A16_SFLOAT, kInputUsage, "reconstruct.normalRoughness");
+    _reconstructDiffuseAlbedo = makeImage(
+        resolution.renderWidth, resolution.renderHeight,
+        VK_FORMAT_R16G16B16A16_SFLOAT, kInputUsage, "reconstruct.diffuseAlbedo");
+    _reconstructSpecularAlbedo = makeImage(
+        resolution.renderWidth, resolution.renderHeight,
+        VK_FORMAT_R16G16B16A16_SFLOAT, kInputUsage, "reconstruct.specularAlbedo");
     // Storage, because NGX refuses a read-write resource whose image was not
     // created with it; transfer-destination, because DLSS clears the output
     // itself before writing; transfer-source, because this is where the frame
@@ -1429,6 +1445,12 @@ bool PathTracer::EnsureReconstructionImages(
     _reconstructPack.WriteStorageImage(_reconstructSet, 4, _reconstructDepth);
     _reconstructPack.WriteStorageImage(_reconstructSet, 5, _reconstructMotion);
     _reconstructPack.WriteBuffer(_reconstructSet, 6, _reconstructLuminance);
+    _reconstructPack.WriteStorageImage(_reconstructSet, 8,
+                                       _reconstructNormalRoughness);
+    _reconstructPack.WriteStorageImage(_reconstructSet, 9,
+                                       _reconstructDiffuseAlbedo);
+    _reconstructPack.WriteStorageImage(_reconstructSet, 10,
+                                       _reconstructSpecularAlbedo);
     _reconstructExposure.WriteBuffer(_reconstructExposureSet, 0,
                                      _reconstructLuminance);
     _reconstructExposure.WriteStorageImage(_reconstructExposureSet, 1,
@@ -1471,6 +1493,7 @@ std::vector<float> PathTracer::Reconstruct(
     _reconstructPack.WriteBuffer(_reconstructSet, 0, _accumulation);
     _reconstructPack.WriteBuffer(_reconstructSet, 1, slot.guideDepth);
     _reconstructPack.WriteBuffer(_reconstructSet, 2, slot.guideMotion);
+    _reconstructPack.WriteBuffer(_reconstructSet, 7, slot.guideSurface);
 
     const std::uint32_t extent[2] = {resolution.renderWidth,
                                      resolution.renderHeight};
@@ -1491,6 +1514,9 @@ std::vector<float> PathTracer::Reconstruct(
     frame.depth = describe(_reconstructDepth);
     frame.motion = describe(_reconstructMotion);
     frame.output = describe(_reconstructOutput);
+    frame.normalRoughness = describe(_reconstructNormalRoughness);
+    frame.diffuseAlbedo = describe(_reconstructDiffuseAlbedo);
+    frame.specularAlbedo = describe(_reconstructSpecularAlbedo);
     if (resolution.exposure == ReconstructionExposure::Measured) {
         frame.exposure = describe(_reconstructExposureImage);
     }
@@ -1508,7 +1534,8 @@ std::vector<float> PathTracer::Reconstruct(
         // written in.
         for (const VulkanImage* image :
              {&_reconstructColor, &_reconstructDepth, &_reconstructMotion,
-              &_reconstructExposureImage}) {
+              &_reconstructExposureImage, &_reconstructNormalRoughness,
+              &_reconstructDiffuseAlbedo, &_reconstructSpecularAlbedo}) {
             image->RecordBarrier(command, VK_IMAGE_LAYOUT_UNDEFINED,
                                  VK_IMAGE_LAYOUT_GENERAL,
                                  VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
@@ -1550,7 +1577,8 @@ std::vector<float> PathTracer::Reconstruct(
         // and so names every stage.
         for (const VulkanImage* image :
              {&_reconstructColor, &_reconstructDepth, &_reconstructMotion,
-              &_reconstructExposureImage}) {
+              &_reconstructExposureImage, &_reconstructNormalRoughness,
+              &_reconstructDiffuseAlbedo, &_reconstructSpecularAlbedo}) {
             image->RecordBarrier(command, VK_IMAGE_LAYOUT_GENERAL,
                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1640,9 +1668,20 @@ FrameHandle PathTracer::BeginFrame(const FrameDescription& description)
     // below -- the invalidation, the trace, the guides -- is in those extents.
     // Only the image that comes out is in the requested ones.
     const ReconstructionPlan plan = PlanReconstruction(description);
+    // A backend that turned on or off, or one rebuilt as a different model,
+    // preset or quality -- each is a feature with no history, even at an
+    // unchanged extent. Only the extent used to be noticed, through the resize,
+    // so switching Super Resolution to Ray Reconstruction at one size reset the
+    // backend's history without the frame saying so.
     const bool reconstructionChanged =
-        _hasPreviousFrame && plan.active != _previousReconstructed;
+        _hasPreviousFrame &&
+        (plan.active != _previousReconstructed ||
+         (plan.active &&
+          (plan.resolution.model != _previousReconstructionResolution.model ||
+           plan.resolution.preset != _previousReconstructionResolution.preset ||
+           plan.resolution.quality != _previousReconstructionResolution.quality)));
     _previousReconstructed = plan.active;
+    _previousReconstructionResolution = plan.resolution;
 
     FrameDescription traced = description;
     traced.width = plan.resolution.renderWidth;

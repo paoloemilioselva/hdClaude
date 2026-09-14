@@ -140,6 +140,7 @@ struct VulkanContext::Impl {
 
     mutable std::mutex diagnosticMutex;
     std::string lastValidationError;
+    std::string lastThirdPartyValidationError;
 };
 
 namespace {
@@ -162,12 +163,46 @@ VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(
     const bool isWarning =
         (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0;
 
+    // Whether the finding is entirely inside NVIDIA's NGX runtime.
+    //
+    // NGX records into the command buffer it is handed, names every resource
+    // it allocates `nv.ngx.*`, and opens a debug label of the same prefix
+    // around what it records. A message qualifies only when all three agree:
+    // the innermost label is NGX's, and every object it names other than the
+    // command buffer -- which is hdClaude's, lent to NGX -- is NGX's own. A
+    // finding that touches one of hdClaude's images or buffers does not
+    // qualify and fails the gate as any other does.
+    //
+    // Counted and printed in full rather than silenced: the gate cannot be made
+    // to pass by a defect hdClaude cannot fix, and it must not stop saying the
+    // defect is there. The first were two WRITE_AFTER_WRITE hazards inside Ray
+    // Reconstruction's own Evaluate, on its first evaluation, DLSS 310.9.1.
+    const auto startsWithNgx = [](const char* name) {
+        return name != nullptr && std::strncmp(name, "nv.ngx.", 7) == 0;
+    };
+    bool thirdParty = data->cmdBufLabelCount > 0 &&
+                      startsWithNgx(data->pCmdBufLabels[0].pLabelName);
+    bool namesAnyResource = false;
+    for (uint32_t i = 0; thirdParty && i < data->objectCount; ++i) {
+        if (data->pObjects[i].objectType == VK_OBJECT_TYPE_COMMAND_BUFFER) {
+            continue;
+        }
+        namesAnyResource = true;
+        thirdParty = startsWithNgx(data->pObjects[i].pObjectName);
+    }
+    thirdParty = thirdParty && namesAnyResource;
+
     if (isError || isWarning) {
-        std::fprintf(stderr, "[vulkan %s] %s\n", isError ? "error" : "warning",
+        std::fprintf(stderr, "[vulkan %s%s] %s\n", isError ? "error" : "warning",
+                     thirdParty ? ", inside NGX" : "",
                      data->pMessage ? data->pMessage : "(no message)");
     }
-    context->NoteValidationMessage(isError, isWarning,
+    context->NoteValidationMessage(isError && !thirdParty, isWarning,
                                    data->pMessage ? data->pMessage : "");
+    if (isError && thirdParty) {
+        context->NoteThirdPartyValidationError(data->pMessage ? data->pMessage
+                                                              : "");
+    }
     return VK_FALSE;
 }
 
@@ -185,6 +220,19 @@ void VulkanContext::NoteValidationMessage(bool isError, bool isWarning,
     }
 }
 
+void VulkanContext::NoteThirdPartyValidationError(const char* message) const
+{
+    _thirdPartyValidationErrors.fetch_add(1, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(_impl->diagnosticMutex);
+    _impl->lastThirdPartyValidationError = message;
+}
+
+std::string VulkanContext::LastThirdPartyValidationError() const
+{
+    std::lock_guard<std::mutex> lock(_impl->diagnosticMutex);
+    return _impl->lastThirdPartyValidationError;
+}
+
 std::string VulkanContext::LastValidationError() const
 {
     std::lock_guard<std::mutex> lock(_impl->diagnosticMutex);
@@ -195,8 +243,10 @@ void VulkanContext::ResetValidationCounters()
 {
     _validationErrors.store(0, std::memory_order_relaxed);
     _validationWarnings.store(0, std::memory_order_relaxed);
+    _thirdPartyValidationErrors.store(0, std::memory_order_relaxed);
     std::lock_guard<std::mutex> lock(_impl->diagnosticMutex);
     _impl->lastValidationError.clear();
+    _impl->lastThirdPartyValidationError.clear();
 }
 
 void VulkanContext::Check(VkResult result, const char* context) const

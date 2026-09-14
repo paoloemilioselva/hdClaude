@@ -26,6 +26,7 @@
 #include <nvsdk_ngx_helpers.h>
 #include <nvsdk_ngx_helpers_vk.h>
 #include <nvsdk_ngx_defs_dlssd.h>
+#include <nvsdk_ngx_helpers_dlssd_vk.h>
 
 #include <string>
 #endif
@@ -340,6 +341,98 @@ const char* PresetParameter(ReconstructionQuality quality)
     return NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA;
 }
 
+/// A preset as Ray Reconstruction's letter.
+///
+/// Ray Reconstruction's presets are its own and not Super Resolution's under
+/// the same letters (DLSS-RR Integration Guide 3.13; nvsdk_ngx_defs_dlssd.h):
+/// D is its transformer model, E the latest transformer model, and F "Default
+/// model RR2". The mapping is by what each model is. `Stable` names Super
+/// Resolution's convolutional model, of which Ray Reconstruction has none, so
+/// it builds the default; the render pass says so, rather than this choosing a
+/// different model under a name that means something else.
+NVSDK_NGX_RayReconstruction_Hint_Render_Preset ToNgxRayReconstruction(
+    ReconstructionPreset preset)
+{
+    switch (preset) {
+        case ReconstructionPreset::Default:
+        case ReconstructionPreset::Stable:
+            return NVSDK_NGX_RayReconstruction_Hint_Render_Preset_Default;
+        case ReconstructionPreset::Transformer:
+            return NVSDK_NGX_RayReconstruction_Hint_Render_Preset_E;
+        case ReconstructionPreset::TransformerAlternate:
+            return NVSDK_NGX_RayReconstruction_Hint_Render_Preset_D;
+    }
+    return NVSDK_NGX_RayReconstruction_Hint_Render_Preset_Default;
+}
+
+const char* RayReconstructionPresetParameter(ReconstructionQuality quality)
+{
+    switch (quality) {
+        case ReconstructionQuality::NativeResolution:
+            return NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_DLAA;
+        case ReconstructionQuality::Quality:
+            return NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Quality;
+        case ReconstructionQuality::Balanced:
+            return NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Balanced;
+        case ReconstructionQuality::Performance:
+            return NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Performance;
+        case ReconstructionQuality::UltraPerformance:
+            return NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraPerformance;
+    }
+    return NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_DLAA;
+}
+
+/// Ray Reconstruction's optimal render extents.
+///
+/// The same query as Super Resolution's, through Ray Reconstruction's own
+/// callback (DLSS-RR Integration Guide 5.5). The SDK ships this as an inline
+/// helper only in its D3D and CUDA headers, so it is written out here against
+/// the one parameter it reads rather than by including a Direct3D header into
+/// a Vulkan renderer.
+NVSDK_NGX_Result RayReconstructionOptimalSettings(
+    NVSDK_NGX_Parameter* parameters, unsigned int width, unsigned int height,
+    NVSDK_NGX_PerfQuality_Value quality, ReconstructionSizing* sizing)
+{
+    void* callback = nullptr;
+    NVSDK_NGX_Parameter_GetVoidPointer(
+        parameters, NVSDK_NGX_Parameter_DLSSDOptimalSettingsCallback, &callback);
+    if (callback == nullptr) {
+        return NVSDK_NGX_Result_FAIL_OutOfDate;
+    }
+    NVSDK_NGX_Parameter_SetUI(parameters, NVSDK_NGX_Parameter_Width, width);
+    NVSDK_NGX_Parameter_SetUI(parameters, NVSDK_NGX_Parameter_Height, height);
+    NVSDK_NGX_Parameter_SetI(parameters, NVSDK_NGX_Parameter_PerfQualityValue,
+                             quality);
+    NVSDK_NGX_Parameter_SetI(parameters, NVSDK_NGX_Parameter_RTXValue, false);
+    const NVSDK_NGX_Result result =
+        static_cast<PFN_NVSDK_NGX_DLSS_GetOptimalSettingsCallback>(callback)(
+            parameters);
+    if (NVSDK_NGX_FAILED(result)) {
+        return result;
+    }
+    NVSDK_NGX_Parameter_GetUI(parameters, NVSDK_NGX_Parameter_OutWidth,
+                              &sizing->renderWidth);
+    NVSDK_NGX_Parameter_GetUI(parameters, NVSDK_NGX_Parameter_OutHeight,
+                              &sizing->renderHeight);
+    sizing->maxWidth = sizing->renderWidth;
+    sizing->maxHeight = sizing->renderHeight;
+    sizing->minWidth = sizing->renderWidth;
+    sizing->minHeight = sizing->renderHeight;
+    NVSDK_NGX_Parameter_GetUI(parameters,
+                              NVSDK_NGX_Parameter_DLSS_Get_Dynamic_Max_Render_Width,
+                              &sizing->maxWidth);
+    NVSDK_NGX_Parameter_GetUI(parameters,
+                              NVSDK_NGX_Parameter_DLSS_Get_Dynamic_Max_Render_Height,
+                              &sizing->maxHeight);
+    NVSDK_NGX_Parameter_GetUI(parameters,
+                              NVSDK_NGX_Parameter_DLSS_Get_Dynamic_Min_Render_Width,
+                              &sizing->minWidth);
+    NVSDK_NGX_Parameter_GetUI(parameters,
+                              NVSDK_NGX_Parameter_DLSS_Get_Dynamic_Min_Render_Height,
+                              &sizing->minHeight);
+    return result;
+}
+
 /// An hdClaude texture as an NGX resource.
 ///
 /// The subresource range is the whole of the image, because every image
@@ -396,18 +489,26 @@ class NgxBackend final : public ReconstructionBackend {
 
     ReconstructionSizing QuerySizing(std::uint32_t outputWidth,
                                      std::uint32_t outputHeight,
-                                     ReconstructionQuality quality) const override
+                                     ReconstructionQuality quality,
+                                     ReconstructionModel model) const override
     {
         ReconstructionSizing sizing;
         if (outputWidth == 0 || outputHeight == 0) {
             sizing.reason = "an output extent of zero";
             return sizing;
         }
-        float sharpness = 0.0f;
-        const NVSDK_NGX_Result result = NGX_DLSS_GET_OPTIMAL_SETTINGS(
-            _parameters, outputWidth, outputHeight, ToNgx(quality),
-            &sizing.renderWidth, &sizing.renderHeight, &sizing.maxWidth,
-            &sizing.maxHeight, &sizing.minWidth, &sizing.minHeight, &sharpness);
+        NVSDK_NGX_Result result = NVSDK_NGX_Result_Success;
+        if (model == ReconstructionModel::RayReconstruction) {
+            result = RayReconstructionOptimalSettings(
+                _parameters, outputWidth, outputHeight, ToNgx(quality), &sizing);
+        } else {
+            float sharpness = 0.0f;
+            result = NGX_DLSS_GET_OPTIMAL_SETTINGS(
+                _parameters, outputWidth, outputHeight, ToNgx(quality),
+                &sizing.renderWidth, &sizing.renderHeight, &sizing.maxWidth,
+                &sizing.maxHeight, &sizing.minWidth, &sizing.minHeight,
+                &sharpness);
+        }
         if (result != NVSDK_NGX_Result_Success) {
             sizing.reason =
                 std::string("DLSS would not name its render extents: ") +
@@ -440,6 +541,10 @@ class NgxBackend final : public ReconstructionBackend {
                 *reason = "a zero extent, or no command buffer to record into";
             }
             return false;
+        }
+
+        if (resolution.model == ReconstructionModel::RayReconstruction) {
+            return BuildRayReconstruction(command, resolution, reason);
         }
 
         // The preset, set before the feature is created because that is when
@@ -502,6 +607,10 @@ class NgxBackend final : public ReconstructionBackend {
     void Evaluate(VkCommandBuffer command, const ReconstructionFrame& frame) override
     {
         if (_feature == nullptr || command == VK_NULL_HANDLE) {
+            return;
+        }
+        if (_resolution.model == ReconstructionModel::RayReconstruction) {
+            EvaluateRayReconstruction(command, frame);
             return;
         }
         if (!frame.color.Valid() || !frame.depth.Valid() ||
@@ -574,6 +683,105 @@ class NgxBackend final : public ReconstructionBackend {
     void ResetHistory() override { _reset = true; }
 
   private:
+    /// Ray Reconstruction's feature: the same extents and quality as Super
+    /// Resolution's, plus how it reads its guides.
+    bool BuildRayReconstruction(VkCommandBuffer command,
+                                const ReconstructionResolution& resolution,
+                                std::string* reason)
+    {
+        _parameters->Set(
+            RayReconstructionPresetParameter(resolution.quality),
+            static_cast<unsigned int>(ToNgxRayReconstruction(resolution.preset)));
+
+        NVSDK_NGX_DLSSD_Create_Params create{};
+        // The only mode the guide allows (5.3).
+        create.InDenoiseMode = NVSDK_NGX_DLSS_Denoise_Mode_DLUnified;
+        // Roughness rides in the normal image's alpha, which is how the guide
+        // kernel packs it.
+        create.InRoughnessMode = NVSDK_NGX_DLSS_Roughness_Mode_Packed;
+        // Device depth in [0, 1] through the host's projection, not view-space
+        // distance: hardware depth in NVIDIA's terms (3.4.7).
+        create.InUseHWDepth = NVSDK_NGX_DLSS_Depth_Type_HW;
+        create.InWidth = resolution.renderWidth;
+        create.InHeight = resolution.renderHeight;
+        create.InTargetWidth = resolution.outputWidth;
+        create.InTargetHeight = resolution.outputHeight;
+        create.InPerfQualityValue = ToNgx(resolution.quality);
+        // HDR and low-resolution motion for the reasons Super Resolution sets
+        // them. No exposure flag of either kind: Ray Reconstruction supports
+        // neither an exposure input nor auto-exposure (3.7), and the frame is
+        // handed over with no exposure folded in.
+        create.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR |
+                                      NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
+
+        const NVSDK_NGX_Result result = NGX_VULKAN_CREATE_DLSSD_EXT1(
+            _context.Device(), command, 1, 1, &_feature, _parameters, &create);
+        if (result != NVSDK_NGX_Result_Success || _feature == nullptr) {
+            _feature = nullptr;
+            if (reason != nullptr) {
+                *reason = std::string("Ray Reconstruction would not build: ") +
+                          ToString(result);
+            }
+            return false;
+        }
+        _resolution = resolution;
+        _reset = true;
+        return true;
+    }
+
+    void EvaluateRayReconstruction(VkCommandBuffer command,
+                                   const ReconstructionFrame& frame)
+    {
+        if (!frame.color.Valid() || !frame.depth.Valid() ||
+            !frame.motion.Valid() || !frame.output.Valid() ||
+            !frame.normalRoughness.Valid() || !frame.diffuseAlbedo.Valid() ||
+            !frame.specularAlbedo.Valid()) {
+            std::fprintf(stderr,
+                         "hdClaude: Ray Reconstruction was handed a frame "
+                         "without its guides and reconstructed nothing\n");
+            return;
+        }
+
+        NVSDK_NGX_Resource_VK color = ToNgx(frame.color, false);
+        NVSDK_NGX_Resource_VK depth = ToNgx(frame.depth, false);
+        NVSDK_NGX_Resource_VK motion = ToNgx(frame.motion, false);
+        NVSDK_NGX_Resource_VK output = ToNgx(frame.output, true);
+        NVSDK_NGX_Resource_VK normals = ToNgx(frame.normalRoughness, false);
+        NVSDK_NGX_Resource_VK diffuse = ToNgx(frame.diffuseAlbedo, false);
+        NVSDK_NGX_Resource_VK specular = ToNgx(frame.specularAlbedo, false);
+
+        NVSDK_NGX_VK_DLSSD_Eval_Params eval{};
+        eval.pInColor = &color;
+        eval.pInOutput = &output;
+        eval.pInDepth = &depth;
+        eval.pInMotionVectors = &motion;
+        eval.pInNormals = &normals;
+        // Packed: the feature reads roughness from the normals' alpha, and
+        // the separate input stays empty.
+        eval.pInRoughness = nullptr;
+        eval.pInDiffuseAlbedo = &diffuse;
+        eval.pInSpecularAlbedo = &specular;
+        // Negated, for the reason Super Resolution's is.
+        eval.InJitterOffsetX = -frame.jitterX;
+        eval.InJitterOffsetY = -frame.jitterY;
+        eval.InRenderSubrectDimensions.Width = frame.color.width;
+        eval.InRenderSubrectDimensions.Height = frame.color.height;
+        eval.InReset = (frame.reset || _reset) ? 1 : 0;
+        eval.InMVScaleX = 1.0f;
+        eval.InMVScaleY = 1.0f;
+        eval.InPreExposure = frame.preExposure;
+
+        const NVSDK_NGX_Result result =
+            NGX_VULKAN_EVALUATE_DLSSD_EXT(command, _feature, _parameters, &eval);
+        if (result != NVSDK_NGX_Result_Success) {
+            std::fprintf(stderr,
+                         "hdClaude: Ray Reconstruction would not evaluate: %s\n",
+                         ToString(result));
+            return;
+        }
+        _reset = false;
+    }
+
     void ReleaseFeature()
     {
         if (_feature != nullptr) {

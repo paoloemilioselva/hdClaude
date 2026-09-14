@@ -38,6 +38,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (exposure)
                          (reconstruction)
                          (reconstructionPreset)
+                         (reconstructionModel)
                          (reconstructionAutoExposure)
                          (lightGeometry)
                          (curveGeometry)
@@ -95,6 +96,20 @@ ReconstructionChoice ParseReconstruction(const std::string& value)
         choice.recognised = false;
     }
     return choice;
+}
+
+bool ParseModel(const std::string& value, hdclaude::ReconstructionModel* out)
+{
+    using M = hdclaude::ReconstructionModel;
+    const std::string name = Lowered(value);
+    if (name.empty() || name == "super-resolution" || name == "sr") {
+        *out = M::SuperResolution;
+    } else if (name == "ray-reconstruction" || name == "rr") {
+        *out = M::RayReconstruction;
+    } else {
+        return false;
+    }
+    return true;
 }
 
 bool ParsePreset(const std::string& value, hdclaude::ReconstructionPreset* out)
@@ -347,6 +362,18 @@ void HdClaudeRenderPass::_Execute(
             reconstructionName.c_str());
     }
 
+    const std::string modelName = _renderDelegate->GetRenderSetting<std::string>(
+        _tokens->reconstructionModel, std::string("super-resolution"));
+    hdclaude::ReconstructionModel model =
+        hdclaude::ReconstructionModel::SuperResolution;
+    if (!ParseModel(modelName, &model) && _reportedModel != modelName) {
+        _reportedModel = modelName;
+        TF_WARN(
+            "hdClaude: \"%s\" is not a reconstruction model, so Super "
+            "Resolution runs. Use one of: super-resolution, ray-reconstruction.",
+            modelName.c_str());
+    }
+
     const std::string presetName = _renderDelegate->GetRenderSetting<std::string>(
         _tokens->reconstructionPreset, std::string("default"));
     hdclaude::ReconstructionPreset preset =
@@ -359,6 +386,20 @@ void HdClaudeRenderPass::_Execute(
             "transformer (K), transformer-alt (J).",
             presetName.c_str());
     } else if (preset == hdclaude::ReconstructionPreset::Stable &&
+               model == hdclaude::ReconstructionModel::RayReconstruction &&
+               _reportedPreset != presetName + "/rr") {
+        // Ray Reconstruction's presets are its own models, and none of them is
+        // Super Resolution's convolutional F: the backend builds its default,
+        // and this is where that is said rather than done quietly.
+        _reportedPreset = presetName + "/rr";
+        TF_WARN(
+            "hdClaude: \"%s\" names Super Resolution's convolutional model, "
+            "which Ray Reconstruction does not have, so Ray Reconstruction "
+            "builds its default. Use default, transformer (preset E) or "
+            "transformer-alt (preset D).",
+            presetName.c_str());
+    } else if (preset == hdclaude::ReconstructionPreset::Stable &&
+               model == hdclaude::ReconstructionModel::SuperResolution &&
                _reportedPreset != presetName) {
         // Honoured as asked, and said once. SDK 310.9.1 marks preset F
         // deprecated in `nvsdk_ngx_defs.h` without removing it, so it still
@@ -546,6 +587,7 @@ void HdClaudeRenderPass::_Execute(
     settings.reconstruct = reconstruction.on;
     settings.reconstructionQuality = reconstruction.quality;
     settings.reconstructionPreset = preset;
+    settings.reconstructionModel = model;
     settings.lightGeometry = _renderDelegate->GetRenderSetting<bool>(
         _tokens->lightGeometry, false);
     settings.reconstructionAutoExposure =

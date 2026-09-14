@@ -188,6 +188,16 @@ as data -- no exposure and no transfer function -- and each withheld, like
 depth, while reconstruction upscales. usdview's AOV menu probes a fixed list and
 so offers `normal` alone; the others are reachable by name.
 
+Ray Reconstruction reads them. `ReconstructionModel::RayReconstruction` builds
+NGX's Ray Reconstruction feature instead of Super Resolution's
+(`HDCLAUDE_RECONSTRUCTION_MODEL=ray-reconstruction`, or the `Reconstruction
+model` render setting), with the roughness packed into the normals' alpha and
+depth read as hardware depth. It takes no exposure input and has no
+auto-exposure (Integration Guide 3.7), so neither is handed to it. Its presets
+are its own: `transformer` selects E, the latest transformer model;
+`transformer-alt` D; and `stable`, which names Super Resolution's convolutional
+model, builds Ray Reconstruction's default and says so.
+
 Guides describe the **primary visible surface** -- the same surface depth and
 motion describe. An earlier version of this section had normal and albedo taken
 from the first non-delta surface behind a perfect mirror, so that a mirror would

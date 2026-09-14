@@ -65,6 +65,9 @@ IF "%~1"=="" (
   ECHO                                  balanced, performance, ultraperformance
   ECHO   HDCLAUDE_RECONSTRUCTION_PRESET default. default, stable ^(DLSS preset
   ECHO                                  F^), transformer ^(K^), transformer-alt ^(J^)
+  ECHO   HDCLAUDE_RECONSTRUCTION_MODEL  default super-resolution. super-resolution,
+  ECHO                                  or ray-reconstruction, which denoises as
+  ECHO                                  it upscales and reads the material guides
   ECHO   HDCLAUDE_DLSS_AUTO_EXPOSURE    let DLSS estimate the frame's exposure
   ECHO                                  instead of being told it. Off; the
   ECHO                                  measured value is reported per frame

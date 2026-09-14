@@ -535,13 +535,15 @@ void TestDlssReconstructsTheFrameItIsGiven(const VulkanContext& context,
     // at the output extent, and a backend that answered otherwise would have
     // the caller rendering at a size DLAA does not mean.
     const ReconstructionSizing native = backend->QuerySizing(
-        kOutputWidth, kOutputHeight, ReconstructionQuality::NativeResolution);
+        kOutputWidth, kOutputHeight, ReconstructionQuality::NativeResolution,
+        ReconstructionModel::SuperResolution);
     CHECK(native.valid);
     CHECK_EQ(native.renderWidth, kOutputWidth);
     CHECK_EQ(native.renderHeight, kOutputHeight);
 
     const ReconstructionSizing sizing = backend->QuerySizing(
-        kOutputWidth, kOutputHeight, ReconstructionQuality::Performance);
+        kOutputWidth, kOutputHeight, ReconstructionQuality::Performance,
+        ReconstructionModel::SuperResolution);
     CHECK(sizing.valid);
     CHECK(sizing.renderWidth > 0 && sizing.renderWidth < kOutputWidth);
     CHECK(sizing.renderHeight > 0 && sizing.renderHeight < kOutputHeight);

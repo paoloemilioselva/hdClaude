@@ -46,6 +46,17 @@ layout(set = 0, binding = 6, scalar) writeonly buffer LuminancePartials {
     float values[];
 } partials;
 
+// The primary surface's guides, three vec4 per pixel -- normal and roughness,
+// diffuse albedo, specular albedo -- and the images Ray Reconstruction reads
+// them from. Packed for Super Resolution too, which ignores them: one kernel and
+// one set of images is simpler than two, at three render-extent images.
+layout(set = 0, binding = 7, scalar) readonly buffer GuideSurface {
+    vec4 values[];
+} guideSurface;
+layout(set = 0, binding = 8, rgba16f) uniform writeonly image2D normalRoughnessImage;
+layout(set = 0, binding = 9, rgba16f) uniform writeonly image2D diffuseAlbedoImage;
+layout(set = 0, binding = 10, rgba16f) uniform writeonly image2D specularAlbedoImage;
+
 layout(push_constant) uniform Params {
     uvec2 extent;
 } params;
@@ -92,6 +103,11 @@ void main()
         imageStore(colorImage, coordinate, vec4(colour, 1.0));
         imageStore(depthImage, coordinate, vec4(guideDepth.values[index], 0.0, 0.0, 0.0));
         imageStore(motionImage, coordinate, vec4(guideMotion.values[index], 0.0, 0.0));
+        imageStore(normalRoughnessImage, coordinate, guideSurface.values[3u * index]);
+        imageStore(diffuseAlbedoImage, coordinate,
+                   vec4(guideSurface.values[3u * index + 1u].rgb, 1.0));
+        imageStore(specularAlbedoImage, coordinate,
+                   vec4(guideSurface.values[3u * index + 2u].rgb, 1.0));
 
         // Rec.709 on the linear colour actually handed over, which is what the
         // exposure has to be an exposure *of*. A non-finite pixel is excluded

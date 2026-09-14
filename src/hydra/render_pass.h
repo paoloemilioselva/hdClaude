@@ -97,6 +97,7 @@ class HDCLAUDE_API HdClaudeRenderPass final : public HdRenderPass {
     /// second buries everything else in the log.
     std::string _reportedReconstruction;
     std::string _reportedPreset;
+    std::string _reportedModel;
     std::string _reportedCurveGeometry;
     std::string _reportedUnavailable;
     /// What the last reconstructed frame was produced by, so a change of

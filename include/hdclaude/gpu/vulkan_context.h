@@ -221,6 +221,18 @@ class VulkanContext {
     /// The most recent validation error text, for test diagnostics.
     std::string LastValidationError() const;
 
+    /// Validation errors entirely inside NVIDIA's NGX runtime: raised under a
+    /// debug label NGX opened, on resources NGX allocated and named. Kept out
+    /// of `ValidationErrorCount` because hdClaude cannot fix them, and counted
+    /// here so a test still says they happened; a finding that names any of
+    /// hdClaude's own objects is never counted here. See the classification in
+    /// vulkan_context.cpp.
+    std::uint64_t ThirdPartyValidationErrorCount() const
+    {
+        return _thirdPartyValidationErrors.load(std::memory_order_relaxed);
+    }
+    std::string LastThirdPartyValidationError() const;
+
     // --- Immediate submission ------------------------------------------------
 
     /// Record and submit a one-shot command buffer, then wait. Used for uploads
@@ -231,6 +243,7 @@ class VulkanContext {
     /// function with C linkage; not part of the intended API.
     void NoteValidationMessage(bool isError, bool isWarning,
                                const char* message) const;
+    void NoteThirdPartyValidationError(const char* message) const;
 
     /// Force the device-lost latch. Exists so tests can exercise the refusal
     /// and teardown paths without a real device fault -- an untested
@@ -278,6 +291,7 @@ class VulkanContext {
     mutable std::atomic<bool> _deviceLost{false};
     mutable std::atomic<std::uint64_t> _validationErrors{0};
     mutable std::atomic<std::uint64_t> _validationWarnings{0};
+    mutable std::atomic<std::uint64_t> _thirdPartyValidationErrors{0};
 };
 
 }  // namespace hdclaude

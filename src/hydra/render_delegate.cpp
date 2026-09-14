@@ -40,6 +40,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (exposure)
                          (reconstruction)
                          (reconstructionPreset)
+                         (reconstructionModel)
                          (reconstructionAutoExposure)
                          (lightGeometry)
                          (curveGeometry)
@@ -651,6 +652,15 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         {"Reconstruction preset", _tokens->reconstructionPreset,
          VtValue(std::string(TfGetenv("HDCLAUDE_RECONSTRUCTION_PRESET",
                                       "default")))},
+
+        // Which reconstruction runs. Accepted: super-resolution,
+        // ray-reconstruction. Super Resolution by default, which is what this
+        // setting's absence always meant; Ray Reconstruction denoises as it
+        // upscales and is the model built for a path-traced frame, and reads
+        // the reconstruction guides to do it. Changing it rebuilds.
+        {"Reconstruction model", _tokens->reconstructionModel,
+         VtValue(std::string(TfGetenv("HDCLAUDE_RECONSTRUCTION_MODEL",
+                                      "super-resolution")))},
 
         // Let DLSS estimate the frame's exposure rather than being told it.
         // Off, because being told is what its own guide asks for, and because

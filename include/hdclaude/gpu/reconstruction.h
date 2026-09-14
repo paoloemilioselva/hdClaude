@@ -125,6 +125,20 @@ enum class ReconstructionQuality {
     UltraPerformance,
 };
 
+/// Which reconstruction a backend runs.
+///
+/// `SuperResolution` upscales and anti-aliases a frame, and was built for
+/// rasterised input: on a path-traced frame it treats the noise as detail to
+/// keep or outliers to reject, and at one sample it kept 70% of a converged
+/// image's light. `RayReconstruction` denoises and upscales in one model built
+/// for exactly this input, and takes the reconstruction guides to do it
+/// (docs/dlss-integration.md 4). They are different trained models behind
+/// different features, so choosing one is a rebuild.
+enum class ReconstructionModel {
+    SuperResolution,
+    RayReconstruction,
+};
+
 /// What a backend says it wants to be handed for a given output size.
 ///
 /// The render extents are the backend's answer, not the caller's request: DLSS
@@ -215,6 +229,7 @@ struct ReconstructionResolution {
     ReconstructionQuality quality = ReconstructionQuality::NativeResolution;
     ReconstructionPreset preset = ReconstructionPreset::Default;
     ReconstructionExposure exposure = ReconstructionExposure::Measured;
+    ReconstructionModel model = ReconstructionModel::SuperResolution;
 };
 
 /// One image a backend reads or writes. Owned by the caller throughout.
@@ -280,6 +295,15 @@ struct ReconstructionFrame {
     /// rather than assume one.
     ReconstructionTexture exposure;
 
+    /// The primary surface's reconstruction guides, which Ray Reconstruction
+    /// reads and Super Resolution does not (docs/dlss-integration.md 4).
+    /// `normalRoughness` carries the world-space shading normal in rgb and the
+    /// linear roughness in alpha; the albedos are rgb. Same extent, row order
+    /// and layout rules as `color`.
+    ReconstructionTexture normalRoughness;
+    ReconstructionTexture diffuseAlbedo;
+    ReconstructionTexture specularAlbedo;
+
     float jitterX = 0.0f;
     float jitterY = 0.0f;
 
@@ -308,7 +332,8 @@ class ReconstructionBackend {
     /// What to render at, for a given output size and quality.
     virtual ReconstructionSizing QuerySizing(std::uint32_t outputWidth,
                                              std::uint32_t outputHeight,
-                                             ReconstructionQuality) const = 0;
+                                             ReconstructionQuality,
+                                             ReconstructionModel) const = 0;
 
     /// Build, or rebuild, for these extents.
     ///

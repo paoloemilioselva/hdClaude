@@ -3468,6 +3468,42 @@ int main()
                     // Changing what the extents mean is a history reset even
                     // though the camera never moved.
                     CHECK(dlaa.historyReset);
+
+                    // Ray Reconstruction, the same backend building its other
+                    // feature -- fed the reconstruction guides, which exist
+                    // only because MaterialX closures report them. Asserted
+                    // the way the upscale above is, and then the reference
+                    // below is compared after it too, which is phase 14's
+                    // gate: a reference render is untouched by it.
+                    hdclaude::FrameDescription denoised = native;
+                    denoised.settings.reconstructionModel =
+                        hdclaude::ReconstructionModel::RayReconstruction;
+                    const hdclaude::FrameResult rr =
+                        tracer.EndFrame(tracer.BeginFrame(denoised));
+                    if (!rr.reconstructed) {
+                        std::printf("  ray reconstruction . not run: %s\n",
+                                    tracer.ReconstructionUnavailable().c_str());
+                    }
+                    CHECK(rr.reconstructed);
+                    CHECK(rr.historyReset);
+                    CHECK_EQ(rr.image.size(),
+                             std::size_t(kOutputWidth) * kOutputHeight * 4);
+                    double rrBrightest = 0.0;
+                    bool rrFinite = true;
+                    for (std::size_t i = 0; i < rr.image.size(); i += 4) {
+                        for (int c = 0; c < 3; ++c) {
+                            const float value = rr.image[i + std::size_t(c)];
+                            rrFinite = rrFinite && std::isfinite(value);
+                            rrBrightest = std::max(rrBrightest, double(value));
+                        }
+                    }
+                    CHECK(rrFinite);
+                    CHECK(rrBrightest > 0.0);
+                    std::printf("  ray reconstruction . %s, %ux%u -> %ux%u, "
+                                "brightest %.4f\n",
+                                rr.reconstructionBackend.c_str(), rr.renderWidth,
+                                rr.renderHeight, rr.width, rr.height,
+                                rrBrightest);
                 }
 
                 // And the reference frame again, now that a backend either
@@ -4137,11 +4173,15 @@ int main()
             // estimator would be measuring two different integrals against each
             // other (docs/architecture.md 5).
             bool reconstructed = false;
-            const auto sequence = [&](bool reconstruct) {
+            const auto sequence = [&](bool reconstruct,
+                                      hdclaude::ReconstructionModel model =
+                                          hdclaude::ReconstructionModel::
+                                              SuperResolution) {
                 hdclaude::FrameDescription frame = converged;
                 frame.mode = hdclaude::RenderMode::Interactive;
                 frame.settings.samplesPerPixel = 1;
                 frame.settings.reconstruct = reconstruct;
+                frame.settings.reconstructionModel = model;
                 frame.settings.reconstructionQuality =
                     hdclaude::ReconstructionQuality::NativeResolution;
 
@@ -4233,6 +4273,35 @@ int main()
                 // wrong, so the reconstruction must still be short of the
                 // converged image it is estimating.
                 CHECK(ssimClean < 1.0);
+
+                // Ray Reconstruction over the same one-sample sequence, held
+                // to the same two claims against the same unreconstructed
+                // frames -- still not thresholds. It is the model built for
+                // this input, so how it compares with Super Resolution is
+                // printed beside it: that is a statement about NVIDIA's
+                // models, which this suite measures and does not assert.
+                const std::vector<std::vector<float>> denoised = sequence(
+                    true, hdclaude::ReconstructionModel::RayReconstruction);
+                const double ssimDenoised =
+                    hdclaude::Ssim(denoised.back().data(), reference.image.data(),
+                                   kDlaaWidth, kDlaaHeight);
+                const std::vector<std::vector<float>> tailDenoised(
+                    denoised.end() - 8, denoised.end());
+                const double flickerDenoised = hdclaude::TemporalInstability(
+                    tailDenoised, kDlaaWidth, kDlaaHeight);
+                const double keptDenoised =
+                    convergedMean > 0.0
+                        ? meanLuminance(denoised.back()) / convergedMean
+                        : 0.0;
+                std::printf("  RR quality ..... ssim %.4f against %.4f "
+                            "unreconstructed and %.4f super resolution; "
+                            "flicker %.4f; energy kept %.1f%% at one sample a "
+                            "frame\n",
+                            ssimDenoised, ssimNoisy, ssimClean, flickerDenoised,
+                            100.0 * keptDenoised);
+                CHECK(ssimDenoised > ssimNoisy);
+                CHECK(flickerDenoised < flickerNoisy);
+                CHECK(ssimDenoised < 1.0);
             }
 
             // --- Which way the sub-pixel offset points ----------------------
@@ -4678,6 +4747,16 @@ int main()
                          context->LastValidationError().c_str());
         }
         CHECK_EQ(errors, std::uint64_t(0));
+        // Findings inside NVIDIA's runtime, which this cannot fix, said every
+        // run so that they do not become a thing nobody knows about.
+        const std::uint64_t ngxErrors = context->ThirdPartyValidationErrorCount();
+        std::printf("  validation ..... %llu errors, %llu inside NGX%s%s\n",
+                    static_cast<unsigned long long>(errors),
+                    static_cast<unsigned long long>(ngxErrors),
+                    ngxErrors != 0 ? " -- last: " : "",
+                    ngxErrors != 0
+                        ? context->LastThirdPartyValidationError().c_str()
+                        : "");
     } catch (const std::exception& error) {
         // Reported rather than left to terminate: a kernel that fails to
         // compile should name itself, not abort with a status code.
