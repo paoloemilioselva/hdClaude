@@ -14,11 +14,25 @@
 include_guard(GLOBAL)
 include(FetchContent)
 
-set(HDCLAUDE_DLSS_TAG "v310.3.0" CACHE STRING "NVIDIA DLSS SDK release tag")
+# A plain variable, not a cache entry. As a cache default the pin was read once,
+# into the first configure, and a build tree kept that tag however the line
+# here changed: moving from 310.3.0 to 310.9.1 edited this file and went on
+# building against 310.3.0 without a word. A pinned version is the one
+# committed. A different SDK is still one variable away: HDCLAUDE_DLSS_SDK.
+set(HDCLAUDE_DLSS_TAG "v310.9.1")
 
-# An already-extracted SDK, from an earlier fetch or a manual download.
+# A different SDK, extracted by hand, used instead of the pinned fetch.
+#
+# Only while the variable is set. The override is a cache entry, so without the
+# `else` it outlived the environment that asked for it and every later configure
+# kept using that directory -- which, pointed at the fetch's own checkout, froze
+# it at whatever tag it was first cloned at.
 if(DEFINED ENV{HDCLAUDE_DLSS_SDK} AND EXISTS "$ENV{HDCLAUDE_DLSS_SDK}/include/nvsdk_ngx_vk.h")
   set(FETCHCONTENT_SOURCE_DIR_DLSS "$ENV{HDCLAUDE_DLSS_SDK}" CACHE PATH "" FORCE)
+  message(STATUS "hdClaude: using the DLSS SDK at $ENV{HDCLAUDE_DLSS_SDK} "
+                 "instead of the pinned ${HDCLAUDE_DLSS_TAG}")
+else()
+  unset(FETCHCONTENT_SOURCE_DIR_DLSS CACHE)
 endif()
 
 FetchContent_Declare(dlss
@@ -97,7 +111,7 @@ if(EXISTS "${dlss_SOURCE_DIR}/include/nvsdk_ngx_vk.h")
       HDCLAUDE_DLSS_RUNTIME_DIR="${HDCLAUDE_DLSS_RUNTIME_DIR}")
 
   set(HDCLAUDE_DLSS_AVAILABLE TRUE CACHE INTERNAL "")
-  message(STATUS "hdClaude: NVIDIA DLSS SDK ${HDCLAUDE_DLSS_TAG} at ${dlss_SOURCE_DIR}")
+  message(STATUS "hdClaude: NVIDIA DLSS SDK at ${dlss_SOURCE_DIR}")
 else()
   set(HDCLAUDE_DLSS_AVAILABLE FALSE CACHE INTERNAL "")
   set(HDCLAUDE_ENABLE_DLSS OFF CACHE BOOL "" FORCE)

@@ -257,7 +257,7 @@ session and a batch render are configured the same way:
 | Setting | Environment | Values |
 |---|---|---|
 | Reconstruction | `HDCLAUDE_RECONSTRUCTION` | `off` (default), `dlaa`, `quality`, `balanced`, `performance`, `ultraperformance` |
-| Reconstruction preset | `HDCLAUDE_RECONSTRUCTION_PRESET` | `default`, `stable` (DLSS preset F), `transformer` (K), `transformer-alt` (J) |
+| Reconstruction preset | `HDCLAUDE_RECONSTRUCTION_PRESET` | `default`, `stable` (DLSS preset F, deprecated by NVIDIA as of SDK 310.9.1 and reported when chosen), `transformer` (K), `transformer-alt` (J) |
 | — | `HDCLAUDE_DLSS_RUNTIME_DIR` | a directory holding `nvngx_dlss.dll` |
 
 **`off` and everything else are different estimators, not different speeds.**
@@ -275,7 +275,7 @@ without DLSS both leave an unreconstructed frame — so the pass says which, onc
 per distinct answer, and names the backend and extents when one does run:
 
 ```
-hdClaude: reconstructing with NVIDIA DLSS 310.3.0.0, dlaa, 512x373 -> 512x373, preset "default"
+hdClaude: reconstructing with NVIDIA DLSS 310.9.1.0, dlaa, 512x373 -> 512x373, preset "default"
 ```
 
 The version is in the backend's name because **the version is the model**. NGX

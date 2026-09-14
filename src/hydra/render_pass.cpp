@@ -332,6 +332,18 @@ void HdClaudeRenderPass::_Execute(
             "chooses its own. Use one of: default, stable (DLSS preset F), "
             "transformer (K), transformer-alt (J).",
             presetName.c_str());
+    } else if (preset == hdclaude::ReconstructionPreset::Stable &&
+               _reportedPreset != presetName) {
+        // Honoured as asked, and said once. SDK 310.9.1 marks preset F
+        // deprecated in `nvsdk_ngx_defs.h` without removing it, so it still
+        // selects the model -- until a runtime stops shipping it, at which point
+        // NGX reverts to its default without saying so.
+        _reportedPreset = presetName;
+        TF_WARN(
+            "hdClaude: \"%s\" selects DLSS preset F, which NVIDIA deprecates as "
+            "of DLSS SDK 310.9.1. It is used as asked; transformer (K) is "
+            "NVIDIA's recommendation.",
+            presetName.c_str());
     }
 
     // --- Framing --------------------------------------------------------------

@@ -148,12 +148,12 @@ IF DEFINED HDCLAUDE_VALIDATION_LAYER_DIR IF EXIST "%HDCLAUDE_VALIDATION_LAYER_DI
 
 REM ---------------------------------------------------------------------------
 REM 5. NVIDIA DLSS SDK - optional, proprietary, never committed.
-REM     Discovered only; its binaries are not added to PATH here because the
-REM     renderer loads them explicitly through NGX at runtime.
+REM     Nothing is set here. The SDK is fetched at the tag cmake\NvidiaDLSS.cmake
+REM     pins; HDCLAUDE_DLSS_SDK is for pointing at a *different* SDK by hand.
+REM     This used to set it to _deps\dlss-src whenever that existed, which is
+REM     the fetch's own checkout: CMake then took it for a hand-supplied SDK,
+REM     stopped updating it, and a changed pin built the old SDK silently.
 REM ---------------------------------------------------------------------------
-IF NOT DEFINED HDCLAUDE_DLSS_SDK IF EXIST "%HDCLAUDE_ROOT%\_deps\dlss-src\include\nvsdk_ngx_vk.h" (
-  SET "HDCLAUDE_DLSS_SDK=%HDCLAUDE_ROOT%\_deps\dlss-src"
-)
 
 REM ---------------------------------------------------------------------------
 REM 6. RenderMan - optional. This OpenUSD build includes the RenderMan OSL
