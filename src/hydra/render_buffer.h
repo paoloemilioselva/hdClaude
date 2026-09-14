@@ -50,6 +50,18 @@ class HdClaudeRenderBuffer final : public HdRenderBuffer {
     /// the data to throw three quarters of it away.
     void WriteScalar(const std::vector<float>& values);
 
+    /// A per-pixel vector of data -- a normal, an albedo -- `stride` floats a
+    /// pixel starting `offset` into each, into however many channels the
+    /// buffer has.
+    ///
+    /// No transfer function, unlike `Write`: these are measurements handed to
+    /// something that computes with them, and an sRGB curve applied to an
+    /// albedo is a wrong albedo. A format that cannot hold a signed value
+    /// exactly is left at its clear value rather than filled with a quantised
+    /// one.
+    void WriteData(const std::vector<float>& values, std::size_t stride,
+                   std::size_t offset);
+
     void Clear(const float* value);
 
   protected:

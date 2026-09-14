@@ -43,7 +43,10 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (curveGeometry)
                          (curveSides)
                          (curveSegmentSamples)
-                         (subdivisionLevel));
+                         (subdivisionLevel)
+                         (diffuseAlbedo)
+                         (specularAlbedo)
+                         (roughness));
 
 /// The reconstruction setting, parsed.
 ///
@@ -151,6 +154,10 @@ void HdClaudeRenderPass::_Execute(
     HdClaudeRenderBuffer* colorBuffer = nullptr;
     const HdRenderPassAovBinding* colorBinding = nullptr;
     HdClaudeRenderBuffer* depthBuffer = nullptr;
+    HdClaudeRenderBuffer* normalBuffer = nullptr;
+    HdClaudeRenderBuffer* roughnessBuffer = nullptr;
+    HdClaudeRenderBuffer* diffuseAlbedoBuffer = nullptr;
+    HdClaudeRenderBuffer* specularAlbedoBuffer = nullptr;
     const HdRenderPassAovBindingVector& bindings =
         renderPassState->GetAovBindings();
     for (const HdRenderPassAovBinding& binding : bindings) {
@@ -164,6 +171,14 @@ void HdClaudeRenderPass::_Execute(
             colorBinding = &binding;
         } else if (binding.aovName == HdAovTokens->depth) {
             depthBuffer = buffer;
+        } else if (binding.aovName == HdAovTokens->normal) {
+            normalBuffer = buffer;
+        } else if (binding.aovName == _tokens->roughness) {
+            roughnessBuffer = buffer;
+        } else if (binding.aovName == _tokens->diffuseAlbedo) {
+            diffuseAlbedoBuffer = buffer;
+        } else if (binding.aovName == _tokens->specularAlbedo) {
+            specularAlbedoBuffer = buffer;
         }
     }
 
@@ -215,15 +230,26 @@ void HdClaudeRenderPass::_Execute(
         return;
     }
 
-    if (!colorBuffer) {
-        // No colour AOV to write. Not an error -- some passes bind only depth,
-        // which hdClaude does not produce yet.
+    // The frame's extent comes from whichever AOV is bound. Colour when the
+    // host asks for it; otherwise a data AOV on its own, which is what a
+    // viewer showing one guide binds -- returning here without colour, as this
+    // once did, left a normal AOV chosen in usdview never written at all.
+    HdClaudeRenderBuffer* extentBuffer = colorBuffer;
+    for (HdClaudeRenderBuffer* candidate :
+         {depthBuffer, normalBuffer, roughnessBuffer, diffuseAlbedoBuffer,
+          specularAlbedoBuffer}) {
+        if (extentBuffer == nullptr) {
+            extentBuffer = candidate;
+        }
+    }
+    if (!extentBuffer) {
+        // Nothing hdClaude produces was asked for.
         markConverged(true);
         return;
     }
 
-    const unsigned int width = colorBuffer->GetWidth();
-    const unsigned int height = colorBuffer->GetHeight();
+    const unsigned int width = extentBuffer->GetWidth();
+    const unsigned int height = extentBuffer->GetHeight();
     if (width == 0 || height == 0) {
         markConverged(true);
         return;
@@ -686,7 +712,9 @@ void HdClaudeRenderPass::_Execute(
         }
     }
 
-    colorBuffer->Write(image);
+    if (colorBuffer != nullptr) {
+        colorBuffer->Write(image);
+    }
     // Depth only when a host asked for it, and untouched on the way: it is a
     // geometric measurement rather than a picture, so no exposure and no
     // transfer function apply to it.
@@ -697,6 +725,23 @@ void HdClaudeRenderPass::_Execute(
     // writing one into the other reads a correct buffer at the wrong stride.
     // The guide is real and correct, it is simply not an AOV at this size, so
     // it is withheld rather than stretched into place.
+    // The reconstruction guides follow depth's rule for the same reason: they
+    // describe the traced grid, so they are written only where that is the
+    // buffer's grid.
+    if (frame.renderWidth == width && frame.renderHeight == height) {
+        if (normalBuffer != nullptr) {
+            normalBuffer->WriteData(frame.normalRoughness, 4, 0);
+        }
+        if (roughnessBuffer != nullptr) {
+            roughnessBuffer->WriteData(frame.normalRoughness, 4, 3);
+        }
+        if (diffuseAlbedoBuffer != nullptr) {
+            diffuseAlbedoBuffer->WriteData(frame.diffuseAlbedo, 3, 0);
+        }
+        if (specularAlbedoBuffer != nullptr) {
+            specularAlbedoBuffer->WriteData(frame.specularAlbedo, 3, 0);
+        }
+    }
     if (depthBuffer != nullptr && !frame.depth.empty()) {
         if (frame.renderWidth == width && frame.renderHeight == height) {
             depthBuffer->WriteScalar(frame.depth);

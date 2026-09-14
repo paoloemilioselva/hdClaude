@@ -182,6 +182,12 @@ scattering lobe reports no normal, and the interpolated shading normal turned
 to the viewer stands in for it. They reach the host as
 `FrameResult::normalRoughness`, `diffuseAlbedo` and `specularAlbedo`.
 
+A Hydra host asks for them as AOVs: `normal` (Hydra's own token, the world-space
+shading normal), `roughness`, `diffuseAlbedo` and `specularAlbedo`, each written
+as data -- no exposure and no transfer function -- and each withheld, like
+depth, while reconstruction upscales. usdview's AOV menu probes a fixed list and
+so offers `normal` alone; the others are reachable by name.
+
 Guides describe the **primary visible surface** -- the same surface depth and
 motion describe. An earlier version of this section had normal and albedo taken
 from the first non-delta surface behind a perfect mirror, so that a mirror would

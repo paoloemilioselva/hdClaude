@@ -128,6 +128,38 @@ void HdClaudeRenderBuffer::WriteScalar(const std::vector<float>& values)
     }
 }
 
+void HdClaudeRenderBuffer::WriteData(const std::vector<float>& values,
+                                     std::size_t stride, std::size_t offset)
+{
+    const size_t pixels = static_cast<size_t>(_width) * _height;
+    if (pixels == 0 || stride == 0 || offset >= stride ||
+        values.size() < pixels * stride) {
+        return;
+    }
+    const size_t channels =
+        std::min<size_t>(stride - offset, HdGetComponentCount(_format));
+    const HdFormat component = HdGetComponentFormat(_format);
+    if (component != HdFormatFloat32 && component != HdFormatFloat16) {
+        return;
+    }
+    const size_t pixelSize = HdDataSizeOfFormat(_format);
+
+    for (size_t i = 0; i < pixels; ++i) {
+        char* destination = _data.data() + i * pixelSize;
+        for (size_t c = 0; c < channels; ++c) {
+            const float value = values[i * stride + offset + c];
+            if (component == HdFormatFloat32) {
+                std::memcpy(destination + c * sizeof(float), &value,
+                            sizeof(float));
+            } else {
+                const GfHalf half(value);
+                std::memcpy(destination + c * sizeof(GfHalf), &half,
+                            sizeof(GfHalf));
+            }
+        }
+    }
+}
+
 void HdClaudeRenderBuffer::Write(const std::vector<float>& linearRgba)
 {
     const size_t pixels = static_cast<size_t>(_width) * _height;

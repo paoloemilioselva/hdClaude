@@ -147,7 +147,7 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 | Pixar's KitchenSet | 2026-09-14 | 179.231 s (2m 59.231s) | 1.0 GiB | `00b231edeea1963a6330dc4334268fcf15aa2c1ef9d7d0b7105969923d2d0508` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | Collective Project 001 | 2026-09-14 | 30.799 s (0m 30.799s) | 1.1 GiB | `70efde746960a0effb27c66af8d884e5e4fa64ea9c3433e0957d6b7c4df5cad4` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | OpenPBR Playground | 2026-09-14 | 171.429 s (2m 51.429s) | 12.6 GiB | `4b483618ba3f6b1b5bfabbaaacdece5d31b1c3e0f63a394b1f746b0858b34fbd` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Subdivision Feature Matrix | 2026-09-14 | 15.194 s (0m 15.194s) | 768.0 MiB | `d7ea0a89e68908790ab111b55072da57e472c23ab062a6d64af154529fc8a99c` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Subdivision Feature Matrix | 2026-09-14 | 14.207 s (0m 14.207s) | 768.0 MiB | `d7ea0a89e68908790ab111b55072da57e472c23ab062a6d64af154529fc8a99c` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | New Zealand Height Map | 2026-09-14 | 12.189 s (0m 12.189s) | 480.0 MiB | `8dbf225e903ddef37061b9513c4de0cf6bbe897e65a0b56a5d71488d3cc50ff0` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 6 |
 <!-- gallery-timings:end -->
 

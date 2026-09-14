@@ -45,7 +45,10 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (curveGeometry)
                          (curveSides)
                          (curveSegmentSamples)
-                         (subdivisionLevel));
+                         (subdivisionLevel)
+                         (diffuseAlbedo)
+                         (specularAlbedo)
+                         (roughness));
 
 namespace {
 
@@ -522,6 +525,20 @@ HdAovDescriptor HdClaudeRenderDelegate::GetDefaultAovDescriptor(
     }
     if (name == HdAovTokens->depth) {
         return HdAovDescriptor(HdFormatFloat32, false, VtValue(1.0f));
+    }
+    // The reconstruction guides, as a host can ask for them by name and look
+    // at them (docs/dlss-integration.md 4). Clear values are NVIDIA's sky
+    // defaults, so a pixel nothing was drawn into reads as sky reads.
+    if (name == HdAovTokens->normal || name == _tokens->specularAlbedo) {
+        return HdAovDescriptor(HdFormatFloat32Vec3, false,
+                               VtValue(GfVec3f(0.0f)));
+    }
+    if (name == _tokens->diffuseAlbedo) {
+        return HdAovDescriptor(HdFormatFloat32Vec3, false,
+                               VtValue(GfVec3f(0.5f)));
+    }
+    if (name == _tokens->roughness) {
+        return HdAovDescriptor(HdFormatFloat32, false, VtValue(0.0f));
     }
     if (name == HdAovTokens->primId || name == HdAovTokens->instanceId ||
         name == HdAovTokens->elementId) {
