@@ -343,17 +343,22 @@ void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
     // Curves as segments the traversal kernel intersects, or as tubes of
     // triangles.
     //
-    // Swept by default, and that is a retreat rather than a preference. The
-    // implicit path is the exact shape and costs about thirty-two bytes a
-    // segment against five hundred, but it draws a visible artefact at every
-    // joint between two segments -- a crescent that follows the seam, which on
-    // a groom reads as circular patterns scattered through the fur. A known
-    // artefact should not be what a render does by default, so it is not, until
-    // the cause is found. `HDCLAUDE_CURVE_GEOMETRY=implicit` selects it, which
-    // is also how the two are compared on one scene (roadmap open question 5).
+    // Implicit by default, chosen knowing what it costs.
+    //
+    // It is the exact shape rather than a faceted approximation, about
+    // thirty-two bytes a segment against five hundred, and on ALab's groom it
+    // is 4.6 GiB against 14.2 and 2.9 s of publish against 23.1. It also draws
+    // a crescent at every joint between two segments, which on fur reads as
+    // circular patterns scattered through it (roadmap open question 5).
+    //
+    // The artefact is a defect and is not fixed. Paolo asked for the lighter
+    // path as the default anyway, and on an asset whose swept form does not fit
+    // on the card that is the difference between a render and no render. This
+    // comment is here so the choice stays visible: `swept` is one setting away
+    // and is what the joint artefact is compared against.
     const std::string curveGeometry =
-        TfGetenv("HDCLAUDE_CURVE_GEOMETRY", "swept");
-    const bool implicitCurves = curveGeometry == "implicit";
+        TfGetenv("HDCLAUDE_CURVE_GEOMETRY", "implicit");
+    const bool implicitCurves = curveGeometry != "swept";
 
     _renderParam = std::make_unique<HdClaudeRenderParam>(
         _store.get(), _materialCompiler.get(), _texturePool.get(),
@@ -586,10 +591,11 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         // is flip one in a viewport and look: swept against implicit on a real
         // groom is a comparison no still frame makes for you.
         //
-        // Accepted: swept, implicit. Swept while the implicit path has a known
-        // artefact at segment joints (roadmap open question 5).
+        // Accepted: swept, implicit. Implicit is the default: it is far
+        // lighter, and it draws a known artefact at segment joints (roadmap
+        // open question 5).
         {"Curve geometry", _tokens->curveGeometry,
-         VtValue(std::string(TfGetenv("HDCLAUDE_CURVE_GEOMETRY", "swept")))},
+         VtValue(std::string(TfGetenv("HDCLAUDE_CURVE_GEOMETRY", "implicit")))},
         {"Curve sides", _tokens->curveSides,
          VtValue(TfGetenvInt("HDCLAUDE_CURVE_SIDES", 6))},
         {"Curve segment samples", _tokens->curveSegmentSamples,

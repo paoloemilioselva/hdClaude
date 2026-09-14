@@ -38,7 +38,7 @@ IF "%~1"=="" (
   ECHO   HDCLAUDE_SAMPLES_PER_FRAME     default 4     samples per progressive update
   ECHO   HDCLAUDE_MAX_BOUNCES           default 8     path length
   ECHO   HDCLAUDE_SUBDIVISION_LEVEL     0-6, default 2, 0 disables refinement
-  ECHO   HDCLAUDE_CURVE_GEOMETRY        swept ^(default^) or implicit. Implicit
+  ECHO   HDCLAUDE_CURVE_GEOMETRY        implicit ^(default^) or swept. Implicit
   ECHO                                  intersects each segment as a round cone
   ECHO                                  and is far cheaper, but draws an
   ECHO                                  artefact at segment joints; see the

@@ -1,5 +1,8 @@
 #include "hdclaude/gpu/acceleration_structure.h"
 
+#include <iterator>
+#include <unordered_set>
+
 #include <cstring>
 #include <utility>
 
@@ -749,6 +752,38 @@ void SceneAccelerator::Update(const Scene& scene)
     // Build any prototype we do not already hold, keyed by geometry rather than
     // by index: a publication that reorders prototypes reuses everything.
     _prototypeFingerprints.assign(scene.prototypes.size(), 0);
+
+    // Everything this scene could possibly want, before anything is built.
+    //
+    // The structures that survive are the ones whose geometry is asked for
+    // again, plus the ones whose *topology* is, because those are the
+    // candidates a deforming prototype refits onto. Everything else is released
+    // here rather than at the end.
+    //
+    // The order is the whole point. Building into a second map and freeing the
+    // old one afterwards means both exist at once, and for a scene whose
+    // geometry has wholly changed that is two complete copies of it on the
+    // device: switching ALab's groom from swept tubes to implicit segments
+    // asked for 14.2 GiB of the old and 4.6 GiB of the new together, which is
+    // more than the card has, and the frame died rather than the switch merely
+    // being expensive.
+    {
+        std::unordered_set<std::uint64_t> wantedGeometry;
+        std::unordered_set<std::uint64_t> wantedTopology;
+        for (const MeshPrototype& prototype : scene.prototypes) {
+            if (prototype.indices.empty() && prototype.segments.empty()) {
+                continue;
+            }
+            wantedGeometry.insert(prototype.Fingerprint());
+            wantedTopology.insert(prototype.TopologyFingerprint());
+        }
+        for (auto it = _byFingerprint.begin(); it != _byFingerprint.end();) {
+            const bool keep = wantedGeometry.count(it->first) != 0 ||
+                              wantedTopology.count(it->second.Topology()) != 0;
+            it = keep ? std::next(it) : _byFingerprint.erase(it);
+        }
+    }
+
     std::unordered_map<std::uint64_t, BottomLevelStructure> retained;
 
     // What is held, indexed by the part of a prototype an update may keep. A

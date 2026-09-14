@@ -226,6 +226,8 @@ reversed.
 | 2026-09-10 | Procedural geometry needs no shader binding table, because traversal is a ray *query* | An AABB is only ever a candidate: `rayQueryProceedEXT` hands it to the kernel, which intersects the cone and calls `rayQueryGenerateIntersectionEXT`. That is the same loop in `extend` and in `shadow` and costs no new pipeline stage, which is a dividend of the 2026-09-05 decision to use `VK_KHR_ray_query` in compute rather than a ray-tracing pipeline |
 | 2026-09-10 | Curve geometry defaults to swept again while the implicit path has a known artefact | The implicit path is the better representation by every measure that was taken -- exact shape, a third of the memory, an eighth of the publish time -- and it draws a crescent at every segment joint. A known visual defect should not be what a render does by default, whatever else is true of it. It stays one environment variable away, which is also what makes the two comparable on one scene |
 | 2026-09-10 | Geometry settings are render settings too, and changing one resyncs the stage | Curve geometry, curve sides, curve segment samples and the subdivision level decide what an rprim *is*, so unlike a sample count they cannot take effect on the next frame -- the prototypes were built the old way during Sync. The render pass is the only part of the delegate holding a render index, so it compares them each execute and marks every rprim dirty when one moves. They are settings and not only environment variables because the interesting thing to do with them is flip one in a viewport and look, which is how swept and implicit curves are judged against each other on a real groom |
+| 2026-09-14 | Curve geometry defaults to implicit, reversing the entry above, with the joint artefact still unfixed | Paolo asked for the lighter path as the default. On ALab it is 4.6 GiB against 14.2 and 2.9 s of publish against 23.1, and on an asset whose swept form does not fit on the card that is the difference between a render and none. The crescent at segment joints remains a known defect (open question 5), and `swept` stays one setting away as what it is compared against. The delegate's descriptor and the render pass share the one default -- a pass that read an unset setting as swept rebuilt every curve on its first frame -- and a value that is neither `implicit` nor `swept` renders implicit and is reported once by name |
+| 2026-09-14 | Structures a publication cannot use are released *before* its new ones are built | Building into a second map and freeing the old one afterwards holds both at once, and for a scene whose geometry has wholly changed that is two complete copies on the device: switching ALab's groom from swept to implicit asked for 14.2 GiB and 4.6 GiB together and the frame died. What survives is any structure whose geometry fingerprint is asked for again, or whose topology fingerprint is, since those are what a deforming prototype refits onto |
 | 2026-09-05 | The pbrlib override set is all-or-nothing | MaterialX resolves `#include` relative to the including file, so mixing one upstream closure with one hdClaude closure emits `struct ClosureData` twice. The set is exactly the 22 pbrlib files that include `mx_closure_type.glsl`; no stdlib file does |
 
 ## Open questions
@@ -256,8 +258,9 @@ Tracked here rather than decided prematurely.
    constant-radius chain of segments renders with a dark crescent at each joint,
    where the same capsule described as *one* segment renders perfectly smooth
    (rms 0.0089 between the two descriptions, 0.56% of pixels, all of it at the
-   seams). `HDCLAUDE_CURVE_GEOMETRY` therefore defaults to `swept` until this is
-   found.
+   seams). `HDCLAUDE_CURVE_GEOMETRY` defaulted to `swept` while this was open, and
+   defaults to `implicit` since 2026-09-14 at Paolo's request, with the defect
+   still unfixed -- see the decision log.
 
    What has been excluded, each with the install verified afterwards -- several
    early attempts were run against a stale installed shader and are void:

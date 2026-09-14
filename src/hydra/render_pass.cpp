@@ -256,7 +256,20 @@ void HdClaudeRenderPass::_Execute(
     {
         const std::string curveGeometry =
             _renderDelegate->GetRenderSetting<std::string>(
-                _tokens->curveGeometry, std::string("swept"));
+                _tokens->curveGeometry, std::string("implicit"));
+        // Anything but `swept` is the default, implicit, and says so once. The
+        // fallback has to agree with the delegate's: a pass that read an
+        // unset setting as swept would rebuild every curve on its first frame,
+        // holding both forms at once on exactly the asset the default exists
+        // for.
+        if (curveGeometry != "swept" && curveGeometry != "implicit" &&
+            _reportedCurveGeometry != curveGeometry) {
+            _reportedCurveGeometry = curveGeometry;
+            TF_WARN(
+                "hdClaude: \"%s\" is not a curve geometry, so curves render "
+                "implicit. Use one of: implicit, swept.",
+                curveGeometry.c_str());
+        }
         const int curveSides = std::clamp(
             _renderDelegate->GetRenderSetting<int>(_tokens->curveSides, 6), 3,
             64);
@@ -271,7 +284,7 @@ void HdClaudeRenderPass::_Execute(
         auto* param = static_cast<HdClaudeRenderParam*>(
             _renderDelegate->GetRenderParam());
         if (param != nullptr &&
-            param->SetGeometrySettings(curveGeometry == "implicit", curveSides,
+            param->SetGeometrySettings(curveGeometry != "swept", curveSides,
                                        curveSegmentSamples, subdivision) &&
             GetRenderIndex() != nullptr) {
             HdChangeTracker& tracker = GetRenderIndex()->GetChangeTracker();
