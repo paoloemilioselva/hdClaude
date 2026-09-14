@@ -3765,6 +3765,68 @@ int main()
             }
         }
 
+        // --- The specular hit distance guide -----------------------------------
+        //
+        // A mirror turned 45 degrees about Y, seen straight down -Z, reflects
+        // the view to exactly +X; a wall facing it at x = 1.5 is then 1.5 away
+        // along the specular probe from the mirror's centre, which is where the
+        // centre pixel's primary surface is. The wall is edge-on to the camera,
+        // so it cannot be the primary surface of that pixel. A pixel that
+        // misses everything holds FP16_MAX, and a surface whose reflection
+        // meets nothing does too.
+        {
+            constexpr std::uint32_t kSize = 64;
+            constexpr float kWall = 1.5f;
+            const float quarter = 0.25f * 3.14159265f;
+            Transform3x4 mirror;
+            mirror.m[0] = std::cos(quarter);   mirror.m[2] = std::sin(quarter);
+            mirror.m[8] = -std::sin(quarter);  mirror.m[10] = std::cos(quarter);
+            // A quad turned -90 degrees about Y faces -X, and moved to x = 1.5.
+            Transform3x4 wall;
+            wall.m[0] = 0.0f;  wall.m[2] = -1.0f;  wall.m[3] = kWall;
+            wall.m[8] = 1.0f;  wall.m[10] = 0.0f;
+
+            const auto hitDistanceOf = [&](bool withWall, std::uint64_t revision) {
+                Scene scene;
+                scene.prototypes.push_back(MakeQuad());
+                scene.instances.push_back({0, mirror, 0, true});
+                if (withWall) {
+                    scene.instances.push_back({0, wall, 0, true});
+                }
+                tracer.SetScene(scene, {materials[0]});
+                hdclaude::FrameDescription frame;
+                frame.width = kSize;
+                frame.height = kSize;
+                frame.camera = LookDownZWithClip(4.0f, 0.1f, 100.0f);
+                frame.mode = hdclaude::RenderMode::Reference;
+                frame.sceneRevision = revision;
+                frame.settings.samplesPerPixel = 1;
+                frame.settings.maxBounces = 1;
+                return tracer.EndFrame(tracer.BeginFrame(frame)).specularHitDistance;
+            };
+
+            const std::size_t centre = (kSize / 2) * kSize + kSize / 2;
+            const std::vector<float> walled = hitDistanceOf(true, 71);
+            const std::vector<float> open = hitDistanceOf(false, 72);
+            CHECK_EQ(walled.size(), std::size_t(kSize) * kSize);
+            CHECK_EQ(open.size(), std::size_t(kSize) * kSize);
+            if (walled.size() == std::size_t(kSize) * kSize &&
+                open.size() == walled.size()) {
+                std::printf("  specular hit distance: %.5f against %.5f, open "
+                            "%.1f, miss %.1f\n",
+                            walled[centre], kWall, open[centre], walled[0]);
+                // Pixel 32 spans x in [0, 4/64] on the mirror, which is where
+                // its probe starts, and a probe starting at x reaches the wall
+                // after 1.5 - x. So the distance lies in [1.5 - 1/16, 1.5],
+                // plus the ray offset and the few thousandths by which a
+                // perspective ray is not exactly -Z.
+                CHECK(walled[centre] > kWall - 0.0625f - 0.005f);
+                CHECK(walled[centre] < kWall + 0.005f);
+                CHECK_EQ(open[centre], 65504.0f);
+                CHECK_EQ(walled[0], 65504.0f);
+            }
+        }
+
         // --- A shadow ray is not stopped by a curve beyond its light ----------
         //
         // The other half of the same fault. A shadow ray runs from a surface to

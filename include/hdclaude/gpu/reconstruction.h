@@ -304,6 +304,23 @@ struct ReconstructionFrame {
     ReconstructionTexture diffuseAlbedo;
     ReconstructionTexture specularAlbedo;
 
+    /// World-space distance along the specular probe from the primary
+    /// surface, FP16_MAX where it met nothing (docs/dlss-integration.md 4).
+    /// Ray Reconstruction reads it with the two matrices below to reproject
+    /// reflections, where it would otherwise have to learn their motion.
+    ReconstructionTexture specularHitDistance;
+
+    /// The frame's camera, without jitter: world to view and view to clip.
+    ///
+    /// In NVIDIA's convention, which is row-major with a row vector on the
+    /// left -- translation in elements 12 to 14, basis vectors as rows -- and
+    /// that is the same sixteen numbers in the same order as a GLSL
+    /// column-major matrix applied to a column vector (Streamline's
+    /// sl_matrix_helpers.h builds a camera with its position in row 3). So
+    /// these are hdClaude's column-major matrices, unconverted.
+    float worldToView[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    float viewToClip[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+
     float jitterX = 0.0f;
     float jitterY = 0.0f;
 

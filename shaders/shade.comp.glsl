@@ -461,6 +461,19 @@ void main()
             vec4(max(hdclaude_bsdf.guideDiffuse, vec3(0.0)), 0.0);
         guideSurface.values[3u * pixel + 2u] =
             vec4(max(hdclaude_bsdf.guideSpecular, vec3(0.0)), 0.0);
+
+        // The probe the specular hit distance is measured along: the view
+        // reflected about the normal the closures answer to, which is the
+        // direction the specular lobe is centred on. Started on the side of the
+        // true surface it leaves by, so a normal map that tilts it below the
+        // triangle does not start it inside the object.
+        vec3 reflected = normalize(reflect(rayDirection, normal));
+        vec3 side = dot(reflected, point.frontGeometricNormal) >= 0.0
+                        ? point.frontGeometricNormal
+                        : -point.frontGeometricNormal;
+        guideSpecularRay.values[2u * pixel] =
+            vec4(hdclaude_offset_ray(point.position, side), 1.0);
+        guideSpecularRay.values[2u * pixel + 1u] = vec4(reflected, 65504.0);
     }
 
     // --- Emission -----------------------------------------------------------

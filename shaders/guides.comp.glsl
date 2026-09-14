@@ -43,8 +43,21 @@ void main()
         guideSurface.values[3u * index] = vec4(0.0);
         guideSurface.values[3u * index + 1u] = vec4(0.5, 0.5, 0.5, 0.0);
         guideSurface.values[3u * index + 2u] = vec4(0.0);
+        guideSpecularRay.values[2u * index] = vec4(0.0);
+        guideSpecularRay.values[2u * index + 1u] = vec4(0.0, 0.0, 0.0, 65504.0);
         return;
     }
+
+    // Cleared for a hit as for a miss, and before anything below can return:
+    // `shade` overwrites the surface guides and records a probe for a hit whose
+    // material it runs, and a pixel it never reaches -- or a hit behind the
+    // camera, which returns just below -- is not left holding a previous
+    // frame's surface.
+    guideSurface.values[3u * index] = vec4(0.0);
+    guideSurface.values[3u * index + 1u] = vec4(0.5, 0.5, 0.5, 0.0);
+    guideSurface.values[3u * index + 2u] = vec4(0.0);
+    guideSpecularRay.values[2u * index] = vec4(0.0);
+    guideSpecularRay.values[2u * index + 1u] = vec4(0.0, 0.0, 0.0, 65504.0);
 
     // `extend` leaves the hit point in the path's origin, so the position is
     // read rather than recomputed -- one fewer place for the intersection and
@@ -70,13 +83,6 @@ void main()
     // Rigid only: a mesh whose points changed moved in a way no matrix
     // describes, and this reports the rigid part rather than pretending to the
     // rest.
-    // Cleared for a hit as for a miss: `shade` overwrites it for a hit whose
-    // material it runs, and a pixel it never reaches is not left holding a
-    // previous frame's surface.
-    guideSurface.values[3u * index] = vec4(0.0);
-    guideSurface.values[3u * index + 1u] = vec4(0.5, 0.5, 0.5, 0.0);
-    guideSurface.values[3u * index + 2u] = vec4(0.0);
-
     InstanceGeometry geometry = instances.values[record.x];
     vec3 objectPoint = vec4(hitWorld, 1.0) * geometry.worldToObject;
     vec3 previousWorld = vec4(objectPoint, 1.0) * geometry.previousObjectToWorld;

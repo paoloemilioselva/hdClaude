@@ -154,6 +154,7 @@ guides can work for an arbitrary authored nodegraph.
 | Normal + roughness | `R16G16B16A16_SFLOAT` | world-space shading normal; linear roughness, sqrt of GGX alpha |
 | Diffuse albedo | `R16G16B16A16_SFLOAT` | the diffuse component of reflectance; sky (0.5, 0.5, 0.5) |
 | Specular albedo | `R16G16B16A16_SFLOAT` | the specular reflectivity for this view; sky (0, 0, 0) |
+| Specular hit distance | `R32_SFLOAT` | world-space distance along the specular lobe's centre from the primary surface; nothing met FP16_MAX |
 
 The definitions are NVIDIA's, from the DLSS-RR Integration Guide (August 2026,
 3.4.1-3.4.4 and the appendix). Diffuse albedo is "the diffuse component of
@@ -197,6 +198,18 @@ auto-exposure (Integration Guide 3.7), so neither is handed to it. Its presets
 are its own: `transformer` selects E, the latest transformer model;
 `transformer-alt` D; and `stable`, which names Super Resolution's convolutional
 model, builds Ray Reconstruction's default and says so.
+
+Ray Reconstruction is also given the specular hit distance, because hdClaude
+supplies no specular motion vectors (Integration Guide 3.4.8, 3.4.9), with the
+frame's jitter-free world-to-view and view-to-clip. The guide does not say which
+specular ray to measure; a path samples one lobe, so its own ray is diffuse at
+many pixels and noisy at all of them, and a noisy guide confuses reconstruction
+(3.5). So `shade` records a probe along the view reflected about the closures'
+shading normal -- the centre of the specular lobe -- and `specular_hit` traces
+it against the same geometry, curves and lights a path sees. The matrices are
+handed over as hdClaude's column-major ones: NVIDIA's are row-major with the
+vector on the left and the translation in row 3, which is the same sixteen
+numbers in the same order.
 
 Guides describe the **primary visible surface** -- the same surface depth and
 motion describe. An earlier version of this section had normal and albedo taken

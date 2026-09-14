@@ -56,6 +56,10 @@ layout(set = 0, binding = 7, scalar) readonly buffer GuideSurface {
 layout(set = 0, binding = 8, rgba16f) uniform writeonly image2D normalRoughnessImage;
 layout(set = 0, binding = 9, rgba16f) uniform writeonly image2D diffuseAlbedoImage;
 layout(set = 0, binding = 10, rgba16f) uniform writeonly image2D specularAlbedoImage;
+layout(set = 0, binding = 11, scalar) readonly buffer GuideSpecularRay {
+    vec4 values[];
+} guideSpecularRay;
+layout(set = 0, binding = 12, r32f) uniform writeonly image2D specularHitDistanceImage;
 
 layout(push_constant) uniform Params {
     uvec2 extent;
@@ -108,6 +112,8 @@ void main()
                    vec4(guideSurface.values[3u * index + 1u].rgb, 1.0));
         imageStore(specularAlbedoImage, coordinate,
                    vec4(guideSurface.values[3u * index + 2u].rgb, 1.0));
+        imageStore(specularHitDistanceImage, coordinate,
+                   vec4(guideSpecularRay.values[2u * index + 1u].w, 0.0, 0.0, 0.0));
 
         // Rec.709 on the linear colour actually handed over, which is what the
         // exposure has to be an exposure *of*. A non-finite pixel is excluded

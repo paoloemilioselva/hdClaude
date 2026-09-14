@@ -181,6 +181,16 @@ layout(set = 0, binding = 28, scalar) buffer GuideMotion { vec2 values[]; } guid
 // a diffuse albedo of one half and no specular albedo.
 layout(set = 0, binding = 29, scalar) buffer GuideSurface { vec4 values[]; } guideSurface;
 
+// The specular hit distance guide and the probe ray it is measured along, two
+// vec4 per pixel:
+//
+//   [2i]    probe origin, and 1 in w where `shade` recorded a probe
+//   [2i+1]  probe direction, and the distance it met in w
+//
+// `guides` clears every pixel to no probe and NVIDIA's sky value (FP16_MAX),
+// `shade` records a probe at each primary hit, and `specular_hit` traces them.
+layout(set = 0, binding = 30, scalar) buffer GuideSpecularRay { vec4 values[]; } guideSpecularRay;
+
 
 
 // Hit record written by `extend` and read by `shade`.

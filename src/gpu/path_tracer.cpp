@@ -83,6 +83,7 @@ std::vector<BindingDescription> KernelBindings()
     bindings.push_back(storage(27, "guideDepth"));
     bindings.push_back(storage(28, "guideMotion"));
     bindings.push_back(storage(29, "guideSurface"));
+    bindings.push_back(storage(30, "guideSpecularRay"));
     bindings.push_back(storage(22, "environmentDistribution"));
     bindings.push_back(storage(23, "pathWavelengths"));
     bindings.push_back(storage(24, "spectralTables"));
@@ -229,6 +230,51 @@ VulkanBuffer MakeStorage(VulkanAllocator& allocator, VkDeviceSize size,
     description.domain = BufferDomain::DeviceLocal;
     description.debugName = name;
     return VulkanBuffer(allocator, description);
+}
+
+/// Column-major 4x4 product, `out = a * b`.
+void MultiplyMatrix4(const float a[16], const float b[16], float out[16])
+{
+    float result[16];
+    for (int column = 0; column < 4; ++column) {
+        for (int row = 0; row < 4; ++row) {
+            double sum = 0.0;
+            for (int k = 0; k < 4; ++k) {
+                sum += double(a[k * 4 + row]) * double(b[column * 4 + k]);
+            }
+            result[column * 4 + row] = float(sum);
+        }
+    }
+    std::memcpy(out, result, sizeof(result));
+}
+
+/// General 4x4 inverse by cofactors, in double. A camera's placement is not
+/// assumed rigid: a host may hand one with scale in it, and the inverse has to
+/// be the inverse of what was handed.
+void InvertMatrix4(const float m[16], float out[16])
+{
+    double a[16];
+    for (int i = 0; i < 16; ++i) a[i] = m[i];
+    double inv[16];
+    inv[0] = a[5]*a[10]*a[15] - a[5]*a[11]*a[14] - a[9]*a[6]*a[15] + a[9]*a[7]*a[14] + a[13]*a[6]*a[11] - a[13]*a[7]*a[10];
+    inv[4] = -a[4]*a[10]*a[15] + a[4]*a[11]*a[14] + a[8]*a[6]*a[15] - a[8]*a[7]*a[14] - a[12]*a[6]*a[11] + a[12]*a[7]*a[10];
+    inv[8] = a[4]*a[9]*a[15] - a[4]*a[11]*a[13] - a[8]*a[5]*a[15] + a[8]*a[7]*a[13] + a[12]*a[5]*a[11] - a[12]*a[7]*a[9];
+    inv[12] = -a[4]*a[9]*a[14] + a[4]*a[10]*a[13] + a[8]*a[5]*a[14] - a[8]*a[6]*a[13] - a[12]*a[5]*a[10] + a[12]*a[6]*a[9];
+    inv[1] = -a[1]*a[10]*a[15] + a[1]*a[11]*a[14] + a[9]*a[2]*a[15] - a[9]*a[3]*a[14] - a[13]*a[2]*a[11] + a[13]*a[3]*a[10];
+    inv[5] = a[0]*a[10]*a[15] - a[0]*a[11]*a[14] - a[8]*a[2]*a[15] + a[8]*a[3]*a[14] + a[12]*a[2]*a[11] - a[12]*a[3]*a[10];
+    inv[9] = -a[0]*a[9]*a[15] + a[0]*a[11]*a[13] + a[8]*a[1]*a[15] - a[8]*a[3]*a[13] - a[12]*a[1]*a[11] + a[12]*a[3]*a[9];
+    inv[13] = a[0]*a[9]*a[14] - a[0]*a[10]*a[13] - a[8]*a[1]*a[14] + a[8]*a[2]*a[13] + a[12]*a[1]*a[10] - a[12]*a[2]*a[9];
+    inv[2] = a[1]*a[6]*a[15] - a[1]*a[7]*a[14] - a[5]*a[2]*a[15] + a[5]*a[3]*a[14] + a[13]*a[2]*a[7] - a[13]*a[3]*a[6];
+    inv[6] = -a[0]*a[6]*a[15] + a[0]*a[7]*a[14] + a[4]*a[2]*a[15] - a[4]*a[3]*a[14] - a[12]*a[2]*a[7] + a[12]*a[3]*a[6];
+    inv[10] = a[0]*a[5]*a[15] - a[0]*a[7]*a[13] - a[4]*a[1]*a[15] + a[4]*a[3]*a[13] + a[12]*a[1]*a[7] - a[12]*a[3]*a[5];
+    inv[14] = -a[0]*a[5]*a[14] + a[0]*a[6]*a[13] + a[4]*a[1]*a[14] - a[4]*a[2]*a[13] - a[12]*a[1]*a[6] + a[12]*a[2]*a[5];
+    inv[3] = -a[1]*a[6]*a[11] + a[1]*a[7]*a[10] + a[5]*a[2]*a[11] - a[5]*a[3]*a[10] - a[9]*a[2]*a[7] + a[9]*a[3]*a[6];
+    inv[7] = a[0]*a[6]*a[11] - a[0]*a[7]*a[10] - a[4]*a[2]*a[11] + a[4]*a[3]*a[10] + a[8]*a[2]*a[7] - a[8]*a[3]*a[6];
+    inv[11] = -a[0]*a[5]*a[11] + a[0]*a[7]*a[9] + a[4]*a[1]*a[11] - a[4]*a[3]*a[9] - a[8]*a[1]*a[7] + a[8]*a[3]*a[5];
+    inv[15] = a[0]*a[5]*a[10] - a[0]*a[6]*a[9] - a[4]*a[1]*a[10] + a[4]*a[2]*a[9] + a[8]*a[1]*a[6] - a[8]*a[2]*a[5];
+    const double det = a[0]*inv[0] + a[1]*inv[4] + a[2]*inv[8] + a[3]*inv[12];
+    const double scale = det != 0.0 ? 1.0 / det : 0.0;
+    for (int i = 0; i < 16; ++i) out[i] = float(inv[i] * scale);
 }
 
 /// Invert a 3x4 rigid-plus-scale transform.
@@ -417,6 +463,7 @@ PathTracer::PathTracer(const VulkanContext& context, VulkanAllocator& allocator,
     _shadow = build("shadow.comp.glsl", 0);
     _film = build("film.comp.glsl", 0);
     _guides = build("guides.comp.glsl", 0);
+    _specularHit = build("specular_hit.comp.glsl", 0);
 
     _accelerator = std::make_unique<SceneAccelerator>(context, allocator);
 
@@ -946,6 +993,8 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
         // albedo.
         VulkanBuffer guideSurface =
             MakeStorage(_allocator, paths * 48, "guide.surface");
+        VulkanBuffer guideSpecularRay =
+            MakeStorage(_allocator, paths * 32, "guide.specularRay");
         // Eight uints: activeCount, nextActiveCount, shadowCount, a pad, the two
         // ray accumulators, and the two hashes -- over what the rays were and over
         // what they hit. Everything past byte 16 is per call rather than per
@@ -993,6 +1042,11 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
         surfaceReadbackDescription.debugName = "guide.surfaceReadback";
         VulkanBuffer surfaceReadback(_allocator, surfaceReadbackDescription);
 
+        BufferDescription specularRayReadbackDescription = guideReadbackDescription;
+        specularRayReadbackDescription.size = paths * 32;
+        specularRayReadbackDescription.debugName = "guide.specularRayReadback";
+        VulkanBuffer specularRayReadback(_allocator, specularRayReadbackDescription);
+
         BufferDescription readbackDescription;
         readbackDescription.size = paths * 16;
         readbackDescription.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -1014,6 +1068,7 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
         slot.guideDepth = std::move(guideDepth);
         slot.guideMotion = std::move(guideMotion);
         slot.guideSurface = std::move(guideSurface);
+        slot.guideSpecularRay = std::move(guideSpecularRay);
         slot.counters = std::move(counters);
         slot.rayReadback = std::move(rayReadback);
         slot.activeQueue = std::move(activeQueue);
@@ -1025,6 +1080,7 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
         slot.guideReadback = std::move(guideReadback);
         slot.motionReadback = std::move(motionReadback);
         slot.surfaceReadback = std::move(surfaceReadback);
+        slot.specularRayReadback = std::move(specularRayReadback);
         }
 
     // The film is shared, so it is built once outside the loop.
@@ -1089,6 +1145,7 @@ void PathTracer::WriteDescriptors(VkDescriptorSet set,
     pipeline.WriteBuffer(set, 27, slot.guideDepth);
     pipeline.WriteBuffer(set, 28, slot.guideMotion);
     pipeline.WriteBuffer(set, 29, slot.guideSurface);
+    pipeline.WriteBuffer(set, 30, slot.guideSpecularRay);
     pipeline.WriteBuffer(set, 22, _environmentDistribution);
     pipeline.WriteBuffer(set, 23, slot.wavelengths);
     pipeline.WriteBuffer(set, 24, _spectralTables);
@@ -1284,6 +1341,8 @@ bool PathTracer::EnsureReconstructionImages(
         add(8, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, "normalRoughnessImage");
         add(9, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, "diffuseAlbedoImage");
         add(10, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, "specularAlbedoImage");
+        add(11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, "guideSpecularRay");
+        add(12, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, "specularHitDistanceImage");
 
         const std::string source =
             LoadKernel(_shaderDirectory, "reconstruct_inputs.comp.glsl");
@@ -1393,6 +1452,9 @@ bool PathTracer::EnsureReconstructionImages(
     _reconstructSpecularAlbedo = makeImage(
         resolution.renderWidth, resolution.renderHeight,
         VK_FORMAT_R16G16B16A16_SFLOAT, kInputUsage, "reconstruct.specularAlbedo");
+    _reconstructSpecularHitDistance = makeImage(
+        resolution.renderWidth, resolution.renderHeight, VK_FORMAT_R32_SFLOAT,
+        kInputUsage, "reconstruct.specularHitDistance");
     // Storage, because NGX refuses a read-write resource whose image was not
     // created with it; transfer-destination, because DLSS clears the output
     // itself before writing; transfer-source, because this is where the frame
@@ -1451,6 +1513,8 @@ bool PathTracer::EnsureReconstructionImages(
                                        _reconstructDiffuseAlbedo);
     _reconstructPack.WriteStorageImage(_reconstructSet, 10,
                                        _reconstructSpecularAlbedo);
+    _reconstructPack.WriteStorageImage(_reconstructSet, 12,
+                                       _reconstructSpecularHitDistance);
     _reconstructExposure.WriteBuffer(_reconstructExposureSet, 0,
                                      _reconstructLuminance);
     _reconstructExposure.WriteStorageImage(_reconstructExposureSet, 1,
@@ -1479,7 +1543,8 @@ bool PathTracer::EnsureReconstructionImages(
 
 std::vector<float> PathTracer::Reconstruct(
     const FrameSlot& slot, const ReconstructionResolution& resolution,
-    const RenderSettings& settings, bool historyReset)
+    const RenderSettings& settings, bool historyReset,
+    const RenderCamera& camera)
 {
     std::string reason;
     if (!EnsureReconstructionImages(resolution, &reason)) {
@@ -1494,6 +1559,7 @@ std::vector<float> PathTracer::Reconstruct(
     _reconstructPack.WriteBuffer(_reconstructSet, 1, slot.guideDepth);
     _reconstructPack.WriteBuffer(_reconstructSet, 2, slot.guideMotion);
     _reconstructPack.WriteBuffer(_reconstructSet, 7, slot.guideSurface);
+    _reconstructPack.WriteBuffer(_reconstructSet, 11, slot.guideSpecularRay);
 
     const std::uint32_t extent[2] = {resolution.renderWidth,
                                      resolution.renderHeight};
@@ -1517,6 +1583,12 @@ std::vector<float> PathTracer::Reconstruct(
     frame.normalRoughness = describe(_reconstructNormalRoughness);
     frame.diffuseAlbedo = describe(_reconstructDiffuseAlbedo);
     frame.specularAlbedo = describe(_reconstructSpecularAlbedo);
+    frame.specularHitDistance = describe(_reconstructSpecularHitDistance);
+    // World to view is the inverse of the camera's placement, and view to clip
+    // is the host's world-to-clip taken back through that placement, so the
+    // two compose to exactly the projection the depth guide was written with.
+    InvertMatrix4(camera.cameraToWorld, frame.worldToView);
+    MultiplyMatrix4(camera.worldToClip, camera.cameraToWorld, frame.viewToClip);
     if (resolution.exposure == ReconstructionExposure::Measured) {
         frame.exposure = describe(_reconstructExposureImage);
     }
@@ -1535,7 +1607,8 @@ std::vector<float> PathTracer::Reconstruct(
         for (const VulkanImage* image :
              {&_reconstructColor, &_reconstructDepth, &_reconstructMotion,
               &_reconstructExposureImage, &_reconstructNormalRoughness,
-              &_reconstructDiffuseAlbedo, &_reconstructSpecularAlbedo}) {
+              &_reconstructDiffuseAlbedo, &_reconstructSpecularAlbedo,
+              &_reconstructSpecularHitDistance}) {
             image->RecordBarrier(command, VK_IMAGE_LAYOUT_UNDEFINED,
                                  VK_IMAGE_LAYOUT_GENERAL,
                                  VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
@@ -1578,7 +1651,8 @@ std::vector<float> PathTracer::Reconstruct(
         for (const VulkanImage* image :
              {&_reconstructColor, &_reconstructDepth, &_reconstructMotion,
               &_reconstructExposureImage, &_reconstructNormalRoughness,
-              &_reconstructDiffuseAlbedo, &_reconstructSpecularAlbedo}) {
+              &_reconstructDiffuseAlbedo, &_reconstructSpecularAlbedo,
+              &_reconstructSpecularHitDistance}) {
             image->RecordBarrier(command, VK_IMAGE_LAYOUT_GENERAL,
                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1751,6 +1825,7 @@ FrameHandle PathTracer::BeginFrame(const FrameDescription& description)
     _pendingFrame.normalRoughness = std::move(_lastNormalRoughness);
     _pendingFrame.diffuseAlbedo = std::move(_lastDiffuseAlbedo);
     _pendingFrame.specularAlbedo = std::move(_lastSpecularAlbedo);
+    _pendingFrame.specularHitDistance = std::move(_lastSpecularHitDistance);
 
     if (plan.active) {
         // The traced image is what the backend is *given*, by way of the film
@@ -1761,7 +1836,7 @@ FrameHandle PathTracer::BeginFrame(const FrameDescription& description)
         // wrong size and never a black image.
         std::vector<float> reconstructed =
             Reconstruct(_slots[_lastSlot], plan.resolution, settings,
-                        _pendingFrame.historyReset);
+                        _pendingFrame.historyReset, description.camera);
         if (!reconstructed.empty()) {
             _pendingFrame.image = std::move(reconstructed);
             _pendingFrame.reconstructed = true;
@@ -1849,6 +1924,7 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
         _shadow.ResetSets();
         _film.ResetSets();
         _guides.ResetSets();
+        _specularHit.ResetSets();
         for (ComputePipeline& pipeline : _shade) {
             pipeline.ResetSets();
         }
@@ -1868,6 +1944,7 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
             other.shadowSet = _shadow.AllocateSet();
             other.filmSet = _film.AllocateSet();
             other.guidesSet = _guides.AllocateSet();
+            other.specularHitSet = _specularHit.AllocateSet();
             other.shadeSets.reserve(_shade.size());
             for (ComputePipeline& pipeline : _shade) {
                 other.shadeSets.push_back(pipeline.AllocateSet());
@@ -1881,6 +1958,7 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
             WriteDescriptors(other.shadowSet, _shadow, other);
             WriteDescriptors(other.filmSet, _film, other);
             WriteDescriptors(other.guidesSet, _guides, other);
+            WriteDescriptors(other.specularHitSet, _specularHit, other);
             for (std::size_t i = 0; i < _shade.size(); ++i) {
                 // Each material's set carries its own textures, which is what
                 // lets the generator number a material's samplers from zero.
@@ -1899,6 +1977,7 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     const VkDescriptorSet shadowSet = slot.shadowSet;
     const VkDescriptorSet filmSet = slot.filmSet;
     const VkDescriptorSet guidesSet = slot.guidesSet;
+    const VkDescriptorSet specularHitSet = slot.specularHitSet;
     const std::vector<VkDescriptorSet>& shadeSets = slot.shadeSets;
 
     // Clear the film once; samples accumulate into it. A progressive caller
@@ -2181,6 +2260,15 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
                     Barrier(command);
                 }
 
+                // The specular hit distance, from the probes the first
+                // bounce's shading recorded and before the next bounce's
+                // extend moves anything.
+                if (bounce == 0) {
+                    _specularHit.Dispatch(command, specularHitSet, pixelGroupsX,
+                                          pixelGroupsY);
+                    Barrier(command);
+                }
+
                 stamp(base + 9);
                 stamp(base + 10);
                 _prepareDispatch.Dispatch(command, prepareSet, 1, 1, 1,
@@ -2271,6 +2359,11 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
         vkCmdCopyBuffer(command, slot.guideSurface.Handle(),
                         slot.surfaceReadback.Handle(), 1, &surface);
 
+        VkBufferCopy specularRay{};
+        specularRay.size = static_cast<VkDeviceSize>(paths) * 32;
+        vkCmdCopyBuffer(command, slot.guideSpecularRay.Handle(),
+                        slot.specularRayReadback.Handle(), 1, &specularRay);
+
         VkBufferCopy rays{};
         rays.srcOffset = 16;
         rays.size = 16;
@@ -2308,6 +2401,12 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
             std::memcpy(&_lastNormalRoughness[i * 4], s, 4 * sizeof(float));
             std::memcpy(&_lastDiffuseAlbedo[i * 3], s + 4, 3 * sizeof(float));
             std::memcpy(&_lastSpecularAlbedo[i * 3], s + 8, 3 * sizeof(float));
+        }
+        const auto* probes =
+            static_cast<const float*>(slot.specularRayReadback.MappedData());
+        _lastSpecularHitDistance.assign(pixels, 65504.0f);
+        for (std::size_t i = 0; i < pixels; ++i) {
+            _lastSpecularHitDistance[i] = probes[i * 8 + 7];
         }
     }
 

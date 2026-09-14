@@ -8,7 +8,9 @@
 
 #include "hdclaude/gpu/reconstruction.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <iterator>
 #include <cstdlib>
 #include <memory>
 #include <utility>
@@ -735,7 +737,7 @@ class NgxBackend final : public ReconstructionBackend {
         if (!frame.color.Valid() || !frame.depth.Valid() ||
             !frame.motion.Valid() || !frame.output.Valid() ||
             !frame.normalRoughness.Valid() || !frame.diffuseAlbedo.Valid() ||
-            !frame.specularAlbedo.Valid()) {
+            !frame.specularAlbedo.Valid() || !frame.specularHitDistance.Valid()) {
             std::fprintf(stderr,
                          "hdClaude: Ray Reconstruction was handed a frame "
                          "without its guides and reconstructed nothing\n");
@@ -749,6 +751,15 @@ class NgxBackend final : public ReconstructionBackend {
         NVSDK_NGX_Resource_VK normals = ToNgx(frame.normalRoughness, false);
         NVSDK_NGX_Resource_VK diffuse = ToNgx(frame.diffuseAlbedo, false);
         NVSDK_NGX_Resource_VK specular = ToNgx(frame.specularAlbedo, false);
+        NVSDK_NGX_Resource_VK hitDistance =
+            ToNgx(frame.specularHitDistance, false);
+        // Copied because the SDK takes them as mutable pointers.
+        float worldToView[16];
+        float viewToClip[16];
+        std::copy(std::begin(frame.worldToView), std::end(frame.worldToView),
+                  worldToView);
+        std::copy(std::begin(frame.viewToClip), std::end(frame.viewToClip),
+                  viewToClip);
 
         NVSDK_NGX_VK_DLSSD_Eval_Params eval{};
         eval.pInColor = &color;
@@ -761,6 +772,10 @@ class NgxBackend final : public ReconstructionBackend {
         eval.pInRoughness = nullptr;
         eval.pInDiffuseAlbedo = &diffuse;
         eval.pInSpecularAlbedo = &specular;
+        // With the matrices it is read against (Integration Guide 3.4.9).
+        eval.pInSpecularHitDistance = &hitDistance;
+        eval.pInWorldToViewMatrix = worldToView;
+        eval.pInViewToClipMatrix = viewToClip;
         // Negated, for the reason Super Resolution's is.
         eval.InJitterOffsetX = -frame.jitterX;
         eval.InJitterOffsetY = -frame.jitterY;

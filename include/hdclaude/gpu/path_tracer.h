@@ -390,6 +390,11 @@ struct FrameResult {
     std::vector<float> diffuseAlbedo;
     std::vector<float> specularAlbedo;
 
+    /// World-space distance along the specular probe from the primary surface,
+    /// one float per pixel of the render extent; 65504, FP16_MAX, where the
+    /// probe met nothing or there was no surface to leave.
+    std::vector<float> specularHitDistance;
+
     bool Valid() const { return width != 0 && height != 0 && !image.empty(); }
 };
 
@@ -612,7 +617,8 @@ class PathTracer {
     std::vector<float> Reconstruct(const FrameSlot& slot,
                                    const ReconstructionResolution& resolution,
                                    const RenderSettings& settings,
-                                   bool historyReset);
+                                   bool historyReset,
+                                   const RenderCamera& camera);
 
 
     /// The trace itself: the body the old Render() was, unchanged.
@@ -698,6 +704,7 @@ class PathTracer {
     ComputePipeline _shadow;
     ComputePipeline _film;
     ComputePipeline _guides;
+    ComputePipeline _specularHit;
     std::vector<ComputePipeline> _shade;
 
     // --- Reconstruction ------------------------------------------------------
@@ -741,6 +748,7 @@ class PathTracer {
     VulkanImage _reconstructNormalRoughness;
     VulkanImage _reconstructDiffuseAlbedo;
     VulkanImage _reconstructSpecularAlbedo;
+    VulkanImage _reconstructSpecularHitDistance;
     VulkanImage _reconstructOutput;
     VulkanBuffer _reconstructReadback;
     /// One luminance partial per workgroup of the packing kernel, and the 1x1
@@ -797,6 +805,7 @@ class PathTracer {
     std::vector<float> _lastNormalRoughness;
     std::vector<float> _lastDiffuseAlbedo;
     std::vector<float> _lastSpecularAlbedo;
+    std::vector<float> _lastSpecularHitDistance;
 
     /// The world-to-clip the previous frame was rendered with, and whether
     /// there was one. Motion is measured against this.
@@ -865,6 +874,9 @@ class PathTracer {
         /// Normal and roughness, diffuse albedo, specular albedo: three vec4
         /// per pixel.
         VulkanBuffer guideSurface;
+        /// Specular probe rays and the distances they met: two vec4 per pixel.
+        VulkanBuffer guideSpecularRay;
+        VulkanBuffer specularRayReadback;
         VulkanBuffer guideReadback;
         VulkanBuffer motionReadback;
         VulkanBuffer surfaceReadback;
@@ -887,6 +899,7 @@ class PathTracer {
         VkDescriptorSet shadowSet = VK_NULL_HANDLE;
         VkDescriptorSet filmSet = VK_NULL_HANDLE;
         VkDescriptorSet guidesSet = VK_NULL_HANDLE;
+        VkDescriptorSet specularHitSet = VK_NULL_HANDLE;
         std::vector<VkDescriptorSet> shadeSets;
 
         /// The resource generation these sets were written against. Zero means
