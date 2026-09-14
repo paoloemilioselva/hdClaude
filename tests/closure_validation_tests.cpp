@@ -35,10 +35,12 @@
 #include <MaterialXGenShader/Shader.h>
 #include <MaterialXGenShader/Util.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <cstdio>
 #include <fstream>
+#include <functional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -60,6 +62,10 @@ struct PushParams {
 
 // Must match mtlx/pbrlib/genglsl_pt/lib/mx_closure_type.glsl.
 constexpr std::uint32_t kClosureReflection = 1;
+// Not a MaterialX closure type: the harness's request to evaluate each direction
+// the way `shade` does, REFLECTION in front of the normal and TRANSMISSION
+// behind it.
+constexpr std::uint32_t kClosureBySide = 0;
 
 std::string ReadFile(const char* path)
 {
@@ -131,6 +137,35 @@ struct Measurement {
     std::string error;
 };
 
+constexpr double kPi = 3.14159265358979323846;
+
+// The chi-squared test's resolution: cells over the sphere, and quadrature
+// points per side inside each. Theta is split evenly so that the horizon lies
+// exactly on a cell boundary -- a reflection lobe's density jumps to zero there,
+// and a cell straddling a discontinuity is integrated worst by a regular grid.
+constexpr std::uint32_t kChiThetaBins = 20;
+constexpr std::uint32_t kChiPhiBins = 40;
+constexpr std::uint32_t kChiSubdivisions = 24;
+
+struct ChiSquareParams {
+    std::uint32_t count;
+    std::uint32_t seed;
+    float viewTheta;
+    std::uint32_t mode;
+    std::uint32_t thetaBins;
+    std::uint32_t phiBins;
+    std::uint32_t subdivisions;
+    std::uint32_t reserved;
+};
+
+struct ChiSquareHistograms {
+    bool ok = false;
+    std::vector<double> observed;
+    std::vector<double> expected;
+    std::uint32_t kept = 0;
+    std::string error;
+};
+
 class Validator {
   public:
     Validator(const VulkanContext& context, VulkanAllocator& allocator,
@@ -139,50 +174,140 @@ class Validator {
     {
         _libraries = LoadDefaultMaterialXLibraries();
         _kernel = ReadFile(HDCLAUDE_VALIDATION_KERNEL);
+        _chiSquareKernel = ReadFile(HDCLAUDE_CHI2_KERNEL);
     }
 
-    bool Ready() const { return !_kernel.empty() && _libraries != nullptr; }
-
-    Measurement Measure(mx::DocumentPtr doc, const std::string& name,
-                        float viewTheta)
+    bool Ready() const
     {
-        Measurement result;
+        return !_kernel.empty() && !_chiSquareKernel.empty() &&
+               _libraries != nullptr;
+    }
 
-        // --- Generate -------------------------------------------------------
-        std::string source;
-        try {
-            mx::ShaderGeneratorPtr generator = PathTracerShaderGenerator::create();
-            mx::GenContext genContext(generator);
-            genContext.registerSourceCodeSearchPath(DefaultMaterialXSourceSearchPath());
-            // Reduced interface: node values set directly in this test become
-            // compile-time constants rather than members of the material's
-            // public uniform block. The renderer wants the complete interface,
-            // because it drives those parameters; a closure unit test wants the
-            // values baked in, so the measurement cannot be wrong because a
-            // uniform upload was.
-            genContext.getOptions().shaderInterfaceType = mx::SHADER_INTERFACE_REDUCED;
+    /// Where a closure's sampled directions land, and where its reported
+    /// density says they should.
+    ///
+    /// Both are histograms over the same (theta, phi) cells of the whole
+    /// sphere. `observed` counts the samples `shade` would keep -- a finite,
+    /// positive density at the direction chosen -- and `expected` is the
+    /// number of all `kSampleCount` samples the density puts in each cell. On
+    /// the directions a sampler keeps, its distribution has to *be* that
+    /// density, so the two agree in every cell, not only in total.
+    ChiSquareHistograms MeasureDistribution(mx::DocumentPtr doc,
+                                            const std::string& name,
+                                            float viewTheta)
+    {
+        ChiSquareHistograms result;
 
-            std::vector<mx::TypedElementPtr> renderable;
-            mx::findRenderableElements(doc, renderable);
-            if (renderable.empty()) {
-                result.error = "no renderable element";
-                return result;
-            }
-            mx::ShaderPtr shader =
-                generator->generate(name, renderable.front(), genContext);
-            source = shader->getSourceCode(mx::Stage::PIXEL);
-        } catch (const std::exception& error) {
-            result.error = std::string("generation failed: ") + error.what();
+        GlslCompileResult compiled;
+        if (!Build(doc, name, _chiSquareKernel, compiled, result.error)) {
             return result;
         }
 
-        // --- Compile --------------------------------------------------------
-        GlslCompileOptions options;
-        options.moduleName = name;
-        const GlslCompileResult compiled =
-            _compiler.Compile(source + _kernel, options);
-        if (!compiled.ok) {
-            result.error = "compilation failed:\n" + compiled.log;
+        const std::uint32_t cells = kChiThetaBins * kChiPhiBins;
+        const std::uint32_t densityPoints =
+            cells * kChiSubdivisions * kChiSubdivisions;
+        const std::uint32_t sampleSlots = kSampleCount * 4;
+
+        BufferDescription description;
+        description.size =
+            std::uint64_t(std::max(sampleSlots, densityPoints)) * sizeof(float);
+        description.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        description.domain = BufferDomain::HostReadback;
+        description.debugName = "chi2.values";
+        VulkanBuffer values(_allocator, description);
+
+        BufferDescription uniformDescription;
+        uniformDescription.size = 4096;
+        uniformDescription.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        uniformDescription.domain = BufferDomain::HostUpload;
+        uniformDescription.debugName = "chi2.materialUniforms";
+        VulkanBuffer materialUniforms(_allocator, uniformDescription);
+        std::memset(materialUniforms.MappedData(), 0,
+                    static_cast<std::size_t>(uniformDescription.size));
+
+        std::vector<BindingDescription> bindings(2);
+        bindings[0].binding = 0;
+        bindings[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[0].debugName = "values";
+        bindings[1].binding = 1;
+        bindings[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        bindings[1].debugName = "materialUniforms";
+
+        ComputePipeline pipeline(_context, compiled.spirv, bindings,
+                                 sizeof(ChiSquareParams), name + ".chi2");
+        VkDescriptorSet set = pipeline.AllocateSet();
+        pipeline.WriteBuffer(set, 0, values);
+        pipeline.WriteBuffer(set, 1, materialUniforms,
+                             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+
+        const auto run = [&](std::uint32_t mode, std::uint32_t count) {
+            std::memset(values.MappedData(), 0,
+                        static_cast<std::size_t>(description.size));
+            ChiSquareParams push{count,         0x2545F491u,  viewTheta,
+                                 mode,          kChiThetaBins, kChiPhiBins,
+                                 kChiSubdivisions, 0u};
+            const std::uint32_t groups = (count + 63) / 64;
+            _context.SubmitImmediate([&](VkCommandBuffer command) {
+                pipeline.Dispatch(command, set, groups, 1, 1, &push,
+                                  sizeof(push));
+            });
+            return static_cast<const float*>(values.MappedData());
+        };
+
+        const double thetaStep = kPi / kChiThetaBins;
+        const double phiStep = 2.0 * kPi / kChiPhiBins;
+
+        // --- Observed ---------------------------------------------------------
+        result.observed.assign(cells, 0.0);
+        {
+            const float* slots = run(0, kSampleCount);
+            for (std::uint32_t i = 0; i < kSampleCount; ++i) {
+                const float* s = slots + std::size_t(i) * 4;
+                if (s[3] == 0.0f) {
+                    continue;
+                }
+                const double z = std::clamp(double(s[2]), -1.0, 1.0);
+                const double theta = std::acos(z);
+                double phi = std::atan2(double(s[1]), double(s[0]));
+                if (phi < 0.0) {
+                    phi += 2.0 * kPi;
+                }
+                const std::uint32_t t = std::min(
+                    std::uint32_t(theta / thetaStep), kChiThetaBins - 1);
+                const std::uint32_t p =
+                    std::min(std::uint32_t(phi / phiStep), kChiPhiBins - 1);
+                result.observed[t * kChiPhiBins + p] += 1.0;
+                ++result.kept;
+            }
+        }
+
+        // --- Expected ---------------------------------------------------------
+        result.expected.assign(cells, 0.0);
+        {
+            const float* slots = run(1, densityPoints);
+            const std::uint32_t perCell = kChiSubdivisions * kChiSubdivisions;
+            const double pointArea = thetaStep * phiStep / perCell;
+            for (std::uint32_t c = 0; c < cells; ++c) {
+                double integral = 0.0;
+                for (std::uint32_t k = 0; k < perCell; ++k) {
+                    integral += double(slots[std::size_t(c) * perCell + k]);
+                }
+                result.expected[c] = integral * pointArea * kSampleCount;
+            }
+        }
+
+        result.ok = true;
+        return result;
+    }
+
+    Measurement Measure(mx::DocumentPtr doc, const std::string& name,
+                        float viewTheta,
+                        std::uint32_t closureType = kClosureReflection)
+    {
+        Measurement result;
+
+        GlslCompileResult compiled;
+        if (!Build(doc, name, _kernel, compiled, result.error)) {
             return result;
         }
 
@@ -223,7 +348,7 @@ class Validator {
         pipeline.WriteBuffer(set, 1, materialUniforms,
                              VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
 
-        PushParams push{kSampleCount, 0x9E3779B9u, viewTheta, kClosureReflection};
+        PushParams push{kSampleCount, 0x9E3779B9u, viewTheta, closureType};
         const std::uint32_t groups = (kSampleCount + 63) / 64;
 
         _context.SubmitImmediate([&](VkCommandBuffer command) {
@@ -269,11 +394,55 @@ class Validator {
     }
 
   private:
+    /// Generate `doc` for the path-tracing target and compile it with a
+    /// harness kernel appended.
+    bool Build(mx::DocumentPtr doc, const std::string& name,
+               const std::string& kernel, GlslCompileResult& compiled,
+               std::string& error)
+    {
+        std::string source;
+        try {
+            mx::ShaderGeneratorPtr generator = PathTracerShaderGenerator::create();
+            mx::GenContext genContext(generator);
+            genContext.registerSourceCodeSearchPath(DefaultMaterialXSourceSearchPath());
+            // Reduced interface: node values set directly in this test become
+            // compile-time constants rather than members of the material's
+            // public uniform block. The renderer wants the complete interface,
+            // because it drives those parameters; a closure unit test wants the
+            // values baked in, so the measurement cannot be wrong because a
+            // uniform upload was.
+            genContext.getOptions().shaderInterfaceType = mx::SHADER_INTERFACE_REDUCED;
+
+            std::vector<mx::TypedElementPtr> renderable;
+            mx::findRenderableElements(doc, renderable);
+            if (renderable.empty()) {
+                error = "no renderable element";
+                return false;
+            }
+            mx::ShaderPtr shader =
+                generator->generate(name, renderable.front(), genContext);
+            source = shader->getSourceCode(mx::Stage::PIXEL);
+        } catch (const std::exception& exception) {
+            error = std::string("generation failed: ") + exception.what();
+            return false;
+        }
+
+        GlslCompileOptions options;
+        options.moduleName = name;
+        compiled = _compiler.Compile(source + kernel, options);
+        if (!compiled.ok) {
+            error = "compilation failed:\n" + compiled.log;
+            return false;
+        }
+        return true;
+    }
+
     const VulkanContext& _context;
     VulkanAllocator& _allocator;
     const GlslCompiler& _compiler;
     mx::DocumentPtr _libraries;
     std::string _kernel;
+    std::string _chiSquareKernel;
 };
 
 void Report(const char* label, const Measurement& m)
@@ -331,8 +500,10 @@ void CheckClosure(const char* label, const Measurement& m, double tolerance)
     // Energy conservation.
     CHECK(m.albedo <= 1.02);
 
-    // Total probability mass.
-    CHECK_NEAR(m.densityIntegral + m.discardedFraction, 1.0, tolerance);
+    // Total probability mass, unless the caller has it measured elsewhere.
+    if (tolerance >= 0.0) {
+        CHECK_NEAR(m.densityIntegral + m.discardedFraction, 1.0, tolerance);
+    }
 }
 
 /// Reflectance of a smooth dielectric interface at one incidence.
@@ -394,6 +565,210 @@ void CheckReflectance(const char* label, const Measurement& m, double expected,
 /// does not suffer this -- is what constrains them.
 constexpr double kBroadLobeTolerance = 0.02;
 constexpr double kNarrowLobeTolerance = 0.10;
+/// No mass check from the uniform-sphere estimate. For a refracted lobe, whose
+/// peak density times 4 pi exceeds the kernel's per-sample clamp, that estimate
+/// reads low for a reason that has nothing to do with the closure; the
+/// chi-squared quadrature measures the same mass without the clamp and is where
+/// those closures are held to it.
+constexpr double kEnergyOnly = -1.0;
+
+/// Q(a, x), the regularized upper incomplete gamma function.
+///
+/// The chi-squared survival function is Q(dof / 2, statistic / 2). A series
+/// below x = a + 1 and a continued fraction above it, each where it converges
+/// quickly (Numerical Recipes 6.2). Checked against published critical values
+/// before anything relies on it.
+double RegularizedGammaQ(double a, double x)
+{
+    if (x <= 0.0) {
+        return 1.0;
+    }
+    const double logPrefactor = -x + a * std::log(x) - std::lgamma(a);
+    if (x < a + 1.0) {
+        double term = 1.0 / a;
+        double sum = term;
+        double ap = a;
+        for (int n = 0; n < 100000; ++n) {
+            ap += 1.0;
+            term *= x / ap;
+            sum += term;
+            if (std::abs(term) < std::abs(sum) * 1.0e-15) {
+                break;
+            }
+        }
+        return 1.0 - sum * std::exp(logPrefactor);
+    }
+    constexpr double kTiny = 1.0e-300;
+    double b = x + 1.0 - a;
+    double c = 1.0 / kTiny;
+    double d = 1.0 / b;
+    double h = d;
+    for (int i = 1; i < 100000; ++i) {
+        const double an = -double(i) * (double(i) - a);
+        b += 2.0;
+        d = an * d + b;
+        if (std::abs(d) < kTiny) d = kTiny;
+        c = b + an / c;
+        if (std::abs(c) < kTiny) c = kTiny;
+        d = 1.0 / d;
+        const double delta = d * c;
+        h *= delta;
+        if (std::abs(delta - 1.0) < 1.0e-15) {
+            break;
+        }
+    }
+    return std::exp(logPrefactor) * h;
+}
+
+struct ChiSquareResult {
+    double statistic = 0.0;
+    int degreesOfFreedom = 0;
+    double pValue = 0.0;
+    /// Samples landed in a cell the density gives no mass at all. No
+    /// statistic is needed to call that wrong.
+    double impossibleSamples = 0.0;
+    std::size_t worstCell = 0;
+    double worstObserved = 0.0;
+    double worstExpected = 0.0;
+};
+
+/// Pearson's test of observed against expected cell counts.
+///
+/// Cells expected to hold fewer than five samples are pooled, smallest first,
+/// until each pool expects at least five: the statistic is only chi-squared
+/// distributed when no cell's expectation is small, which is the same pooling
+/// Mitsuba's `ChiSquareTest` does and for the same reason.
+ChiSquareResult PearsonChiSquare(const std::vector<double>& observed,
+                                 const std::vector<double>& expected)
+{
+    constexpr double kMinimumExpected = 5.0;
+    ChiSquareResult result;
+
+    std::vector<std::size_t> order(expected.size());
+    for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::sort(order.begin(), order.end(), [&](std::size_t l, std::size_t r) {
+        return expected[l] < expected[r];
+    });
+
+    double worstContribution = -1.0;
+    int cells = 0;
+    double pooledObserved = 0.0;
+    double pooledExpected = 0.0;
+    const auto add = [&](double o, double e, std::size_t cell) {
+        const double contribution = (o - e) * (o - e) / e;
+        result.statistic += contribution;
+        ++cells;
+        if (contribution > worstContribution) {
+            worstContribution = contribution;
+            result.worstCell = cell;
+            result.worstObserved = o;
+            result.worstExpected = e;
+        }
+    };
+    for (std::size_t cell : order) {
+        if (expected[cell] <= 0.0) {
+            result.impossibleSamples += observed[cell];
+            continue;
+        }
+        if (expected[cell] < kMinimumExpected) {
+            pooledObserved += observed[cell];
+            pooledExpected += expected[cell];
+            if (pooledExpected >= kMinimumExpected) {
+                add(pooledObserved, pooledExpected, cell);
+                pooledObserved = 0.0;
+                pooledExpected = 0.0;
+            }
+            continue;
+        }
+        add(observed[cell], expected[cell], cell);
+    }
+    if (pooledExpected > 0.0) {
+        add(pooledObserved, pooledExpected, order.front());
+    }
+
+    result.degreesOfFreedom = std::max(1, cells - 1);
+    result.pValue = RegularizedGammaQ(0.5 * result.degreesOfFreedom,
+                                      0.5 * result.statistic);
+    return result;
+}
+
+/// Assert that a closure samples the density it reports.
+///
+/// `significance` is the per-test level. With a fixed seed every run is the
+/// same run, so this is not flaky in the ordinary sense; but a correct
+/// closure still fails with that probability on the one seed chosen, which is
+/// why the level is corrected for the number of closures tested.
+void CheckDistribution(const char* label, const ChiSquareHistograms& h,
+                       double significance)
+{
+    if (!h.ok) {
+        std::fprintf(stderr, "  %s: %s\n", label, h.error.c_str());
+    }
+    CHECK(h.ok);
+    if (!h.ok) return;
+
+    const ChiSquareResult chi = PearsonChiSquare(h.observed, h.expected);
+    double totalExpected = 0.0;
+    for (double e : h.expected) totalExpected += e;
+
+    const double cellTheta =
+        (double(chi.worstCell / kChiPhiBins) + 0.5) * 180.0 / kChiThetaBins;
+    const double cellPhi =
+        (double(chi.worstCell % kChiPhiBins) + 0.5) * 360.0 / kChiPhiBins;
+    std::printf("  %-30s chi2 %9.1f  dof %4d  p %.4f  kept %u  expected %.0f"
+                "  worst cell (%.0f, %.0f deg) %.0f vs %.1f\n",
+                label, chi.statistic, chi.degreesOfFreedom, chi.pValue, h.kept,
+                totalExpected, cellTheta, cellPhi, chi.worstObserved,
+                chi.worstExpected);
+    if (chi.impossibleSamples > 0.0) {
+        std::printf("  %-30s   %.0f samples where the density is zero\n", "",
+                    chi.impossibleSamples);
+    }
+    CHECK_EQ(chi.impossibleSamples, 0.0);
+    CHECK(chi.pValue > significance);
+
+    // Not vacuous. A closure whose every sample is discarded has an empty
+    // histogram and an empty expectation, and agrees with itself perfectly;
+    // `translucent_bsdf` did exactly that, and so a closure has to keep most
+    // of what it samples.
+    CHECK(h.kept > kSampleCount / 2);
+
+    // Probability mass, from the quadrature rather than from a uniform-sphere
+    // estimate. On the directions kept the density integrates to the kept
+    // fraction, and the discarded rest is the remainder, so the two totals are
+    // the same number of samples. The uniform estimate clamps every value it
+    // accumulates to protect a fixed-point sum, which a refracted lobe's peak
+    // exceeds; the quadrature has no such limit. One per cent is the
+    // quadrature's own error on the narrowest lobe here.
+    CHECK_NEAR(totalExpected / double(kSampleCount),
+               double(h.kept) / double(kSampleCount), 0.01);
+
+    // A failure names where it is, because a statistic alone says only that
+    // something is wrong. The cells are listed by their own contribution,
+    // before pooling, which is where a mismatched lobe shows its shape.
+    if (!(chi.pValue > significance)) {
+        std::vector<std::size_t> cells;
+        for (std::size_t c = 0; c < h.expected.size(); ++c) {
+            if (h.expected[c] >= 5.0 || h.observed[c] >= 5.0) cells.push_back(c);
+        }
+        const auto contribution = [&](std::size_t c) {
+            const double e = std::max(h.expected[c], 1.0);
+            return (h.observed[c] - e) * (h.observed[c] - e) / e;
+        };
+        std::sort(cells.begin(), cells.end(), [&](std::size_t l, std::size_t r) {
+            return contribution(l) > contribution(r);
+        });
+        for (std::size_t i = 0; i < std::min<std::size_t>(cells.size(), 16); ++i) {
+            const std::size_t c = cells[i];
+            std::printf("  %-30s   cell (%5.1f, %5.1f deg)  observed %7.0f"
+                        "  expected %9.1f\n",
+                        "",
+                        (double(c / kChiPhiBins) + 0.5) * 180.0 / kChiThetaBins,
+                        (double(c % kChiPhiBins) + 0.5) * 360.0 / kChiPhiBins,
+                        h.observed[c], h.expected[c]);
+        }
+    }
+}
 
 }  // namespace
 
@@ -666,6 +1041,263 @@ int main()
             CheckClosure("add(diffuse, conductor)",
                          validator.Measure(WrapInMaterial(doc, s), "vAdd", 0.3f),
                          kBroadLobeTolerance);
+        }
+
+        // --- Whole closures, asked the way `shade` asks -----------------------
+        //
+        // Every measurement above evaluates with REFLECTION, which is right for
+        // the lobes and probes it was written for and says nothing about a
+        // closure that scatters behind its normal. The integrator asks
+        // TRANSMISSION there, so energy and probability mass are measured
+        // again in that form for every closure that can send light through:
+        // one that answers only REFLECTION -- which `chiang_hair_bsdf` did --
+        // passes the checks above and loses half its light in a render.
+        {
+            // Two further expectations where a closed form gives one, because
+            // energy and mass alone are satisfied by a closure that throws its
+            // samples away: density 0.5 plus discarded 0.5 sums to one, and so
+            // does 0 plus 1. White diffuse transmission returns everything it
+            // receives, and a lobe sampled uniformly over a sphere it is
+            // defined on everywhere has nothing to discard.
+            constexpr double kNone = -1.0;
+            struct WholeCase {
+                const char* label;
+                double tolerance;
+                std::function<mx::NodePtr(mx::DocumentPtr)> build;
+                double expectedAlbedo = kNone;
+                double maxDiscarded = kNone;
+            };
+            const WholeCase whole[] = {
+                {"dielectric RT, by side", kEnergyOnly,
+                 [](mx::DocumentPtr doc) {
+                     mx::NodePtr n = AddNode(doc, "dielectric_bsdf", "wD", "BSDF");
+                     SetValue(n, "weight", 1.0f);
+                     SetValue(n, "ior", 1.5f);
+                     SetValue(n, "roughness", mx::Vector2(0.3f, 0.3f));
+                     n->setInputValue("scatter_mode", std::string("RT"), "string");
+                     return n;
+                 }},
+                {"generalized_schlick RT, by side", kEnergyOnly,
+                 [](mx::DocumentPtr doc) {
+                     mx::NodePtr n =
+                         AddNode(doc, "generalized_schlick_bsdf", "wG", "BSDF");
+                     SetValue(n, "weight", 1.0f);
+                     SetValue(n, "color0", mx::Color3(0.04f, 0.04f, 0.04f));
+                     SetValue(n, "color90", mx::Color3(1.0f, 1.0f, 1.0f));
+                     SetValue(n, "roughness", mx::Vector2(0.3f, 0.3f));
+                     n->setInputValue("scatter_mode", std::string("RT"), "string");
+                     return n;
+                 }},
+                {"translucent, by side", kBroadLobeTolerance,
+                 [](mx::DocumentPtr doc) {
+                     mx::NodePtr n = AddNode(doc, "translucent_bsdf", "wT", "BSDF");
+                     SetValue(n, "weight", 1.0f);
+                     SetValue(n, "color", mx::Color3(1.0f, 1.0f, 1.0f));
+                     return n;
+                 },
+                 1.0, 0.0},
+                {"chiang_hair, by side", kBroadLobeTolerance,
+                 [](mx::DocumentPtr doc) {
+                     return AddNode(doc, "chiang_hair_bsdf", "wH", "BSDF");
+                 },
+                 kNone, 0.0},
+                {"multiply(conductor, 0.5)", kBroadLobeTolerance,
+                 [](mx::DocumentPtr doc) {
+                     mx::NodePtr c = AddNode(doc, "conductor_bsdf", "wMc", "BSDF");
+                     SetValue(c, "weight", 1.0f);
+                     SetValue(c, "roughness", mx::Vector2(0.4f, 0.4f));
+                     mx::NodePtr m = AddNode(doc, "multiply", "wMul", "BSDF");
+                     Connect(m, "in1", c);
+                     SetValue(m, "in2", 0.5f);
+                     return m;
+                 }},
+            };
+            for (const WholeCase& c : whole) {
+                mx::DocumentPtr doc = validator.NewDocument();
+                mx::NodePtr bsdf = c.build(doc);
+                const Measurement m = validator.Measure(
+                    WrapInMaterial(doc, bsdf), "vWhole", 0.6f, kClosureBySide);
+                CheckClosure(c.label, m, c.tolerance);
+                if (c.expectedAlbedo != kNone) {
+                    CHECK_NEAR(m.albedo, c.expectedAlbedo, 0.01);
+                }
+                if (c.maxDiscarded != kNone) {
+                    CHECK(m.discardedFraction <= c.maxDiscarded);
+                }
+            }
+        }
+
+        // --- Chi-squared: sampling against the reported density --------------
+        //
+        // The last of the five acceptance items (materialx-codegen.md 8). The
+        // furnace and the mass check above agree on totals; this asks where
+        // the mass is, cell by cell over the sphere, so a sampler that puts the
+        // right amount of energy in the wrong directions fails here and
+        // nowhere else.
+        //
+        // The p-value is first checked against published chi-squared critical
+        // values -- each is the statistic at which p is exactly 0.05 -- so the
+        // gate below cannot pass because the survival function is wrong.
+        CHECK_NEAR(RegularizedGammaQ(0.5, 0.5 * 3.841459), 0.05, 1.0e-5);
+        CHECK_NEAR(RegularizedGammaQ(5.0, 0.5 * 18.307038), 0.05, 1.0e-5);
+        CHECK_NEAR(RegularizedGammaQ(50.0, 0.5 * 124.342113), 0.05, 1.0e-5);
+        {
+            using Builder = std::function<mx::NodePtr(mx::DocumentPtr)>;
+            struct Case {
+                const char* label;
+                float viewTheta;
+                Builder build;
+            };
+            const auto diffuse = [](mx::DocumentPtr doc, const char* name,
+                                    float grey) {
+                mx::NodePtr n =
+                    AddNode(doc, "oren_nayar_diffuse_bsdf", name, "BSDF");
+                SetValue(n, "weight", 1.0f);
+                SetValue(n, "color", mx::Color3(grey, grey, grey));
+                return n;
+            };
+            const auto conductor = [](mx::DocumentPtr doc, const char* name,
+                                      float weight, float ru, float rv) {
+                mx::NodePtr n = AddNode(doc, "conductor_bsdf", name, "BSDF");
+                SetValue(n, "weight", weight);
+                SetValue(n, "roughness", mx::Vector2(ru, rv));
+                return n;
+            };
+            const auto dielectric = [](mx::DocumentPtr doc, const char* name,
+                                       float roughness, const char* mode) {
+                mx::NodePtr n = AddNode(doc, "dielectric_bsdf", name, "BSDF");
+                SetValue(n, "weight", 1.0f);
+                SetValue(n, "ior", 1.5f);
+                SetValue(n, "roughness", mx::Vector2(roughness, roughness));
+                n->setInputValue("scatter_mode", std::string(mode), "string");
+                return n;
+            };
+
+            const Case cases[] = {
+                {"oren_nayar (rough 0.5)", 0.6f,
+                 [&](mx::DocumentPtr doc) {
+                     mx::NodePtr n = diffuse(doc, "xOn", 1.0f);
+                     SetValue(n, "roughness", 0.5f);
+                     return n;
+                 }},
+                {"burley_diffuse (rough 0.5)", 0.6f,
+                 [&](mx::DocumentPtr doc) {
+                     mx::NodePtr n =
+                         AddNode(doc, "burley_diffuse_bsdf", "xBu", "BSDF");
+                     SetValue(n, "weight", 1.0f);
+                     SetValue(n, "color", mx::Color3(1.0f, 1.0f, 1.0f));
+                     SetValue(n, "roughness", 0.5f);
+                     return n;
+                 }},
+                {"conductor (0.3)", 0.6f,
+                 [&](mx::DocumentPtr doc) {
+                     return conductor(doc, "xCo", 1.0f, 0.3f, 0.3f);
+                 }},
+                {"conductor (0.2 x 0.6)", 0.6f,
+                 [&](mx::DocumentPtr doc) {
+                     return conductor(doc, "xCa", 1.0f, 0.2f, 0.6f);
+                 }},
+                {"dielectric R (0.3)", 0.6f,
+                 [&](mx::DocumentPtr doc) {
+                     return dielectric(doc, "xDr", 0.3f, "R");
+                 }},
+                {"dielectric RT (0.3)", 0.6f,
+                 [&](mx::DocumentPtr doc) {
+                     return dielectric(doc, "xDt", 0.3f, "RT");
+                 }},
+                {"sheen (0.3)", 0.6f,
+                 [&](mx::DocumentPtr doc) {
+                     mx::NodePtr n = AddNode(doc, "sheen_bsdf", "xSh", "BSDF");
+                     SetValue(n, "weight", 1.0f);
+                     SetValue(n, "color", mx::Color3(1.0f, 1.0f, 1.0f));
+                     SetValue(n, "roughness", 0.3f);
+                     return n;
+                 }},
+                {"mix(conductor, diffuse)", 0.6f,
+                 [&](mx::DocumentPtr doc) {
+                     mx::NodePtr m = AddNode(doc, "mix", "xMix", "BSDF");
+                     Connect(m, "fg", conductor(doc, "xMb", 1.0f, 0.4f, 0.4f));
+                     Connect(m, "bg", diffuse(doc, "xMa", 1.0f));
+                     SetValue(m, "mix", 0.5f);
+                     return m;
+                 }},
+                {"layer(dielectric, diffuse)", 0.6f,
+                 [&](mx::DocumentPtr doc) {
+                     mx::NodePtr l = AddNode(doc, "layer", "xLay", "BSDF");
+                     Connect(l, "top", dielectric(doc, "xLt", 0.2f, "R"));
+                     Connect(l, "base", diffuse(doc, "xLb", 1.0f));
+                     return l;
+                 }},
+                {"add(diffuse, conductor)", 0.6f,
+                 [&](mx::DocumentPtr doc) {
+                     mx::NodePtr s = AddNode(doc, "add", "xAdd", "BSDF");
+                     Connect(s, "in1", diffuse(doc, "xAa", 0.5f));
+                     Connect(s, "in2", conductor(doc, "xAb", 0.5f, 0.5f, 0.5f));
+                     return s;
+                 }},
+                {"multiply(conductor, 0.5)", 0.6f,
+                 [&](mx::DocumentPtr doc) {
+                     mx::NodePtr m = AddNode(doc, "multiply", "xMul", "BSDF");
+                     Connect(m, "in1", conductor(doc, "xMc", 1.0f, 0.3f, 0.3f));
+                     SetValue(m, "in2", 0.5f);
+                     return m;
+                 }},
+                {"dielectric T (0.3)", 0.6f,
+                 [&](mx::DocumentPtr doc) {
+                     return dielectric(doc, "xDT", 0.3f, "T");
+                 }},
+                {"generalized_schlick R (0.3)", 0.6f,
+                 [&](mx::DocumentPtr doc) {
+                     mx::NodePtr n =
+                         AddNode(doc, "generalized_schlick_bsdf", "xGr", "BSDF");
+                     SetValue(n, "weight", 1.0f);
+                     SetValue(n, "color0", mx::Color3(0.9f, 0.6f, 0.3f));
+                     SetValue(n, "roughness", mx::Vector2(0.3f, 0.3f));
+                     return n;
+                 }},
+                {"generalized_schlick RT (0.3)", 0.6f,
+                 [&](mx::DocumentPtr doc) {
+                     mx::NodePtr n =
+                         AddNode(doc, "generalized_schlick_bsdf", "xGt", "BSDF");
+                     SetValue(n, "weight", 1.0f);
+                     SetValue(n, "color0", mx::Color3(0.04f, 0.04f, 0.04f));
+                     SetValue(n, "color90", mx::Color3(1.0f, 1.0f, 1.0f));
+                     SetValue(n, "roughness", mx::Vector2(0.3f, 0.3f));
+                     n->setInputValue("scatter_mode", std::string("RT"), "string");
+                     return n;
+                 }},
+                {"translucent", 0.6f,
+                 [&](mx::DocumentPtr doc) {
+                     mx::NodePtr n = AddNode(doc, "translucent_bsdf", "xTr", "BSDF");
+                     SetValue(n, "weight", 1.0f);
+                     SetValue(n, "color", mx::Color3(1.0f, 1.0f, 1.0f));
+                     return n;
+                 }},
+                {"subsurface", 0.6f,
+                 [&](mx::DocumentPtr doc) {
+                     mx::NodePtr n = AddNode(doc, "subsurface_bsdf", "xSs", "BSDF");
+                     SetValue(n, "weight", 1.0f);
+                     SetValue(n, "color", mx::Color3(0.8f, 0.8f, 0.8f));
+                     return n;
+                 }},
+                {"chiang_hair", 0.6f,
+                 [&](mx::DocumentPtr doc) {
+                     return AddNode(doc, "chiang_hair_bsdf", "xHa", "BSDF");
+                 }},
+            };
+
+            // One per cent over the whole set, shared between the cases.
+            const double significance =
+                1.0 - std::pow(1.0 - 0.01, 1.0 / double(std::size(cases)));
+            for (const Case& c : cases) {
+                mx::DocumentPtr doc = validator.NewDocument();
+                mx::NodePtr bsdf = c.build(doc);
+                CheckDistribution(
+                    c.label,
+                    validator.MeasureDistribution(WrapInMaterial(doc, bsdf),
+                                                  "vChi2", c.viewTheta),
+                    significance);
+            }
         }
 
         const std::uint64_t errors = context->ValidationErrorCount();

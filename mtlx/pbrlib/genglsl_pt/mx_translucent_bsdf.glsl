@@ -41,7 +41,18 @@ void mx_translucent_bsdf(ClosureData closureData, float weight, vec3 color, vec3
     }
 
     // ---- MaterialX 1.39.3 evaluation, unchanged -----------------------------
-    if (closureData.closureType == CLOSURE_TYPE_REFLECTION)
+    //
+    // Answered for TRANSMISSION as well, and TRANSMISSION is the one that
+    // matters. A rasteriser evaluates every light with REFLECTION whichever side
+    // it is on, so upstream never needed another; hdClaude's integrator asks
+    // TRANSMISSION for a direction behind the normal -- which is every direction
+    // this lobe samples and the only side it responds on. Answering REFLECTION
+    // alone therefore discarded all of its samples and gave every light behind
+    // it zero response: the chi-squared harness kept none of a million samples,
+    // and thin-walled OpenPBR subsurface, which is built from this closure,
+    // passed no light through at all.
+    if (closureData.closureType == CLOSURE_TYPE_REFLECTION ||
+        closureData.closureType == CLOSURE_TYPE_TRANSMISSION)
     {
         float NdotL = clamp(dot(N, L), 0.0, 1.0);
         bsdf.response = color * weight * NdotL * M_PI_INV;

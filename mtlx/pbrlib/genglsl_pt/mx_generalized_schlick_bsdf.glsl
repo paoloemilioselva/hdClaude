@@ -121,11 +121,20 @@ void mx_generalized_schlick_bsdf(ClosureData closureData, float weight, vec3 col
         if (mx_pt_select_lobe(u, reflectProbability, selectionPdf) ||
             !mx_pt_refract(V, H, etaRatio, refracted))
         {
-            bsdf.sampledL = reflect(-V, H);
+            // Kept only on the view's side, and a refraction only if it
+            // crosses: a lobe's sample that lands where the lobe has no
+            // density would be evaluated by the other branch and weighted by a
+            // density that never produced it. The same rule, for the same
+            // measured reason, as mx_dielectric_bsdf.
+            vec3 reflected = reflect(-V, H);
+            bsdf.sampledL = dot(reflected, N) * dot(V, N) > 0.0 ? reflected
+                                                                 : vec3(0.0);
         }
         else
         {
-            bsdf.sampledL = normalize(refracted);
+            vec3 transmitted = normalize(refracted);
+            bsdf.sampledL = dot(transmitted, N) * dot(V, N) < 0.0 ? transmitted
+                                                                   : vec3(0.0);
         }
         bsdf.isDelta = smoothSurface ? 1.0 : 0.0;
         return;
@@ -187,7 +196,10 @@ void mx_generalized_schlick_bsdf(ClosureData closureData, float weight, vec3 col
         float LdotH = dot(L, H);
         float NdotL = abs(dot(N, L));
 
-        if (VdotH * LdotH > 0.0)
+        // A microfacet both directions can see, or no transmission: Walter et
+        // al.'s chi-plus factors, which MaterialX's G2 does not carry. See the
+        // same test in mx_dielectric_bsdf for what omitting it measured.
+        if (VdotH * dot(V, N) <= 0.0 || LdotH * dot(L, N) <= 0.0)
         {
             bsdf.pdf = 0.0;
             return;

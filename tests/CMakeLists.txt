@@ -86,7 +86,8 @@ if(HDCLAUDE_ENABLE_MATERIALX)
   target_include_directories(hdClaudeClosureValidationTests
       PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   target_compile_definitions(hdClaudeClosureValidationTests PRIVATE
-      HDCLAUDE_VALIDATION_KERNEL="${CMAKE_CURRENT_SOURCE_DIR}/closure_validation.comp.glsl")
+      HDCLAUDE_VALIDATION_KERNEL="${CMAKE_CURRENT_SOURCE_DIR}/closure_validation.comp.glsl"
+      HDCLAUDE_CHI2_KERNEL="${CMAKE_CURRENT_SOURCE_DIR}/closure_chi2.comp.glsl")
   add_test(NAME closure_validation COMMAND hdClaudeClosureValidationTests)
 
   # The first images: a MaterialX material shading real geometry through the

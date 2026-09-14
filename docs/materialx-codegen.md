@@ -424,7 +424,8 @@ gate every change to this target.
 | all 22 pbrlib closure overrides | done |
 | compute pipeline and dispatch | done |
 | **the acceptance tests in §8, on the GPU** | **energy and density done** |
-| chi-squared sampling agreement (item 3) | not started |
+| chi-squared sampling agreement (item 3) | done: 20 cases over every closure and all four combinators |
+| furnace within 0.5% of the *analytic* albedo (item 2) | not asserted: albedo is bounded by 1.02, not compared with a closed form, except for white `translucent_bsdf` |
 
 The override set is complete, and the surface shaders real assets use compile:
 
@@ -443,8 +444,24 @@ hdClaude contains no knowledge of the names `standard_surface` or
 overridden closures, which is the whole of the claim in
 [architecture.md](architecture.md) §1.1.
 
-What remains is the numerical acceptance in §8 — furnace, chi-squared, mixture
-densities — not a question of whether the approach works.
+What remains of the numerical acceptance in §8 is item 2 as written: each
+furnace compared with its analytic directional albedo to 0.5%, rather than
+bounded above.
+
+Item 3 is `tests/closure_chi2.comp.glsl` and `MeasureDistribution` in
+`tests/closure_validation_tests.cpp`. Each closure's sampled directions are
+histogrammed over 20 x 40 cells of the sphere against its reported density
+integrated over each cell by 24 x 24 quadrature, evaluated the way `shade`
+evaluates -- REFLECTION in front of the normal, TRANSMISSION behind -- and
+Pearson's statistic is tested at one per cent across the set. It also asserts
+the probability mass from the same quadrature, and that a closure keeps most of
+what it samples, so that a closure discarding everything cannot agree with
+itself. It found four defects on its first runs, each recorded in the
+[roadmap](roadmap.md) decision log: rough dielectric and generalized-Schlick
+transmission reporting density for back-facing microfacets; both closures'
+reflection samples leaving below the horizon and being weighted as
+transmission; and `chiang_hair_bsdf` and `translucent_bsdf` answering only
+REFLECTION, so that the integrator discarded every sample behind the normal.
 
 Generation cannot succeed until all 22 overrides are present, for the reason in
 §3. Tracked as phase 4 in [roadmap.md](roadmap.md).

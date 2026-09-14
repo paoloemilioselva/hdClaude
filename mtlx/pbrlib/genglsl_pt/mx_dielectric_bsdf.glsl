@@ -243,11 +243,25 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
         {
             // Reflection, or total internal reflection, which is reflection
             // whatever the caller asked for.
-            bsdf.sampledL = reflect(-V, H);
+            //
+            // Kept only if it leaves on the view's side. A microfacet tilted
+            // far enough reflects below the surface, where this lobe has no
+            // density; the caller would then ask the *transmission* branch
+            // about it and weight a reflection sample by a density that never
+            // produced it. That was measured: at 34 degrees, alpha 0.3, one
+            // sample in 150 went below the horizon this way and the chi-squared
+            // test over the sphere failed on exactly those cells. Such a sample
+            // is discarded, as pbrt-v4's DielectricBxDF discards it.
+            vec3 reflected = reflect(-V, H);
+            bsdf.sampledL = dot(reflected, N) * dot(V, N) > 0.0 ? reflected
+                                                                 : vec3(0.0);
         }
         else
         {
-            bsdf.sampledL = normalize(refracted);
+            // And a refraction only if it crosses.
+            vec3 transmitted = normalize(refracted);
+            bsdf.sampledL = dot(transmitted, N) * dot(V, N) < 0.0 ? transmitted
+                                                                   : vec3(0.0);
         }
         bsdf.isDelta = smoothSurface ? 1.0 : 0.0;
         return;
@@ -314,8 +328,22 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
         float LdotH = dot(L, H);
         float NdotL = abs(dot(N, L));
 
-        // Same side of the microfacet: not a transmission configuration.
-        if (VdotH * LdotH > 0.0)
+        // A microfacet both directions can see, or no transmission at all.
+        //
+        // The half vector was turned to face the macro-surface's upper side,
+        // and that says nothing about whether it faces *the view*. For a
+        // direction far enough off the refracted lobe it does not: the
+        // microfacet that would bend V into L points away from V, no ray can
+        // arrive at it, and Walter et al.'s BTDF is zero there through the
+        // chi-plus factors on (v.m)/(v.n) and (l.m)/(l.n). MaterialX's G2 has
+        // no such factor, so without this test the lobe answered with a
+        // response and a density for impossible configurations -- the density
+        // expected ten thousand samples between 105 and 125 degrees that the
+        // sampler, which only draws visible normals, never produced. pbrt-v4
+        // rejects the same back-facing microfacets in DielectricBxDF::f and
+        // ::PDF. The old test, that V and L lie on opposite sides of H, is
+        // implied by this one and missed exactly that case.
+        if (VdotH * dot(V, N) <= 0.0 || LdotH * dot(L, N) <= 0.0)
         {
             bsdf.pdf = 0.0;
             return;

@@ -6,11 +6,11 @@
 // parameter point:
 //
 //   sum[0]  white furnace:  sum over sampled directions of f/pdf
-//   sum[1]  sample count actually taken (some samples terminate below horizon)
+//   sum[1]  sample count, every sample, including those that produced nothing
 //   sum[2]  mixture density integral: sum over uniform sphere of pdf * 4pi
 //   sum[3]  uniform sample count
 //   sum[4]  count of sampled directions whose reported pdf was non-finite
-//   sum[5]  count of sampled directions whose reported pdf was zero
+//   sum[5]  count of samples discarded: no direction, or a zero density at it
 //
 // The furnace sum divided by the sample count is the directional albedo, which
 // must not exceed one: a closure that returns more energy than it receives is
@@ -39,8 +39,26 @@ layout(push_constant) uniform Params {
     uint sampleCount;
     uint seed;
     float viewTheta;   // incidence angle, radians
-    uint closureType;  // REFLECTION or TRANSMISSION for the furnace pass
+    uint closureType;  // REFLECTION or TRANSMISSION, or 0 to ask as `shade` does
 } params;
+
+// The closure type to evaluate a direction with.
+//
+// A fixed REFLECTION is what the reflectance probes want: they measure one lobe
+// of an interface against its closed form. Zero asks the way the integrator
+// asks -- REFLECTION on the view's side of the normal, TRANSMISSION behind it --
+// and that is the question every *whole-closure* property has to be put in: a
+// closure that answers only one of the two is right by the first and loses
+// half its light in a render.
+int evaluationType(vec3 L, vec3 V, vec3 N)
+{
+    if (params.closureType != 0u)
+    {
+        return int(params.closureType);
+    }
+    return dot(L, N) * dot(V, N) > 0.0 ? CLOSURE_TYPE_REFLECTION
+                                        : CLOSURE_TYPE_TRANSMISSION;
+}
 
 // Fixed-point steps per unit.
 //
@@ -129,7 +147,7 @@ void main()
     if (dot(L, L) > 0.5)
     {
         L = normalize(L);
-        ClosureData evalData = ClosureData(int(params.closureType), L, V, N, P, 1.0);
+        ClosureData evalData = ClosureData(evaluationType(L, V, N), L, V, N, P, 1.0);
         hdclaude_material_shade(evalData);
 
         float pdf = hdclaude_bsdf.pdf;
@@ -154,8 +172,20 @@ void main()
             float weight = (f.x + f.y + f.z) / 3.0 / pdf;
             accumulate(0, weight);
         }
-        atomicAdd(results.sums[1], 1u);
     }
+    else
+    {
+        // No direction at all: the closure declined the sample, which `shade`
+        // treats exactly as a direction with zero density -- the path ends and
+        // the sample carries weight zero. Counted with those, because the
+        // probability it held is missing from the density integral in the same
+        // way. A dielectric declines a reflection that would leave below the
+        // horizon, which is where this first mattered.
+        atomicAdd(results.sums[5], 1u);
+    }
+    // Every sample counts toward the mean, including the ones that produced
+    // nothing: the albedo is the average weight over all of them.
+    atomicAdd(results.sums[1], 1u);
 
     // --- Pass B: integrate the reported density over the sphere -------------
     // Uniform directions, so the Monte Carlo estimate of the integral is
@@ -166,7 +196,7 @@ void main()
     vec3 uniformL = vec3(r * cos(phi), r * sin(phi), z);
 
     ClosureData densityData =
-        ClosureData(int(params.closureType), uniformL, V, N, P, 1.0);
+        ClosureData(evaluationType(uniformL, V, N), uniformL, V, N, P, 1.0);
     hdclaude_material_shade(densityData);
 
     float updf = hdclaude_bsdf.pdf;

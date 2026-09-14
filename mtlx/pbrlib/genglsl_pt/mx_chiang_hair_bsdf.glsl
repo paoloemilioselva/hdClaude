@@ -226,7 +226,17 @@ void mx_chiang_hair_bsdf(ClosureData closureData, vec3 tint_R, vec3 tint_TT, vec
 
     bsdf.throughput = vec3(0.0);
 
-    if (closureData.closureType == CLOSURE_TYPE_REFLECTION)
+    // Both kinds of evaluation, because a fibre has no "far side".
+    //
+    // hdClaude's integrator asks REFLECTION for a direction on the view's side
+    // of the shading normal and TRANSMISSION for one behind it, and this BCSDF
+    // is defined over the whole sphere either way -- the TT lobe is *mostly*
+    // behind. Upstream answers REFLECTION only, because a rasteriser has no
+    // other question to ask; answering it only here left every sample behind
+    // the normal with no density, so half of this lobe's samples were thrown
+    // away and forward scattering through hair was never rendered at all.
+    if (closureData.closureType == CLOSURE_TYPE_REFLECTION ||
+        closureData.closureType == CLOSURE_TYPE_TRANSMISSION)
     {
         X = normalize(X - dot(X, N) * N);
         vec3 Y = cross(N, X);
