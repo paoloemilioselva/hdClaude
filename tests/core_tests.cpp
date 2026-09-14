@@ -313,6 +313,79 @@ void TestReflectanceUpsamplingRoundTrips()
     CHECK(worst < 1.0e-3);
 }
 
+/// The Munsell half of phase 1's round-trip gate.
+///
+/// The gate names "a set of Munsell reflectances", and the set above is chosen
+/// by eye. The 24 ColorChecker patches are the standard Munsell-specified set:
+/// each is defined by a Munsell notation (dark skin is 3 YR 3.7/3.2, cyan is
+/// 5 B 5/8, the neutrals run N 9.5/ to N 2/), and X-Rite publishes the sRGB
+/// values of those notations under D65, which is the colour space this fit
+/// works in. The values are the manufacturer's 8-bit sRGB, decoded through the
+/// sRGB transfer function, and they include the most saturated reflectances in
+/// the chart -- orange, yellow and cyan sit near the edge of sRGB -- which is
+/// where a bounded spectral model is tested hardest.
+void TestMunsellColorCheckerRoundTrips()
+{
+    struct Patch {
+        const char* name;
+        const char* munsell;
+        int r, g, b;
+    };
+    const Patch patches[] = {
+        {"dark skin", "3 YR 3.7/3.2", 0x73, 0x52, 0x44},
+        {"light skin", "2.2 YR 6.47/4.1", 0xc2, 0x96, 0x82},
+        {"blue sky", "4.3 PB 4.95/5.5", 0x62, 0x7a, 0x9d},
+        {"foliage", "6.7 GY 4.2/4.1", 0x57, 0x6c, 0x43},
+        {"blue flower", "9.7 PB 5.47/6.7", 0x85, 0x80, 0xb1},
+        {"bluish green", "2.5 BG 7/6", 0x67, 0xbd, 0xaa},
+        {"orange", "5 YR 6/11", 0xd6, 0x7e, 0x2c},
+        {"purplish blue", "7.5 PB 4/10.7", 0x50, 0x5b, 0xa6},
+        {"moderate red", "2.5 R 5/10", 0xc1, 0x5a, 0x63},
+        {"purple", "5 P 3/7", 0x5e, 0x3c, 0x6c},
+        {"yellow green", "5 GY 7.1/9.1", 0x9d, 0xbc, 0x40},
+        {"orange yellow", "10 YR 7/10.5", 0xe0, 0xa3, 0x2e},
+        {"blue", "7.5 PB 2.9/12.7", 0x38, 0x3d, 0x96},
+        {"green", "0.25 G 5.4/9.6", 0x46, 0x94, 0x49},
+        {"red", "5 R 4/12", 0xaf, 0x36, 0x3c},
+        {"yellow", "5 Y 8/11.1", 0xe7, 0xc7, 0x1f},
+        {"magenta", "2.5 RP 5/12", 0xbb, 0x56, 0x95},
+        {"cyan", "5 B 5/8", 0x08, 0x85, 0xa1},
+        {"white", "N 9.5/", 0xf3, 0xf3, 0xf3},
+        {"neutral 8", "N 8/", 0xc8, 0xc8, 0xc8},
+        {"neutral 6.5", "N 6.5/", 0xa0, 0xa0, 0xa0},
+        {"neutral 5", "N 5/", 0x7a, 0x7a, 0x7a},
+        {"neutral 3.5", "N 3.5/", 0x55, 0x55, 0x55},
+        {"black", "N 2/", 0x34, 0x34, 0x34},
+    };
+
+    double worst = 0.0;
+    const Patch* worstPatch = &patches[0];
+    for (const Patch& patch : patches) {
+        const Vec3 rgb{SrgbToLinear(float(patch.r) / 255.0f),
+                       SrgbToLinear(float(patch.g) / 255.0f),
+                       SrgbToLinear(float(patch.b) / 255.0f)};
+        const SpectrumFit fit = FitSpectrum(rgb);
+        const Vec3 back = IntegrateSpectrum(fit);
+
+        const double difference =
+            DeltaE2000(XyzToLab(LinearSrgbToXyz(rgb)),
+                       XyzToLab(LinearSrgbToXyz(back)));
+        if (difference > worst) {
+            worst = difference;
+            worstPatch = &patch;
+        }
+
+        for (float lambda = kLambdaMin; lambda <= kLambdaMax; lambda += 5.0f) {
+            const float value = EvaluateSpectrum(fit, lambda);
+            CHECK(value >= 0.0f && value <= 1.0f);
+        }
+    }
+
+    std::printf("  Munsell ColorChecker round trip: worst dE2000 %.2e (%s, %s)\n",
+                worst, worstPatch->name, worstPatch->munsell);
+    CHECK(worst < 1.0e-3);
+}
+
 /// Emission is unbounded and must stay exact in both chromaticity and
 /// magnitude.
 ///
@@ -1266,6 +1339,7 @@ int main()
     TestBlackbodyPeakMatchesWien();
     TestDeltaE2000MatchesPublishedPairs();
     TestReflectanceUpsamplingRoundTrips();
+    TestMunsellColorCheckerRoundTrips();
     TestEmissionUpsamplingPreservesColourAndMagnitude();
     TestChromaTableMatchesTheFit();
     TestHeroPacketIntegratesUnbiased();
