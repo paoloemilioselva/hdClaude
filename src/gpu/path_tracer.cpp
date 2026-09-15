@@ -84,6 +84,8 @@ std::vector<BindingDescription> KernelBindings()
     bindings.push_back(storage(28, "guideMotion"));
     bindings.push_back(storage(29, "guideSurface"));
     bindings.push_back(storage(30, "guideSpecularRay"));
+    bindings.push_back(storage(31, "instanceLinks"));
+    bindings.push_back(storage(32, "pathLastInstance"));
     bindings.push_back(storage(22, "environmentDistribution"));
     bindings.push_back(storage(23, "pathWavelengths"));
     bindings.push_back(storage(24, "spectralTables"));
@@ -158,6 +160,11 @@ struct FrameBlock {
     /// Whether light geometry is in the scene at all. Takes the slot a pad
     /// held, so the block's layout is unchanged.
     std::uint32_t lightGeometry;
+    /// Words of light-linking membership each instance has in `instanceLinks`.
+    std::uint32_t linkWords;
+    /// The dome light's link categories, or -1.
+    std::int32_t domeLightLink;
+    std::int32_t domeShadowLink;
 };
 
 /// The radical inverse of `index` in `base`, one coordinate of a Halton
@@ -832,6 +839,44 @@ void PathTracer::SetScene(const Scene& scene,
         _lightCount = static_cast<std::uint32_t>(scene.lights.size());
     }
 
+    // --- Light-linking membership ---------------------------------------------
+    // One bit a category, `_linkWords` words an instance, indexed by the
+    // instance's position in the scene -- which is the custom index a ray query
+    // reports, not its position in the instance table. Always allocated, for the
+    // same reason as the light table.
+    {
+        _linkWords = (scene.linkCategoryCount + 31u) / 32u;
+        std::vector<std::uint32_t> membership(
+            std::max<std::size_t>(1, scene.instances.size() * _linkWords), 0u);
+        for (std::size_t i = 0; i < scene.instances.size(); ++i) {
+            for (const std::uint32_t category : scene.instances[i].linkCategories) {
+                if (category < scene.linkCategoryCount) {
+                    membership[i * _linkWords + category / 32u] |=
+                        1u << (category % 32u);
+                }
+            }
+        }
+        const VkDeviceSize size = membership.size() * sizeof(std::uint32_t);
+
+        BufferDescription staging;
+        staging.size = size;
+        staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        staging.domain = BufferDomain::HostUpload;
+        staging.debugName = "instanceLinks.staging";
+        VulkanBuffer upload(_allocator, staging);
+        upload.Write(membership.data(), size);
+
+        _instanceLinks = MakeStorage(_allocator, size, "instanceLinks");
+        _context.SubmitImmediate([&](VkCommandBuffer command) {
+            VkBufferCopy region{};
+            region.size = size;
+            vkCmdCopyBuffer(command, upload.Handle(), _instanceLinks.Handle(), 1,
+                            &region);
+        });
+        _domeLightLink = scene.domeLightLink;
+        _domeShadowLink = scene.domeShadowLink;
+    }
+
     // --- Textures ------------------------------------------------------------
     UploadTextures(scene.textures);
 
@@ -989,6 +1034,9 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
         // Whether a dispersive surface has already collapsed the path's packet onto
         // its hero wavelength.
         VulkanBuffer heroOnly = MakeStorage(_allocator, paths * 4, "path.heroOnly");
+        // The instance each path last scattered from, for light linking.
+        VulkanBuffer lastInstance =
+            MakeStorage(_allocator, paths * 4, "path.lastInstance");
         VulkanBuffer hits = MakeStorage(_allocator, paths * 16, "path.hits");
         VulkanBuffer guideDepth =
             MakeStorage(_allocator, paths * 4, "guide.depth");
@@ -1069,6 +1117,7 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
         slot.scatterPdf = std::move(scatterPdf);
         slot.medium = std::move(medium);
         slot.heroOnly = std::move(heroOnly);
+        slot.lastInstance = std::move(lastInstance);
         slot.hits = std::move(hits);
         slot.guideDepth = std::move(guideDepth);
         slot.guideMotion = std::move(guideMotion);
@@ -1151,6 +1200,8 @@ void PathTracer::WriteDescriptors(VkDescriptorSet set,
     pipeline.WriteBuffer(set, 28, slot.guideMotion);
     pipeline.WriteBuffer(set, 29, slot.guideSurface);
     pipeline.WriteBuffer(set, 30, slot.guideSpecularRay);
+    pipeline.WriteBuffer(set, 31, _instanceLinks);
+    pipeline.WriteBuffer(set, 32, slot.lastInstance);
     pipeline.WriteBuffer(set, 22, _environmentDistribution);
     pipeline.WriteBuffer(set, 23, slot.wavelengths);
     pipeline.WriteBuffer(set, 24, _spectralTables);
@@ -2044,6 +2095,9 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     block.jitter[1] = settings.jitter[1];
     block.useFixedJitter = settings.fixedJitter ? 1u : 0u;
     block.lightGeometry = settings.lightGeometry ? 1u : 0u;
+    block.linkWords = _linkWords;
+    block.domeLightLink = _domeLightLink;
+    block.domeShadowLink = _domeShadowLink;
 
     const std::uint32_t pathGroups = (paths + 63) / 64;
     const std::uint32_t pixelGroupsX = (width + 7) / 8;

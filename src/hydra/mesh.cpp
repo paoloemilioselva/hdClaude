@@ -127,7 +127,7 @@ HdDirtyBits HdClaudeMesh::GetInitialDirtyBitsMask() const
            HdChangeTracker::DirtyVisibility | HdChangeTracker::DirtyPrimvar |
            HdChangeTracker::DirtyNormals | HdChangeTracker::DirtyInstancer |
            HdChangeTracker::DirtyMaterialId | HdChangeTracker::DirtyDisplayStyle |
-           HdChangeTracker::DirtySubdivTags;
+           HdChangeTracker::DirtySubdivTags | HdChangeTracker::DirtyCategories;
 }
 
 HdDirtyBits HdClaudeMesh::_PropagateDirtyBits(HdDirtyBits bits) const
@@ -776,6 +776,10 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     }
 
     entry.prototype.opacity = hdclaude::OpacityClass::Opaque;
+
+    // Which light links and shadow links include each placement.
+    entry.instanceCategories = HdClaudeRprimCategories(
+        sceneDelegate, id, GetInstancerId(), entry.transforms.size());
 
     // --- Unbound geometry -------------------------------------------------------
     // A mesh with no material binding gets a diffuse material of its own

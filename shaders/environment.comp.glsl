@@ -10,6 +10,29 @@
 
 layout(local_size_x = 64) in;
 
+/// Whether a light with these links contributes along a scattered ray that
+/// left `lastInstance` with density `scatterPdf`.
+///
+/// Its light link must include the surface the ray left: a light illuminates
+/// only what it links, by either strategy (shade.comp.glsl asks the same of
+/// next-event estimation).
+///
+/// And a light with a shadow link contributes only where next-event estimation
+/// could not have reached it -- a camera ray, a delta closure, a walk that
+/// scattered, all of which carry a density of zero. Where it could, that
+/// estimate took the light in full, because a shadow link names the geometry
+/// that blocks a *shadow ray* and a scattered ray has already been stopped by
+/// whatever it met first; weighing the two against each other would mix two
+/// different transports.
+bool delivers(int lightLink, int shadowLink, int lastInstance, float scatterPdf)
+{
+    if (!hdclaude_linked(lastInstance, lightLink))
+    {
+        return false;
+    }
+    return shadowLink < 0 || !(scatterPdf > 0.0);
+}
+
 layout(push_constant) uniform EnvironmentParams {
     /// Which bounce this dispatch is, counted from zero.
     ///
@@ -39,6 +62,11 @@ void main()
     vec3 direction = pathDirection.values[path];
     vec4 lambda = pathWavelengths.values[path];
 
+    // The surface this ray left, and the density of the scattering there. Both
+    // decide what a light the ray reaches may contribute (see `delivers`).
+    int lastInstance = pathLastInstance.values[path];
+    float scatterPdf = pathScatterPdf.values[path];
+
     // --- A ray that struck an analytic light ---------------------------------
     //
     // The other half of next-event estimation. A light is now an opaque emitter
@@ -60,7 +88,8 @@ void main()
         vec3 normal;
         float distance = hdclaude_intersect_light(
             light, pathOrigin.values[path], direction, normal);
-        if (distance > 0.0)
+        if (distance > 0.0 &&
+            delivers(light.lightLink, light.shadowLink, lastInstance, scatterPdf))
         {
             vec4 emission = pathThroughput.values[path] *
                             hdclaude_upsample_emission(
@@ -69,7 +98,6 @@ void main()
                                 lambda, light.colorTemperature,
                                 light.temperatureScale);
 
-            float scatterPdf = pathScatterPdf.values[path];
             if (scatterPdf > 0.0)
             {
                 float lightPdf =
@@ -84,9 +112,12 @@ void main()
     }
 
     vec4 radiance =
-        hdclaude_upsample_emission(hdclaude_environment(direction), lambda,
-                                   frame.environmentTemperature,
-                                   frame.environmentTemperatureScale);
+        delivers(frame.domeLightLink, frame.domeShadowLink, lastInstance,
+                 scatterPdf)
+            ? hdclaude_upsample_emission(hdclaude_environment(direction), lambda,
+                                         frame.environmentTemperature,
+                                         frame.environmentTemperatureScale)
+            : vec4(0.0);
 
     // Multiple importance sampling against next-event estimation, which
     // samples this same environment at every shading point. Both strategies
@@ -97,7 +128,6 @@ void main()
     // A scatter density of zero means there was no competing strategy -- a
     // camera ray, or a delta closure that next-event estimation cannot sample
     // -- and the environment arrives in full.
-    float scatterPdf = pathScatterPdf.values[path];
     if (scatterPdf > 0.0)
     {
         radiance *= hdclaude_mis_weight(scatterPdf,
@@ -115,13 +145,23 @@ void main()
     for (uint i = 0u; i < frame.lightCount; ++i)
     {
         Light distant = lights.values[i];
-        if (distant.type != HDCLAUDE_LIGHT_DISTANT)
+        // A distant light whose geometry is not in the frame -- which is every
+        // light while the `lightGeometry` setting is off, its default -- is one
+        // no ray can reach, exactly like a hidden area light, and next-event
+        // estimation takes its whole contribution for that reason. Adding the
+        // disc here as well counted the light twice wherever a scattered ray
+        // found the cone: a 40 degree sun lit a floor 19 per cent too bright,
+        // and a sun of half a degree too little to see.
+        if (distant.type != HDCLAUDE_LIGHT_DISTANT ||
+            !hdclaude_light_geometry_visible(distant))
         {
             continue;
         }
         vec3 axis = normalize(-distant.direction);
         float cosMax = cos(max(distant.angularRadius, 1.0e-4));
-        if (dot(direction, axis) <= cosMax)
+        if (dot(direction, axis) <= cosMax ||
+            !delivers(distant.lightLink, distant.shadowLink, lastInstance,
+                      scatterPdf))
         {
             continue;
         }

@@ -176,6 +176,10 @@ struct MeshInstance {
     /// in from the origin. A caller that knows nothing of motion gets
     /// none, rather than nonsense.
     bool hasPreviousTransform = false;
+
+    /// The light-linking categories this placement belongs to, as indices
+    /// into `Scene::linkCategoryCount`. Empty for geometry no light links.
+    std::vector<std::uint32_t> linkCategories;
 };
 
 /// What kind of emitter a Light is. Mirrors `path_state.glsl`.
@@ -270,7 +274,15 @@ struct Light {
     /// `RenderSettings::lightGeometry` can only take geometry away. A light
     /// cannot force its shape into a frame that asked for none.
     std::uint32_t visibleGeometry = 1;
-    float pad1 = 0.0f;
+
+    /// The light-linking category this light illuminates, or -1 for every
+    /// surface. UsdLux's `collection:lightLink`, resolved by Hydra into a
+    /// category that geometry either belongs to or does not; the index is into
+    /// `Scene::linkCategoryCount`.
+    std::int32_t lightLink = -1;
+    /// The category of geometry that occludes this light, or -1 for all of it.
+    /// UsdLux's `collection:shadowLink`.
+    std::int32_t shadowLink = -1;
 };
 
 /// Slots in the shared texture array.
@@ -382,6 +394,22 @@ struct Scene {
     /// rotation in every scene that means anything, but "in every scene that
     /// means anything" is not a thing to build a shader on.
     float domeLightToWorld[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+
+    // --- Light linking ------------------------------------------------------
+    //
+    // UsdLux's `collection:lightLink` and `collection:shadowLink`, as Hydra
+    // delivers them: each non-trivial collection is a *category*, a light names
+    // the category it links, and a piece of geometry lists the categories that
+    // include it. A collection that includes everything is no category at all,
+    // which is what -1 means on a light.
+
+    /// How many distinct categories the lights name. Instance categories and
+    /// light links index below this.
+    std::uint32_t linkCategoryCount = 0;
+    /// The dome light's `lightLink` category, or -1.
+    std::int32_t domeLightLink = -1;
+    /// The dome light's `shadowLink` category, or -1.
+    std::int32_t domeShadowLink = -1;
 
     std::uint64_t revision = 0;
 

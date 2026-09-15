@@ -13,6 +13,7 @@
 #include "hdclaude/gpu/path_tracer.h"
 #include "hdclaude/gpu/scene.h"
 
+#include "pxr/base/tf/token.h"
 #include "pxr/usd/sdf/path.h"
 
 #include <cstdint>
@@ -40,6 +41,11 @@ struct HdClaudeMeshEntry {
     /// Which entry of `subsetMaterials` owns each triangle, or -1 for the
     /// mesh's own binding. Empty when the mesh has no subsets.
     std::vector<int> triangleSubsets;
+
+    /// The light-linking categories each entry of `transforms` belongs to, in
+    /// the same order. Empty when the mesh is in no category at all, which is
+    /// every mesh of a stage that links nothing.
+    std::vector<std::vector<TfToken>> instanceCategories;
 };
 
 /// A compiled material, keyed by the path of the Hydra material prim.
@@ -71,6 +77,12 @@ struct HdClaudeLightEntry {
     float domeLightToWorld[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     /// What about this light is not honoured as authored, if anything.
     std::string report;
+
+    /// The Hydra categories of the light's `collection:lightLink` and
+    /// `collection:shadowLink`. Empty for a collection that includes everything,
+    /// which is how Hydra reports one.
+    TfToken lightLink;
+    TfToken shadowLink;
 };
 
 /// Thread-safe accumulator and snapshot source.
@@ -127,6 +139,9 @@ class HdClaudeSceneStore {
     std::map<SdfPath, std::vector<hdclaude::Transform3x4>> _previousTransforms;
     std::map<SdfPath, HdClaudeMaterialEntry> _materials;
     std::map<SdfPath, HdClaudeLightEntry> _lights;
+    /// What the last snapshot could not honour across lights, such as two dome
+    /// lights linked differently. Reported beside the per-entry reports.
+    std::vector<std::string> _snapshotReports;
     hdclaude::CompiledMaterial _fallback;
     bool _hasFallback = false;
     std::uint64_t _revision = 1;

@@ -565,6 +565,31 @@ void main()
             lightSample = hdclaude_sample_light(emitter, point.position, lightU);
         }
 
+        // --- Light linking ---------------------------------------------------
+        //
+        // A light illuminates only the surfaces its `lightLink` includes, so a
+        // surface outside it receives nothing from that light by either
+        // strategy: not here, and not in the environment kernel when a
+        // scattered ray reaches the light (which asks the same question of the
+        // surface the ray left). The sample is taken first and discarded, so
+        // the path's random sequence does not depend on the link.
+        int lightLink = -1;
+        int shadowLink = -1;
+        if (environmentSample)
+        {
+            lightLink = frame.domeLightLink;
+            shadowLink = frame.domeShadowLink;
+        }
+        else if (!sunSample)
+        {
+            lightLink = lights.values[emitter].lightLink;
+            shadowLink = lights.values[emitter].shadowLink;
+        }
+        if (!hdclaude_linked(record.x, lightLink))
+        {
+            lightSample.pdf = 0.0;
+        }
+
         // Which side of the surface the light lies on decides which closure
         // can carry it, exactly as it does for a scattered direction. A light
         // in front is a reflection; a light behind is a *transmission*, and
@@ -613,7 +638,18 @@ void main()
                 // would throw away the share of a strategy that cannot happen,
                 // and every hidden light would be too dark by exactly that
                 // share.
-                bool hittable = !sunSample;
+                //
+                // A light with a shadow link is in that position too, for a
+                // different reason. Its shadow link says which geometry blocks
+                // *this* light, and only a shadow ray can ask that: a scattered
+                // ray that reaches the light has been stopped by whatever it
+                // met first, linked or not, so the two strategies would be
+                // estimating different transport and no weighting of them is
+                // right. Next-event estimation is the one the link is defined
+                // for, and it takes the light in full; the environment kernel
+                // gives such a light nothing from a ray that could have been
+                // weighed against this estimate.
+                bool hittable = !sunSample && shadowLink < 0;
                 if (hittable && emitter < frame.lightCount)
                 {
                     hittable =
@@ -735,7 +771,8 @@ void main()
                             // occlude it.
                             ray.maxDistance = lightSample.distance * 0.9999;
                             ray.path = path;
-                            ray.pad0 = 0u; ray.pad1 = 0u;
+                            ray.shadowLink = shadowLink;
+                            ray.pad1 = 0u;
                             shadowRays.values[index] = ray;
                         }
                     }
@@ -862,6 +899,9 @@ void main()
     // so it stores zero and takes the environment in full.
     pathScatterPdf.values[path] =
         hdclaude_bsdf.isDelta < 0.5 ? pdf : 0.0;
+    // And the surface the ray leaves, whose light links decide what an emitter
+    // it reaches contributes.
+    pathLastInstance.values[path] = record.x;
 
     // Russian roulette after a few bounces, so a long dim path is terminated
     // with a compensating weight rather than traced to the depth limit.

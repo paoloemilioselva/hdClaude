@@ -663,6 +663,15 @@ class PathTracer {
     VulkanBuffer _lightTable;
     std::uint32_t _lightCount = 0;
 
+    /// Which light-linking categories each instance belongs to: `_linkWords`
+    /// 32-bit words an instance, one bit a category, indexed by the custom
+    /// index a ray query reports. Always a real buffer, so a descriptor can
+    /// name it; a scene with no categories has zero words an instance.
+    VulkanBuffer _instanceLinks;
+    std::uint32_t _linkWords = 0;
+    std::int32_t _domeLightLink = -1;
+    std::int32_t _domeShadowLink = -1;
+
     // The scene's texture pool: each distinct image once, referred to by a
     // material's textureSlots.
     std::vector<VulkanImage> _texturePool;
@@ -872,6 +881,10 @@ class PathTracer {
         /// wavelength by a dispersive surface, so the collapse compensates
         /// exactly once.
         VulkanBuffer heroOnly;
+        /// The instance each path last scattered from, or -1 for a camera ray,
+        /// so an emitter a scattered ray reaches can be tested against that
+        /// surface's light links.
+        VulkanBuffer lastInstance;
         VulkanBuffer hits, counters, activeQueue, nextActiveQueue, shadowRays;
         /// Normalised device depth of the primary hit, and its landing place on
         /// the host.

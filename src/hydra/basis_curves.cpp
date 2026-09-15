@@ -106,7 +106,8 @@ HdDirtyBits HdClaudeBasisCurves::GetInitialDirtyBitsMask() const
     return HdChangeTracker::DirtyTopology | HdChangeTracker::DirtyPoints |
            HdChangeTracker::DirtyWidths | HdChangeTracker::DirtyPrimvar |
            HdChangeTracker::DirtyTransform | HdChangeTracker::DirtyVisibility |
-           HdChangeTracker::DirtyMaterialId | HdChangeTracker::DirtyInstancer;
+           HdChangeTracker::DirtyMaterialId | HdChangeTracker::DirtyInstancer |
+           HdChangeTracker::DirtyCategories;
 }
 
 void HdClaudeBasisCurves::_InitRepr(const TfToken& reprToken,
@@ -322,6 +323,10 @@ void HdClaudeBasisCurves::Sync(HdSceneDelegate* sceneDelegate,
             return;
         }
     }
+
+    // Which light links and shadow links include each placement.
+    entry.instanceCategories = HdClaudeRprimCategories(
+        sceneDelegate, id, GetInstancerId(), entry.transforms.size());
 
     HdClaudeTrace("curves <%s>: %zu strands -> %zu vertices, %zu triangles, "
                   "%zu instances",

@@ -20,13 +20,35 @@ void main()
     }
     ShadowRay ray = shadowRays.values[index];
 
+    // A light with a shadow link is occluded only by the geometry in it
+    // (UsdLux `collection:shadowLink`). Membership is a property of the
+    // instance, which only the shader can test, so for such a ray every
+    // triangle is handed to the loop below as a candidate instead of being
+    // committed by the implementation. Every other ray keeps the opaque fast
+    // path.
+    bool linked = ray.shadowLink >= 0;
+    uint flags = gl_RayFlagsTerminateOnFirstHitEXT |
+                 (linked ? gl_RayFlagsNoOpaqueEXT : gl_RayFlagsOpaqueEXT);
+
     rayQueryEXT query;
-    rayQueryInitializeEXT(query, sceneTlas,
-                          gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
-                          0xFF, ray.origin, 1.0e-4, ray.direction,
-                          ray.maxDistance);
+    rayQueryInitializeEXT(query, sceneTlas, flags, 0xFF, ray.origin, 1.0e-4,
+                          ray.direction, ray.maxDistance);
     while (rayQueryProceedEXT(query))
     {
+        if (rayQueryGetIntersectionTypeEXT(query, false) ==
+            gl_RayQueryCandidateIntersectionTriangleEXT)
+        {
+            // Only reached for a linked ray. The implementation has already
+            // placed the hit inside the ray's interval.
+            if (hdclaude_linked(
+                    rayQueryGetIntersectionInstanceCustomIndexEXT(query, false),
+                    ray.shadowLink))
+            {
+                rayQueryConfirmIntersectionEXT(query);
+            }
+            continue;
+        }
+
         // A box is only ever a *candidate*. Triangle geometry is committed
         // by the implementation; a curve's box says "the segment inside me
         // might be hit", and this is where that question is answered.
@@ -80,7 +102,8 @@ void main()
                 // nine per cent of the light off the surface below it
                 // (`tests/render_tests.cpp`). The comparison is made here
                 // rather than trusted to the implementation.
-                if (hit >= rayQueryGetRayTMinEXT(query) && hit < ray.maxDistance)
+                if (hit >= rayQueryGetRayTMinEXT(query) && hit < ray.maxDistance &&
+                    hdclaude_linked(candidateInstance, ray.shadowLink))
                 {
                     rayQueryGenerateIntersectionEXT(query, hit);
                 }

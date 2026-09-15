@@ -3223,6 +3223,212 @@ int main()
             CHECK_NEAR(Luminance(cool) / Luminance(neutral), 1.0, 0.05);
         }
 
+        // --- Light linking and shadow linking ----------------------------------
+        //
+        // UsdLux's `collection:lightLink` says which geometry a light
+        // illuminates and `collection:shadowLink` which geometry blocks it. The
+        // closed forms are the unlinked scenes themselves: a surface that a
+        // shadow link lets see past an occluder must render exactly as it does
+        // with no occluder at all, and a surface a light link leaves out must
+        // receive nothing. Each is paired with the render the link changes, so
+        // a link that did nothing could not pass.
+        //
+        // The occluders are black, so the only thing they can do to the floor
+        // is block it. A white one would reflect light back and the "no
+        // occluder" render would stop being the right reference.
+        //
+        // Both kinds of emitter a scattered ray can reach are covered: a distant
+        // light, found in the environment kernel's cone test, and the
+        // environment itself. A shadow-linked emitter is estimated by next-event
+        // estimation alone (shade.comp.glsl), so these renders are also the
+        // check that doing so neither drops nor doubles the light.
+        {
+            const CompiledMaterial black = MakeDiffuseMaterial(
+                libraries, compiler, tracer.ShadeKernelSource(),
+                mx::Color3(0.0f, 0.0f, 0.0f), "black");
+            CHECK(!black.spirv.empty());
+            const std::vector<CompiledMaterial> linkMaterials = {materials[0],
+                                                                 black};
+
+            constexpr int kLink = 0;
+            const auto instance = [](const Transform3x4& transform,
+                                     std::uint32_t material,
+                                     std::vector<std::uint32_t> categories) {
+                MeshInstance placed{0, transform, material, true};
+                placed.linkCategories = std::move(categories);
+                return placed;
+            };
+
+            // A distant light 45 degrees off the floor's normal, emitting
+            // towards -x and -z. A 1x1 occluder two units up at x = 2 casts
+            // its shadow on the centre of the floor while lying outside the
+            // camera's view, which at that height spans |x| < 1.
+            Light distant;
+            distant.type = static_cast<std::uint32_t>(LightType::Distant);
+            distant.direction[0] = -0.70710678f;
+            distant.direction[1] = 0.0f;
+            distant.direction[2] = -0.70710678f;
+            distant.angularRadius = 0.01f;
+            const float kDistantRadiance = 1.0f / (3.14159265f * 0.01f * 0.01f);
+            for (int i = 0; i < 3; ++i) {
+                distant.radiance[i] = kDistantRadiance;
+            }
+
+            RenderSettings linkSettings;
+            linkSettings.lightGeometry = true;
+            linkSettings.samplesPerPixel = 256;
+            linkSettings.maxBounces = 3;
+            for (int i = 0; i < 3; ++i) {
+                linkSettings.environmentColor[i] = 0.0f;
+                linkSettings.sunRadiance[i] = 0.0f;
+            }
+
+            const Transform3x4 floorPlace = Transform(4, 4, 1, 0, 0, 0);
+            const Transform3x4 occluderPlace = Transform(0.5f, 0.5f, 1, 2, 0, 2);
+
+            const auto renderDistant = [&](bool occluder, std::int32_t lightLink,
+                                           std::int32_t shadowLink,
+                                           std::vector<std::uint32_t> floorIn,
+                                           std::vector<std::uint32_t> occluderIn) {
+                Scene scene;
+                scene.prototypes.push_back(MakeQuad());
+                scene.instances.push_back(instance(floorPlace, 0, floorIn));
+                if (occluder) {
+                    scene.instances.push_back(
+                        instance(occluderPlace, 1, occluderIn));
+                }
+                Light light = distant;
+                light.lightLink = lightLink;
+                light.shadowLink = shadowLink;
+                scene.lights.push_back(light);
+                scene.linkCategoryCount = 1;
+                tracer.SetScene(scene, linkMaterials);
+                const std::vector<float> image =
+                    tracer.Render(kWidth, kHeight, LookDownZ(4.0f), linkSettings);
+                return Luminance(Window(image, 0.5f, 0.5f, 8));
+            };
+
+            const float open = renderDistant(false, -1, -1, {}, {});
+            const float shadowed = renderDistant(true, -1, -1, {}, {});
+            const float pastExcluded =
+                renderDistant(true, -1, kLink, {kLink}, {});
+            const float blockedIncluded =
+                renderDistant(true, -1, kLink, {kLink}, {kLink});
+            const float unlinkedFloor =
+                renderDistant(false, kLink, -1, {}, {kLink});
+            const float linkedFloor = renderDistant(false, kLink, -1, {kLink}, {});
+            std::printf("  distant light links: open %.4f, shadowed %.4f, "
+                        "occluder outside shadowLink %.4f, inside %.4f; floor "
+                        "outside lightLink %.4f, inside %.4f\n",
+                        open, shadowed, pastExcluded, blockedIncluded,
+                        unlinkedFloor, linkedFloor);
+
+            // White at 0.8 under an irradiance of cos 45: 0.8 / pi * 0.7071.
+            CHECK_NEAR(open, 0.18006, 0.01);
+            CHECK(shadowed < open * 0.02f);
+            CHECK_NEAR(pastExcluded / open, 1.0, 0.02);
+            CHECK(blockedIncluded < open * 0.02f);
+            CHECK(unlinkedFloor < open * 0.001f);
+            CHECK_NEAR(linkedFloor / open, 1.0, 0.02);
+
+            // The environment, under a black roof one unit above the floor and
+            // wider than anything it could let past at the sides. The camera
+            // sits under the roof, looking down, so the roof is never seen.
+            RenderSettings skySettings = linkSettings;
+            skySettings.samplesPerPixel = 512;
+            for (int i = 0; i < 3; ++i) {
+                skySettings.environmentColor[i] = 1.0f;
+            }
+            const Transform3x4 skyFloor = Transform(200, 200, 1, 0, 0, 0);
+            const Transform3x4 roof = Transform(200, 200, 1, 0, 0, 1);
+
+            const auto renderSky = [&](bool roofed, std::int32_t lightLink,
+                                       std::int32_t shadowLink,
+                                       std::vector<std::uint32_t> floorIn,
+                                       std::vector<std::uint32_t> roofIn) {
+                Scene scene;
+                scene.prototypes.push_back(MakeQuad());
+                scene.instances.push_back(instance(skyFloor, 0, floorIn));
+                if (roofed) {
+                    scene.instances.push_back(instance(roof, 1, roofIn));
+                }
+                scene.hasDomeLight = true;
+                scene.domeLightLink = lightLink;
+                scene.domeShadowLink = shadowLink;
+                scene.linkCategoryCount = 1;
+                tracer.SetScene(scene, linkMaterials);
+                const std::vector<float> image =
+                    tracer.Render(kWidth, kHeight, LookDownZ(0.5f), skySettings);
+                return Luminance(Window(image, 0.5f, 0.5f, 12));
+            };
+
+            const float skyOpen = renderSky(false, -1, -1, {}, {});
+            const float skyRoofed = renderSky(true, -1, -1, {}, {});
+            const float skyPastRoof = renderSky(true, -1, kLink, {kLink}, {});
+            const float skyUnlinked = renderSky(false, kLink, -1, {}, {kLink});
+            const float skyLinked = renderSky(false, kLink, -1, {kLink}, {});
+            std::printf("  environment links: open %.4f, roofed %.4f, roof "
+                        "outside shadowLink %.4f; floor outside lightLink %.4f, "
+                        "inside %.4f\n",
+                        skyOpen, skyRoofed, skyPastRoof, skyUnlinked, skyLinked);
+
+            // A white furnace for the upper hemisphere: the albedo.
+            CHECK_NEAR(skyOpen, 0.8, 0.02);
+            CHECK(skyRoofed < skyOpen * 0.02f);
+            CHECK_NEAR(skyPastRoof / skyOpen, 1.0, 0.02);
+            CHECK(skyUnlinked < skyOpen * 0.001f);
+            CHECK_NEAR(skyLinked / skyOpen, 1.0, 0.02);
+        }
+
+        // --- A wide distant light, with its geometry out of the frame ----------
+        //
+        // A distant light's irradiance on a surface facing it is its radiance
+        // times the cone's projected solid angle, `pi sin^2 theta`, so a white
+        // floor under one reads `0.8 sin^2 theta` times the radiance. The
+        // `lightGeometry` setting is off by default, and with it off no ray can
+        // reach a light: next-event estimation takes the whole contribution.
+        // The environment kernel added a scattered ray's share of the disc all
+        // the same, which went unseen for as long as every test rendered with
+        // geometry on and every sun was half a degree wide. At 40 degrees it
+        // was 19 per cent.
+        {
+            constexpr float kHalfAngle = 20.0f * 3.14159265f / 180.0f;
+            Scene scene;
+            scene.prototypes.push_back(MakeQuad());
+            scene.instances.push_back({0, Transform(4, 4, 1, 0, 0, 0), 0, true});
+            Light distant;
+            distant.type = static_cast<std::uint32_t>(LightType::Distant);
+            distant.direction[0] = 0.0f;
+            distant.direction[1] = 0.0f;
+            distant.direction[2] = -1.0f;
+            distant.angularRadius = kHalfAngle;
+            for (int i = 0; i < 3; ++i) {
+                distant.radiance[i] = 1.0f;
+            }
+            scene.lights.push_back(distant);
+            tracer.SetScene(scene, materials);
+
+            const double expected =
+                0.8 * std::sin(kHalfAngle) * std::sin(kHalfAngle);
+            for (const bool geometry : {false, true}) {
+                RenderSettings wide;
+                wide.lightGeometry = geometry;
+                wide.samplesPerPixel = 256;
+                wide.maxBounces = 3;
+                for (int i = 0; i < 3; ++i) {
+                    wide.environmentColor[i] = 0.0f;
+                    wide.sunRadiance[i] = 0.0f;
+                }
+                const std::vector<float> image =
+                    tracer.Render(kWidth, kHeight, LookDownZ(4.0f), wide);
+                const float measured = Luminance(Window(image, 0.5f, 0.5f, 12));
+                std::printf("  distant light of 40 degrees, geometry %s: %.4f "
+                            "(closed form %.4f)\n",
+                            geometry ? "on" : "off", measured, expected);
+                CHECK_NEAR(measured, expected, expected * 0.02);
+            }
+        }
+
         // --- A texture arrives the way round it was decoded -------------------
         //
         // The quad's UVs put v = 0 at the bottom, and the texture's first row

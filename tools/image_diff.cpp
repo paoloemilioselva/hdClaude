@@ -63,7 +63,9 @@ int Usage()
                  "[--rms <value>] [--worst <value>] "
                  "[--failed-fraction <value>] [--per-pixel <value>]\n"
                  "       hdClaudeImageDiff --scan <image>\n"
-                 "       hdClaudeImageDiff --energy <reference> <candidate>\n";
+                 "       hdClaudeImageDiff --energy <reference> <candidate>\n"
+                 "       hdClaudeImageDiff --expectation <reference> <candidate> "
+                 "[<block px> <z limit>]\n";
     return 2;
 }
 
@@ -325,6 +327,112 @@ int Energy(const char* referencePath, const char* candidatePath)
     return 0;
 }
 
+/// Whether two renders have the same expected image, region by region.
+///
+/// The gate above assumes both images drew the same random numbers for the
+/// same estimator, so that an unchanged renderer differs by little per pixel.
+/// Two *different* unbiased estimators of the same image -- next-event
+/// estimation alone against a balance-heuristic combination, say -- agree in
+/// expectation and in nothing else: their noise is independent, and a
+/// per-pixel limit fails them or has to be loosened until it means nothing.
+///
+/// So each image is cut into square blocks and each block's mean luminance is
+/// compared against the noise the two images themselves show there: the
+/// difference of the means over the combined standard error, estimated from
+/// the spread of each block's pixels. That spread includes the block's real
+/// structure as well as its noise, which can only make a difference *harder*
+/// to call significant -- so a pass needs a negative control beside it, and a
+/// failure is a real one. Blocks are independent, so the limit is a z-score set
+/// far past what a few hundred blocks produce by chance.
+int Expectation(const char* referencePath, const char* candidatePath,
+                int block, double zLimit)
+{
+    Image reference;
+    Image candidate;
+    if (!Read(referencePath, &reference) || !Read(candidatePath, &candidate)) {
+        return 1;
+    }
+    if (reference.width != candidate.width ||
+        reference.height != candidate.height) {
+        std::cerr << "Resolution differs\n";
+        return 1;
+    }
+    const auto luminance = [](const Image& image, int x, int y) {
+        const float* p =
+            &image.pixels[(static_cast<std::size_t>(y) * image.width + x) * 4];
+        return 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+    };
+
+    double worstZ = 0.0;
+    double worstReference = 0.0;
+    double worstCandidate = 0.0;
+    int worstX = 0;
+    int worstY = 0;
+    double referenceTotal = 0.0;
+    double candidateTotal = 0.0;
+    int blocks = 0;
+    for (int by = 0; by + block <= reference.height; by += block) {
+        for (int bx = 0; bx + block <= reference.width; bx += block) {
+            double sumR = 0.0, sumC = 0.0, squareR = 0.0, squareC = 0.0;
+            int n = 0;
+            for (int y = by; y < by + block; ++y) {
+                for (int x = bx; x < bx + block; ++x) {
+                    const double r = luminance(reference, x, y);
+                    const double c = luminance(candidate, x, y);
+                    if (!std::isfinite(r) || !std::isfinite(c)) {
+                        std::cerr << "  non-finite pixel at (" << x << ", " << y
+                                  << ")\n";
+                        return 1;
+                    }
+                    sumR += r;
+                    sumC += c;
+                    squareR += r * r;
+                    squareC += c * c;
+                    ++n;
+                }
+            }
+            const double meanR = sumR / n;
+            const double meanC = sumC / n;
+            const double varianceR = std::max(0.0, squareR / n - meanR * meanR);
+            const double varianceC = std::max(0.0, squareC / n - meanC * meanC);
+            const double standardError =
+                std::sqrt((varianceR + varianceC) / (n - 1));
+            const double difference = std::abs(meanC - meanR);
+            // A block with no spread in either image -- empty background --
+            // is compared exactly: any difference there is not noise.
+            const double z = standardError > 0.0 ? difference / standardError
+                              : difference > 1.0e-9 ? 1.0e30
+                                                     : 0.0;
+            if (z > worstZ) {
+                worstZ = z;
+                worstReference = meanR;
+                worstCandidate = meanC;
+                worstX = bx;
+                worstY = by;
+            }
+            referenceTotal += sumR;
+            candidateTotal += sumC;
+            ++blocks;
+        }
+    }
+
+    std::cout << "  expectation: " << blocks << " blocks of " << block << " px, "
+              << "candidate mean " << candidateTotal / (blocks * block * block)
+              << " against " << referenceTotal / (blocks * block * block)
+              << ", worst z " << worstZ << " (limit " << zLimit << ") at ("
+              << worstX << ", " << worstY << "): " << worstCandidate
+              << " against " << worstReference << '\n';
+    if (candidateTotal <= 1.0e-6 * blocks * block * block) {
+        std::cerr << "  candidate is uniformly black\n";
+        return 1;
+    }
+    if (worstZ > zLimit) {
+        std::cerr << "  a region's mean differs by more than its noise allows\n";
+        return 1;
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -334,6 +442,10 @@ try {
     }
     if (argc == 4 && std::string(argv[1]) == "--energy") {
         return Energy(argv[2], argv[3]);
+    }
+    if ((argc == 4 || argc == 6) && std::string(argv[1]) == "--expectation") {
+        return Expectation(argv[2], argv[3], argc == 6 ? std::stoi(argv[4]) : 16,
+                           argc == 6 ? std::stod(argv[5]) : 6.0);
     }
     if (argc < 3) {
         return Usage();

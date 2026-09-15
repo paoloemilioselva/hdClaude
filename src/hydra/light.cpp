@@ -8,12 +8,14 @@
 #include "hdclaude/core/spectrum.h"
 
 #include "pxr/base/gf/matrix4d.h"
+#include "pxr/base/tf/stringUtils.h"
 #include "pxr/base/gf/vec3d.h"
 #include "pxr/base/gf/vec3f.h"
 #include "pxr/imaging/hd/sceneDelegate.h"
 #include "pxr/imaging/hd/tokens.h"
 #include "pxr/usd/usdLux/tokens.h"
 
+#include <algorithm>
 #include <cmath>
 #include <type_traits>
 
@@ -65,6 +67,93 @@ void StoreVector(float (&out)[3], const GfVec3f& value)
     out[0] = value[0];
     out[1] = value[1];
     out[2] = value[2];
+}
+
+/// The category a light-linking parameter names, or the empty token Hydra uses
+/// for a collection that includes everything.
+TfToken LinkParam(HdSceneDelegate* delegate, const SdfPath& id,
+                  const TfToken& name)
+{
+    const VtValue value = delegate->GetLightParamValue(id, name);
+    return value.IsHolding<TfToken>() ? value.UncheckedGet<TfToken>() : TfToken();
+}
+
+/// Appends "`name` = value is not honoured" to a light's report.
+void Unhonoured(std::string* report, const std::string& what)
+{
+    if (!report->empty()) {
+        *report += "; ";
+    }
+    *report += what;
+}
+
+/// The UsdLux inputs hdClaude reads nothing of, reported by name when they are
+/// authored away from the value that would make ignoring them exact.
+///
+/// None of these is substituted for. UsdLux calls `diffuse` and `specular`
+/// "non-physical" controls, `shadow:color`, `distance` and `falloff` are
+/// artistic ones, and a physically based transport has no place to put any of
+/// them that would still be the same light; a light filter is a shader
+/// hdClaude has no implementation of. Saying so is the whole of the support.
+std::string UnhonouredInputs(HdSceneDelegate* delegate, const SdfPath& id)
+{
+    std::string report;
+    const auto scalar = [&](const TfToken& name, float exact) {
+        const float value = Param<float>(delegate, id, name, exact);
+        if (value != exact) {
+            Unhonoured(&report, TfStringPrintf("inputs:%s = %g is not honoured "
+                                               "(treated as %g)",
+                                               name.GetText(), value, exact));
+        }
+    };
+    scalar(HdLightTokens->diffuse, 1.0f);
+    scalar(HdLightTokens->specular, 1.0f);
+    scalar(HdLightTokens->shadowDistance, -1.0f);
+    scalar(HdLightTokens->shadowFalloff, -1.0f);
+    scalar(HdLightTokens->shadowFalloffGamma, 1.0f);
+
+    const auto colour = [&](const TfToken& name) {
+        const GfVec3f value = ParamColor(delegate, id, name, GfVec3f(0.0f));
+        if (value != GfVec3f(0.0f)) {
+            Unhonoured(&report,
+                       TfStringPrintf("inputs:%s = (%g, %g, %g) is not honoured "
+                                      "(treated as black)",
+                                      name.GetText(), value[0], value[1], value[2]));
+        }
+    };
+    colour(HdLightTokens->shadowColor);
+    colour(HdLightTokens->shapingFocusTint);
+
+    const VtValue filters = delegate->GetLightParamValue(id, HdTokens->filters);
+    if (filters.IsHolding<SdfPathVector>() &&
+        !filters.UncheckedGet<SdfPathVector>().empty()) {
+        Unhonoured(&report,
+                   TfStringPrintf("light:filters names %zu light filter(s), and "
+                                  "hdClaude implements no light filter",
+                                  filters.UncheckedGet<SdfPathVector>().size()));
+    }
+    return report;
+}
+
+/// UsdLux's `sizeFactor` for a distant light with `normalize` on.
+///
+/// Quoted from `UsdLuxLightAPI::GetNormalizeAttr`: with the half-angle
+/// `theta = clamp(radians(angle) / 2, 0, pi)`, the factor is 1 at zero,
+/// `pi sin^2 theta` up to a hemisphere and `(2 - sin^2 theta) pi` beyond it. It
+/// is the solid angle's projection onto a surface facing the light, so a
+/// normalised distant light delivers `intensity` lux there whatever its size.
+float DistantSizeFactor(float angleDegrees)
+{
+    const float theta = std::clamp(
+        angleDegrees * static_cast<float>(M_PI) / 180.0f * 0.5f, 0.0f,
+        static_cast<float>(M_PI));
+    if (theta <= 0.0f) {
+        return 1.0f;
+    }
+    const float sin2 = std::sin(theta) * std::sin(theta);
+    return theta <= 0.5f * static_cast<float>(M_PI)
+               ? static_cast<float>(M_PI) * sin2
+               : (2.0f - sin2) * static_cast<float>(M_PI);
 }
 
 }  // namespace
@@ -142,13 +231,15 @@ void HdClaudeLight::Sync(HdSceneDelegate* sceneDelegate,
     }
 
     // --- Placement -------------------------------------------------------------
-    const GfMatrix4d transform = sceneDelegate->GetTransform(id);
+    GfMatrix4d transform = sceneDelegate->GetTransform(id);
     const GfVec3f position(transform.ExtractTranslation());
     // USD lights emit along their local -Z.
     const GfVec3f emitDirection =
         GfVec3f(transform.TransformDir(GfVec3d(0.0, 0.0, -1.0))).GetNormalized();
 
-    std::string entryReport;
+    std::string entryReport = UnhonouredInputs(sceneDelegate, id);
+    const TfToken lightLink = LinkParam(sceneDelegate, id, HdTokens->lightLink);
+    const TfToken shadowLink = LinkParam(sceneDelegate, id, HdTokens->shadowLink);
 
     hdclaude::Light light;
     light.colorTemperature = colorTemperature;
@@ -163,6 +254,8 @@ void HdClaudeLight::Sync(HdSceneDelegate* sceneDelegate,
         // leaves the scene, sampled by the environment strategy instead.
         HdClaudeLightEntry entry;
         entry.isDome = true;
+        entry.lightLink = lightLink;
+        entry.shadowLink = shadowLink;
         entry.domeColorTemperature = colorTemperature;
         entry.domeTemperatureScale = temperatureScale;
         StoreVector(entry.environmentColor, radiance);
@@ -178,6 +271,41 @@ void HdClaudeLight::Sync(HdSceneDelegate* sceneDelegate,
         if (!texturePath.empty() && param->TexturePool() != nullptr) {
             entry.domeTexture =
                 static_cast<int>(param->TexturePool()->Acquire(texturePath));
+        }
+
+        // Only a latitude-longitude map is read. `automatic` is taken to be
+        // one, since that is the only layout hdClaude can decode it as; a map
+        // authored as any other layout would be sampled in the wrong
+        // parameterisation, and says so.
+        const TfToken format = Param<TfToken>(
+            sceneDelegate, id, HdLightTokens->textureFormat, TfToken("automatic"));
+        if (!texturePath.empty() && format != TfToken("automatic") &&
+            format != TfToken("latlong")) {
+            Unhonoured(&entryReport,
+                       TfStringPrintf("inputs:texture:format = %s is read as "
+                                      "latlong, the only layout hdClaude samples",
+                                      format.GetText()));
+        }
+        const VtValue portals =
+            sceneDelegate->GetLightParamValue(id, HdTokens->portals);
+        if (portals.IsHolding<SdfPathVector>() &&
+            !portals.UncheckedGet<SdfPathVector>().empty()) {
+            // Portals guide sampling and change no expected value, so ignoring
+            // them costs noise, not correctness -- but they were asked for.
+            Unhonoured(&entryReport,
+                       "portals are not used to guide the dome's sampling");
+        }
+        entry.report = entryReport;
+
+        // `DomeLight_1`'s pole axis. UsdImaging hands it over as `domeOffset`,
+        // a rotation that aligns the map's top pole with the stage's up axis
+        // (or the axis the light names) and that applies to the dome alone,
+        // before the prim's own transform -- hdPrman composes it in the same
+        // order. `DomeLight` has none, and the parameter is then absent.
+        const VtValue domeOffset =
+            sceneDelegate->GetLightParamValue(id, HdLightTokens->domeOffset);
+        if (domeOffset.IsHolding<GfMatrix4d>()) {
+            transform = domeOffset.UncheckedGet<GfMatrix4d>() * transform;
         }
 
         // The dome's own rotation, inverted: the environment kernel takes a
@@ -252,6 +380,9 @@ void HdClaudeLight::Sync(HdSceneDelegate* sceneDelegate,
         light.angularRadius =
             std::max(1.0e-4f, angle * 0.5f * static_cast<float>(M_PI) / 180.0f);
         light.type = static_cast<std::uint32_t>(hdclaude::LightType::Distant);
+        if (normalize) {
+            radiance /= DistantSizeFactor(angle);
+        }
     } else {
         HdClaudeTrace("light <%s>: unsupported type %s", id.GetText(),
                       _lightType.GetText());
@@ -282,21 +413,34 @@ void HdClaudeLight::Sync(HdSceneDelegate* sceneDelegate,
                              SdfAssetPath())
              .GetAssetPath()
              .empty()) {
-        entryReport =
-            "the IES profile is ignored; hdClaude applies only the cone and "
-            "focus terms of UsdLuxShapingAPI";
+        Unhonoured(&entryReport,
+                   "the IES profile is ignored; hdClaude applies only the cone "
+                   "and focus terms of UsdLuxShapingAPI");
     }
 
     // UsdLux `normalize` makes a light's total power independent of its size,
     // so the radiance an area light emits falls as its area grows. A distant
-    // light has no area and is unaffected.
+    // light was divided by its own size factor above.
     if (normalize && light.area > 0.0f) {
         radiance /= light.area;
     }
     StoreVector(light.radiance, radiance);
 
+    // Texture maps on area lights are not sampled: the light emits its colour
+    // uniformly.
+    if (_lightType == HdPrimTypeTokens->rectLight &&
+        !Param<SdfAssetPath>(sceneDelegate, id, HdLightTokens->textureFile,
+                             SdfAssetPath())
+             .GetAssetPath()
+             .empty()) {
+        Unhonoured(&entryReport, "inputs:texture:file is not sampled; the rect "
+                                 "light emits its colour uniformly");
+    }
+
     HdClaudeLightEntry entry;
     entry.light = light;
+    entry.lightLink = lightLink;
+    entry.shadowLink = shadowLink;
     entry.report = std::move(entryReport);
     param->SceneStore()->PublishLight(id, std::move(entry));
 

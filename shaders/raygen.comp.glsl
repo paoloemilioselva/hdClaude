@@ -63,6 +63,8 @@ void main()
     pathScatterPdf.values[index] = 0.0;
     // The full packet, until a dispersive surface forces a choice of one.
     pathHeroOnly.values[index] = 0u;
+    // No surface yet, so no light link to answer to.
+    pathLastInstance.values[index] = -1;
     // A camera ray starts in vacuum.
     pathMedium.values[2u * index + 0u] = vec4(0.0);
     pathMedium.values[2u * index + 1u] = vec4(0.0);

@@ -7018,3 +7018,98 @@ GGX energy the existing rough dielectric already loses at that roughness. An
 `open_pbr_surface` glass authored thin-walled with a depth of 0.5 and a grey
 colour -- which would absorb inside a volume -- transmits 1.8308 and reads 0.9950
 in the furnace: no interior, and the base carrying the internal bounces.
+
+## 2026-09-16 -- Light linking, and a distant light counted twice
+
+Reported as something off with ALab's image-based and directional light. Read
+against the UsdLux schema, hdClaude honoured every light input ALab's rig
+authors except one it had no code for at all: **linking**. ALab encloses its set
+in `/root/dmp_skydome_alab01`, a sphere 3.5 km across with a black diffuse and an
+emissive matte painting, and both `lgt_sun_distant` and `lgt_env_dome` list it in
+`collection:shadowLink:excludes` -- the sun also excludes the two louvered
+windows on `wall04`. Without linking, every shadow ray from the sun and the dome
+met the sphere, and the set was lit by the painting as ordinary emissive geometry
+instead.
+
+**How Hydra delivers it.** A render delegate never reads a collection. Each
+non-trivial collection becomes a *category* token: a light's `lightLink` and
+`shadowLink` parameters name one, `GetCategories` lists the ones an rprim is in,
+and `GetInstanceCategories` does the same per native instance (a point instancer
+is linked through its own `GetCategories`, which applies to all its instances).
+The legacy `UsdImagingDelegate` answers from its collection cache. Through a scene
+index -- the default in 26.03 for usdview and usdrecord -- only
+`HdsiLightLinkingSceneIndex` answers, and OpenUSD inserts it for nobody; hdPrman
+registers it for RenderMan. `HdClaude_LightLinkingSceneIndexPlugin` now registers
+it for hdClaude at phase 1, after the NURBS conversion.
+
+**On the device.** The scene store numbers the categories the lights name.
+Categories no light names are dropped, since they can change nothing. Each
+instance carries one bit a category in `instanceLinks`, indexed by the custom
+index a ray query reports. Each light carries `lightLink` and `shadowLink`
+indices, and the dome's pair is in the frame block. A light's shadow ray carries
+its `shadowLink`. For such a ray the shadow kernel drops the opaque flag, so every
+triangle becomes a candidate it can confirm only for members; every other ray
+keeps the fast path. Each path records the instance it last scattered from, so an
+emitter a scattered ray reaches is asked about that surface's light link.
+
+**The estimator.** A light link is a property of the receiving surface, and
+both strategies drop an unlinked surface alike. A shadow link is not symmetric:
+it says what blocks a *shadow ray*, while a scattered ray reaching the light has
+already been stopped by whatever it met. The two strategies then estimate
+different transport, and the balance heuristic would return a weight-dependent
+mixture of them. So a shadow-linked light is estimated by next-event estimation
+alone. It takes the light in full, and a scattered ray contributes nothing where
+next-event estimation ran. Where it did not (a camera ray, a delta closure, a
+scattering walk), the light arrives as before. This is a decision in UsdLux's
+silence, and it is recorded in the decision log.
+
+**Measured** (`tests/render_tests.cpp`). A white floor lit at 45 degrees by a
+distant light reads 0.1806, against the closed form 0.18006. With a black
+occluder outside the light's shadow link the floor reads 0.1806, and with the
+occluder inside it 0.0000. A floor outside the light link reads 0.0000, and
+inside it 0.1806. Under a white environment the open floor reads 0.7996 (albedo
+0.8). Under a black roof outside the dome's shadow link it reads 0.7977, and
+roofed with no link 0.0000.
+
+At the USD level (`tests/usd/light_linking_equivalence.py`, through the
+installed plugin) there is an ALab-like enclosure plus a native instance, both
+excluded from the sun's and the dome's shadow links. The stage must match the
+same stage without either: worst block z 1.22 against a limit of 6. Without
+the links it must not match, and it reads z 151.
+
+**A defect found by the check.** The same script compares a normalised distant
+light at 1 and 40 degrees, which UsdLux says must light a facing surface the
+same. The 40 degree light was 19 per cent too bright, with or without
+`normalize`. Next-event estimation alone gave the closed form exactly (0.1403
+against 0.140). The excess was the environment kernel adding a scattered ray's
+share of the distant light's disc even when `lightGeometry` is off, its default.
+With the setting off, next-event estimation treats every light as unhittable and
+takes its whole contribution, so the disc was counted twice. Area lights already
+skipped hidden geometry, but the distant loop did not. Every render test that
+could have seen it ran with geometry on, and every sun in the gallery is 1
+degree, where the double count is a few parts in ten thousand. It now matches
+the closed form with geometry on and off: 0.0938 against 0.0936 at 40 degrees.
+`subdivision_features` renders identically, and `newzealand_heightmap` differs
+by rms 7.8e-5.
+
+**What else was read against the schema.** A distant light's `normalize` now
+divides by UsdLux's `sizeFactor`. `DomeLight_1`'s pole axis, handed over as
+`domeOffset`, is composed before the prim's transform. The pole-axis check
+compares `poleAxis = "Z"` on a Z-up stage with a `DomeLight` turned 90 degrees
+about X: the two are identical, and the unturned control reads z 118. The
+inputs with no physically based meaning are named in the light's report when
+authored: `diffuse`, `specular`, the `shadow:` artistic controls,
+`shaping:focusTint`, light filters, a rect light's `texture:file`, dome map
+layouts other than latitude-longitude, and portals.
+
+**In ALab.** The full set needs 49.6 GB of textures and does not fit in this
+machine's memory. The reported scene was therefore rendered as the gallery
+renders it, the set deactivated, but with the light rig and skydome active,
+camera `renderCam`, frame 1004. After the change the frame carries 2.34 times
+the light: the sun and the dome now reach the characters. The painted sky also
+brightens and grains, and that follows from the asset. The skydome's
+`UsdPreviewSurface` leaves `specular` at its default, a 4 per cent dielectric at
+roughness 0.5. Nothing excludes the skydome from the sun's light link, and its
+shadow link now lets the sun through the sphere's far side, so the sun lights
+that specular from inside. Glimpse, ALab's own renderer, hides it from shadows
+through `primvars:glimpse:visibility:shadow`, which is not UsdLux.

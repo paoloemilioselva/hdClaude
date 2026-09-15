@@ -83,6 +83,11 @@ layout(set = 0, binding = 0, scalar) uniform FrameBlock {
     // RenderSettings::lightGeometry. It takes the slot a pad held, so the
     // block's scalar layout is unchanged.
     uint  lightGeometry;
+    // Light linking: words of category membership an instance has in
+    // `instanceLinks`, and the dome light's two categories, -1 for none.
+    uint  linkWords;
+    int   domeLightLink;
+    int   domeShadowLink;
 } frame;
 
 // --- Path state -------------------------------------------------------------
@@ -318,7 +323,9 @@ struct ShadowRay {
     vec4 contribution;   // per lane
     float maxDistance;
     uint path;
-    uint pad0;
+    /// The light's `shadowLink` category: only geometry in it occludes this
+    /// ray. -1 when every piece of geometry does.
+    int shadowLink;
     uint pad1;
 };
 layout(set = 0, binding = 11, scalar) buffer ShadowRays { ShadowRay values[]; } shadowRays;
@@ -459,11 +466,54 @@ struct Light {
     /// regardless: the global setting can only take geometry away, never add
     /// it back. Takes the slot a pad held.
     uint  visibleGeometry;
-    float pad1;
+    /// The light-linking category this light illuminates, or -1 for every
+    /// surface (UsdLux `collection:lightLink`).
+    int   lightLink;
+    /// The category of geometry that occludes it, or -1 for all geometry
+    /// (UsdLux `collection:shadowLink`).
+    int   shadowLink;
 };
 layout(set = 0, binding = 15, scalar) readonly buffer LightTable {
     Light values[];
 } lights;
+
+// --- Light linking ----------------------------------------------------------
+//
+// UsdLux links a light to geometry through two collections on the light:
+// `lightLink`, the geometry it illuminates, and `shadowLink`, the geometry that
+// casts its shadows. Hydra resolves each non-trivial collection into a category
+// and tells every rprim which categories include it; a light names a category
+// by index, and -1 is the collection that includes everything.
+//
+// Membership is one bit a category, `frame.linkWords` words an instance,
+// indexed by the instance's custom index.
+layout(set = 0, binding = 31, scalar) readonly buffer InstanceLinks {
+    uint values[];
+} instanceLinks;
+
+// The instance each path last scattered from, or -1 while the path is still a
+// camera ray. An emitter a scattered ray reaches lights the surface the ray
+// left, so that surface is the one its light link is asked about.
+layout(set = 0, binding = 32, scalar) buffer PathLastInstance {
+    int values[];
+} pathLastInstance;
+
+/// Whether `instance` belongs to link `category`.
+///
+/// A category of -1 is the collection that includes everything, so every
+/// instance belongs to it; so does no instance at all, which is what a camera
+/// ray has -- linking decides what a light does to a surface, and a camera ray
+/// has not left one.
+bool hdclaude_linked(int instance, int category)
+{
+    if (category < 0 || instance < 0)
+    {
+        return true;
+    }
+    uint word = instanceLinks.values[uint(instance) * frame.linkWords +
+                                     uint(category) / 32u];
+    return ((word >> (uint(category) % 32u)) & 1u) != 0u;
+}
 
 // --- Textures ---------------------------------------------------------------
 //

@@ -15,6 +15,8 @@
 #include "pxr/base/tf/hashmap.h"
 #include "pxr/base/vt/value.h"
 
+#include <vector>
+
 PXR_NAMESPACE_OPEN_SCOPE
 
 class HdClaudeInstancer : public HdInstancer {
@@ -33,6 +35,18 @@ class HdClaudeInstancer : public HdInstancer {
     /// so a prototype under two levels of instancing appears once per pair.
     VtMatrix4dArray ComputeInstanceTransforms(const SdfPath& prototypeId);
 
+    /// The light-linking categories of each instance of `prototypeId`, in the
+    /// same order `ComputeInstanceTransforms` returns them.
+    ///
+    /// An instance is in a category when Hydra says so of it -- through
+    /// `GetInstanceCategories`, which is how a native instance is linked -- or
+    /// of the instancer, which is how a point instancer is linked and applies
+    /// to all its instances. Nested instancers take the union with each of
+    /// their parent's instances, since a collection that includes an outer
+    /// instance includes everything inside it.
+    std::vector<std::vector<TfToken>> ComputeInstanceCategories(
+        const SdfPath& prototypeId);
+
   private:
     void _SyncPrimvars(HdSceneDelegate* delegate, HdDirtyBits dirtyBits);
 
@@ -42,5 +56,13 @@ class HdClaudeInstancer : public HdInstancer {
     /// place that needs to know which.
     TfHashMap<TfToken, VtValue, TfToken::HashFunctor> _primvars;
 };
+
+/// The light-linking categories of each of an rprim's `instanceCount`
+/// placements: the rprim's own, united with its instancer's for each instance
+/// when it has one. Empty when no placement is in any category, which is what
+/// the scene store takes to mean the rprim is linked to nothing.
+std::vector<std::vector<TfToken>> HdClaudeRprimCategories(
+    HdSceneDelegate* delegate, const SdfPath& id, const SdfPath& instancerId,
+    std::size_t instanceCount);
 
 PXR_NAMESPACE_CLOSE_SCOPE

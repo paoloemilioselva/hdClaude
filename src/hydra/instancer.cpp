@@ -11,6 +11,8 @@
 #include "pxr/imaging/hd/sceneDelegate.h"
 #include "pxr/imaging/hd/tokens.h"
 
+#include <algorithm>
+
 PXR_NAMESPACE_OPEN_SCOPE
 
 HdClaudeInstancer::HdClaudeInstancer(HdSceneDelegate* delegate, const SdfPath& id)
@@ -179,6 +181,95 @@ VtMatrix4dArray HdClaudeInstancer::ComputeInstanceTransforms(
         }
     }
     return composed;
+}
+
+namespace {
+
+/// `into` with every token of `from` it does not already hold.
+void Union(std::vector<TfToken>* into, const std::vector<TfToken>& from)
+{
+    for (const TfToken& token : from) {
+        if (std::find(into->begin(), into->end(), token) == into->end()) {
+            into->push_back(token);
+        }
+    }
+}
+
+}  // namespace
+
+std::vector<std::vector<TfToken>> HdClaudeInstancer::ComputeInstanceCategories(
+    const SdfPath& prototypeId)
+{
+    HdSceneDelegate* delegate = GetDelegate();
+    const SdfPath& id = GetId();
+
+    const VtArray<TfToken> shared = delegate->GetCategories(id);
+    const std::vector<VtArray<TfToken>> perInstance =
+        delegate->GetInstanceCategories(id);
+    const VtIntArray indices = delegate->GetInstanceIndices(id, prototypeId);
+
+    // The same walk as ComputeInstanceTransforms, so entry i here is the
+    // instance entry i there places.
+    std::vector<std::vector<TfToken>> categories;
+    categories.reserve(indices.size());
+    for (const int index : indices) {
+        std::vector<TfToken> own(shared.begin(), shared.end());
+        const auto at = static_cast<std::size_t>(index);
+        if (at < perInstance.size()) {
+            Union(&own, std::vector<TfToken>(perInstance[at].begin(),
+                                             perInstance[at].end()));
+        }
+        categories.push_back(std::move(own));
+    }
+
+    if (GetParentId().IsEmpty()) {
+        return categories;
+    }
+    auto* claudeParent = dynamic_cast<HdClaudeInstancer*>(
+        delegate->GetRenderIndex().GetInstancer(GetParentId()));
+    if (claudeParent == nullptr) {
+        return categories;
+    }
+
+    const std::vector<std::vector<TfToken>> parentCategories =
+        claudeParent->ComputeInstanceCategories(id);
+    std::vector<std::vector<TfToken>> composed;
+    composed.reserve(parentCategories.size() * categories.size());
+    for (const std::vector<TfToken>& outer : parentCategories) {
+        for (const std::vector<TfToken>& inner : categories) {
+            std::vector<TfToken> both = inner;
+            Union(&both, outer);
+            composed.push_back(std::move(both));
+        }
+    }
+    return composed;
+}
+
+std::vector<std::vector<TfToken>> HdClaudeRprimCategories(
+    HdSceneDelegate* delegate, const SdfPath& id, const SdfPath& instancerId,
+    std::size_t instanceCount)
+{
+    const VtArray<TfToken> ownArray = delegate->GetCategories(id);
+    const std::vector<TfToken> own(ownArray.begin(), ownArray.end());
+
+    std::vector<std::vector<TfToken>> categories;
+    if (!instancerId.IsEmpty()) {
+        if (auto* instancer = dynamic_cast<HdClaudeInstancer*>(
+                delegate->GetRenderIndex().GetInstancer(instancerId))) {
+            categories = instancer->ComputeInstanceCategories(id);
+        }
+    }
+    categories.resize(instanceCount);
+
+    bool any = false;
+    for (std::vector<TfToken>& placement : categories) {
+        Union(&placement, own);
+        any = any || !placement.empty();
+    }
+    if (!any) {
+        categories.clear();
+    }
+    return categories;
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

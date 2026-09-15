@@ -88,6 +88,24 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
     // an obviously untextured one.
     materials.push_back(_fallback);
 
+    // Light-linking categories, numbered by the lights that name them. A
+    // category no light names cannot change anything, so geometry that
+    // belongs only to those is linked to nothing and costs no membership bits.
+    std::map<TfToken, std::int32_t> categoryIndex;
+    const auto categoryOf = [&](const TfToken& token) -> std::int32_t {
+        if (token.IsEmpty()) {
+            return -1;
+        }
+        return categoryIndex
+            .emplace(token, static_cast<std::int32_t>(categoryIndex.size()))
+            .first->second;
+    };
+    for (const auto& [path, entry] : _lights) {
+        categoryOf(entry.lightLink);
+        categoryOf(entry.shadowLink);
+    }
+    scene.linkCategoryCount = static_cast<std::uint32_t>(categoryIndex.size());
+
     std::map<SdfPath, std::uint32_t> materialIndex;
     for (const auto& [path, entry] : _materials) {
         if (entry.compiled.spirv.empty()) {
@@ -151,7 +169,16 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
             }
             instance.material = material;
             instance.visible = true;
-            scene.instances.push_back(instance);
+            if (i < mesh.instanceCategories.size() && !categoryIndex.empty()) {
+                for (const TfToken& token : mesh.instanceCategories[i]) {
+                    const auto found = categoryIndex.find(token);
+                    if (found != categoryIndex.end()) {
+                        instance.linkCategories.push_back(
+                            static_cast<std::uint32_t>(found->second));
+                    }
+                }
+            }
+            scene.instances.push_back(std::move(instance));
         }
     }
 
@@ -160,8 +187,27 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
     // Several dome lights are legal in USD and rare in practice; their
     // radiances are summed, which is what a renderer that treated each as a
     // real emitter would arrive at, rather than silently honouring one.
+    _snapshotReports.clear();
+    const SdfPath* linkedDome = nullptr;
     for (const auto& [path, entry] : _lights) {
         if (entry.isDome) {
+            // Several domes sum into one environment, and one environment has
+            // one pair of links. Domes that agree are exact; domes that do not
+            // cannot be represented, and the first one's links are used and
+            // the disagreement said.
+            if (linkedDome == nullptr) {
+                linkedDome = &path;
+                scene.domeLightLink = categoryOf(entry.lightLink);
+                scene.domeShadowLink = categoryOf(entry.shadowLink);
+            } else if (categoryOf(entry.lightLink) != scene.domeLightLink ||
+                       categoryOf(entry.shadowLink) != scene.domeShadowLink) {
+                _snapshotReports.push_back(
+                    path.GetString() +
+                    ": its light or shadow link differs from that of " +
+                    linkedDome->GetString() +
+                    ", and hdClaude sums dome lights into one environment with "
+                    "one set of links, so that dome's links are used");
+            }
             if (!scene.hasDomeLight) {
                 scene.hasDomeLight = true;
                 scene.environmentColor[0] = 0.0f;
@@ -186,7 +232,10 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
                           std::begin(scene.domeLightToWorld));
             }
         } else {
-            scene.lights.push_back(entry.light);
+            hdclaude::Light light = entry.light;
+            light.lightLink = categoryOf(entry.lightLink);
+            light.shadowLink = categoryOf(entry.shadowLink);
+            scene.lights.push_back(light);
         }
     }
 
@@ -231,6 +280,8 @@ std::vector<std::string> HdClaudeSceneStore::FallbackReports() const
             reports.push_back(path.GetString() + ": " + entry.report);
         }
     }
+    reports.insert(reports.end(), _snapshotReports.begin(),
+                   _snapshotReports.end());
     return reports;
 }
 
