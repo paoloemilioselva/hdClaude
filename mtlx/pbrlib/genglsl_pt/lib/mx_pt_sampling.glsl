@@ -193,13 +193,48 @@ float mx_pt_balance_heuristic(float fPdf, float gPdf)
 
 // --- Combinator support -----------------------------------------------------
 
+// A fresh uniform for one lobe selection.
+//
+// Every choice in a closure tree needs a number of its own, and the order the
+// generated code runs in is why it cannot simply reuse one. MaterialX emits a
+// node's children before the node, so every leaf and every combinator has
+// already chosen by the time its parent chooses, and a parent's rescaled
+// number never reaches anything below it. Reading `hdclaude_sample_u.z` at
+// every level therefore made nested choices the *same* choice: in
+// `mix(mix(a, b, 0.5), c, 0.5)` the outer mix takes the inner one exactly when
+// u < 0.5, and the inner one then takes `a` every time, so `b` was never
+// sampled while the reported density still gave it a quarter. The chi-squared
+// test measured that at p = 0 and the furnace at 3.6 per cent of the light
+// (tests/closure_validation_tests.cpp).
+//
+// Each call hashes the pass's lobe number with a count of the calls made in
+// this invocation, so a choice is independent of every other choice in the
+// tree while still costing the path's random stream nothing beyond the one
+// number the integrator already draws for it. A hash rather than a stateful
+// generator because the closures are free functions with no state to thread
+// through, and the count is a per-invocation global exactly as
+// `hdclaude_sample_u` is.
+float mx_pt_selection_random()
+{
+    uint state = floatBitsToUint(hdclaude_sample_u.z) ^
+                 (hdclaude_selection_count * 2654435769u);
+    hdclaude_selection_count += 1u;
+    // Two rounds of Jarzynski and Olano's PCG hash, since the inputs differ in
+    // a handful of bits and one round leaves them visibly correlated.
+    for (int round = 0; round < 2; ++round)
+    {
+        state = state * 747796405u + 2891336453u;
+        uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+        state = (word >> 22u) ^ word;
+    }
+    return float(state >> 8u) / 16777216.0;
+}
+
 // One-sample stochastic selection between two lobes.
 //
-// Returns true to take the first lobe. `u` is consumed and *rescaled* back to
-// [0, 1) so the caller can reuse it for the selected lobe's direction sample.
-// Rescaling rather than drawing a fresh number keeps the sample count per
-// bounce fixed, which is what allows a stratified sampler to stay stratified
-// through an arbitrarily deep combinator tree.
+// Returns true to take the first lobe, with `u` a number no other choice has
+// seen -- see mx_pt_selection_random. `u` is rescaled back to [0, 1) as well,
+// which nothing currently reads.
 bool mx_pt_select_lobe(inout float u, float probabilityFirst, out float selectionPdf)
 {
     float p = clamp(probabilityFirst, 0.0, 1.0);

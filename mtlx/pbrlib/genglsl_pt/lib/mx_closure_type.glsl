@@ -71,7 +71,8 @@ const float kHdclaudeMinAlpha = 1.0e-4;
 //
 // The `shade` kernel writes these before calling the material entry point.
 vec4 hdclaude_wavelengths = vec4(0.0);  // hero wavelengths, nanometres
-vec3 hdclaude_sample_u = vec3(0.0);     // stratified sample: xy direction, z lobe
+vec3 hdclaude_sample_u = vec3(0.0);     // sample: xy direction, z seeds lobe choices
+uint hdclaude_selection_count = 0u;     // lobe choices made so far; see mx_pt_selection_random
 
 // The *geometric* normal at the hit, unflipped, or zero where none was supplied.
 //
@@ -128,8 +129,10 @@ bool hdclaude_entering(vec3 shadingNormal, vec3 V)
 // knows which one it was -- so the medium is propagated by the same selection
 // that propagates `sampledL`, and read from the sampling pass.
 //
-// The fields are meaningful under CLOSURE_TYPE_PT_SAMPLE, where that selection
-// happens, and are left cleared by the evaluation types.
+// Under CLOSURE_TYPE_PT_SAMPLE the fields name the interior of the lobe that
+// was sampled. Under the evaluation types they name one chosen at random as
+// the sampling pass would have chosen it for the direction evaluated; see
+// hdclaude_select_medium.
 
 // How the second vector of a medium is to be read. The two closures that
 // publish an interior describe it in different terms, and which terms decides
@@ -206,6 +209,52 @@ void hdclaude_clear_medium(inout BSDF result)
     result.mediumAlbedo = vec3(0.0);
     result.mediumAnisotropy = 0.0;
     result.mediumKind = HDCLAUDE_MEDIUM_NONE;
+}
+
+// Which interior a *shadow ray* crosses, under evaluation.
+//
+// Next-event estimation through a transmissive surface asks the evaluation
+// types about a light behind it. When that light is inside the object the
+// shadow ray travels through the object's interior and has to be attenuated by
+// it, so the evaluation has to say which interior that is -- and nothing was
+// selected, which is why these types used to clear the medium.
+//
+// The answer has to be the one the *other* strategy gives, or the two cannot be
+// weighed against each other. A scattered path enters the interior of the lobe
+// the sampling pass chose, and given that it left along `L`, the chance that
+// lobe `i` was the one is
+//
+//     P_i * pdf_i(L) / pdf(L)
+//
+// with `P_i` the product of the combinators' selection probabilities on the way
+// to it. So an evaluation reaches the same distribution by choosing, at every
+// combinator, between its two children in proportion to each child's selection
+// probability times its own density at `L`: the densities telescope, since a
+// child's density is already the mixture of its leaves'. A lobe with no
+// interior is chosen as often as it would carry the path, and choosing it
+// clears the medium, which attenuates by nothing. The expected transmittance is
+// then exactly the one the scattered path's estimate has at `L`, and next-event
+// estimation multiplies the whole response by the chosen interior's.
+//
+// `u` is a fresh uniform, and `weightA`, `weightB` the two children's selection
+// probabilities times their densities.
+void hdclaude_select_medium(inout BSDF result, BSDF a, float weightA, BSDF b,
+                            float weightB, float u)
+{
+    float total = max(weightA, 0.0) + max(weightB, 0.0);
+    if (!(total > 0.0))
+    {
+        hdclaude_clear_medium(result);
+        return;
+    }
+    if (u * total < max(weightA, 0.0))
+    {
+        hdclaude_carry_medium(result, a);
+    }
+    else
+    {
+        hdclaude_carry_medium(result, b);
+    }
 }
 
 // Dispersion, written by the integrator rather than published by a closure.

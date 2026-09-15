@@ -133,7 +133,7 @@ void mx_generalized_schlick_bsdf(ClosureData closureData, float weight, vec3 col
         float reflectProbability =
             transmissive ? clamp(mx_pt_luminance_weight(Fh), 0.05, 0.95) : 1.0;
 
-        float u = hdclaude_sample_u.z;
+        float u = mx_pt_selection_random();
         float selectionPdf;
         vec3 refracted;
         if (mx_pt_select_lobe(u, reflectProbability, selectionPdf) ||

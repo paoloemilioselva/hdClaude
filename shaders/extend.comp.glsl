@@ -412,6 +412,20 @@ void main()
     pathOrigin.values[path] = origin;
     pathDirection.values[path] = direction;
 
+    // A walk that scattered has left the vertex whose density the environment
+    // kernel would weigh an emitter hit against. That density belongs to the
+    // surface the path entered by, and next-event estimation from that surface
+    // reaches a light along a straight line with no collision on it -- a
+    // different path from one that scattered on the way. Nothing samples a
+    // light from a scattering vertex, so a hit after one has no second strategy
+    // to share with and takes its whole contribution, exactly as a hit after a
+    // delta closure does. Without this, a light inside a scattering medium seen
+    // through a rough interface lost the share the interface's density claimed.
+    if (collisions > 0)
+    {
+        pathScatterPdf.values[path] = 0.0;
+    }
+
     ivec4 record = ivec4(-1, -1, 0, 0);
     if (light >= 0)
     {

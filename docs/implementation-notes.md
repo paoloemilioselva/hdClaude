@@ -3280,8 +3280,13 @@ which is a different interface with its own index and no Abbe number at all.
 The consequence is visible in the same measurement. MaterialX builds OpenPBR's
 specular lobe as `layer(top: reflection-only dielectric, base: transmission-only
 dielectric)`, so an `open_pbr_surface` glass refracts a full spectrum and
-reflects a highlight that is only partly tinted: 1.037 blue over red where the
-interface itself gives 1.154. Energy is still conserved -- the layer hands the
+reflects a highlight that is not tinted at all, since everything reaching it
+was reflected by the lobe that does not disperse. (This note first said "only
+partly tinted: 1.037 blue over red where the interface itself gives 1.154". That
+was the noise of a nine-pixel window: eight independent windows of the same
+render averaged 0.9990, and over a 41-pixel window the reading is 0.9934 against
+the undispersed control's 0.9981. The test had asserted the noise; it now
+asserts neutrality, 2026-09-15.) Energy is still conserved -- the layer hands the
 base `1 - F` and the base transmits it whatever its own index -- so this costs
 colour in a highlight and nothing else. Applying the transmission medium's Abbe
 number to every dielectric lobe would fix the highlight and disperse every coat
@@ -6810,3 +6815,144 @@ shift when the compiled code does -- it varied run to run after the depth
 binding landed and it varies still. The subdivision matrix, rendered in the same
 pass, is unchanged at rms 0, so this is not a general perturbation but a
 property of particular scenes.
+
+## 2026-09-15 -- Every lobe choice was one choice, and a light inside a medium
+
+This started as phase 6's "absorption on shadow rays, and next-event estimation
+at a scattering vertex", and reading the code that carries a medium through the
+closures turned up something larger first.
+
+**Nested lobe choices were the same choice.** Every combinator -- `mix`,
+`layer`, `add` -- and both RT splits, in `dielectric_bsdf` and
+`generalized_schlick_bsdf`, chose a lobe with
+`float u = hdclaude_sample_u.z;`. `mx_pt_select_lobe` rescales that number, and
+its comment said the rescaling lets the selected lobe reuse it "through an
+arbitrarily deep combinator tree". That would be true if a parent chose first
+and handed the rescaled number down. MaterialX emits a node's children *before*
+the node, so every child has already chosen by the time its parent does, the
+rescaled number goes nowhere, and every choice in the tree is made by comparing
+the same `u` against its own probability. In `mix(mix(a, b, 0.5), c, 0.5)` the
+outer mix takes the inner one exactly when `u < 0.5`, and the inner mix then
+takes `a` every time: `b` is never sampled, while the density the tree reports
+still gives it a quarter.
+
+The chi-squared suite could not see it because every combinator case held a
+single choice. Three nested cases failed at p = 0 on their first run:
+`mix(mix(conductor, diffuse), conductor)` at a statistic of 202,643 over 399
+degrees of freedom, with the furnace 3.6% short of the quadrature (0.72081
+against 0.74742); `mix(dielectric RT, diffuse)` at 4,716 and 0.56% short; and
+`layer(dielectric R, mix(conductor, diffuse))` at 1,475 and 0.37% over. Each
+choice now calls `mx_pt_selection_random`, which hashes `u.z` with a count of
+the choices made in the invocation -- two rounds of the PCG hash, because the
+inputs differ in a handful of bits -- so choices are independent of each other
+and the path's random stream is consumed exactly as before. The three read
+0.74742, 0.99018 and 0.91409 against quadratures of 0.74742, 0.99033 and
+0.91409, and all 741 closure checks pass.
+
+In the gallery every scene with a combinator resamples. Against the renders
+from before the change, ten scenes keep between 99.994% and 100.015% of their
+light, with the banded shares showing only noise regressing toward the mean: a
+nested choice between two partial weights is rare in these assets, since
+`open_pbr_surface` and `standard_surface` gate most of theirs with weights of
+exactly zero or one. The OpenPBR Playground is the exception and gains 0.73%,
+nearly all of it in the band from 0.1 to 1 that holds 72.6% of its light --
+light the correlated choices had been failing to sample.
+
+**A dispersion tint that was noise.** One render test failed after the change:
+it asserted that an `open_pbr_surface` authoring dispersion reflects a highlight
+tinted blue over red by more than the undispersed control. That material's
+specular lobe is `layer(reflection-only, transmission-only)`, dispersion belongs
+to the lobe that transmits, and the highlight is reflected by the lobe that does
+not, so the expected tint is none. The recorded 1.037 was one nine-pixel window:
+eight independent windows of the same render averaged 0.9990 on the old code and
+0.9997 on the new one, with a spread of three per cent. The test now asserts
+neutrality over a 41-pixel window (0.9934 against the control's 0.9981), and the
+note above that recorded the tint is corrected.
+
+**Shadow rays through an interior.** A shadow ray that reaches a light without
+meeting a surface has not left the volume it started in. It can start in an
+interior two ways: the path is already inside one and the light is on the side
+it came from, or the path is outside and the light is behind a transmissive
+surface. Neither was attenuated, and the scattered path that reaches the same
+light was, so the two MIS strategies disagreed. It only matters for a light
+inside the medium -- any light outside is behind the far wall -- and there it
+mattered in full. A rect light one unit into a slab absorbing three quarters per
+unit, seen through a 0.3-roughness interface, read 0.3141 of the same slab left
+clear; it reads 0.2448, against 0.25 at normal incidence and a little less for a
+rough refraction's longer flight. The smooth interface, which has no next-event
+estimate, read 0.2499 before and after.
+
+The second case needed a decision. Under evaluation nothing has been selected,
+so the combinators used to clear the medium, and a shadow ray entering a
+material with more than one interior -- `open_pbr_surface` publishes two -- has
+to be told which one it crosses. The textbook answer, each lobe by its share of
+the response, would make the two strategies estimate different quantities: a
+scattered path enters the interior of the lobe that was *sampled*, and given
+that it left along `L` that is lobe `i` with probability
+`P_i * pdf_i(L) / pdf(L)`. So `hdclaude_select_medium` chooses at every
+combinator by each child's selection probability times its density, which
+telescopes to exactly that, and next-event estimation attenuates the whole
+response by the chosen interior's `exp(-sigma_t * d)`. That is also the
+transmittance the walk returns in expectation for a flight with no collision:
+the zero-collision weight `density / mean` times `exp(-sigma_a * d)`, averaged
+over the proposing lane, is `exp(-sigma_t * d)` lane by lane.
+
+**Why the Playground went darker, and was not supposed to.** The first version
+of the shadow-ray absorption took 0.31% of the Playground's light away again,
+and a region beside the glass of juice lost up to half. Five explanations were
+written down and five renders ruled them out: the open foam mesh (hiding it
+changed nothing), the ice cubes' open inner spheres (likewise), the path's
+medium record failing to nest (deciding entering by the geometric normal
+instead changed nothing), the thin-walled mason jar's volume (zeroing its depth
+made the loss larger), and a closed mesh that leaks (a ray probe found the
+octopus closed and consistently wound, and none of the meshes mirrored). An
+instrument settled it. A marker that no real sample can produce -- a
+contribution of -1000 on exactly the attenuated shadow rays -- showed the
+rays on indirect bounces only, and marking one bit of the material index per
+render decoded the largest share to material 20, `jellyToy`, the octopus. What
+none of the explanations had questioned was that the marked rays were
+unoccluded shadow rays at all: the Playground's moon, sun and LED lights author
+`shadow:enable` false, so their contribution lands without a shadow ray, and
+the change was attenuating it by the octopus's interior over the whole distance
+to the moon. A light no object blocks is not shadowed by an object's interior
+either, and nothing establishes where along the line that interior ends, so
+shadowless lights are exempt. With that the Playground reads exactly 100% of the
+light it had before the media changes. The geometric entering test stays: it is
+the rule the scattered path uses, and the path's medium record genuinely does
+not nest.
+
+The mason jar investigation left a finding of its own. MaterialX 1.39.3's
+`open_pbr_surface` builds its transmission volume from `transmission_depth`
+without reading `geometry_thin_walled`, where the OpenPBR specification says a
+thin-walled translucent base "reduces to a thin sheet of dielectric". It is
+recorded in the decision log rather than changed here.
+
+**The density after a walk.** `pathScatterPdf` is the density of the surface the
+path last scattered from, and the environment kernel weighs an emitter hit
+against it. After a walk that *scattered*, the hit is on a different path from
+the straight line next-event estimation took from that surface, and nothing
+samples a light from a scattering vertex, so the hit has no second strategy and
+must take its whole contribution -- as a hit after a delta closure does. The
+extend kernel now clears the density when the walk collided. The instrument had
+to be chosen carefully: comparing a rough interface with a smooth one measures
+the interface, because the slab is open at its sides and roughness changes how
+much light total internal reflection carries out of them (a light facing the
+camera read 16.09, 20.93 and 25.22 at roughness 0, 0.3 and 1). Shrinking the
+light at constant power is the instrument instead. Both lights are far smaller
+than the medium's free path, so the image forgets the source's size, while a
+light's density -- and the stale weight -- grows as its area shrinks. A light
+facing away inside a slab scattering eight times per unit read 6.78 at a
+half-extent of 0.05 with the old weight and 11.10 without it, and quartering its
+area moved the image by 0.809 with the old weight; at 4096 samples it moves it
+by 0.990, and an eighth of the area by 1.026.
+
+**Not built: next-event estimation from a scattering vertex.** A shadow ray from
+a collision can deliver light only if nothing deviates it, and every interior
+boundary here does: a dielectric refracts, and `subsurface_bsdf` enters and
+leaves by a cosine lobe, so light leaving toward a lamp left the boundary in a
+direction chosen at the boundary rather than along the line from a collision.
+Connecting the two straight through would estimate a path the transport does not
+have. The estimate that boundary admits is the one `shade` already makes where
+the walk arrives. What is left is an emitter inside the same closed interior,
+which would cost a shadow ray per collision in every walk to serve a rare scene,
+and is recorded in the roadmap rather than built.

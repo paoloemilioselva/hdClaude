@@ -37,7 +37,7 @@ void mx_add_bsdf(ClosureData closureData, BSDF in1, BSDF in2, out BSDF result)
 
     if (closureData.closureType == CLOSURE_TYPE_PT_SAMPLE)
     {
-        float u = hdclaude_sample_u.z;
+        float u = mx_pt_selection_random();
         float selectionPdf;
         if (mx_pt_select_lobe(u, 0.5, selectionPdf))
         {
@@ -55,6 +55,7 @@ void mx_add_bsdf(ClosureData closureData, BSDF in1, BSDF in2, out BSDF result)
     else
     {
         result.isDelta = min(in1.isDelta, in2.isDelta);
-        hdclaude_clear_medium(result);
+        hdclaude_select_medium(result, in1, 0.5 * in1.pdf, in2, 0.5 * in2.pdf,
+                               mx_pt_selection_random());
     }
 }

@@ -60,7 +60,7 @@ void mx_layer_bsdf(ClosureData closureData, BSDF top, BSDF base, out BSDF result
 
     if (closureData.closureType == CLOSURE_TYPE_PT_SAMPLE)
     {
-        float u = hdclaude_sample_u.z;
+        float u = mx_pt_selection_random();
         float selectionPdf;
         if (mx_pt_select_lobe(u, pTop, selectionPdf))
         {
@@ -78,6 +78,8 @@ void mx_layer_bsdf(ClosureData closureData, BSDF top, BSDF base, out BSDF result
     else
     {
         result.isDelta = min(top.isDelta, base.isDelta);
-        hdclaude_clear_medium(result);
+        hdclaude_select_medium(result, top, pTop * top.pdf, base,
+                               (1.0 - pTop) * base.pdf,
+                               mx_pt_selection_random());
     }
 }

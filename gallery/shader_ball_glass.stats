@@ -29,20 +29,20 @@ materialsCompiled     17
 texturesLoaded        10
 textureBytes          691715204
 cameraRays            1073741824
-tracedRays            4469178400
-shadowRays            2648534459
-rayHash               9520580384171639274
-hitHash               6627874734729302263
+tracedRays            4469234988
+shadowRays            2648569269
+rayHash               4722971156495389293
+hitHash               1034492533457123628
 deviceBytesPeak       1527103488
 
 [cost]
 device                NVIDIA GeForce RTX 5060 Ti
 measured              2026-09-15
-wallSeconds           35.077
-traceMs               20772
-ingestMs              175
-publishMs             173
-subdivideMs           35
-materialMs            1833
-textureMs             1327
-outsideSeconds        13.956
+wallSeconds           42.068
+traceMs               21000
+ingestMs              195
+publishMs             206
+subdivideMs           33
+materialMs            1827
+textureMs             1463
+outsideSeconds        20.666

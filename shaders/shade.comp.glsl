@@ -626,9 +626,75 @@ void main()
                 // is that spectrum times the illuminant its RGB was authored
                 // against. Multiplying two reflectances would render every lit
                 // surface under an equal-energy sky nobody authored.
+                vec4 lightResponse =
+                    hdclaude_upsample(hdclaude_bsdf.response, lambda);
+
+                // The interior the shadow ray crosses, if it crosses one.
+                //
+                // A shadow ray that reaches a light without meeting a surface
+                // has not left whatever volume it started in, so when that is
+                // an interior the light arrives attenuated by it -- the same
+                // `exp(-sigma_t * d)` a scattered path's walk returns in
+                // expectation for a flight with no collision on it. Only two
+                // ways for a shadow ray to start inside one exist. The path is
+                // already in an interior and the light is on the side it came
+                // from; or the light is behind a transmissive surface the ray
+                // *enters*, and it enters the interior of the lobe that carries
+                // it, which the evaluation has just chosen as the sampling pass
+                // would have (hdclaude_select_medium). A ray leaving an
+                // interior, or one that never enters, is in no medium at all.
+                //
+                // Entering is decided exactly as the scattered path decides it
+                // below -- by the geometric normal facing the view -- and not
+                // from the path's record of where it is, which does not nest: a
+                // path that has passed through an ice cube in a glass of juice
+                // is recorded as in vacuum while it is still in juice.
+                //
+                // Only for a light that casts shadows. A light authored with
+                // `shadow:enable` false is one no object blocks, so its
+                // contribution lands with no shadow ray and nothing establishes
+                // where along the line the interior ends; attenuating it over
+                // the whole distance to the light treated the medium as reaching
+                // all the way there. An interior's absorption is part of how an
+                // object shadows, and such a light is not shadowed. The OpenPBR
+                // Playground's moon, sun and LED lights are authored that way,
+                // and its octopus lost most of their light before this.
+                //
+                // This used to be missing, and it only matters when the shadow
+                // ray is unoccluded -- a light *inside* the medium, since any
+                // light outside it is behind the far wall. There it mattered in
+                // full: next-event estimation delivered the light unattenuated
+                // while the scattered path attenuated it, and a light inside an
+                // absorbing slab seen through a rough interface rendered with
+                // the estimate's share of it as though the slab were clear.
+                {
+                    vec4 pathInterior = pathMedium.values[2u * path + 1u];
+                    vec3 crossed = vec3(0.0);
+                    if (lightInFront && pathInterior.w > 1.5)
+                    {
+                        crossed = pathMedium.values[2u * path + 0u].xyz;
+                    }
+                    else if (!lightInFront &&
+                             dot(point.geometricNormal, V) > 0.0 &&
+                             hdclaude_bsdf.mediumKind != HDCLAUDE_MEDIUM_NONE)
+                    {
+                        crossed = hdclaude_bsdf.mediumExtinction;
+                    }
+                    if (lightSample.castsShadows &&
+                        max(max(crossed.x, crossed.y), crossed.z) > 0.0)
+                    {
+                        // Capped so an environment sample's unbounded distance
+                        // stays finite, and zero extinction stays zero rather
+                        // than becoming a product with infinity.
+                        vec4 sigmaT = hdclaude_lane_extinction(crossed, lambda);
+                        lightResponse *=
+                            exp(-sigmaT * min(lightSample.distance, 1.0e30));
+                    }
+                }
+
                 vec4 contribution =
                     throughput *
-                    hdclaude_upsample(hdclaude_bsdf.response, lambda) *
+                    lightResponse *
                     hdclaude_upsample_emission(lightSample.radiance, lambda,
                                                lightSample.colorTemperature,
                                                lightSample.temperatureScale) *

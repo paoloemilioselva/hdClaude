@@ -1390,6 +1390,44 @@ int main()
                      Connect(s, "in2", conductor(doc, "xAb", 0.5f, 0.5f, 0.5f));
                      return s;
                  }},
+                // Nested selections. Every combinator chooses a lobe in the
+                // sampling pass, and children run before their parents, so
+                // each nested choice must be independent of the ones around
+                // it: the density a combinator reports is the product of the
+                // selection probabilities along the way to each leaf, and it
+                // describes the sampling only if those choices are. Every
+                // case above holds a single choice and cannot see this.
+                {"mix(mix(conductor, diffuse), conductor)", 0.6f,
+                 [&](mx::DocumentPtr doc) {
+                     mx::NodePtr inner = AddNode(doc, "mix", "xNi", "BSDF");
+                     Connect(inner, "fg", conductor(doc, "xNa", 1.0f, 0.1f, 0.1f));
+                     Connect(inner, "bg", diffuse(doc, "xNb", 1.0f));
+                     SetValue(inner, "mix", 0.5f);
+                     mx::NodePtr outer = AddNode(doc, "mix", "xNo", "BSDF");
+                     Connect(outer, "fg", inner);
+                     Connect(outer, "bg", conductor(doc, "xNc", 1.0f, 0.5f, 0.5f));
+                     SetValue(outer, "mix", 0.5f);
+                     return outer;
+                 }},
+                {"mix(dielectric RT, diffuse)", 0.6f,
+                 [&](mx::DocumentPtr doc) {
+                     mx::NodePtr m = AddNode(doc, "mix", "xNd", "BSDF");
+                     Connect(m, "fg", dielectric(doc, "xNe", 0.3f, "RT"));
+                     Connect(m, "bg", diffuse(doc, "xNf", 1.0f));
+                     SetValue(m, "mix", 0.5f);
+                     return m;
+                 }},
+                {"layer(dielectric R, mix(conductor, diffuse))", 0.6f,
+                 [&](mx::DocumentPtr doc) {
+                     mx::NodePtr m = AddNode(doc, "mix", "xNg", "BSDF");
+                     Connect(m, "fg", conductor(doc, "xNh", 1.0f, 0.1f, 0.1f));
+                     Connect(m, "bg", diffuse(doc, "xNj", 1.0f));
+                     SetValue(m, "mix", 0.3f);
+                     mx::NodePtr l = AddNode(doc, "layer", "xNl", "BSDF");
+                     Connect(l, "top", dielectric(doc, "xNk", 0.5f, "R"));
+                     Connect(l, "base", m);
+                     return l;
+                 }},
                 {"multiply(conductor, 0.5)", 0.6f,
                  [&](mx::DocumentPtr doc) {
                      mx::NodePtr m = AddNode(doc, "multiply", "xMul", "BSDF");

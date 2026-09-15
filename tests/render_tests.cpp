@@ -36,6 +36,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace mx = MaterialX;
@@ -293,7 +294,8 @@ CompiledMaterial MakeScatteringMedium(mx::DocumentPtr libraries,
                                       const mx::Vector3& scattering,
                                       float anisotropy,
                                       const std::string& name,
-                                      float ior = 1.5f)
+                                      float ior = 1.5f,
+                                      float roughness = 0.0f)
 {
     mx::DocumentPtr doc = mx::createDocument();
     doc->importLibrary(libraries);
@@ -301,13 +303,13 @@ CompiledMaterial MakeScatteringMedium(mx::DocumentPtr libraries,
     mx::NodePtr reflection = AddNode(doc, "dielectric_bsdf", "dr", "BSDF");
     SetValue(reflection, "weight", 1.0f);
     SetValue(reflection, "ior", ior);
-    SetValue(reflection, "roughness", mx::Vector2(0.0f, 0.0f));
+    SetValue(reflection, "roughness", mx::Vector2(roughness, roughness));
     reflection->setInputValue("scatter_mode", std::string("R"), "string");
 
     mx::NodePtr transmission = AddNode(doc, "dielectric_bsdf", "dt", "BSDF");
     SetValue(transmission, "weight", 1.0f);
     SetValue(transmission, "ior", ior);
-    SetValue(transmission, "roughness", mx::Vector2(0.0f, 0.0f));
+    SetValue(transmission, "roughness", mx::Vector2(roughness, roughness));
     transmission->setInputValue("scatter_mode", std::string("T"), "string");
 
     mx::NodePtr volume = AddNode(doc, "anisotropic_vdf", "vd", "VDF");
@@ -1717,6 +1719,143 @@ int main()
             CHECK(measured[0] > measured[1] * 1.5);
         }
 
+        // --- A light inside a medium, seen through a rough interface ---------
+        //
+        // The one arrangement in which a shadow ray crosses an interior without
+        // meeting a surface, and the one in which a scattered path reaches a
+        // light after scattering while a rough surface's density is still on
+        // record. Both were wrong, and neither can be seen from outside a
+        // medium or through a smooth interface: a smooth interface has no
+        // next-event estimate and stores no density, so it takes the whole
+        // light by the scattered path, which was always right.
+        //
+        // The slab is two quads a unit apart with a rect light halfway, all
+        // inside the medium, and the camera looks through the front quad.
+        {
+            const auto slabWithLight = [&](const CompiledMaterial& medium,
+                                           float lightZ, float facing,
+                                           float halfExtent, float radiance,
+                                           float depth,
+                                           std::uint32_t samples = 1024) {
+                Scene scene;
+                scene.prototypes.push_back(MakeQuad());
+                scene.prototypes.push_back(MakeQuadFacingBack());
+                Transform3x4 back;
+                back.m[11] = -depth;
+                scene.instances.push_back({0, Transform3x4{}, 0, true});
+                scene.instances.push_back({1, back, 0, true});
+
+                Light rect;
+                rect.type = static_cast<std::uint32_t>(LightType::Rect);
+                rect.position[2] = lightZ;
+                rect.direction[2] = facing;
+                rect.uAxis[0] = halfExtent;
+                rect.vAxis[1] = halfExtent;
+                rect.area = 4.0f * halfExtent * halfExtent;
+                for (int i = 0; i < 3; ++i) {
+                    rect.radiance[i] = radiance;
+                }
+                scene.lights.push_back(rect);
+                tracer.SetScene(scene, {medium});
+
+                RenderSettings settings;
+                settings.lightGeometry = true;
+                settings.samplesPerPixel = samples;
+                settings.maxBounces = 8;
+                for (int i = 0; i < 3; ++i) {
+                    settings.environmentColor[i] = 0.0f;
+                    settings.sunRadiance[i] = 0.0f;
+                }
+                const std::vector<float> image =
+                    tracer.Render(kWidth, kHeight, LookDownZ(3.0f), settings);
+                return Luminance(Window(image, 0.5f, 0.5f, 6));
+            };
+
+            // Absorption on the shadow ray. A light one unit into a medium that
+            // absorbs three quarters of what crosses a unit must arrive at a
+            // quarter of what it does through the same slab left clear, and a
+            // rough interface splits it between next-event estimation and the
+            // scattered path, so each strategy has to attenuate it. The flight
+            // through a rough refraction is a little longer than the unit, and
+            // the ratio is correspondingly a little below a quarter.
+            {
+                const float absorption = float(std::log(4.0));
+                const struct { float roughness; const char* name; } cases[] = {
+                    {0.0f, "smooth"}, {0.3f, "rough"}};
+                double ratio[2] = {0.0, 0.0};
+                for (int which = 0; which < 2; ++which) {
+                    const CompiledMaterial clear = MakeScatteringMedium(
+                        libraries, compiler, tracer.ShadeKernelSource(),
+                        mx::Vector3(0.0f, 0.0f, 0.0f), mx::Vector3(0.0f, 0.0f, 0.0f),
+                        0.0f, std::string("clear ") + cases[which].name, 1.5f,
+                        cases[which].roughness);
+                    const CompiledMaterial absorbing = MakeScatteringMedium(
+                        libraries, compiler, tracer.ShadeKernelSource(),
+                        mx::Vector3(absorption, absorption, absorption),
+                        mx::Vector3(0.0f, 0.0f, 0.0f), 0.0f,
+                        std::string("absorbing ") + cases[which].name, 1.5f,
+                        cases[which].roughness);
+                    CHECK(!clear.spirv.empty() && !absorbing.spirv.empty());
+                    if (clear.spirv.empty() || absorbing.spirv.empty()) {
+                        continue;
+                    }
+                    const double lit =
+                        slabWithLight(clear, -1.0f, 1.0f, 0.9f, 2.0f, 2.0f);
+                    const double dimmed =
+                        slabWithLight(absorbing, -1.0f, 1.0f, 0.9f, 2.0f, 2.0f);
+                    ratio[which] = lit > 0.0 ? dimmed / lit : 0.0;
+                    std::printf("  light in a medium, %s: clear %.4f, absorbing "
+                                "%.4f, ratio %.4f (closed form 0.25 at normal "
+                                "incidence)\n",
+                                cases[which].name, lit, dimmed, ratio[which]);
+                }
+                CHECK_NEAR(ratio[0], 0.25, 0.0125);
+                CHECK_NEAR(ratio[1], 0.25, 0.0125);
+            }
+
+            // The density after a walk. A light facing away from the front
+            // quad cannot be reached from it along a straight line, so only a
+            // path that scatters behind the light finds its emitting side, and
+            // next-event estimation from the front quad has nothing to share
+            // with it. Weighing such a hit against the rough interface's
+            // density anyway took the share `p_bsdf / (p_bsdf + p_light)` from
+            // it, and a light's density grows as its area shrinks.
+            //
+            // So the instrument is the light's size at constant power. Both
+            // lights are far smaller than a free path in the medium, which
+            // scatters every eighth of a unit, so the light that reaches the
+            // camera has forgotten how large its source was; the weight that
+            // was wrong has not, and quartering the area quartered it. A
+            // smooth interface would be no reference at all: the slab is open
+            // at its sides, and roughness changes how much light total internal
+            // reflection carries out of them.
+            {
+                const CompiledMaterial rough = MakeScatteringMedium(
+                    libraries, compiler, tracer.ShadeKernelSource(),
+                    mx::Vector3(0.0f, 0.0f, 0.0f), mx::Vector3(8.0f, 8.0f, 8.0f),
+                    0.0f, "behind rough", 1.5f, 0.3f);
+                CHECK(!rough.spirv.empty());
+                if (!rough.spirv.empty()) {
+                    // Four thousand samples, because a ratio of two
+                    // small-light renders carries about three per cent of noise
+                    // at one thousand: 1.038 there, where 4096 read 0.990, and
+                    // a third light of an eighth the area read 1.026 -- no trend
+                    // with size, which is the claim. The old weight read 0.809.
+                    const double large = slabWithLight(
+                        rough, -0.25f, -1.0f, 0.05f, 400.0f, 0.5f, 4096);
+                    const double small = slabWithLight(
+                        rough, -0.25f, -1.0f, 0.025f, 1600.0f, 0.5f, 4096);
+                    const double ratio = large > 0.0 ? small / large : 0.0;
+                    std::printf("  light facing away inside a scattering medium: "
+                                "half-extent 0.05 %.4f, 0.025 at the same power "
+                                "%.4f, ratio %.4f\n",
+                                large, small, ratio);
+                    CHECK(large > 0.0);
+                    CHECK_NEAR(ratio, 1.0, 0.05);
+                }
+            }
+        }
+
         // --- And what it transmits is estimated too ---------------------------
         //
         // The other half of a refracting surface, and until 2026-09-07 the half
@@ -2508,7 +2647,13 @@ int main()
                 }
                 const std::vector<float> image =
                     tracer.Render(kWidth, kHeight, LookDownZ(1.0f), settings);
-                return Window(image, 0.5f, 0.5f, 4);
+                // The centre, where the closed form is stated, and a window
+                // twenty times its area for a ratio that has to resolve a per
+                // cent: nine by nine pixels carry about three per cent of noise
+                // in blue over red, sRGB red being a difference of large XYZ
+                // terms.
+                return std::make_pair(Window(image, 0.5f, 0.5f, 4),
+                                      Window(image, 0.5f, 0.5f, 20));
             };
 
             // The control: the same surface with no dispersion authored. It must
@@ -2540,9 +2685,11 @@ int main()
 
             if (!flat.spirv.empty() && !spread.spirv.empty() &&
                 !bare.spirv.empty()) {
-                const Pixel bareResult = mirrorUnderLight(bare);
-                const Pixel flatResult = mirrorUnderLight(flat);
-                const Pixel spreadResult = mirrorUnderLight(spread);
+                const Pixel bareResult = mirrorUnderLight(bare).first;
+                const auto flatPair = mirrorUnderLight(flat);
+                const auto spreadPair = mirrorUnderLight(spread);
+                const Pixel flatResult = flatPair.first;
+                const Pixel spreadResult = spreadPair.first;
 
                 const double achromatic =
                     ((ior - 1.0) / (ior + 1.0)) * ((ior - 1.0) / (ior + 1.0)) *
@@ -2581,9 +2728,12 @@ int main()
                 const double bareRatio =
                     bareResult.r > 0.0 ? bareResult.b / bareResult.r : 0.0;
                 const double spreadRatio =
-                    spreadResult.r > 0.0 ? spreadResult.b / spreadResult.r : 0.0;
+                    spreadPair.second.r > 0.0
+                        ? spreadPair.second.b / spreadPair.second.r
+                        : 0.0;
                 const double flatRatio =
-                    flatResult.r > 0.0 ? flatResult.b / flatResult.r : 0.0;
+                    flatPair.second.r > 0.0 ? flatPair.second.b / flatPair.second.r
+                                            : 0.0;
                 std::printf("  blue/red: %.4f closure, %.4f open_pbr, "
                             "%.4f flat (closed form %.4f)\n",
                             bareRatio, spreadRatio, flatRatio,
@@ -2591,13 +2741,18 @@ int main()
                 CHECK(bareRatio > 1.08);
                 CHECK(flatRatio > 0.96 && flatRatio < 1.04);
 
-                // The authored route reaches the image. The number it reaches it
-                // by is smaller than the interface's own, for the structural
-                // reason in the comment above this block, so what is asserted is
-                // that a value read off the document changed the render at all
-                // and changed it in the right direction -- not that it produced
-                // the full spread, which through this graph it cannot.
-                CHECK(spreadRatio > flatRatio + 0.02);
+                // And through `open_pbr_surface` the highlight is *neutral*.
+                // Its specular lobe is `layer(reflection-only, transmission-
+                // only)`, dispersion belongs to the lobe that transmits, and
+                // everything reaching this pixel was reflected by the lobe that
+                // does not -- so the expected ratio is the flat control's. This
+                // used to assert a partial tint of about 1.037, which was one
+                // nine-pixel window's noise: eight independent windows averaged
+                // 0.9990 on the same code, and the centre read 0.9730 once lobe
+                // selection drew a different sequence. The document's Abbe
+                // number reaching the program is asserted above; that it
+                // refracts is the closure's own measurement.
+                CHECK_NEAR(spreadRatio, flatRatio, 0.02);
             }
         }
 

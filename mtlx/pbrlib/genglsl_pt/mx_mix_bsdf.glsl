@@ -52,7 +52,7 @@ void mx_mix_bsdf(ClosureData closureData, BSDF fg, BSDF bg, float mixValue, out 
         // weight. The result is delta only if the branch actually taken is:
         // a mix of a mirror and a diffuse lobe is not a delta closure, and
         // treating it as one would suppress NEE on the diffuse half.
-        float u = hdclaude_sample_u.z;
+        float u = mx_pt_selection_random();
         float selectionPdf;
         if (mx_pt_select_lobe(u, w, selectionPdf))
         {
@@ -72,6 +72,10 @@ void mx_mix_bsdf(ClosureData closureData, BSDF fg, BSDF bg, float mixValue, out 
         // Under evaluation, "delta" describes the closure as a whole: it is a
         // delta closure only if every constituent lobe is one.
         result.isDelta = min(fg.isDelta, bg.isDelta);
-        hdclaude_clear_medium(result);
+        // Which interior a shadow ray through this surface crosses, chosen
+        // as the sampling pass would have chosen it; see
+        // hdclaude_select_medium.
+        hdclaude_select_medium(result, fg, w * fg.pdf, bg, (1.0 - w) * bg.pdf,
+                               mx_pt_selection_random());
     }
 }
