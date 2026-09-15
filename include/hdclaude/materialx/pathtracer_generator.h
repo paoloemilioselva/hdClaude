@@ -297,6 +297,23 @@ mx::DocumentPtr LoadDefaultMaterialXLibraries();
 float AuthoredDispersion(const mx::DocumentPtr& document,
                          std::vector<std::string>* diagnostics = nullptr);
 
+/// Whether a document's surface is thin-walled, read from the document for the
+/// same reason dispersion is.
+///
+/// OpenPBR defines a thin-walled surface as "a 2d sheet with no interior" whose
+/// translucent base "reduces to a thin sheet of dielectric", seen identically
+/// from either side. MaterialX 1.39.3's `open_pbr_surface` graph reads
+/// `geometry_thin_walled` for its subsurface lobe alone: the transmission lobe
+/// still refracts, and still carries the interior volume whenever
+/// `transmission_depth` is positive. The flag therefore travels beside the
+/// program, and the dielectric closure and the integrator honour it.
+///
+/// `open_pbr_surface` names it `geometry_thin_walled` and `standard_surface`
+/// names it `thin_walled`. A connected flag cannot be a per-material value and
+/// is reported, as is a second surface node that disagrees with the first.
+bool AuthoredThinWalled(const mx::DocumentPtr& document,
+                        std::vector<std::string>* diagnostics = nullptr);
+
 }  // namespace hdclaude
 
 #endif  // HDCLAUDE_MATERIALX_PATHTRACER_GENERATOR_H

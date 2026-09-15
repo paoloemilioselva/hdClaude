@@ -103,6 +103,8 @@ struct ShadePush {
     /// constant rather than a frame-uniform field so that a whole sample can be
     /// recorded into one command buffer.
     std::uint32_t bounce = 0;
+    /// One when the material is a thin-walled sheet. See shade.comp.glsl.
+    std::uint32_t thinWalled = 0;
 };
 
 /// Mirrors EnvironmentParams in environment.comp.glsl.
@@ -906,12 +908,15 @@ void PathTracer::SetScene(const Scene& scene,
     _materialTextureSlots.reserve(materials.size());
     _materialDispersion.clear();
     _materialDispersion.reserve(materials.size());
+    _materialThinWalled.clear();
+    _materialThinWalled.reserve(materials.size());
     for (const CompiledMaterial& material : materials) {
         _shade.push_back(ComputePipeline(_context, material.spirv, bindings,
                                          sizeof(ShadePush),
                                          "shade." + material.debugName));
         _materialTextureSlots.push_back(material.textureSlots);
         _materialDispersion.push_back(material.dispersionAbbe);
+        _materialThinWalled.push_back(material.thinWalled ? 1u : 0u);
     }
 
     // --- The sort's tables ---------------------------------------------------
@@ -2251,6 +2256,7 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
                     ShadePush push;
                     push.materialId = static_cast<std::uint32_t>(i);
                     push.dispersionAbbe = _materialDispersion[i];
+                    push.thinWalled = _materialThinWalled[i];
                     push.bounce = bounce;
                     _shade[i].DispatchIndirect(
                         command, shadeSets[i], slot.dispatchArgs,

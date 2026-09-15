@@ -136,6 +136,7 @@ CompiledMaterial CompileMaterial(
     // each test that needs it, so a test authoring the OpenPBR inputs exercises
     // the whole chain rather than a value set by hand.
     material.dispersionAbbe = AuthoredDispersion(doc);
+    material.thinWalled = AuthoredThinWalled(doc);
     return material;
 }
 
@@ -246,6 +247,36 @@ CompiledMaterial MakeLayeredDielectric(mx::DocumentPtr libraries,
     mx::NodePtr surface = AddNode(doc, "surface", "s", "surfaceshader");
     Connect(surface, "bsdf", layered);
     SetValue(surface, "opacity", 1.0f);
+    mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+    Connect(material, "surfaceshader", surface);
+
+    return CompileMaterial(doc, compiler, shadeKernel, name);
+}
+
+/// A thin-walled `open_pbr_surface` glass, with a transmission depth.
+///
+/// The depth is there to be ignored. MaterialX 1.39.3's graph attaches an
+/// interior volume whenever `transmission_depth` is positive, thin-walled or
+/// not; OpenPBR says a thin-walled surface has no interior. A tinted colour with
+/// a depth would absorb inside a volume, so reading exactly the clear sheet's
+/// transmission is what says there is none.
+CompiledMaterial MakeThinWalledGlass(mx::DocumentPtr libraries,
+                                     const GlslCompiler& compiler,
+                                     const std::string& shadeKernel,
+                                     float ior, bool thinWalled,
+                                     const std::string& name)
+{
+    mx::DocumentPtr doc = mx::createDocument();
+    doc->importLibrary(libraries);
+
+    mx::NodePtr surface = AddNode(doc, "open_pbr_surface", "s", "surfaceshader");
+    SetValue(surface, "base_weight", 0.0f);
+    SetValue(surface, "specular_roughness", 0.0f);
+    SetValue(surface, "specular_ior", ior);
+    SetValue(surface, "transmission_weight", 1.0f);
+    SetValue(surface, "transmission_color", mx::Color3(0.5f, 0.5f, 0.5f));
+    SetValue(surface, "transmission_depth", 0.5f);
+    SetValue(surface, "geometry_thin_walled", thinWalled);
     mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
     Connect(material, "surfaceshader", surface);
 
@@ -2753,6 +2784,110 @@ int main()
                 // number reaching the program is asserted above; that it
                 // refracts is the closure's own measurement.
                 CHECK_NEAR(spreadRatio, flatRatio, 0.02);
+            }
+        }
+
+        // --- A thin-walled sheet transmits without refracting ----------------
+        //
+        // OpenPBR's thin-walled surface is "a 2d sheet with no interior" whose
+        // translucent base "reduces to a thin sheet of dielectric". Two parallel
+        // faces bend nothing, and the bounces between them give a lossless
+        // sheet of single-face reflectance R the closed forms
+        //
+        //     reflected  2R / (1 + R)        transmitted  (1 - R) / (1 + R)
+        //
+        // -- 0.0769 and 0.9231 at n = 1.5, against a single interface's 0.04 and
+        // 0.96. Roughness is ignored on the transmitted side by decision, so a
+        // rough sheet transmits exactly what a smooth one does. Each is
+        // measured at normal incidence, where R is the closed form's.
+        {
+            const float ior = 1.5f;
+            const float emitted = 2.0f;
+            const double R = ((ior - 1.0) / (ior + 1.0)) * ((ior - 1.0) / (ior + 1.0));
+            const double sheetReflect = 2.0 * R / (1.0 + R);
+            const double sheetTransmit = (1.0 - R) / (1.0 + R);
+
+            const auto sheetUnderLight = [&](const CompiledMaterial& material,
+                                             float lightZ, float facing,
+                                             float sky) {
+                Scene scene;
+                scene.prototypes.push_back(MakeQuad());
+                scene.instances.push_back({0, Transform3x4{}, 0, true});
+                if (emitted > 0.0f && facing != 0.0f) {
+                    Light rect;
+                    rect.type = static_cast<std::uint32_t>(LightType::Rect);
+                    rect.position[2] = lightZ;
+                    rect.direction[2] = facing;
+                    rect.uAxis[0] = 20.0f;
+                    rect.vAxis[1] = 20.0f;
+                    rect.area = 40.0f * 40.0f;
+                    for (int i = 0; i < 3; ++i) {
+                        rect.radiance[i] = emitted;
+                    }
+                    scene.lights.push_back(rect);
+                }
+                tracer.SetScene(scene, {material});
+
+                RenderSettings settings;
+                settings.lightGeometry = true;
+                settings.samplesPerPixel = 256;
+                settings.maxBounces = 3;
+                for (int i = 0; i < 3; ++i) {
+                    settings.environmentColor[i] = sky;
+                    settings.sunRadiance[i] = 0.0f;
+                }
+                const std::vector<float> image =
+                    tracer.Render(kWidth, kHeight, LookDownZ(6.0f), settings);
+                return Window(image, 0.5f, 0.5f, 4).g;
+            };
+
+            const struct { float roughness; const char* name; } sheets[] = {
+                {0.0f, "smooth"}, {0.3f, "rough"}};
+            for (const auto& sheet : sheets) {
+                CompiledMaterial thin = MakeDielectricMaterial(
+                    libraries, compiler, tracer.ShadeKernelSource(), ior,
+                    std::string("thin sheet ") + sheet.name, sheet.roughness, "RT");
+                CHECK(!thin.spirv.empty());
+                if (thin.spirv.empty()) {
+                    continue;
+                }
+                thin.thinWalled = true;
+
+                // Behind the sheet, facing the camera through it.
+                const double through = sheetUnderLight(thin, -2.0f, 1.0f, 0.0f);
+                // Behind the camera, facing the sheet, seen in its reflection.
+                const double mirrored = sheetUnderLight(thin, 8.0f, -1.0f, 0.0f);
+                // A white sky on both sides and no light: a lossless sheet.
+                const double furnace = sheetUnderLight(thin, 0.0f, 0.0f, 1.0f);
+                std::printf("  thin sheet %s: transmits %.4f (closed form %.4f), "
+                            "reflects %.4f (closed form %.4f), furnace %.4f\n",
+                            sheet.name, through, sheetTransmit * emitted, mirrored,
+                            sheetReflect * emitted, furnace);
+                CHECK_NEAR(through, sheetTransmit * emitted, sheetTransmit * emitted * 0.01);
+                CHECK_NEAR(furnace, 1.0, 0.02);
+                if (sheet.roughness == 0.0f) {
+                    CHECK_NEAR(mirrored, sheetReflect * emitted, sheetReflect * emitted * 0.05);
+                }
+            }
+
+            // Authored through OpenPBR, the flag is read off the document and a
+            // depth with a grey colour -- which would absorb inside a volume --
+            // changes nothing: the sheet has no interior. MaterialX's graph
+            // layers the sheet's transmission under its reflection lobe, so
+            // this also measures the internal bounces carried by the base.
+            const CompiledMaterial glass = MakeThinWalledGlass(
+                libraries, compiler, tracer.ShadeKernelSource(), ior, true,
+                "openpbr thin glass");
+            CHECK(!glass.spirv.empty());
+            CHECK(glass.thinWalled);
+            if (!glass.spirv.empty()) {
+                const double through = sheetUnderLight(glass, -2.0f, 1.0f, 0.0f);
+                const double furnace = sheetUnderLight(glass, 0.0f, 0.0f, 1.0f);
+                std::printf("  thin open_pbr glass with a depth: transmits %.4f "
+                            "(closed form %.4f), furnace %.4f\n",
+                            through, sheetTransmit * emitted, furnace);
+                CHECK_NEAR(through, sheetTransmit * emitted, sheetTransmit * emitted * 0.02);
+                CHECK_NEAR(furnace, 1.0, 0.02);
             }
         }
 

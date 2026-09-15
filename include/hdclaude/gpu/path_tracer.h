@@ -245,6 +245,11 @@ struct CompiledMaterial {
     /// dispersive power `1 / V`, so a scale of zero -- the default, and what
     /// every material that does not ask for dispersion has -- leaves this zero.
     float dispersionAbbe = 0.0f;
+
+    /// Whether the surface is a thin-walled sheet: no interior, and a
+    /// dielectric that transmits without refracting. Read from the document,
+    /// like `dispersionAbbe`; see `AuthoredThinWalled`.
+    bool thinWalled = false;
 };
 
 /// Resolves `#include` directives in the kernel sources.
@@ -695,6 +700,7 @@ class PathTracer {
     /// Per-material Abbe number, parallel to _shade. Pushed with the material
     /// id at each shading dispatch.
     std::vector<float> _materialDispersion;
+    std::vector<std::uint32_t> _materialThinWalled;
 
     ComputePipeline _raygen;
     ComputePipeline _extend;

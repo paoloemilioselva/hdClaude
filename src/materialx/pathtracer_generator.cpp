@@ -858,7 +858,81 @@ float ReadFloatInput(const mx::NodePtr& node, const char* input, bool* connected
     return 0.0f;
 }
 
+/// A boolean input's authored value, or its nodedef default. `connected` says
+/// whether the input is driven by something rather than authored.
+bool ReadBoolInput(const mx::NodePtr& node, const char* input, bool* connected)
+{
+    *connected = false;
+    if (const mx::InputPtr authored = node->getInput(input)) {
+        if (authored->hasNodeName() || authored->hasNodeGraphString() ||
+            authored->hasInterfaceName()) {
+            *connected = true;
+            return false;
+        }
+        if (const mx::ValuePtr value = authored->getValue()) {
+            if (value->isA<bool>()) {
+                return value->asA<bool>();
+            }
+        }
+    }
+    if (const mx::NodeDefPtr definition = node->getNodeDef()) {
+        if (const mx::InputPtr declared = definition->getActiveInput(input)) {
+            if (const mx::ValuePtr value = declared->getValue()) {
+                if (value->isA<bool>()) {
+                    return value->asA<bool>();
+                }
+            }
+        }
+    }
+    return false;
+}
+
 }  // namespace
+
+bool AuthoredThinWalled(const mx::DocumentPtr& document,
+                        std::vector<std::string>* diagnostics)
+{
+    if (!document) {
+        return false;
+    }
+
+    bool found = false;
+    bool thin = false;
+    for (const mx::NodePtr& node : document->getNodes()) {
+        const std::string& category = node->getCategory();
+        const char* input = category == "open_pbr_surface"   ? "geometry_thin_walled"
+                            : category == "standard_surface" ? "thin_walled"
+                                                             : nullptr;
+        if (!input) {
+            continue;
+        }
+
+        bool connected = false;
+        const bool authored = ReadBoolInput(node, input, &connected);
+        if (connected) {
+            if (diagnostics) {
+                diagnostics->push_back(
+                    "node '" + node->getName() + "' connects '" + input +
+                    "'; thin-walled is a per-material property here and only an "
+                    "authored value can be honoured, so it renders as not "
+                    "thin-walled");
+            }
+            continue;
+        }
+        if (found && authored != thin) {
+            if (diagnostics) {
+                diagnostics->push_back(
+                    "surface node '" + node->getName() +
+                    "' disagrees with an earlier one about being thin-walled; "
+                    "the first is used");
+            }
+            continue;
+        }
+        found = true;
+        thin = authored;
+    }
+    return thin;
+}
 
 float AuthoredDispersion(const mx::DocumentPtr& document,
                          std::vector<std::string>* diagnostics)

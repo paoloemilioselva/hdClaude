@@ -44,6 +44,12 @@ layout(push_constant) uniform ShadeParams {
     /// frame -- and every dispatch in a batched buffer would otherwise have read
     /// whichever value happened to be written last.
     uint bounce;
+
+    /// One when this material is a thin-walled sheet, read from the document
+    /// because the MaterialX graph does not carry it to the transmission lobe.
+    /// Such a surface has no interior, so a transmission through it enters no
+    /// medium, and its dielectric transmits without refracting.
+    uint thinWalled;
 } shadeParams;
 
 /// Interpolated geometry at a hit.
@@ -384,6 +390,7 @@ void main()
     // connected.
     hdclaude_wavelengths = lambda;
     hdclaude_dispersion_abbe = shadeParams.dispersionAbbe;
+    hdclaude_thin_walled = float(shadeParams.thinWalled);
     // The true geometric normal, so a closure can tell which side of the
     // interface it is on. The shading normal cannot answer that: near a
     // silhouette it tilts past the horizon on a perfectly opaque object.
@@ -676,6 +683,7 @@ void main()
                     }
                     else if (!lightInFront &&
                              dot(point.geometricNormal, V) > 0.0 &&
+                             shadeParams.thinWalled == 0u &&
                              hdclaude_bsdf.mediumKind != HDCLAUDE_MEDIUM_NONE)
                     {
                         crossed = hdclaude_bsdf.mediumExtinction;
@@ -815,7 +823,12 @@ void main()
     // without one leaves it zero, which is vacuum and costs nothing. Leaving is
     // unconditional: the far side of a closed object is whatever contains it,
     // and nesting media is a scope this does not claim.
-    if (scatterClosure == CLOSURE_TYPE_TRANSMISSION)
+    // A thin-walled sheet has no interior (OpenPBR, "Thin-walled mode"), so a
+    // path that passes through one is in whatever it was in before. Whatever
+    // volume the graph attached to its transmission lobe describes a bulk the
+    // specification says is not there.
+    if (scatterClosure == CLOSURE_TYPE_TRANSMISSION &&
+        shadeParams.thinWalled == 0u)
     {
         bool goingIn = dot(point.geometricNormal, V) > 0.0;
         // Subsurface arrives here under the same name as a volume, because a

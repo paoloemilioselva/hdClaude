@@ -95,7 +95,13 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
     // reflection-only lobes, and the first is inside glass while the second is
     // not. What separates them is the *path's* history, which only the
     // integrator has, so it publishes it.
-    bool insideDenseMedium = !entering && hdclaude_inside_medium > 0.5;
+    //
+    // A thin-walled sheet has no inside at all. OpenPBR has the surface "always
+    // flipped so that incident rays enter top-down", so it sees the authored
+    // index from both sides.
+    bool thinSheet = hdclaude_thin_walled > 0.5;
+    bool insideDenseMedium =
+        !thinSheet && !entering && hdclaude_inside_medium > 0.5;
     float relativeIor =
         insideDenseMedium ? 1.0 / max(ior, M_FLOAT_EPS) : ior;
 
@@ -211,6 +217,120 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
     bsdf.guideSpecular = (transmissive ? safeTint : dirAlbedoV * safeTint) * weight;
     bsdf.guideNormal = N;
     bsdf.guideRoughness = avgAlpha;
+
+    // ---- hdClaude: a thin-walled sheet -------------------------------------
+    //
+    // OpenPBR's thin-walled mode treats the surface as "a 2d sheet with no
+    // interior" whose translucent base "reduces to a thin sheet of dielectric",
+    // and notes that the reflection "will also technically be modified due to
+    // the internal bounces in the sheet". MaterialX 1.39.3's graph does neither:
+    // it hands this closure a refracting transmission lobe whatever the flag
+    // says. So a lobe that transmits, on a material the integrator has marked
+    // thin-walled, is shaded as the sheet here.
+    //
+    // A sheet of two parallel faces bends nothing, so transmission continues
+    // undeviated. Summing the bounces between its faces gives, for a lossless
+    // sheet with single-face reflectance F,
+    //
+    //     reflected    2F / (1 + F)        transmitted    (1 - F) / (1 + F)
+    //
+    // which sum to one. Roughness shapes the reflection as it always does and is
+    // ignored on the transmitted side: the specification gives no closed form
+    // for a rough sheet's transmission, and the decision taken in its absence is
+    // a delta straight through (docs/roadmap.md, decision log, 2026-09-15).
+    //
+    // The two modes carry the sheet differently, and the difference is where the
+    // top face's reflection already lives. RT is the whole sheet on its own. T is
+    // the base `open_pbr_surface` layers under a reflection-only lobe, and that
+    // lobe has already reflected F and handed on the rest; of what reaches the
+    // base, the sheet's further reflection is `F / (1 + F)` and its transmission
+    // `1 / (1 + F)`, which sum to one. Carrying the internal bounces in the base
+    // rather than in the reflection-only lobe keeps a coat -- another
+    // reflection-only lobe, indistinguishable at runtime -- a single interface.
+    if (thinSheet && transmissive)
+    {
+        // Everything that reaches the sheet is reflected or transmitted.
+        bsdf.throughput = vec3(1.0 - weight);
+
+        vec3 sheetReflect = layerBase ? Fv / (1.0 + Fv) : 2.0 * Fv / (1.0 + Fv);
+        vec3 sheetTransmit = layerBase ? 1.0 / (1.0 + Fv) : (1.0 - Fv) / (1.0 + Fv);
+        float reflectWeight = mx_pt_luminance_weight(sheetReflect);
+        float transmitWeight = mx_pt_luminance_weight(sheetTransmit);
+        float reflectProbability =
+            reflectWeight + transmitWeight > 0.0
+                ? reflectWeight / (reflectWeight + transmitWeight)
+                : 0.0;
+
+        if (closureData.closureType == CLOSURE_TYPE_PT_SAMPLE)
+        {
+            float u = mx_pt_selection_random();
+            if (u < reflectProbability)
+            {
+                vec3 Vt = mx_pt_to_local(V, Xa, Ya, N);
+                vec3 Ht = mx_ggx_importance_sample_VNDF(hdclaude_sample_u.xy, Vt,
+                                                        safeAlpha);
+                vec3 H = mx_pt_to_world(Ht, Xa, Ya, N);
+                vec3 reflected = reflect(-V, H);
+                bsdf.sampledL = dot(reflected, N) > 0.0 ? reflected : vec3(0.0);
+                bsdf.isDelta = smoothSurface ? 1.0 : 0.0;
+            }
+            else
+            {
+                bsdf.sampledL = -V;
+                bsdf.isDelta = 1.0;
+            }
+            return;
+        }
+
+        if (closureData.closureType == CLOSURE_TYPE_REFLECTION)
+        {
+            vec3 H = normalize(L + V);
+            float NdotL = clamp(dot(N, L), M_FLOAT_EPS, 1.0);
+            float VdotH = clamp(dot(V, H), M_FLOAT_EPS, 1.0);
+            vec3 Ht = vec3(dot(H, Xa), dot(H, Ya), dot(H, N));
+
+            // The sheet's reflectance at the microfacet, as the single face's
+            // Fresnel is taken at the microfacet everywhere else.
+            vec3 F = mx_compute_fresnel(VdotH, fd);
+            vec3 sheetF = layerBase ? F / (1.0 + F) : 2.0 * F / (1.0 + F);
+            float D = mx_ggx_NDF(Ht, safeAlpha);
+            float G = mx_ggx_smith_G2(NdotL, NdotV, avgAlpha);
+            vec3 comp = mx_ggx_energy_compensation(NdotV, avgAlpha, F);
+            bsdf.response = D * sheetF * G * comp * safeTint *
+                            closureData.occlusion * weight / (4.0 * NdotV);
+
+            float G1V = mx_pt_ggx_smith_G1_anisotropic(
+                vec3(dot(V, Xa), dot(V, Ya), NdotV), safeAlpha);
+            bsdf.pdf = dot(N, L) > 0.0
+                           ? mx_ggx_VNDF_reflection_PDF(Ht, safeAlpha, G1V, NdotV) *
+                                 reflectProbability
+                           : 0.0;
+            bsdf.isDelta = smoothSurface ? 1.0 : 0.0;
+            return;
+        }
+
+        if (closureData.closureType == CLOSURE_TYPE_TRANSMISSION)
+        {
+            // A delta straight through, which has no finite value at a
+            // direction. It is answered the way a smooth microfacet lobe
+            // answers at the direction it sampled: a response and a density
+            // that are both very large and whose ratio is the estimate, so a
+            // combinator mixing it with a sibling's finite density is dominated
+            // by the delta, as it is for a mirror at the floored roughness.
+            // Next-event estimation never asks, since the lobe is a delta.
+            const float kDeltaDensity = 1.0e7;
+            bool straightThrough = dot(L, -V) > 1.0 - 1.0e-5;
+            bsdf.response = straightThrough
+                                ? sheetTransmit * safeTint * weight * kDeltaDensity
+                                : vec3(0.0);
+            bsdf.pdf = straightThrough
+                           ? (1.0 - reflectProbability) * kDeltaDensity
+                           : 0.0;
+            bsdf.isDelta = 1.0;
+            return;
+        }
+        return;
+    }
 
     // A transmit-only lobe has nothing to say about reflection -- but it says
     // so only after publishing its guides, because a guide is a property of the

@@ -6956,3 +6956,65 @@ have. The estimate that boundary admits is the one `shade` already makes where
 the walk arrives. What is left is an emitter inside the same closed interior,
 which would cost a shadow ray per collision in every walk to serve a rare scene,
 and is recorded in the roadmap rather than built.
+
+## 2026-09-15 -- A thin-walled surface is a sheet, not the skin of a solid
+
+The previous entry recorded that MaterialX 1.39.3's `open_pbr_surface` gives a
+thin-walled surface an interior volume. Reading the graph for the fix showed the
+gap is wider: `geometry_thin_walled` is read in exactly one place, the selector
+between the volumetric and the thin subsurface lobes. The transmission lobe
+ignores it entirely. It still refracts, it still layers the interior volume
+`transmission_depth` builds, and `ND_dielectric_bsdf` has no input through
+which it could be told.
+
+**What the specification says.** OpenPBR's geometry section defines the mode:
+"the slabs at the base assumed to be thin enough that macroscopically the
+material can be treated as a 2d sheet with no interior. This sheet thus appears
+identical viewed from either side". Its slab section puts the ambient medium at
+"the very top of the entire structure (and bottom if thin-walled)". And its
+mixture section says the surface is "always flipped so that incident rays enter
+top-down", that "the translucent-base reduces to a thin sheet of dielectric",
+and that "the reflection lobe from the dielectric will also technically be
+modified due to the internal bounces in the sheet". It leaves "the full
+representation in code" to the renderer.
+
+**What that makes the sheet.** Two parallel faces bend nothing, so transmission
+continues undeviated. Summing the bounces between the faces of a lossless sheet
+with single-face reflectance `F` gives `2F / (1 + F)` reflected and
+`(1 - F) / (1 + F)` transmitted -- 0.0769 and 0.9231 at n = 1.5, against a
+single interface's 0.04 and 0.96 -- and the two sum to one. There is no interior,
+so no medium is entered and next-event estimation attenuates through none.
+
+**Two silences, and Paolo's decisions for them.** The specification gives no
+closed form for a *rough* sheet's transmission, and there is none for two rough
+faces pressed together. Offered a mirrored-reflection lobe, smooth-only with a
+report, or a delta straight through, Paolo chose the last: a rough sheet
+transmits undeviated, its roughness shaping only the reflection. And nothing
+says what `transmission_color` does on a thin-walled surface with a depth; the
+graph drops the tint whenever a depth is authored, and that is kept rather than
+replaced by a rule the specification does not state.
+
+**Where it lives.** The flag is read off the document by `AuthoredThinWalled`
+beside `AuthoredDispersion` -- `geometry_thin_walled` for `open_pbr_surface`,
+`thin_walled` for `standard_surface`, a connected flag reported and not
+honoured -- and reaches the shade kernel as a push constant and the closures as
+`hdclaude_thin_walled`. `mx_dielectric_bsdf` shades a lobe that transmits as the
+sheet. RT mode is the whole sheet. T mode is how `open_pbr_surface` builds its
+glass, as the base under a reflection-only lobe that has already reflected `F`;
+of what reaches that base, the sheet's further reflection is `F / (1 + F)` and
+its transmission `1 / (1 + F)`, which sum to one. Carrying the internal bounces
+in the base rather than in the reflection-only lobe is what keeps a coat -- also
+a reflection-only lobe, and indistinguishable from the specular one at runtime --
+a single interface. The delta transmission answers an evaluation the way a
+floored-roughness mirror does, with a response and a density both very large
+and their ratio the estimate. A thin-walled surface that authors dispersion has
+no direction to spread it and is reported.
+
+**Measured.** At normal incidence under a rect light of radiance 2 behind the
+sheet, a smooth RT sheet transmits 1.8400 and a 0.3-rough one 1.8400, against
+the closed form's 1.8462; the smooth sheet reflects 0.1552 against 0.1538; in a
+white furnace they read 0.9976 and 0.9885, the rough one's shortfall being the
+GGX energy the existing rough dielectric already loses at that roughness. An
+`open_pbr_surface` glass authored thin-walled with a depth of 0.5 and a grey
+colour -- which would absorb inside a volume -- transmits 1.8308 and reads 0.9950
+in the furnace: no interior, and the base carrying the internal bounces.

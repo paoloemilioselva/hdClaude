@@ -273,6 +273,14 @@ void hdclaude_select_medium(inout BSDF result, BSDF a, float weightA, BSDF b,
 // it gets, and what makes this cost nothing where it is not used.
 float hdclaude_dispersion_abbe = 0.0;
 
+// Whether the material is a thin-walled sheet, written by the integrator for the
+// same reason as the Abbe number: MaterialX 1.39.3's `open_pbr_surface` reads
+// `geometry_thin_walled` only for its subsurface lobe, and `ND_dielectric_bsdf`
+// has no input to receive it. OpenPBR defines such a surface as "a 2d sheet with
+// no interior" whose translucent base "reduces to a thin sheet of dielectric",
+// and `mx_dielectric_bsdf` is where that sheet is shaded. One is thin-walled.
+float hdclaude_thin_walled = 0.0;
+
 // The three Fraunhofer lines the Abbe number is defined against, in nanometres.
 // Same values as `kFraunhoferF/D/C` in hdclaude/core/spectrum.h.
 #define HDCLAUDE_FRAUNHOFER_F 486.13

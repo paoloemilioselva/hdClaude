@@ -459,6 +459,17 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
     std::vector<std::string> dispersionDiagnostics;
     result.dispersionAbbe =
         hdclaude::AuthoredDispersion(document, &dispersionDiagnostics);
+    result.thinWalled =
+        hdclaude::AuthoredThinWalled(document, &dispersionDiagnostics);
+    // A thin sheet does not refract, so there is no direction for dispersion to
+    // spread and nothing for it to do. Said once rather than silently ignored,
+    // because an author who set both asked for something the model cannot give.
+    if (result.thinWalled && result.dispersionAbbe > 0.0f) {
+        dispersionDiagnostics.push_back(
+            "authors transmission dispersion on a thin-walled surface, which "
+            "does not refract; the dispersion has no effect");
+        result.dispersionAbbe = 0.0f;
+    }
     for (const std::string& diagnostic : dispersionDiagnostics) {
         TF_WARN("hdClaude: material %s: %s", name.c_str(), diagnostic.c_str());
     }

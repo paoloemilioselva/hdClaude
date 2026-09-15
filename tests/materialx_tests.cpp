@@ -535,6 +535,72 @@ void TestDispersionIsReadFromTheDocument(mx::DocumentPtr libraries)
     }
 }
 
+/// The thin-walled flag is read from the document, under both surface models'
+/// names, and a connected flag is reported rather than guessed.
+void TestThinWalledIsReadFromTheDocument(mx::DocumentPtr libraries)
+{
+    struct Case {
+        const char* category;
+        const char* input;
+        bool author;
+        bool value;
+        bool expected;
+        const char* name;
+    };
+    const Case cases[] = {
+        {"open_pbr_surface", "geometry_thin_walled", false, false, false,
+         "open_pbr default"},
+        {"open_pbr_surface", "geometry_thin_walled", true, true, true,
+         "open_pbr thin"},
+        {"standard_surface", "thin_walled", false, false, false,
+         "standard_surface default"},
+        {"standard_surface", "thin_walled", true, true, true,
+         "standard_surface thin"},
+    };
+
+    for (const Case& probe : cases) {
+        mx::DocumentPtr doc = mx::createDocument();
+        doc->importLibrary(libraries);
+        mx::NodePtr shader = AddNode(doc, probe.category, "s", "surfaceshader");
+        CHECK(shader != nullptr);
+        if (!shader) {
+            continue;
+        }
+        if (probe.author) {
+            SetValue(shader, probe.input, probe.value);
+        }
+        mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+        Connect(material, "surfaceshader", shader);
+
+        std::vector<std::string> diagnostics;
+        const bool read = hdclaude::AuthoredThinWalled(doc, &diagnostics);
+        std::printf("  thin-walled %s: %s (expected %s)\n", probe.name,
+                    read ? "yes" : "no", probe.expected ? "yes" : "no");
+        CHECK(read == probe.expected);
+        CHECK(diagnostics.empty());
+    }
+
+    // Connected: a per-material flag cannot honour a value that varies, so it
+    // is reported and the surface renders as not thin-walled.
+    {
+        mx::DocumentPtr doc = mx::createDocument();
+        doc->importLibrary(libraries);
+        mx::NodePtr constant = AddNode(doc, "constant", "c", "boolean");
+        SetValue(constant, "value", true);
+        mx::NodePtr shader = AddNode(doc, "open_pbr_surface", "s", "surfaceshader");
+        Connect(shader, "geometry_thin_walled", constant);
+        mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+        Connect(material, "surfaceshader", shader);
+
+        std::vector<std::string> diagnostics;
+        CHECK(!hdclaude::AuthoredThinWalled(doc, &diagnostics));
+        CHECK(!diagnostics.empty());
+        if (!diagnostics.empty()) {
+            std::printf("  thin-walled connected: %s\n", diagnostics.front().c_str());
+        }
+    }
+}
+
 }  // namespace
 
 int main()
@@ -560,6 +626,7 @@ int main()
     TestNamedSurfaceGeneratesAndCompiles(compiler, libraries, "standard_surface");
     TestNamedSurfaceGeneratesAndCompiles(compiler, libraries, "open_pbr_surface");
     TestDispersionIsReadFromTheDocument(libraries);
+    TestThinWalledIsReadFromTheDocument(libraries);
 
     return hdclaude_test::Summarize("hdClaudeMaterialXTests");
 }
