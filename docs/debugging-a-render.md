@@ -133,7 +133,27 @@ Clamping is the renderer's only option and it is not a repair: the asset is stil
 wrong, and the report that says so belongs at the USD level where the graph is
 visible.
 
-## 9. Housekeeping that cost time
+## 9. Compare against a closed form, not against another renderer
+
+Another renderer is a second opinion, never the standard. When one disagrees,
+build the smallest scene whose answer is known and measure both against it:
+
+* `tests/usd/closed_form_rect_light.usda` -- a Lambertian floor under a rect
+  light, answered by the configuration factor. A flat floor cannot see itself,
+  so this isolates direct illumination and does not depend on bounce limits.
+* `tests/usd/closed_form_cavity.usda` -- a sealed box that emits and reflects,
+  answered by `L_e / (1 - rho)`. This is the measurement a convex furnace cannot
+  make, since a sphere cannot see itself; it tests the whole interreflection
+  series, which is where renderers actually differ.
+
+Two cautions learned by getting them wrong. A test scene must apply
+`MaterialBindingAPI`, or hdClaude resolves no binding and shades its own
+fallback -- a 0.5 grey Lambertian, which is close enough to many test materials
+to pass for one. And check what the other renderer's image really contains: a
+Houdini Apprentice licence burns a watermark into every Karma render, which is
+where a `max = 1.0` in an otherwise dim EXR comes from.
+
+## 10. Housekeeping that cost time
 
 * Run one heavy render at a time. Two ALab-sized stages at once took the machine
   into swap and the background job was killed.

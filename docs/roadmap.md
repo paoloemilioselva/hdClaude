@@ -394,6 +394,15 @@ Tracked here rather than decided prematurely.
    boundary and the walk together, over a shape a path re-enters. Printed and
    not asserted.
 
+9. **Implicit surfaces are not rendered.** A stage whose only geometry is a
+   `UsdGeomSphere` arrives as "0 prototypes, 0 instances": spheres, cubes,
+   cylinders, cones and capsules reach a delegate as their own prim types, and
+   OpenUSD ships `HdsiImplicitSurfaceSceneIndex` to turn them into meshes (or
+   into the axis-aligned forms a renderer can intersect directly) without
+   inserting it for anyone. It is the same opt-in that the NURBS approximation
+   and light linking needed, and Karma renders these where hdClaude renders
+   nothing. Found 2026-09-16 while building a cross-renderer test.
+
 6. **Volume rendering.** MaterialX VDFs are declared and generated; hdClaude
    currently plans homogeneous interior media only. Heterogeneous volumes
    (`UsdVol`) are not scheduled.

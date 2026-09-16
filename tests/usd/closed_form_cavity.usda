@@ -1,0 +1,97 @@
+#usda 1.0
+(
+    doc = """A closed cavity, whose answer is a closed form.
+
+    Every wall emits radiance 0.1 and reflects half of what reaches it, so the
+    radiance inside settles where L = L_e + rho * L, that is
+    L = 0.1 / (1 - 0.5) = 0.2. A renderer truncating at N bounces reads
+    L_e (1 - rho^(N+1)) / (1 - rho), which at rho = 0.5 and sixteen bounces is
+    0.19999. Every pixel should read 0.2: the camera is inside the box and the
+    box is all it can see.
+
+    This is the measurement a convex furnace cannot make. A sphere cannot see
+    itself, so it tests one bounce however many are asked for; a cavity tests
+    the whole series, which is where renderers disagree about fill.
+
+    hdClaude reads 0.2046 at sixteen bounces (2026-09-16), 2.3% over.
+
+    Render it with:
+      usdrecord --colorCorrectionMode disabled --renderer <name> \\
+                --disableCameraLight --purposes render --imageWidth 200 \\
+                --camera /camera closed_form_cavity.usda out.exr
+    """
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Xform "World"
+{
+    def Mesh "Room" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [
+            1, 2, 3, 0,
+            7, 6, 5, 4,
+            3, 7, 4, 0,
+            5, 6, 2, 1,
+            4, 5, 1, 0,
+            2, 6, 7, 3
+        ]
+        point3f[] points = [
+            (-2, -2, -2), (2, -2, -2), (2, 2, -2), (-2, 2, -2),
+            (-2, -2, 2), (2, -2, 2), (2, 2, 2), (-2, 2, 2)
+        ]
+        uniform bool doubleSided = 0
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </World/Looks/Cavity>
+        uniform token purpose = "render"
+    }
+
+    def Scope "Looks"
+    {
+        def Material "Cavity"
+        {
+            token outputs:surface.connect = </World/Looks/Cavity/Surface.outputs:surface>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.5, 0.5, 0.5)
+                color3f inputs:emissiveColor = (0.1, 0.1, 0.1)
+                float inputs:roughness = 1
+                float inputs:metallic = 0
+                float inputs:ior = 1
+                color3f inputs:specularColor = (0, 0, 0)
+                int inputs:useSpecularWorkflow = 1
+                token outputs:surface
+            }
+        }
+    }
+}
+
+def Camera "camera"
+{
+    float focalLength = 24
+    float horizontalAperture = 20.9
+    float verticalAperture = 20.9
+    float2 clippingRange = (0.01, 100)
+    uniform token[] xformOpOrder = []
+}
+
+def Scope "Render"
+{
+    def RenderSettings "settings"
+    {
+        rel camera = </camera>
+        int2 resolution = (200, 200)
+        int karma:global:diffuselimit = 16
+        int karma:global:reflectlimit = 4
+        int karma:global:refractlimit = 4
+        token[] includedPurposes = ["render"]
+    }
+}
+
+
+

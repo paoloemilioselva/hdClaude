@@ -1,0 +1,105 @@
+#usda 1.0
+(
+    doc = """A scene whose answer is known, for comparing renderers against the
+    specification rather than against each other.
+
+    A Lambertian floor of albedo 0.5 lies under a 2x2 rect light of radiance 1
+    (intensity 1, exposure 0, normalize off) whose near face is 2 units above
+    it. The camera looks straight down at a patch small enough that the
+    configuration factor is constant across it, so every pixel of the render
+    should read the same number.
+
+    For a differential element under the centre of a rectangle of half-widths
+    a, b at height h, the configuration factor is four times the standard
+    corner formula with X = a/h and Y = b/h:
+
+        F = 4 * (1/2pi) * [ X/sqrt(1+X^2) * atan(Y/sqrt(1+X^2))
+                          + Y/sqrt(1+Y^2) * atan(X/sqrt(1+Y^2)) ]
+
+    At a = b = 1 and h = 2 that is F = 0.2394565, and a Lambertian surface of
+    albedo p returns p * L * F, so
+
+        expected pixel value = 0.5 * 1 * 0.2394565 = 0.1197282
+
+    The floor is flat and alone, so it cannot illuminate itself: the answer does
+    not depend on how many bounces a renderer is asked for. hdClaude reads 0.119279 (2026-09-16), which is 0.4% under.
+
+    The mesh applies MaterialBindingAPI deliberately: without it hdClaude sees no
+    binding and shades its own fallback, which is a 0.5 grey Lambertian and so
+    happens to give almost the same answer -- a test that measures the fallback
+    rather than the material it authored.
+
+    Render it with:
+      usdrecord --colorCorrectionMode disabled --renderer <name> \\
+                --disableCameraLight --purposes render --imageWidth 256 \\
+                --camera /camera closed_form_rect_light.usda out.exr
+    """
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Xform "World"
+{
+    def Mesh "Floor" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        float3[] extent = [(-10, 0, -10), (10, 0, 10)]
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-10, 0, -10), (10, 0, -10), (10, 0, 10), (-10, 0, 10)]
+        normal3f[] normals = [(0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0)] (interpolation = "vertex")
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </World/Looks/Grey>
+        uniform token purpose = "render"
+    }
+
+    def Scope "Looks"
+    {
+        def Material "Grey"
+        {
+            token outputs:surface.connect = </World/Looks/Grey/Surface.outputs:surface>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.5, 0.5, 0.5)
+                float inputs:roughness = 1
+                float inputs:metallic = 0
+                float inputs:ior = 1
+                color3f inputs:specularColor = (0, 0, 0)
+                int inputs:useSpecularWorkflow = 1
+                token outputs:surface
+            }
+        }
+    }
+
+    def RectLight "Key" (
+        prepend apiSchemas = ["ShadowAPI"]
+    )
+    {
+        float inputs:width = 2
+        float inputs:height = 2
+        float inputs:intensity = 1
+        float inputs:exposure = 0
+        bool inputs:normalize = 0
+        color3f inputs:color = (1, 1, 1)
+        bool inputs:shadow:enable = 1
+        double3 xformOp:translate = (0, 2, 0)
+        float3 xformOp:rotateXYZ = (-90, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+    }
+}
+
+def Camera "camera"
+{
+    float focalLength = 50
+    float horizontalAperture = 20.9
+    float verticalAperture = 20.9
+    float2 clippingRange = (0.01, 100)
+    double3 xformOp:translate = (0, 0.5, 0)
+    float3 xformOp:rotateXYZ = (-90, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+}
+
+

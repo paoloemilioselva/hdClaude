@@ -7293,3 +7293,68 @@ crossing hides it.
   lost entirely. This is a regression in the thin-walled work of the same day.
 * Subsurface reads 0.83 solid and 0.90 thin-walled, losing a tenth or more
   either way, and is not a regression.
+
+## 2026-09-16 -- Against Karma, and against the closed forms
+
+Reported as confusion at how different hdClaude's OpenPBR Playground looks from
+Karma CPU and XPU, which agree with each other. The comparison was made through
+`usdgallery/render.py`, which renders the *asset* rather than hdClaude's gallery
+entry, from a shell set up by `launch_claude_env.bat`.
+
+**What the difference decomposed into.** Measured on the linear EXRs rather than
+the display JPEGs, hdClaude's frame carried a mean of 0.2796 against Karma's
+0.0606: 4.6 times the light.
+
+* **1.74 of it was hdClaude's own defect.** That render came from the raw asset,
+  so it predates nothing -- it simply did not have the `shadow:enable` correction
+  that the gallery entry carries, and three of the five lights were lighting the
+  room through its walls (2026-09-16, above). With the correction the mean is
+  0.1609.
+* **Most of the rest was bounce depth.** `launch_claude_env.bat` asks for 32
+  bounces, 1024 samples and visible light geometry; Karma's defaults are two
+  diffuse bounces, four reflection and eight refraction. Rendering Karma with
+  `karma:global:diffuselimit = 8` takes it from 0.0606 to 0.1023, against
+  hdClaude's 0.1609 at eight bounces -- 1.56 rather than 4.6.
+* **What remains is fill, not brightness.** Isolating the dome light and banding
+  the difference by luminance, the two renderers agree to within 3-6% in the
+  bands holding 62% of Karma's light, and differ by 3.4x, 6.7x and 29x in the
+  three darkest bands. The disagreement is entirely in how much light arrives
+  after several diffuse bounces.
+
+**Which is right.** Neither renderer is the standard, so both were measured
+against two scenes whose answers are known in closed form, now committed as
+`tests/usd/closed_form_rect_light.usda` and `tests/usd/closed_form_cavity.usda`.
+
+| | closed form | hdClaude | Karma |
+| --- | --- | --- | --- |
+| Lambertian floor under a rect light | 0.119728 | 0.119279 (-0.4%) | 0.094759 (-21%) |
+| Closed cavity, emission 0.1, albedo 0.5 | 0.2 | 0.204642 (+2.3%) | 0.759176 (3.8x) |
+
+The first has no interreflection at all -- a flat floor cannot see itself -- so
+it isolates direct illumination from a rect light, and hdClaude is within half a
+per cent of the configuration factor. The second is the measurement a convex
+furnace cannot make: a sphere cannot see itself, so it tests one bounce however
+many are asked for, while a cavity tests the whole series. hdClaude converges to
+the series' sum within noise. Karma is low on the first and high on the second by
+a factor near pi, which is what an emission read as exitance rather than radiance
+would do.
+
+So hdClaude's transport is right where it can be checked exactly, and the
+Playground's remaining difference is a settings difference plus Karma's own
+conventions. Karma's images also carry an Apprentice watermark, which is where
+every `max = 1.0` in its EXRs comes from.
+
+**Two things found on the way.**
+
+* **Implicit surfaces are not rendered at all.** A stage whose only geometry is a
+  `UsdGeomSphere` reaches hdClaude as "0 prototypes, 0 instances". OpenUSD ships
+  `HdsiImplicitSurfaceSceneIndex` to turn spheres, cubes, cylinders, cones and
+  capsules into meshes, and -- exactly like the NURBS and light-linking scene
+  indices -- a renderer must insert it. Karma renders them; hdClaude renders
+  nothing. Recorded as a roadmap open question.
+* **A test scene must apply `MaterialBindingAPI`.** Without it hdClaude resolves
+  no binding and shades its own fallback, which is a 0.5 grey Lambertian. Three
+  of the scenes written for this comparison did that, and one of them agreed
+  with its closed form anyway *because* the fallback's albedo is the albedo the
+  test meant to author. A test that passes on the fallback is a test of the
+  fallback.
