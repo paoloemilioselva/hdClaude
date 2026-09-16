@@ -27,8 +27,10 @@
 # they plainly mean to, and lets UsdLux's own fallback supply the rest. Applying
 # it makes `Get()` return true and every light in the rig shadow again.
 #
-# Remove this when UsdImaging stops fabricating a value the scene never
-# authored; nothing in hdClaude can tell the two apart.
+# Reported to the asset's author on 2026-09-16. Remove this override once the
+# asset applies `ShadowAPI` itself or drops the valueless declaration -- or once
+# UsdImaging stops fabricating a value the scene never authored, since nothing in
+# hdClaude can tell an unset property from one authored `false`.
 
 over "World"
 {
