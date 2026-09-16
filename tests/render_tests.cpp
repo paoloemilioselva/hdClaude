@@ -283,6 +283,40 @@ CompiledMaterial MakeThinWalledGlass(mx::DocumentPtr libraries,
     return CompileMaterial(doc, compiler, shadeKernel, name);
 }
 
+/// A thin-walled `open_pbr_surface` with whatever else the caller sets.
+///
+/// The OpenPBR Playground's thin-walled materials are not bare sheets: its
+/// paint spill is thin-walled *with subsurface*, its MeetMat thin-walled with an
+/// anisotropic coat, its bottle thin-walled with a thin film and an anisotropic
+/// specular. A sheet on its own was the only thing measured when thin-walled
+/// mode was built, and a sheet on its own is exactly what stayed correct.
+CompiledMaterial MakeThinWalledSurface(
+    mx::DocumentPtr libraries, const GlslCompiler& compiler,
+    const std::string& shadeKernel, const std::string& name,
+    const std::vector<std::pair<std::string, float>>& inputs,
+    bool thinWalled = true)
+{
+    mx::DocumentPtr doc = mx::createDocument();
+    doc->importLibrary(libraries);
+
+    mx::NodePtr surface = AddNode(doc, "open_pbr_surface", "s", "surfaceshader");
+    SetValue(surface, "geometry_thin_walled", thinWalled);
+    // White everywhere a colour would otherwise absorb: OpenPBR's own defaults
+    // include a base colour of 0.8, and a furnace measures what the *transport*
+    // keeps, not what the asset's palette does.
+    for (const char* colour : {"base_color", "specular_color", "coat_color",
+                               "subsurface_color", "transmission_color",
+                               "fuzz_color"}) {
+        SetValue(surface, colour, mx::Color3(1.0f, 1.0f, 1.0f));
+    }
+    for (const auto& [input, value] : inputs) {
+        SetValue(surface, input, value);
+    }
+    mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+    Connect(material, "surfaceshader", surface);
+    return CompileMaterial(doc, compiler, shadeKernel, name);
+}
+
 /// Instantiate a *named* nodedef, rather than letting the category pick one.
 ///
 /// `layer` is two nodedefs with the same category and the same output type:
@@ -2807,9 +2841,9 @@ int main()
             const double sheetReflect = 2.0 * R / (1.0 + R);
             const double sheetTransmit = (1.0 - R) / (1.0 + R);
 
-            const auto sheetUnderLight = [&](const CompiledMaterial& material,
-                                             float lightZ, float facing,
-                                             float sky) {
+            const auto sheetUnderLightAt = [&](const CompiledMaterial& material,
+                                               float lightZ, float facing,
+                                               float sky, std::uint32_t bounces) {
                 Scene scene;
                 scene.prototypes.push_back(MakeQuad());
                 scene.instances.push_back({0, Transform3x4{}, 0, true});
@@ -2831,7 +2865,7 @@ int main()
                 RenderSettings settings;
                 settings.lightGeometry = true;
                 settings.samplesPerPixel = 256;
-                settings.maxBounces = 3;
+                settings.maxBounces = bounces;
                 for (int i = 0; i < 3; ++i) {
                     settings.environmentColor[i] = sky;
                     settings.sunRadiance[i] = 0.0f;
@@ -2839,6 +2873,11 @@ int main()
                 const std::vector<float> image =
                     tracer.Render(kWidth, kHeight, LookDownZ(6.0f), settings);
                 return Window(image, 0.5f, 0.5f, 4).g;
+            };
+            const auto sheetUnderLight = [&](const CompiledMaterial& material,
+                                             float lightZ, float facing,
+                                             float sky) {
+                return sheetUnderLightAt(material, lightZ, facing, sky, 3);
             };
 
             const struct { float roughness; const char* name; } sheets[] = {
@@ -2888,6 +2927,129 @@ int main()
                             through, sheetTransmit * emitted, furnace);
                 CHECK_NEAR(through, sheetTransmit * emitted, sheetTransmit * emitted * 0.02);
                 CHECK_NEAR(furnace, 1.0, 0.02);
+            }
+
+            // --- The furnace holds however long the paths are -----------------
+            //
+            // A furnace at three bounces cannot see a lobe that gains a little
+            // on every crossing: three crossings of a one per cent gain is one
+            // per cent, and thirty-two is a third again. A sheet is the shape
+            // that makes this worth asserting, because a path can cross it
+            // repeatedly -- it is transparent and has two faces -- so any
+            // mismatch between a delta's response and its density compounds.
+            //
+            // It is the assertion the OpenPBR Playground needed: that scene
+            // renders at a mean of 0.166 at eight bounces, 0.181 at sixteen and
+            // 1.53 at thirty-two, which is not a scene converging.
+            for (const auto& sheet : sheets) {
+                CompiledMaterial thin = MakeDielectricMaterial(
+                    libraries, compiler, tracer.ShadeKernelSource(), ior,
+                    std::string("thin sheet bounces ") + sheet.name,
+                    sheet.roughness, "RT");
+                if (thin.spirv.empty()) {
+                    continue;
+                }
+                thin.thinWalled = true;
+                for (const std::uint32_t bounces : {3u, 8u, 16u, 32u}) {
+                    const double furnace =
+                        sheetUnderLightAt(thin, 0.0f, 0.0f, 1.0f, bounces);
+                    std::printf("  thin sheet %s furnace at %u bounces: %.4f\n",
+                                sheet.name, bounces, furnace);
+                    CHECK_NEAR(furnace, 1.0, 0.02);
+                }
+            }
+
+            // --- Thin-walled with the lobes real assets put beside it ---------
+            //
+            // Every thin-walled material in the OpenPBR Playground carries
+            // something else: subsurface on the paint spill and the yellow
+            // paint, an anisotropic coat on MeetMat, a thin film and an
+            // anisotropic specular on the bottle. Each is a furnace here, and a
+            // furnace is the same measurement whatever the lobes are: a
+            // lossless surface in a uniform environment renders it exactly.
+            {
+                const struct {
+                    const char* name;
+                    std::vector<std::pair<std::string, float>> inputs;
+                    /// Whether the furnace is asserted. Two of these do not
+                    /// read one yet and are recorded as open questions rather
+                    /// than asserted away (docs/roadmap.md): a thin-walled
+                    /// transmissive sheet loses all but its own reflection on a
+                    /// closed shape, and subsurface loses a tenth whether the
+                    /// surface is a sheet or a solid.
+                    bool asserted;
+                } materials[] = {
+                    {"subsurface",
+                     {{"subsurface_weight", 0.2f}, {"subsurface_radius", 0.1f}},
+                     false},
+                    {"anisotropic coat",
+                     {{"coat_weight", 1.0f},
+                      {"coat_roughness", 0.1f},
+                      {"coat_roughness_anisotropy", 1.0f}},
+                     true},
+                    // The OpenPBR Playground's `paper`, which is thin-walled
+                    // with a thin film a thousandth thick and nothing else.
+                    {"thin film only", {{"thin_film_thickness", 1.0e-3f}}, true},
+                    {"thin film and transmission",
+                     {{"thin_film_thickness", 1.0e-3f},
+                      {"transmission_weight", 1.0f}},
+                     false},
+                };
+                // A closed sphere, not a quad. A path meets a quad once and
+                // leaves; the scene these materials come from is full of
+                // objects a path crosses, re-enters and crosses again, and a
+                // per-crossing error is only visible once it compounds. The
+                // sphere also presents every angle of incidence at once.
+                const auto sphereFurnace = [&](const CompiledMaterial& material,
+                                               std::uint32_t bounces) {
+                    Scene scene;
+                    scene.prototypes.push_back(MakeSphere());
+                    scene.instances.push_back({0, Transform3x4{}, 0, true});
+                    tracer.SetScene(scene, {material});
+
+                    RenderSettings settings;
+                    settings.samplesPerPixel = 256;
+                    settings.maxBounces = bounces;
+                    for (int i = 0; i < 3; ++i) {
+                        settings.environmentColor[i] = 1.0f;
+                        settings.sunRadiance[i] = 0.0f;
+                    }
+                    const std::vector<float> image =
+                        tracer.Render(kWidth, kHeight, LookDownZ(4.0f), settings);
+                    return static_cast<double>(Window(image, 0.5f, 0.5f, 8).g);
+                };
+
+                // Each is measured thin-walled and solid. The solid render is
+                // the control: where both lose the same energy the loss belongs
+                // to the lobes, and where only the thin-walled one loses it the
+                // sheet is what put it there.
+                for (const auto& entry : materials) {
+                    for (const bool thinWalled : {false, true}) {
+                        CompiledMaterial material = MakeThinWalledSurface(
+                            libraries, compiler, tracer.ShadeKernelSource(),
+                            std::string(thinWalled ? "thin " : "solid ") +
+                                entry.name,
+                            entry.inputs, thinWalled);
+                        CHECK(!material.spirv.empty());
+                        if (material.spirv.empty()) {
+                            continue;
+                        }
+                        material.thinWalled = thinWalled;
+                        for (const std::uint32_t bounces : {3u, 32u}) {
+                            const double furnace =
+                                sphereFurnace(material, bounces);
+                            std::printf("  %s %s sphere furnace at %u bounces: "
+                                        "%.4f%s\n",
+                                        thinWalled ? "thin-walled" : "solid",
+                                        entry.name, bounces, furnace,
+                                        entry.asserted ? "" : " (recorded, not "
+                                                              "asserted)");
+                            if (entry.asserted) {
+                                CHECK_NEAR(furnace, 1.0, 0.03);
+                            }
+                        }
+                    }
+                }
             }
         }
 

@@ -913,8 +913,22 @@ void main()
     // with a compensating weight rather than traced to the depth limit.
     if (shadeParams.bounce >= 2u)
     {
-        float survival = clamp(max(max(throughput.x, throughput.y),
-                                   max(throughput.z, throughput.w)),
+        // The path's *magnitude*, not its largest signed lane.
+        //
+        // A spectral packet's lanes can go negative -- a fit that leaves the
+        // gamut puts them there, and the film carries negatives out to the
+        // image -- and the largest signed lane of an all-negative packet is
+        // negative. Clamped to the 0.05 floor, that gives a path carrying
+        // plenty the minimum chance of surviving and multiplies it by twenty
+        // when it does, every bounce it stays negative.
+        //
+        // Measured on the OpenPBR Playground at thirty-two bounces, this
+        // changed nothing: it was not what made that scene burn (that was an
+        // albedo above one, see `mx_translucent_bsdf.glsl`). It is corrected
+        // because survival is a probability about how much a path *carries*,
+        // and the sign of a spectral lane is not that.
+        float survival = clamp(max(max(abs(throughput.x), abs(throughput.y)),
+                                   max(abs(throughput.z), abs(throughput.w))),
                                0.05, 1.0);
         if (hdclaude_random(rng) > survival)
         {

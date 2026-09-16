@@ -7220,3 +7220,76 @@ attenuating a medium along an unshadowed light's path. The reasoning was sound
 and its premise was a library defect. An explanation that accounts for what an
 image looks like is not evidence that the image is right; the bounce ladder,
 which could have contradicted it, is.
+
+## 2026-09-16 -- An albedo of four, and the bounces that made it visible
+
+Reported as the OpenPBR Playground burning at high bounce counts. It does: the
+frame's mean is 0.166 at eight bounces, 0.181 at sixteen and **1.53** at
+thirty-two, with 253 pixels above 100 and a peak of 124,828. A scene converging
+does not do that.
+
+**What it was.** `/World/Looks/paper` drives `subsurface_color` through a
+`colorcorrect` node with `gain = 4`. A subsurface colour is an albedo, and
+`mx_translucent_bsdf` -- the thin subsurface lobe OpenPBR selects for a
+thin-walled surface -- estimates
+
+    response / pdf = color * weight
+
+so every scatter multiplied the path by four. Thirty-two bounces multiply it by
+4^32, and a shadow ray then delivered the result as one pixel. `paintSpill`
+carries a textured subsurface colour of the same kind, which is why the worst
+pixels sat on it.
+
+It is clamped to [0, 1] now, where the same clamp already stood in
+`mx_subsurface_bsdf` for the volumetric lobe and in `extend.comp.glsl` for a
+medium's single-scattering albedo, with the same physics behind it: a surface
+that returns more light than reaches it makes an estimator that diverges, and no
+number of samples fixes a divergent estimator. With the clamp the ladder
+converges -- 0.159, 0.164, 0.168 at eight, sixteen and thirty-two bounces.
+
+**How it was found, and how much of that was wasted.** The useful instrument was
+elimination by measurement, one suspect at a time, each by an experiment that
+could have exonerated it:
+
+* Disabling next-event estimation dropped the peak from 124,828 to 2,754, so NEE
+  carried it.
+* A material-id bisect (dropping NEE for a range of ids, driven by an
+  environment variable so one build served every step) put the delivery on
+  material 33, `paintSpill`.
+* Capping each factor of the estimate in turn -- the closure's response, the
+  light's density, the light's radiance, the path's throughput -- showed only the
+  throughput cap changed anything, so the path arrived already enormous.
+* Capping what one scattering event may multiply a path by, at 1, 2 and 4,
+  showed the gain was per event and between two and four.
+* A second bisect, capping whole ranges of materials at a weight of one, put the
+  *gain* on material 34, `paper` -- which is not where it was delivered.
+
+Four hypotheses were wrong before that, and each was dropped because a test said
+so rather than because the reasoning gave out: the thin-walled delta's
+acceptance cone (tightening it by four orders of magnitude changed nothing), a
+negative extinction in a medium (never occurs), Russian roulette on an
+all-negative spectral packet (the fix changed nothing measurable; it is kept
+because survival should be about what a path carries, not the sign of a lane),
+and thin-walled mode itself (forcing every material solid left the blow-up
+exactly where it was).
+
+**What the marker diagnostics cost.** Two attempts to have the film report a
+quantity -- writing a material id, then a log of the offending factor -- were
+useless twice over: the film converts a spectral packet to RGB, so a written
+value comes back scaled, and the image's maximum was an ordinary firefly rather
+than the marker. Capping a factor and reading the *plain* image maximum answered
+the same question with no scaffolding at all. The lesson is to instrument by
+removing, not by writing: an experiment whose readout passes through the whole
+film is an experiment about the film.
+
+**Two failures this left behind**, both recorded in the roadmap as open
+questions rather than asserted away, and both found by the sphere furnaces added
+here. A furnace on a *closed* shape is what a quad cannot be: a path crosses it,
+re-enters and crosses again, so a per-crossing error compounds where a single
+crossing hides it.
+
+* A thin-walled transmissive sheet reads 0.0769 -- exactly its own reflectance
+  -- against 0.95 to 1.03 for the same material solid. Transmitted paths are
+  lost entirely. This is a regression in the thin-walled work of the same day.
+* Subsurface reads 0.83 solid and 0.90 thin-walled, losing a tenth or more
+  either way, and is not a regression.

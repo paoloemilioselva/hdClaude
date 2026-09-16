@@ -1,5 +1,7 @@
 #include "scene_store.h"
 
+#include "trace.h"
+
 #include <algorithm>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -112,6 +114,11 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
             continue;
         }
         materialIndex[path] = static_cast<std::uint32_t>(materials.size());
+        // The index a shading dispatch is keyed by, beside the prim it came
+        // from. Nothing else in the renderer can map one to the other -- the
+        // GPU knows only the index, and a diagnostic that reports one is
+        // otherwise a number with no scene attached to it.
+        HdClaudeTrace("material %u: <%s>", materialIndex[path], path.GetText());
         materials.push_back(entry.compiled);
     }
 

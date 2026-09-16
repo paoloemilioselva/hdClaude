@@ -26,6 +26,26 @@ void mx_translucent_bsdf(ClosureData closureData, float weight, vec3 color, vec3
     vec3 V = closureData.V;
     vec3 L = closureData.L;
 
+    // The colour of a diffuse lobe is an albedo, and an albedo above one is a
+    // surface that returns more light than reaches it.
+    //
+    // `response / pdf` for this lobe is exactly `color * weight`, so a colour of
+    // four multiplies the path by four at every scatter and thirty-two bounces
+    // multiply it by 4^32. The OpenPBR Playground's `paper` does precisely
+    // that: its `subsurface_color` is a texture through a `colorcorrect` node
+    // with `gain = 4`, and at thirty-two bounces the scene rendered fireflies
+    // of 10^5 (docs/implementation-notes.md, 2026-09-16).
+    //
+    // Clamped rather than honoured, because no amount of sampling makes a
+    // divergent estimator converge, and because the transport this renderer
+    // implements has no meaning for a reflectance above one. The same clamp is
+    // already applied to a medium's single-scattering albedo in
+    // `extend.comp.glsl`, for the same reason and with the same physics behind
+    // it. What the asset authored is reported by
+    // `scripts/check_scene_materials.py`, which reads the graph rather than the
+    // shaded pixel.
+    color = clamp(color, vec3(0.0), vec3(1.0));
+
     // Invert normal since we're transmitting light from the other side
     N = -N;
 

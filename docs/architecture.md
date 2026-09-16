@@ -15,6 +15,7 @@ Related documents:
 - [Wavefront integrator](wavefront-integrator.md) — queues, kernels, scheduling.
 - [DLSS integration](dlss-integration.md) — guides, resolution, history.
 - [Lessons from hdCodex](lessons-from-hdcodex.md) — defects inherited as rules.
+- [Debugging a render](debugging-a-render.md) — how a reported image is turned into a measurement.
 - [Implementation notes](implementation-notes.md) — findings that corrected this design.
 
 ## 1. The three commitments
