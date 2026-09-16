@@ -82,13 +82,19 @@ had the renderer's intermittent nondeterminism, and nothing at the time noticed.
 `outsideSeconds` is what the wall clock saw that no stage of the renderer
 claims -- opening the stage, USD's plugin discovery, Hydra populating its scene
 index before the delegate is asked for anything, writing the EXR, and tearing
-the device down. It is not a fixed startup tax: it runs from 4.9 s on the height
-map to 61.1 s on the Kitchen Set, scaling with the stage rather than with the
-render, while the four shader balls share one asset and sit at a flat 8.3 s
-however long they trace. Three quarters of the height map's six seconds are not
-rendering; nor are two fifths of the Kitchen Set's two and a half minutes. Read
-`traceMs` for what the renderer cost and the table's wall time for what a person
-waits.
+the device down. It is not a fixed startup tax: it runs from 9.1 s on the height
+map to 65.7 s on the Kitchen Set, scaling with the stage rather than with the
+render, while the four shader balls share one asset and sit between 12.3 and
+13.1 s however long they trace. Four fifths of the height map's eleven seconds
+are not rendering; nor are two fifths of the Kitchen Set's two and a half
+minutes. Read `traceMs` for what the renderer cost and the table's wall time for
+what a person waits.
+
+It is also where a startup regression shows up, and it did: `IsSupported` built
+and destroyed a full Vulkan context to answer whether this machine can render,
+Hydra asked three times per `usdrecord`, and every scene in the table carried
+about fourteen seconds of it. The probe now stops at the physical device and is
+answered once per process, which is worth 62 ms rather than 14.4 s.
 
 A change there is reported rather than fatal. The image gate already fails a
 render that moved, and a deliberate change that legitimately alters how far
@@ -109,6 +115,13 @@ identify the committed display JPEGs. Do not infer timings from file timestamps
 or from partial diagnostic renders. Timings include renderer startup, scene
 loading, MaterialX generation and compilation, geometry processing, and
 sampling; display-JPEG conversion is excluded.
+
+**Measure on a quiet machine.** A timing taken while another render shares the
+device is not a timing of this render. The rows measured during the OpenPBR
+Playground debugging session read 120.5 s for Sponza and 115.6 s for the gold
+shader ball against 55.6 s and 31.0 s on an idle GPU -- with `publishMs` at
+49447 and 29148 against 2212 and 175, which is the tell. Nothing about the
+renderer had changed. If a diagnostic render is running, wait for it.
 
 `render_gallery.bat` does all of that: it renders each scene, times the render
 alone, converts the EXR through `hdClaudeDisplayTransform`, runs
