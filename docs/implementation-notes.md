@@ -7385,3 +7385,55 @@ which they plainly mean to, and leaves the value to the specification -- and it
 is what makes `Get()` return true. Measured: every light in the rig reads
 "shadows yes", and the render is bit-identical to the version that authored
 `true` (rms 0 against the committed baseline).
+
+## 2026-09-16 -- Four Vulkan devices per render, three of them to answer a question
+
+Reported as a slowdown in time to first pixel on the shader balls. The stats
+could not see it: they summed to 3.9 seconds of a 23 second render, and the
+committed per-stage figures for that scene were bimodal in a way that looked
+like the shader cache rather than a regression.
+
+So the first thing added was the measurement itself -- `startupVulkanMs`,
+`startupKernelsMs`, `startupMaterialXMs` and `startupFallbackMs` in the stats
+report, a trace line for what happened *before* the delegate was constructed,
+and another for teardown. A figure nobody records is a figure nobody improves.
+
+**What it found.** A stage holding one camera and no geometry took 20.8 seconds,
+against Storm's 0.9. Of that, the delegate's own startup was 4.7 s and the
+render itself 8 ms; 13.9 s happened before the delegate existed and 1.2 s after
+it died.
+
+That 13.9 s was `HdClaudeRendererPlugin::IsSupported`, which answered "can
+hdClaude trace on this machine" by building a whole `VulkanContext` and throwing
+it away. Hydra asks **three times** per `usdrecord`, and instrumenting the probe
+showed 4507, 4870 and 4975 ms. The delegate then built a fourth context. Four
+Vulkan devices to render an empty stage.
+
+**Where the time in a context goes.** Instrumented: `vkCreateInstance` 50 ms,
+choosing the physical device 1 ms, **`vkCreateDevice` 3.8 s**. The whole cost is
+creating the logical device, and the driver does that no faster for being asked
+politely.
+
+**The fix, in two parts.** The probe no longer creates a device:
+`VulkanContext::Probe` creates an instance, enumerates physical devices and
+reads their extension properties, which is where `VK_KHR_ray_query` and
+`VK_KHR_acceleration_structure` are declared anyway -- every capability the
+renderer requires is a property of the *physical* device. And the answer is
+cached in a function-local static, since a machine's hardware cannot change
+within a process.
+
+What the probe gives up is proof that the device will *create*. That case is
+now reported by the delegate's own initialisation, which says why and leaves an
+empty viewport -- the same outcome as an absent renderer, arrived at three and a
+half seconds sooner, and it was always the delegate's job to survive a device
+that fails after discovery.
+
+**Measured.** The support probe falls from three answers of 4.6 s to one of
+62 ms. An empty stage renders in 6.4 s against 20.8; the gold shader ball at 512
+pixels and 32 samples in 11.1 s against 23.0. The USD-level test suites, which
+spawn a `usdrecord` per stage, fell with it: lights from 157 s to 86 s,
+instancing from 53 s to 28 s, texture quality from 48 s to 24 s.
+
+**What is left.** One `vkCreateDevice` of 3.8 s, which is a driver cost this
+renderer pays once per process and has not yet tried to reduce -- whether it
+depends on the extensions and features enabled is not known.

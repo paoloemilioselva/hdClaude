@@ -131,10 +131,37 @@ struct VulkanCapabilities {
     std::string driverVersion;
 };
 
+/// What a probe can say about a machine without creating a device on it.
+struct VulkanSupport {
+    bool supported = false;
+    /// The device the probe would choose, when there is one.
+    std::string deviceName;
+    /// Why not, when it is not supported. Empty otherwise.
+    std::string reason;
+};
+
 class VulkanContext {
   public:
     explicit VulkanContext(const VulkanContextOptions& options = {});
     ~VulkanContext();
+
+    /// Whether this machine can run hdClaude, answered without creating a
+    /// logical device.
+    ///
+    /// Every capability the renderer requires is a property of the *physical*
+    /// device -- `VK_KHR_ray_query` and `VK_KHR_acceleration_structure` are
+    /// read from `vkEnumerateDeviceExtensionProperties` -- so the answer needs
+    /// an instance and an enumeration, which cost about sixty milliseconds
+    /// together. `vkCreateDevice` costs 3.7 seconds on an RTX 5060 Ti, and
+    /// Hydra asks whether this renderer is supported three times per
+    /// `usdrecord`.
+    ///
+    /// What this deliberately does not prove is that the device will *create*.
+    /// A device that advertises the extensions and then fails is reported by
+    /// the delegate's own initialisation, which says why and leaves an empty
+    /// viewport rather than an absent renderer -- the same outcome a probe
+    /// failure would produce, arrived at three and a half seconds sooner.
+    static VulkanSupport Probe(const VulkanContextOptions& options = {});
 
     VulkanContext(const VulkanContext&) = delete;
     VulkanContext& operator=(const VulkanContext&) = delete;

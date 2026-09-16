@@ -562,6 +562,61 @@ sampler bandwidth. The scene has no dome light, so the environment distribution
 does nothing for it, and the firefly cluster on the toy aeroplane's fuselage is
 still there: one material, not the whole image, and not yet diagnosed.
 
+**Three of its five lights cast no shadows, and it was not the asset's doing**
+(2026-09-16). `sun_screenRight`, `moonLight_screenLFT` and `LEDmeetMat` declare
+`bool inputs:shadow:enable` and give it *no value*, without applying
+`UsdLuxShadowAPI`. The fallback of true that UsdLux documents belongs to that
+API schema, so a prim which does not apply it has no fallback for the property
+at all -- `GetAttributeFallbackValue` reports the name as absent from the prim
+definition. And an attribute that exists without a value is worse than one that
+does not: `UsdImagingDataSourceAttribute::GetTypedValue` zero-initialises when
+neither the attribute nor a schema fallback answers, so `false` reaches every
+Hydra render delegate. The rig demonstrates both halves at once, because
+`mainLamp_spill_AL` does not declare the property at all, arrives with no value,
+and is shadowed as a light with no shadow controls should be.
+
+Those three therefore lit the room *through its walls*, and did it again at
+every bounce: a third of the frame's light. The scene's mean falls from 0.260 to
+0.169 with them shadowing, and the image stops being a flat wash and reads as a
+room lit by its lamp. The gallery entry applies `ShadowAPI` to the three prims
+and authors no value -- the smaller claim, since it says only that these lights
+have shadow controls and lets the specification supply the rest -- and the
+render is bit-identical to authoring `true`. Reported to the asset's author; the
+UsdImaging half is a defect every Hydra renderer inherits.
+
+A previous session had seen those same three lights reported as unshadowed,
+believed it, and written it into `shade.comp.glsl` as a fact about the asset. The
+reasoning built on it was sound and its premise was a library defect.
+
+**An albedo of four.** Its `paper`, `paperPlans` and `OJfoam` drive
+`subsurface_color` through a `colorcorrect` node with `gain = 4`. A subsurface
+colour is an albedo, and the thin subsurface lobe's estimate is exactly
+`color * weight`, so every scatter multiplied a path by four: invisible at eight
+bounces, and 4^32 at thirty-two. The scene's mean went 0.166, 0.181, **1.53** as
+the bounce limit rose, with 253 pixels above 100 and a peak of 124,828 -- not a
+scene converging. hdClaude clamps a colour used as an albedo to [0, 1] where it
+is used, as it already did for the volumetric subsurface lobe and for a medium's
+single-scattering albedo, and the ladder converges: 0.159, 0.164, 0.168.
+`scripts/check_scene_materials.py` names the three materials, since a
+texture-driven value cannot be attributed from the host.
+
+**Against Karma.** Rendered through the same `usdrecord` command, hdClaude
+carried 4.6 times Karma CPU's light. 1.74 of that was the shadow defect above;
+most of the rest is bounce depth, since Karma defaults to two diffuse bounces
+against this renderer's eight -- with `karma:global:diffuselimit = 8` the ratio
+is 1.56. What remains is fill rather than brightness: isolating the dome light
+and banding by luminance, the two agree to within 3-6% in the bands holding 62%
+of Karma's light and differ only in the three darkest. Neither renderer is the
+standard, so both were measured against
+[tests/usd/closed_form_rect_light.usda](tests/usd/closed_form_rect_light.usda)
+and [tests/usd/closed_form_cavity.usda](tests/usd/closed_form_cavity.usda),
+whose answers are known: hdClaude reads 0.119279 and 0.204642 against 0.119728
+and 0.2; Karma reads 0.094759 and 0.759176.
+
+It does have a dome light -- `aiSkyDomeLight1`, with a latitude-longitude map --
+and an earlier note here saying it has none was wrong. On its own that dome
+accounts for 0.0878 of the frame's 0.160.
+
 It is also the scene on which hdCodex reproducibly lost the Vulkan device.
 hdClaude renders it in 55 seconds.
 

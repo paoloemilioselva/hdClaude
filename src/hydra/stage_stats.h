@@ -120,6 +120,29 @@ struct HdClaudeStageStats {
     std::atomic<std::uint64_t> texturesLoaded{0};
     std::atomic<std::uint64_t> textureBytes{0};
 
+    // --- Startup -------------------------------------------------------------
+    //
+    // What the delegate costs before a scene reaches it. These are *not* reset
+    // between renders: they happen once, when the delegate is constructed, and
+    // a second frame that reported them as zero would say the startup was free
+    // rather than already paid.
+    //
+    // They exist because the stages above sum to a few seconds on a scene whose
+    // wall time is twenty, and a figure nobody records is a figure nobody
+    // improves: hdClaude took 18.5 s to render a stage holding one camera and no
+    // geometry, against Storm's 0.9 s, and none of it appeared in any stat.
+    /// Creating the Vulkan instance and device, and choosing the adapter.
+    std::atomic<double> startupVulkanMs{0.0};
+    /// Compiling the fixed kernels -- raygen, extend, shade, shadow, film and
+    /// the rest -- and building their pipelines.
+    std::atomic<double> startupKernelsMs{0.0};
+    /// Loading the MaterialX standard libraries, which the material compiler
+    /// needs before it can generate anything.
+    std::atomic<double> startupMaterialXMs{0.0};
+    /// Compiling the fallback material, which is generated up front so a
+    /// failure during Sync has something to fall back to.
+    std::atomic<double> startupFallbackMs{0.0};
+
     /// Reset between renders. A stat that accumulated across two frames would
     /// describe neither.
     void Reset()

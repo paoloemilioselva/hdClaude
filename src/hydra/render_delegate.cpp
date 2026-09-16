@@ -123,6 +123,16 @@ std::filesystem::path ResolveShaderDirectory()
     return std::filesystem::path(HDCLAUDE_SHADER_DIR);
 }
 
+/// When this plugin's library was loaded.
+///
+/// A delegate's own timings account for a few seconds of a twenty-second render
+/// of an empty stage, so the rest is spent either before it is constructed or
+/// after it is destroyed. This is the earliest moment the plugin can observe,
+/// and the difference between it and the constructor is everything Hydra, USD
+/// and the loader did in between.
+const std::chrono::steady_clock::time_point kLibraryLoaded =
+    std::chrono::steady_clock::now();
+
 }  // namespace
 
 HdClaudeRenderDelegate::HdClaudeRenderDelegate() : HdRenderDelegate()
@@ -235,7 +245,18 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
                 << "texturesLoaded "
                 << stages.texturesLoaded.load(std::memory_order_relaxed) << '\n'
                 << "textureBytes "
-                << stages.textureBytes.load(std::memory_order_relaxed) << '\n';
+                << stages.textureBytes.load(std::memory_order_relaxed) << '\n'
+                << "startupVulkanMs "
+                << stages.startupVulkanMs.load(std::memory_order_relaxed) << '\n'
+                << "startupKernelsMs "
+                << stages.startupKernelsMs.load(std::memory_order_relaxed)
+                << '\n'
+                << "startupMaterialXMs "
+                << stages.startupMaterialXMs.load(std::memory_order_relaxed)
+                << '\n'
+                << "startupFallbackMs "
+                << stages.startupFallbackMs.load(std::memory_order_relaxed)
+                << '\n';
         } else {
             TF_WARN("hdClaude: could not write the stats report to '%s'",
                     path.c_str());
@@ -246,9 +267,17 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
     // allocator, which belongs to the device; releasing them out of order
     // leaks device memory that only surfaces as a validation message at
     // vkDestroyDevice (docs/implementation-notes.md).
+    const auto teardownStart = std::chrono::steady_clock::now();
     _pathTracer.reset();
     _allocator.reset();
     _context.reset();
+    // Timed because it is wall time a user waits through: a render of an empty
+    // stage costs twenty seconds of which the delegate's own startup is under
+    // five, and teardown is one of the two places the rest can be.
+    HdClaudeTrace("teardown: %.0f ms releasing the device",
+                  std::chrono::duration<double, std::milli>(
+                      std::chrono::steady_clock::now() - teardownStart)
+                      .count());
 }
 
 void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
@@ -292,10 +321,22 @@ void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
         const hdclaude::NgxRequirementProvider ngxProvider;
         options.requirementProviders.push_back(&ngxProvider);
 
+        const auto vulkanStart = std::chrono::steady_clock::now();
         _context = std::make_unique<hdclaude::VulkanContext>(options);
         _allocator = std::make_unique<hdclaude::VulkanAllocator>(*_context);
+        const auto kernelsStart = std::chrono::steady_clock::now();
+        HdClaudeAddMilliseconds(
+            _stageStats.startupVulkanMs,
+            std::chrono::duration<double, std::milli>(kernelsStart - vulkanStart)
+                .count());
+
         _pathTracer = std::make_unique<hdclaude::PathTracer>(
             *_context, *_allocator, ResolveShaderDirectory());
+        HdClaudeAddMilliseconds(
+            _stageStats.startupKernelsMs,
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - kernelsStart)
+                .count());
     } catch (const std::exception& error) {
         // Reported, not thrown. Hydra creates a delegate while switching
         // renderers inside a running usdview; an exception here takes the
@@ -309,8 +350,15 @@ void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
     }
 
     if (_pathTracer) {
+        const auto materialXStart = std::chrono::steady_clock::now();
         _materialCompiler = std::make_unique<HdClaudeMaterialCompiler>(
             _pathTracer->ShadeKernelSource());
+        const auto fallbackStart = std::chrono::steady_clock::now();
+        HdClaudeAddMilliseconds(
+            _stageStats.startupMaterialXMs,
+            std::chrono::duration<double, std::milli>(fallbackStart -
+                                                      materialXStart)
+                .count());
 
         // The fallback is compiled up front so that a material failure during
         // Sync has something to fall back *to*. Compiling it lazily on first
@@ -324,6 +372,26 @@ void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
         } else {
             _store->SetFallbackMaterial(std::move(fallback));
         }
+        HdClaudeAddMilliseconds(
+            _stageStats.startupFallbackMs,
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - fallbackStart)
+                .count());
+        HdClaudeTrace(
+            "startup: %.0f ms before this delegate was constructed, then "
+            "%.0f ms vulkan, %.0f ms kernels, %.0f ms materialx, "
+            "%.0f ms fallback material",
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - kLibraryLoaded)
+                    .count() -
+                _stageStats.startupVulkanMs.load(std::memory_order_relaxed) -
+                _stageStats.startupKernelsMs.load(std::memory_order_relaxed) -
+                _stageStats.startupMaterialXMs.load(std::memory_order_relaxed) -
+                _stageStats.startupFallbackMs.load(std::memory_order_relaxed),
+            _stageStats.startupVulkanMs.load(std::memory_order_relaxed),
+            _stageStats.startupKernelsMs.load(std::memory_order_relaxed),
+            _stageStats.startupMaterialXMs.load(std::memory_order_relaxed),
+            _stageStats.startupFallbackMs.load(std::memory_order_relaxed));
     }
 
     // Read once, at construction: a change of refinement level changes the

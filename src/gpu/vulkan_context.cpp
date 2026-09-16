@@ -291,6 +291,81 @@ void VulkanContext::WaitIdle() const
 
 // ---------------------------------------------------------------------------
 
+VulkanSupport VulkanContext::Probe(const VulkanContextOptions& options)
+{
+    VulkanSupport support;
+    if (volkInitialize() != VK_SUCCESS) {
+        support.reason = "no Vulkan loader is present";
+        return support;
+    }
+
+    VkApplicationInfo applicationInfo{VK_STRUCTURE_TYPE_APPLICATION_INFO};
+    applicationInfo.pApplicationName = "hdClaude probe";
+    applicationInfo.apiVersion = VK_API_VERSION_1_3;
+
+    // No layers and no extensions: enumerating physical devices and reading
+    // their extension properties needs neither, and a probe that enabled the
+    // validation layers would make discovering the renderer slower than
+    // rendering with it.
+    VkInstanceCreateInfo instanceInfo{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    instanceInfo.pApplicationInfo = &applicationInfo;
+
+    VkInstance instance = VK_NULL_HANDLE;
+    if (vkCreateInstance(&instanceInfo, nullptr, &instance) != VK_SUCCESS) {
+        support.reason = "no Vulkan instance could be created";
+        return support;
+    }
+    volkLoadInstanceOnly(instance);
+
+    std::uint32_t deviceCount = 0;
+    vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
+    std::vector<VkPhysicalDevice> devices(deviceCount);
+    if (deviceCount > 0) {
+        vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
+    }
+
+    const std::string preferred = ToLower(options.preferredDeviceName);
+    std::string rejected;
+    for (VkPhysicalDevice candidate : devices) {
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(candidate, &properties);
+        const auto extensions = DeviceExtensionProperties(candidate);
+        const bool traces =
+            HasExtension(extensions, VK_KHR_RAY_QUERY_EXTENSION_NAME) &&
+            HasExtension(extensions,
+                         VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+
+        if (!traces) {
+            if (!rejected.empty()) {
+                rejected += ", ";
+            }
+            rejected += properties.deviceName;
+            continue;
+        }
+        // The same preference the constructor applies, so the probe reports the
+        // device the renderer would actually choose.
+        if (!support.supported ||
+            (!preferred.empty() &&
+             ToLower(properties.deviceName).find(preferred) !=
+                 std::string::npos)) {
+            support.supported = true;
+            support.deviceName = properties.deviceName;
+        }
+    }
+
+    if (!support.supported) {
+        support.reason =
+            devices.empty()
+                ? "no Vulkan physical device is present"
+                : "no Vulkan device supports VK_KHR_ray_query with hardware "
+                  "acceleration structures (found: " +
+                      rejected + ")";
+    }
+
+    vkDestroyInstance(instance, nullptr);
+    return support;
+}
+
 VulkanContext::VulkanContext(const VulkanContextOptions& options)
     : _impl(std::make_unique<Impl>())
 {
@@ -420,8 +495,21 @@ VulkanContext::VulkanContext(const VulkanContextOptions& options)
         static_cast<std::uint32_t>(instanceExtensions.size());
     instanceInfo.ppEnabledExtensionNames = instanceExtensions.data();
 
+    // Timed under HDCLAUDE_TRACE, because a context is seconds of a user's wait
+    // and the three steps cost wildly different amounts: on an RTX 5060 Ti the
+    // instance is 50 ms, choosing the device 1 ms, and `vkCreateDevice` 3.8
+    // seconds. Knowing which is which is what stopped the renderer paying for
+    // four of them per render (docs/implementation-notes.md, 2026-09-16).
+    const auto hdclaudeInstanceStart = std::chrono::steady_clock::now();
     Check(vkCreateInstance(&instanceInfo, nullptr, &_instance), "vkCreateInstance");
     volkLoadInstanceOnly(_instance);
+    const auto hdclaudeInstanceDone = std::chrono::steady_clock::now();
+    if (std::getenv("HDCLAUDE_TRACE") != nullptr) {
+        std::fprintf(stderr, "[hdClaude] vkCreateInstance: %.0f ms\n",
+                     std::chrono::duration<double, std::milli>(
+                         hdclaudeInstanceDone - hdclaudeInstanceStart)
+                         .count());
+    }
 
     if (_validationEnabled) {
         VkDebugUtilsMessengerCreateInfoEXT messengerInfo{
@@ -440,7 +528,19 @@ VulkanContext::VulkanContext(const VulkanContextOptions& options)
     }
 
     SelectPhysicalDevice(options);
+    const auto hdclaudeSelectDone = std::chrono::steady_clock::now();
     CreateDevice(options);
+    if (std::getenv("HDCLAUDE_TRACE") != nullptr) {
+        std::fprintf(stderr,
+                     "[hdClaude] selectPhysicalDevice: %.0f ms, vkCreateDevice: "
+                     "%.0f ms\n",
+                     std::chrono::duration<double, std::milli>(
+                         hdclaudeSelectDone - hdclaudeInstanceDone)
+                         .count(),
+                     std::chrono::duration<double, std::milli>(
+                         std::chrono::steady_clock::now() - hdclaudeSelectDone)
+                         .count());
+    }
 
     VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT |
