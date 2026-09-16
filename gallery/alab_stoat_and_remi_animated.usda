@@ -18,14 +18,4 @@ over "root"
     )
     {
     }
-    over "dmp_skydome_alab01" (
-        active = false
-    )
-    {
-    }
-    over "lightrig01" (
-        active = false
-    )
-    {
-    }
 }
