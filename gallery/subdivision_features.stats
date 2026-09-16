@@ -38,11 +38,11 @@ deviceBytesPeak       872415232
 [cost]
 device                NVIDIA GeForce RTX 5060 Ti
 measured              2026-09-16
-wallSeconds           34.998
-traceMs               4739
-ingestMs              3
-publishMs             6424
-subdivideMs           0
-materialMs            705
-textureMs             21
-outsideSeconds        23.833
+wallSeconds           14.468
+traceMs               4428
+ingestMs              2
+publishMs             16
+subdivideMs           1
+materialMs            739
+textureMs             13
+outsideSeconds        10.021
