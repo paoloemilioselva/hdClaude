@@ -8,9 +8,11 @@
 #include "pxr/usd/ar/resolver.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -242,11 +244,141 @@ bool Widen(const HioImageSharedPtr& image, hdclaude::TextureImage* out,
     return true;
 }
 
+/// sRGB's transfer function and its inverse, as IEC 61966-2-1 defines them.
+///
+/// A texture stored as `Rgba8Srgb` is *encoded*, and the sampler decodes it on
+/// every fetch. Averaging four encoded values is therefore not averaging the
+/// four colours: sRGB is concave, so the encoded mean is brighter than the
+/// mean's encoding, and a reduced texture drifts lighter everywhere it has
+/// contrast. Each reduction step decodes, averages, and re-encodes.
+float SrgbToLinear(float encoded)
+{
+    return encoded <= 0.04045f ? encoded / 12.92f
+                               : std::pow((encoded + 0.055f) / 1.055f, 2.4f);
+}
+
+float LinearToSrgb(float linear)
+{
+    return linear <= 0.0031308f
+               ? linear * 12.92f
+               : 1.055f * std::pow(linear, 1.0f / 2.4f) - 0.055f;
+}
+
+/// Halve an image in both axes, averaging each two-by-two block.
+///
+/// A box filter, which is exactly the right filter for a power-of-two
+/// reduction: every source texel lands in exactly one block, so the image's
+/// mean is preserved to the precision of its storage. An odd dimension rounds
+/// up and its last block is half empty, which weights that edge more heavily
+/// than the rest -- the alternative is dropping the line entirely.
+void Halve(hdclaude::TextureImage* image)
+{
+    // Rounded up, so an odd dimension keeps its last row or column as a block
+    // of its own rather than dropping it. Truncating would lose a line at every
+    // step and take the image's mean with it.
+    const std::uint32_t width = std::max(1u, (image->width + 1u) / 2u);
+    const std::uint32_t height = std::max(1u, (image->height + 1u) / 2u);
+    const bool srgb = image->format == hdclaude::TexelFormat::Rgba8Srgb;
+    const bool half = image->format == hdclaude::TexelFormat::Rgba16Sfloat;
+    const std::size_t texel = hdclaude::TexelSize(image->format);
+
+    std::vector<std::uint8_t> reduced(static_cast<std::size_t>(width) * height *
+                                      texel);
+    for (std::uint32_t y = 0; y < height; ++y) {
+        for (std::uint32_t x = 0; x < width; ++x) {
+            for (std::uint32_t c = 0; c < 4; ++c) {
+                float sum = 0.0f;
+                int taken = 0;
+                for (std::uint32_t dy = 0; dy < 2; ++dy) {
+                    for (std::uint32_t dx = 0; dx < 2; ++dx) {
+                        const std::uint32_t sx = x * 2u + dx;
+                        const std::uint32_t sy = y * 2u + dy;
+                        if (sx >= image->width || sy >= image->height) {
+                            continue;
+                        }
+                        const std::size_t at =
+                            (static_cast<std::size_t>(sy) * image->width + sx) *
+                                texel + c * (half ? 2u : 1u);
+                        float value = 0.0f;
+                        if (half) {
+                            GfHalf stored;
+                            std::memcpy(&stored, &image->texels[at],
+                                        sizeof(stored));
+                            value = static_cast<float>(stored);
+                        } else {
+                            value = static_cast<float>(image->texels[at]) / 255.0f;
+                            // Alpha is not sRGB-encoded even in an sRGB image.
+                            if (srgb && c < 3) {
+                                value = SrgbToLinear(value);
+                            }
+                        }
+                        sum += value;
+                        ++taken;
+                    }
+                }
+                float mean = taken > 0 ? sum / static_cast<float>(taken) : 0.0f;
+                const std::size_t to =
+                    (static_cast<std::size_t>(y) * width + x) * texel +
+                    c * (half ? 2u : 1u);
+                if (half) {
+                    WriteHalf(reduced.data() + to, mean);
+                } else {
+                    if (srgb && c < 3) {
+                        mean = LinearToSrgb(mean);
+                    }
+                    reduced[to] = static_cast<std::uint8_t>(
+                        std::clamp(mean, 0.0f, 1.0f) * 255.0f + 0.5f);
+                }
+            }
+        }
+    }
+
+    image->width = width;
+    image->height = height;
+    image->texels = std::move(reduced);
+}
+
+/// Halve until the longest edge is within `maxEdge`. Reports how many times.
+int Reduce(hdclaude::TextureImage* image, std::uint32_t maxEdge)
+{
+    int steps = 0;
+    while (maxEdge > 0 && std::max(image->width, image->height) > maxEdge &&
+           (image->width > 1 || image->height > 1)) {
+        Halve(image);
+        ++steps;
+    }
+    return steps;
+}
+
 }  // namespace
+
+std::uint32_t HdClaudeTextureEdgeCap(const std::string& quality)
+{
+    std::string name;
+    std::transform(quality.begin(), quality.end(), std::back_inserter(name),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (name == "medium" || name == "med") {
+        return 1024;
+    }
+    if (name == "low") {
+        return 256;
+    }
+    return 0;
+}
+
+bool HdClaudeIsTextureQuality(const std::string& quality)
+{
+    std::string name;
+    std::transform(quality.begin(), quality.end(), std::back_inserter(name),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return name.empty() || name == "high" || name == "medium" || name == "med" ||
+           name == "low";
+}
 
 bool HdClaudeLoadTexture(const std::string& assetPath,
                          hdclaude::TextureImage* out, std::string* error,
-                         HdClaudeTextureColorSpace colorSpace)
+                         HdClaudeTextureColorSpace colorSpace,
+                         std::uint32_t maxEdge)
 {
     if (assetPath.empty() || out == nullptr) {
         if (error) *error = "no asset path";
@@ -295,7 +427,26 @@ bool HdClaudeLoadTexture(const std::string& assetPath,
     }
 
     out->debugName = assetPath;
-    return Widen(image, out, error, colorSpace);
+    if (!Widen(image, out, error, colorSpace)) {
+        return false;
+    }
+
+    // Reduced after decoding rather than by asking the image plugin for a
+    // smaller read. A plugin is free to decline a resize, and Hio reports that
+    // by handing back a buffer of the size it felt like -- the same class of
+    // silent mismatch this file already refuses to rely on for format
+    // conversion. The cost is that one image is decoded at its authored size
+    // before it is reduced, so the *peak* is one full image; what the cap
+    // controls is what the scene holds, which is what runs a machine out of
+    // memory.
+    const std::uint32_t authoredWidth = out->width;
+    const std::uint32_t authoredHeight = out->height;
+    if (Reduce(out, maxEdge) > 0) {
+        HdClaudeTrace("texture %s: %ux%u reduced to %ux%u (cap %u)",
+                      assetPath.c_str(), authoredWidth, authoredHeight,
+                      out->width, out->height, maxEdge);
+    }
+    return true;
 }
 
 std::uint32_t HdClaudeTexturePool::Acquire(const std::string& assetPath,
@@ -311,6 +462,7 @@ std::uint32_t HdClaudeTexturePool::Acquire(const std::string& assetPath,
 
     const auto slot = static_cast<std::uint32_t>(_images.size());
     _slots[key] = slot;
+    _sources.push_back(key);
 
     hdclaude::TextureImage image;
     std::string error;
@@ -338,7 +490,7 @@ std::uint32_t HdClaudeTexturePool::Acquire(const std::string& assetPath,
         return slot;
     }
 
-    if (HdClaudeLoadTexture(assetPath, &image, &error, colorSpace)) {
+    if (HdClaudeLoadTexture(assetPath, &image, &error, colorSpace, _maxEdge)) {
         const char* encoding = "linear";
         if (image.format == hdclaude::TexelFormat::Rgba8Srgb) {
             encoding = "sRGB";
@@ -365,8 +517,50 @@ void HdClaudeTexturePool::Clear()
 {
     std::lock_guard<std::mutex> lock(_mutex);
     _slots.clear();
+    _sources.clear();
     _images.clear();
     _failures.clear();
+}
+
+std::uint32_t HdClaudeTexturePool::MaxEdge() const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    return _maxEdge;
+}
+
+bool HdClaudeTexturePool::SetMaxEdge(std::uint32_t maxEdge)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (maxEdge == _maxEdge) {
+        return false;
+    }
+    _maxEdge = maxEdge;
+
+    // Every image already held is re-decoded from its own source, into the slot
+    // it already occupies. Re-decoding rather than halving what is in hand,
+    // because halving a reduced image again is not the same as reducing the
+    // original that far -- and because raising the cap has to get the detail
+    // back, which nothing in the pool still holds.
+    _failures.clear();
+    for (std::size_t slot = 0; slot < _images.size(); ++slot) {
+        const std::string& path = _sources[slot].first;
+        if (path.empty()) {
+            continue;   // an image node with no file; its one texel stands
+        }
+        hdclaude::TextureImage image;
+        std::string error;
+        if (HdClaudeLoadTexture(path, &image, &error, _sources[slot].second,
+                                _maxEdge)) {
+            _images[slot] = std::move(image);
+        } else {
+            _images[slot] = hdclaude::TextureImage();
+            _images[slot].debugName = path;
+            _failures.push_back(path + ": " + error);
+        }
+    }
+    HdClaudeTrace("texture quality changed: %zu images reloaded with a cap of "
+                  "%u", _images.size(), _maxEdge);
+    return true;
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

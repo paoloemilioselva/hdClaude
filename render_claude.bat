@@ -38,6 +38,14 @@ IF "%~1"=="" (
   ECHO   HDCLAUDE_SAMPLES_PER_FRAME     default 4     samples per progressive update
   ECHO   HDCLAUDE_MAX_BOUNCES           default 8     path length
   ECHO   HDCLAUDE_SUBDIVISION_LEVEL     0-6, default 2, 0 disables refinement
+  ECHO   HDCLAUDE_TEXTURE_QUALITY       high ^(default^), medium or low. High is
+  ECHO                                  the authored image; medium and low cap
+  ECHO                                  each texture's longest edge at 1024 and
+  ECHO                                  256, which is a quarter and a sixteenth
+  ECHO                                  of the memory per halving. Nothing is
+  ECHO                                  ever enlarged, and a reduction keeps the
+  ECHO                                  image's mean, so a dome light loses no
+  ECHO                                  power by it
   ECHO   HDCLAUDE_CURVE_GEOMETRY        implicit ^(default^) or swept. Implicit
   ECHO                                  intersects each segment as a round cone,
   ECHO                                  exactly, and is far cheaper

@@ -10,6 +10,7 @@
 #include "mesh.h"
 #include "render_buffer.h"
 #include "render_pass.h"
+#include "texture_loader.h"
 
 #include "pxr/base/plug/plugin.h"
 #include "pxr/base/plug/registry.h"
@@ -47,6 +48,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (curveSides)
                          (curveSegmentSamples)
                          (subdivisionLevel)
+                         (textureQuality)
                          (diffuseAlbedo)
                          (specularAlbedo)
                          (roughness));
@@ -253,6 +255,11 @@ void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
 {
     _store = std::make_unique<HdClaudeSceneStore>();
     _texturePool = std::make_unique<HdClaudeTexturePool>();
+    // The cap is set before any material syncs, not when the render pass first
+    // reads the setting: a stage whose images do not fit in memory has to be
+    // reduced as it loads, and by then the first of them is already decoded.
+    _texturePool->SetMaxEdge(
+        HdClaudeTextureEdgeCap(TfGetenv("HDCLAUDE_TEXTURE_QUALITY", "high")));
     _resourceRegistry = std::make_shared<HdResourceRegistry>();
 
     // Seed the defaults for anything the host did not set, so a
@@ -616,6 +623,23 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
          VtValue(TfGetenvInt("HDCLAUDE_CURVE_SEGMENT_SAMPLES", 1))},
         {"Subdivision level", _tokens->subdivisionLevel,
          VtValue(TfGetenvInt("HDCLAUDE_SUBDIVISION_LEVEL", 2))},
+
+        // How much of each texture is kept, as a cap on its longest edge.
+        //
+        // The scene's images are routinely the largest thing a stage holds:
+        // ALab's 6,261 of them come to 49.6 GB, which is more than this
+        // machine has, and no amount of geometry in that stage approaches it.
+        // A cap on the longest edge is what makes the total independent of how
+        // large the originals happened to be.
+        //
+        // High is the authored image and is the default, because a setting
+        // that quietly changed what an asset says is what the renderer is for
+        // would be the wrong default: every reduction is a different picture,
+        // and the one a scene authored is the one worth defaulting to.
+        //
+        // Accepted: high (authored), medium (1024), low (256).
+        {"Texture quality", _tokens->textureQuality,
+         VtValue(std::string(TfGetenv("HDCLAUDE_TEXTURE_QUALITY", "high")))},
 
         // Whether a light's own shape is rendered.
         //

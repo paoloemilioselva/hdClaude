@@ -121,6 +121,11 @@ if(HDCLAUDE_ENABLE_MATERIALX)
                 "${CMAKE_CURRENT_BINARY_DIR}/usd_lights")
     set_tests_properties(usd_lights PROPERTIES
         ENVIRONMENT "HDCLAUDE_IMAGE_DIFF=$<TARGET_FILE:hdClaudeImageDiff>")
+    add_test(NAME usd_texture_quality
+        COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/usd/run_texture_quality.bat"
+                "${CMAKE_CURRENT_BINARY_DIR}/usd_texture_quality")
+    set_tests_properties(usd_texture_quality PROPERTIES
+        ENVIRONMENT "HDCLAUDE_IMAGE_DIFF=$<TARGET_FILE:hdClaudeImageDiff>")
   endif()
 
   set_tests_properties(closure_validation PROPERTIES

@@ -7113,3 +7113,58 @@ roughness 0.5. Nothing excludes the skydome from the sun's light link, and its
 shadow link now lets the sun through the sphere's far side, so the sun lights
 that specular from inside. Glimpse, ALab's own renderer, hides it from shadows
 through `primvars:glimpse:visibility:shadow`, which is not UsdLux.
+
+## 2026-09-16 -- Texture quality, as a cap on the longest edge
+
+A stage's images are routinely the largest thing it holds. ALab's full set is
+6,261 of them totalling 49.6 GB, which does not fit in this machine's 32 GB and
+is two orders of magnitude past its geometry; the set could not be rendered here
+at all, and the failure arrived as an exhausted allocator rather than as
+anything about textures.
+
+**A cap, not a number of halvings.** `HDCLAUDE_TEXTURE_QUALITY` and the
+`Texture quality` render setting take `high`, `medium` or `low`, which cap each
+image's longest edge at nothing, 1024 and 256. A cap is what makes the total
+independent of how large the originals happen to be: halving every ALab image
+once still leaves 12 GB, while a cap leaves a figure that depends only on how
+many images there are. `high` is the default and does nothing at all -- it is
+the authored image, and neither it nor any other setting ever enlarges one.
+
+**Reduced after decoding.** Hio can be asked to read an image at another size,
+but a plugin is free to decline and reports that by handing back a buffer of the
+size it chose -- the same silent mismatch this loader already refuses to rely on
+for format conversion. So each image is decoded as authored and halved until it
+is within the cap. The peak is therefore one full-size image; what the cap
+controls is what the *scene* holds, which is what runs a machine out of memory.
+
+**Halving is a box filter, in linear light.** Each step averages two-by-two
+blocks, so every source texel carries the same weight and the image's mean is
+preserved -- which matters for a dome light, whose total power is then unchanged
+and merely spread across a coarser sky. An `Rgba8Srgb` texture is *encoded*, and
+sRGB is concave, so averaging encoded values would return something brighter
+than the average colour: every reduced texture would drift lighter wherever it
+had contrast. Each step decodes, averages and re-encodes; alpha is never
+sRGB-encoded and is averaged as it is stood.
+
+**Changing it mid-session.** The pool re-decodes each image into the slot it
+already occupies, because slot indices are baked into generated material code as
+`#define <sampler> hdclaude_textures[i]`; emptying and refilling the pool would
+renumber them and invalidate every compiled material. Re-decoding from the
+source, rather than halving what is in hand, is also what lets the cap be
+*raised* again -- nothing in the pool still holds the detail. The render pass
+then forces a republication, since the renderer's scene carries a copy of the
+images.
+
+**Measured.** `tests/usd/texture_quality.py` renders a 1024-pixel checker at
+each quality and reads the stats report: 4,194,304 texture bytes at `high`,
+4,194,304 at `medium` -- already within its cap, so untouched -- and 262,144 at
+`low`, a sixteenth. The reduced render keeps 99.85% of the frame's light, and
+differs from the high-quality one in 94% of its pixels, so the energy check is
+not passing on an image that was never reduced.
+
+On ALab's characters at frame 1004 (312 images): 2.81 GB of textures and 5.73 GB
+of device memory at `high`, 2.55 GB and 4.94 GB at `medium` -- most of that
+asset's maps are already near 1024 -- and 0.16 GB and 2.52 GB at `low`.
+Decoding costs slightly *more* at a lower quality (7.7 s against 5.7 s here),
+which is the full-size decode plus the filtering, and is the trade the cap makes
+against memory rather than against time.

@@ -5,6 +5,7 @@
 #include "render_delegate.h"
 #include "render_param.h"
 #include "scene_store.h"
+#include "texture_loader.h"
 #include "trace.h"
 
 #include "pxr/base/tf/diagnostic.h"
@@ -45,6 +46,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (curveSides)
                          (curveSegmentSamples)
                          (subdivisionLevel)
+                         (textureQuality)
                          (diffuseAlbedo)
                          (specularAlbedo)
                          (roughness));
@@ -321,6 +323,29 @@ void HdClaudeRenderPass::_Execute(
         const int subdivision = std::clamp(
             _renderDelegate->GetRenderSetting<int>(_tokens->subdivisionLevel, 2),
             0, 6);
+
+        // Texture quality. Unlike the geometry settings below it, this changes
+        // nothing an rprim publishes: the pool re-decodes each image into the
+        // slot it already holds, so every generated material's texture indices
+        // stand and nothing has to be recompiled. What it does need is a
+        // republication, because the scene the renderer holds carries a copy of
+        // the images.
+        const std::string textureQuality =
+            _renderDelegate->GetRenderSetting<std::string>(
+                _tokens->textureQuality, std::string("high"));
+        if (!HdClaudeIsTextureQuality(textureQuality) &&
+            _reportedTextureQuality != textureQuality) {
+            _reportedTextureQuality = textureQuality;
+            TF_WARN(
+                "hdClaude: \"%s\" is not a texture quality, so textures are "
+                "loaded as authored. Use one of: high, medium, low.",
+                textureQuality.c_str());
+        }
+        if (HdClaudeTexturePool* pool = _renderDelegate->TexturePool()) {
+            if (pool->SetMaxEdge(HdClaudeTextureEdgeCap(textureQuality))) {
+                _hasUploaded = false;
+            }
+        }
 
         auto* param = static_cast<HdClaudeRenderParam*>(
             _renderDelegate->GetRenderParam());
