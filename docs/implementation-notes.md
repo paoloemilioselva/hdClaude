@@ -7358,3 +7358,30 @@ every `max = 1.0` in its EXRs comes from.
   with its closed form anyway *because* the fallback's albedo is the albedo the
   test meant to author. A test that passes on the fallback is a test of the
   fallback.
+
+## 2026-09-16 -- The shadow fix, made smaller
+
+Asked why authoring `inputs:shadow:enable = 1` changed anything when UsdLux's
+fallback for it is true, the answer turned out to sharpen the earlier finding.
+
+The fallback belongs to `UsdLuxShadowAPI`, and none of these lights applies it.
+`GetAttributeFallbackValue("inputs:shadow:enable")` reports the name as absent
+from the prim definition: there is no fallback to fall back to. The rig then
+demonstrates both halves of the defect at once:
+
+* `mainLamp_spill_AL` does not declare the property at all. Hydra hands the
+  delegate nothing, hdClaude's own default applies, and it casts shadows -- which
+  is what a light with no shadow controls should do.
+* `sun_screenRight`, `moonLight_screenLFT` and `LEDmeetMat` declare it with no
+  value. `UsdImagingDataSourceAttribute::GetTypedValue` zero-initialises when
+  neither the attribute nor a schema fallback answers, so `false` arrives, and
+  those three cast no shadows.
+
+An attribute that exists without a value is therefore worse than no attribute.
+
+So the gallery entry now applies `ShadowAPI` to those three prims and authors no
+value. It is the smaller claim -- it says these lights have shadow controls,
+which they plainly mean to, and leaves the value to the specification -- and it
+is what makes `Get()` return true. Measured: every light in the rig reads
+"shadows yes", and the render is bit-identical to the version that authored
+`true` (rms 0 against the committed baseline).

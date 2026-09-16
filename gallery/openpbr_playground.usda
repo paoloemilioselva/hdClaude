@@ -7,17 +7,26 @@
     ]
 )
 
-# Three of the rig's lights declare `bool inputs:shadow:enable` with no value:
-# a property with no opinion, which UsdLux's own documentation says falls back
-# to true. UsdImaging's attribute data source cannot express "unset" -- it
-# zero-initialises, so a valueless bool arrives at every render delegate as
-# *false* (pxr/usdImaging/usdImaging/dataSourceAttribute.h, GetTypedValue) --
-# and these three lights therefore cast no shadows at all. They light the room
-# through its walls and do it again at every bounce, which is most of the fill
-# this scene was rendering with.
+# Three of the rig's lights declare `bool inputs:shadow:enable` and give it no
+# value, without applying `UsdLuxShadowAPI`. The documented fallback of true
+# belongs to that API schema, so a prim which does not apply it has no fallback
+# for the property at all -- `GetAttributeFallbackValue` reports the name as not
+# in the prim definition, and `Get()` returns nothing.
 #
-# Authored here rather than in the vendored asset, as every other gallery
-# correction is, and stated as the value the specification already gives them.
+# A valueless attribute that exists is worse than one that does not.
+# UsdImaging's attribute data source cannot express "no opinion": it
+# zero-initialises, so the property arrives at every render delegate as *false*
+# (pxr/usdImaging/usdImaging/dataSourceAttribute.h, GetTypedValue). The rig
+# proves it from both sides -- `mainLamp_spill_AL`, which does not declare the
+# property at all, arrives with no value and is shadowed; the three that declare
+# it without a value arrive as `false` and cast no shadows, lighting the room
+# through its walls at every bounce.
+#
+# So what is authored here is the API schema the asset omitted, not a value.
+# That is the smaller claim: it says these lights have shadow controls, which
+# they plainly mean to, and lets UsdLux's own fallback supply the rest. Applying
+# it makes `Get()` return true and every light in the rig shadow again.
+#
 # Remove this when UsdImaging stops fabricating a value the scene never
 # authored; nothing in hdClaude can tell the two apart.
 
@@ -25,19 +34,22 @@ over "World"
 {
     over "lightRig"
     {
-        over "sun_screenRight"
+        over "sun_screenRight" (
+            prepend apiSchemas = ["ShadowAPI"]
+        )
         {
-            bool inputs:shadow:enable = 1
         }
 
-        over "moonLight_screenLFT"
+        over "moonLight_screenLFT" (
+            prepend apiSchemas = ["ShadowAPI"]
+        )
         {
-            bool inputs:shadow:enable = 1
         }
 
-        over "LEDmeetMat"
+        over "LEDmeetMat" (
+            prepend apiSchemas = ["ShadowAPI"]
+        )
         {
-            bool inputs:shadow:enable = 1
         }
     }
 }

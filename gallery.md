@@ -146,7 +146,7 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 | StandardShaderBall Honey | 2026-09-16 | 51.796 s (0m 51.796s) | 1.4 GiB | `7fb362476349ee063d1ac879106a30a403b394554322d2edbcb8415ce3045285` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | Pixar's KitchenSet | 2026-09-16 | 202.951 s (3m 22.951s) | 1.3 GiB | `00b231edeea1963a6330dc4334268fcf15aa2c1ef9d7d0b7105969923d2d0508` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | Collective Project 001 | 2026-09-16 | 46.685 s (0m 46.685s) | 1.1 GiB | `588c2c18f4665bf13ea0d5c4ab87a5bb45d43b445f61cb608eadf478ef476b67` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| OpenPBR Playground | 2026-09-16 | 101.569 s (1m 41.569s) | 12.7 GiB | `560562e8386a34fcf9220e7f8f98b0a285a4e592804d280e72ae1f8fb9905e99` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| OpenPBR Playground | 2026-09-16 | 108.453 s (1m 48.453s) | 12.7 GiB | `560562e8386a34fcf9220e7f8f98b0a285a4e592804d280e72ae1f8fb9905e99` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | Subdivision Feature Matrix | 2026-09-16 | 34.998 s (0m 34.998s) | 832.0 MiB | `679c8ef413b04f9dd948483e15ff9f6aa5a012b581e719cce2823623310788f4` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | New Zealand Height Map | 2026-09-16 | 24.974 s (0m 24.974s) | 480.0 MiB | `325b060e49bcf2b2d074eeb5c20e345f41861797a86e95db018d8fadcb228ecb` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 6 |
 <!-- gallery-timings:end -->
