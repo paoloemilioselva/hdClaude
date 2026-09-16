@@ -699,9 +699,15 @@ void main()
                 // where along the line the interior ends; attenuating it over
                 // the whole distance to the light treated the medium as reaching
                 // all the way there. An interior's absorption is part of how an
-                // object shadows, and such a light is not shadowed. The OpenPBR
-                // Playground's moon, sun and LED lights are authored that way,
-                // and its octopus lost most of their light before this.
+                // object shadows, and such a light is not shadowed.
+                //
+                // The OpenPBR Playground's moon, sun and LED lights were read
+                // as authored that way, and were not: they declare
+                // `inputs:shadow:enable` with no value at all, and UsdImaging
+                // hands a valueless bool to every render delegate as `false`
+                // (docs/implementation-notes.md, 2026-09-16). The reasoning
+                // above stands for a light genuinely authored unshadowed; that
+                // scene is not one, and its gallery entry now says so.
                 //
                 // This used to be missing, and it only matters when the shadow
                 // ray is unoccluded -- a light *inside* the medium, since any

@@ -7168,3 +7168,55 @@ asset's maps are already near 1024 -- and 0.16 GB and 2.52 GB at `low`.
 Decoding costs slightly *more* at a lower quality (7.7 s against 5.7 s here),
 which is the full-size decode plus the filtering, and is the trade the cap makes
 against memory rather than against time.
+
+## 2026-09-16 -- A light with no opinion about shadows was read as having one
+
+Reported as too much indirect light in the OpenPBR Playground. The bounce ladder
+said the same thing before anything else was known: rendering the scene at 1, 2,
+3, 4 and 8 bounces gave mean 0.105, 0.168, 0.206, 0.230 and 0.275, so 62% of the
+final image was indirect and each bounce carried about 0.6 of the one before --
+high for a room of wood and paper.
+
+**What it was.** Three of the rig's five analytic lights -- `sun_screenRight`,
+`moonLight_screenLFT` and `LEDmeetMat` -- were rendering with no shadows at all.
+`HDCLAUDE_TRACE` says so directly: `shadows no`. An unshadowed light passes
+through every wall and every object in the scene, and next-event estimation
+delivers it again at every bounce of every path, so the whole room filled with
+light that nothing could block.
+
+**Where the `false` came from.** Not the asset. Those three lights *declare*
+`bool inputs:shadow:enable` and give it no value -- `GetPropertyStack` shows one
+spec, `hasValue: False` -- and `UsdLuxShadowAPI` is not applied, so there is no
+schema fallback either. In USD that is a property with no opinion, and UsdLux
+documents the fallback as true.
+
+`UsdImagingDataSourceAttribute<T>::GetTypedValue` cannot express "no opinion".
+It declares `T result{}`, tries the attribute, tries the schema fallback, and
+returns the zero-initialised value when both fail -- which for a `bool` is
+`false`. Every render delegate on the scene-index path therefore receives
+`shadow:enable = false` for a light that authored nothing, and cannot tell it
+from a light that authored `false` deliberately. hdClaude honoured it exactly as
+UsdLux defines it, which is the right thing to do with the value it was given
+and the wrong picture.
+
+**What was done.** The value the specification already gives these lights is
+authored in `gallery/openpbr_playground.usda`, which sublayers the asset, as
+every other gallery correction is. No guess is added to the renderer: it cannot
+distinguish the two cases, and inventing a rule -- "ignore a false unless
+ShadowAPI is applied" -- would be exactly the silent repair this project refuses
+to make. What the renderer does now is *say* which lights are unshadowed, in the
+light's report, because a light nothing occludes changes an entire image without
+looking as though it did.
+
+**The measurement, and a lesson.** With the three lights shadowing, the frame's
+mean falls from 0.260 to 0.169: a third of the light in that render was coming
+through the walls. The room reads as a room lit by its lamp again.
+
+The lesson is the one this project keeps relearning. A previous session saw
+these same three lights reported as unshadowed, believed it, and wrote it into
+`shade.comp.glsl` as a fact about the asset -- "the OpenPBR Playground's moon,
+sun and LED lights are authored that way" -- to justify a decision about
+attenuating a medium along an unshadowed light's path. The reasoning was sound
+and its premise was a library defect. An explanation that accounts for what an
+image looks like is not evidence that the image is right; the bounce ladder,
+which could have contradicted it, is.

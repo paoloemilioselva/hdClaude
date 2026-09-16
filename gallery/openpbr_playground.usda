@@ -6,3 +6,38 @@
         @C:\Users\paolo\Desktop\code\OpenPBRShaderPlayground\ShdrPlygrnd\ShdrPlygrnd_OpenPBR.usda@,
     ]
 )
+
+# Three of the rig's lights declare `bool inputs:shadow:enable` with no value:
+# a property with no opinion, which UsdLux's own documentation says falls back
+# to true. UsdImaging's attribute data source cannot express "unset" -- it
+# zero-initialises, so a valueless bool arrives at every render delegate as
+# *false* (pxr/usdImaging/usdImaging/dataSourceAttribute.h, GetTypedValue) --
+# and these three lights therefore cast no shadows at all. They light the room
+# through its walls and do it again at every bounce, which is most of the fill
+# this scene was rendering with.
+#
+# Authored here rather than in the vendored asset, as every other gallery
+# correction is, and stated as the value the specification already gives them.
+# Remove this when UsdImaging stops fabricating a value the scene never
+# authored; nothing in hdClaude can tell the two apart.
+
+over "World"
+{
+    over "lightRig"
+    {
+        over "sun_screenRight"
+        {
+            bool inputs:shadow:enable = 1
+        }
+
+        over "moonLight_screenLFT"
+        {
+            bool inputs:shadow:enable = 1
+        }
+
+        over "LEDmeetMat"
+        {
+            bool inputs:shadow:enable = 1
+        }
+    }
+}

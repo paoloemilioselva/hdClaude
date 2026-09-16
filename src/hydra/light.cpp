@@ -248,6 +248,24 @@ void HdClaudeLight::Sync(HdSceneDelegate* sceneDelegate,
     StoreVector(light.direction, emitDirection);
     light.castsShadows =
         Param<bool>(sceneDelegate, id, HdLightTokens->shadowEnable, true) ? 1u : 0u;
+    if (light.castsShadows == 0u) {
+        // Honoured exactly as UsdLux defines it -- nothing occludes such a
+        // light -- and reported, because it is the one light input that can
+        // change a whole image without looking like it did: an unshadowed
+        // light passes through every wall and does it again at every bounce.
+        //
+        // It is reported for a second reason. A valueless `inputs:shadow:enable`
+        // is "no opinion", which UsdLux says falls back to true, and
+        // UsdImaging's attribute data source zero-initialises instead, so such
+        // a light arrives here indistinguishable from one authored `false`
+        // (docs/implementation-notes.md, 2026-09-16). hdClaude cannot tell
+        // them apart and must not guess; saying which lights are unshadowed is
+        // what lets the scene be checked.
+        Unhonoured(&entryReport,
+                   "inputs:shadow:enable is false, so no geometry occludes this "
+                   "light -- if the scene did not mean that, check whether the "
+                   "attribute is authored with a value at all");
+    }
 
     if (_lightType == HdPrimTypeTokens->domeLight) {
         // Not an emitter in the light table: the environment a ray sees when it
