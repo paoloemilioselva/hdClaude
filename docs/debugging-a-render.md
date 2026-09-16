@@ -113,12 +113,23 @@ test matter as much as the material under it.
 
 * **A closed shape, not a quad.** A path crosses a quad once and leaves; it
   enters a sphere, crosses, re-enters and crosses again. A per-crossing error of
-  a few per cent is invisible on a quad and unmistakable on a sphere. The
-  thin-walled sheet measured 1.8400 against a closed form of 1.8462 on a quad
-  and 0.0769 on a sphere.
-* **Long paths.** A furnace at three bounces cannot see a gain of four per
-  scatter compounding over thirty-two. Every furnace worth having is run at
-  several bounce limits, and the numbers must agree across them.
+  a few per cent is invisible on a quad and unmistakable on a sphere. Every flat
+  furnace in the suite read within half a per cent of one while a rough
+  `layer(R, T)` sphere read 1.17 at the centre of its disc and 1.92 to 2.43 off
+  it, where the interior angles are steepest.
+* **Every parameter the default leaves alone.** All of those flat furnaces
+  authored roughness zero, and OpenPBR's `specular_roughness` defaults to 0.3,
+  so a rough transmissive interface -- the common case in any real asset -- was
+  measured nowhere at all. A furnace suite is only as good as the corner of the
+  parameter space it visits, and the corner it never visits is usually the one
+  the specification's defaults put every asset in.
+* **Long paths, and more than two rungs.** A furnace at three bounces cannot see
+  a gain of four per scatter compounding over thirty-two. But a ladder of *two*
+  is barely better: 0.9492 at three bounces and 1.0425 at thirty-two was
+  recorded as "0.95 to 1.03", which reads like a truncation loss at one end and
+  noise at the other. The four-rung ladder -- 0.9492, 0.9968, 1.0215, 1.0425 --
+  is a monotone climb, and a climb is a per-crossing gain compounding while a
+  truncation loss can only ever rise towards its limit and stop.
 
 ## 8. What a gain means, and what to do about it
 
@@ -162,3 +173,14 @@ where a `max = 1.0` in an otherwise dim EXR comes from.
   success on a render that never happened.
 * Diagnostics are removed before the commit, and the commit is checked for the
   word `DIAGNOSTIC` before it is made.
+* **A measurement is evidence only if the tree it came from is the tree that
+  gets committed.** Open question 7 recorded that a thin-walled transmissive
+  sphere read 0.0769 -- exactly its own reflectance, every transmitted path
+  lost -- and called it a regression. It does not reproduce: with nothing under
+  `mtlx/`, `shaders/` or `tests/render_tests.cpp` changed since, the same
+  printed line reads 0.9246 and 0.9951, twice in a row to the last digit. The
+  number was almost certainly taken while a diagnostic edit to the thin-walled
+  path was still in the working tree, and it then sent a later session looking
+  for a defect that was never there. So a number that is going into a document
+  is re-run from a clean tree first -- `git status` before the measurement, not
+  only before the commit.

@@ -378,8 +378,45 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
         float u = mx_pt_selection_random();
         float selectionPdf;
         vec3 refracted;
-        if (mx_pt_select_lobe(u, reflectProbability, selectionPdf) ||
-            !mx_pt_refract(V, H, etaRatio, refracted))
+        const bool choseReflection =
+            mx_pt_select_lobe(u, reflectProbability, selectionPdf);
+        const bool refracts =
+            !choseReflection && mx_pt_refract(V, H, etaRatio, refracted);
+
+        // Total internal reflection at a microfacet, in a lobe that does not
+        // own reflection.
+        //
+        // A transmission-only lobe is the base of a `layer` whose top is the
+        // reflection half of the same interface, and that top already reflects
+        // every microfacet -- including the ones past the critical angle, where
+        // its Fresnel is exactly one. So the reflection this lobe would fall
+        // back to is not its to make: it is already counted above, and offering
+        // a direction for it makes the layer report a density that does not
+        // describe the sampling. `mx_layer_bsdf` mixes the base's density at
+        // `1 - p_top` and this lobe answers zero when asked about a reflection,
+        // so every such sample was weighed by the top's density alone while
+        // both halves had produced it. The estimator then divides by less than
+        // it should, once per crossing.
+        //
+        // It is invisible on a smooth surface -- the microfacet is the surface,
+        // so the macro Fresnel is already one and the layer gives this lobe
+        // nothing -- and invisible on a flat one, which a path crosses twice.
+        // A rough sphere is where it shows: `layer(R, T)` at alpha 0.3 read
+        // 1.17 at the centre and 1.97 to 2.34 where the interior angles are
+        // steepest, against 1.00 for the same layer smooth.
+        //
+        // Returning no direction is the consistent answer, not a lost path: the
+        // transmission response is zero in exactly these configurations, so
+        // these samples carry nothing and cost variance rather than energy. The
+        // reflection is still sampled, by the lobe that owns it.
+        if (!choseReflection && !refracts && layerBase)
+        {
+            bsdf.sampledL = vec3(0.0);
+            bsdf.isDelta = smoothSurface ? 1.0 : 0.0;
+            return;
+        }
+
+        if (choseReflection || !refracts)
         {
             // Reflection, or total internal reflection, which is reflection
             // whatever the caller asked for.
@@ -500,15 +537,56 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
                                (NdotV * denom)
                          : 0.0;
 
-        // A transmission-only lobe exists to be layered *under* a reflection
-        // one -- that is the only way `open_pbr_surface` uses it -- and
-        // MaterialX's layering convention is that a base does not know the top's
-        // Fresnel: `layer` supplies it as `top.throughput`, which is `1 - F`.
-        // Carrying it here as well applies it twice, and `F + (1 - F)^2` is four
-        // per cent short of one at normal incidence. The RT mode keeps it,
-        // because there it weighs its own two lobes against each other and
-        // nothing above supplies anything.
-        vec3 fresnelWeight = layerBase ? vec3(1.0) : (vec3(1.0) - F);
+        // What fraction of the light reaching this lobe crosses the interface.
+        //
+        // In RT mode the closure weighs its own two lobes, so it is `1 - F`
+        // taken at the *microfacet* that bends V into L -- the same microfacet
+        // the BTDF above is evaluated on, and the same one the reflection half
+        // takes its `F` from. That is Walter et al.'s split and it is exact.
+        //
+        // A transmission-only lobe is layered *under* a reflection one -- the
+        // only way `open_pbr_surface` uses it -- and MaterialX's layering
+        // convention is that a base does not know the top's Fresnel: `layer`
+        // supplies it as `top.throughput`, which is `1 - A` for the top's
+        // *directional albedo* A at the macro-surface normal. Carrying `1 - F`
+        // here as well would apply a Fresnel twice, and `F + (1 - F)^2` is four
+        // per cent short of one at normal incidence.
+        //
+        // But a macro-surface average is not the per-microfacet split, and on a
+        // rough interface the two are nothing alike. Inside glass, most
+        // microfacets a steep ray meets are past the critical angle, where
+        // `F(V.H)` is exactly one and nothing crosses at all, while the macro
+        // average stays far below one and hands the base light that cannot
+        // physically pass. It compounds over every crossing, so it needs a
+        // closed shape and a deep path limit to see: a sphere of
+        // `layer(R, T)` at alpha 0.3 reads 1.17 at the centre and 1.97 to 2.34
+        // off-centre, where the interior angles are steepest, against 1.00 for
+        // the same layer smooth. The same sphere in RT mode -- the same lobes,
+        // split per microfacet -- reads 0.88 and 0.85.
+        //
+        // So the split is taken at the microfacet in both modes, and the layer's
+        // macro factor is divided back out, leaving exactly `(1 - F(V.H))`
+        // once. `A` is this closure's own directional albedo, computed from the
+        // same index and roughness the lobe above it reads, which is what
+        // `open_pbr_surface` wires: one interface, split into two nodes. Its
+        // reflection half is left at `weight` one there -- `specular_weight`
+        // reaches it as a modulated index, not as a lobe weight -- so the
+        // factor the layer applies is exactly `1 - A`.
+        //
+        // The floor is what makes the division safe. As `A` approaches one the
+        // top keeps everything and the layer multiplies this lobe by nothing,
+        // so the product is zero whatever this returns; the floor only stops it
+        // being zero times an infinity.
+        vec3 fresnelWeight;
+        if (layerBase)
+        {
+            vec3 layerFactor = max(vec3(1.0) - dirAlbedoV, vec3(0.02));
+            fresnelWeight = (vec3(1.0) - F) / layerFactor;
+        }
+        else
+        {
+            fresnelWeight = vec3(1.0) - F;
+        }
         bsdf.response = fresnelWeight * btdf * safeTint * weight;
 
         // ---- hdClaude: density -----------------------------------------------

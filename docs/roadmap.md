@@ -251,6 +251,8 @@ reversed.
 | 2026-09-16 | A valueless `shadow:enable` is corrected by applying the API schema the asset omitted | Three of the OpenPBR Playground's lights declare `bool inputs:shadow:enable` and give it no value, without applying `UsdLuxShadowAPI`. The documented fallback of true belongs to that API schema, so a prim which does not apply it has no fallback for the property at all: `GetAttributeFallbackValue` reports the name as absent from the prim definition. A light with no such property at all is unaffected -- `mainLamp_spill_AL` has none, arrives with no value, and is shadowed as a light should be -- but an attribute that *exists* with no value is worse than one that does not, because `UsdImagingDataSourceAttribute::GetTypedValue` zero-initialises when neither the attribute nor a schema fallback answers, and every render delegate then receives `false`. hdClaude honoured it and three lights lit the room through its walls at every bounce -- a third of the frame's light. The gallery entry applies `ShadowAPI` rather than authoring a value: that is the smaller claim, since it says only that these lights have shadow controls, and lets UsdLux's own fallback supply the rest. The render is bit-identical to authoring `true`. The renderer adds no rule of its own, because the case it would have to detect is one Hydra has already erased; what it does add is a report naming every light nothing occludes |
 | 2026-09-16 | Texture quality is a cap on the longest edge, and `high` is the authored image | A stage's images are the largest thing it holds -- ALab's 6,261 come to 49.6 GB against a machine with 32 -- so the control that matters is one whose result does not depend on how large the originals were: `medium` and `low` cap each image at 1024 and 256 by repeated halving, and `high`, the default, keeps what the asset authored. Nothing is ever enlarged. Each halving is a box filter, which preserves the image's mean exactly, so a reduced dome light still delivers its whole power; an sRGB-encoded texture is decoded before averaging and re-encoded after, because sRGB is concave and averaging encoded values would lighten every texture with contrast in it. Reduced after decoding rather than by asking Hio for a smaller read, since a plugin may decline a resize and report it only by the size of the buffer it returns. Changing the setting re-decodes each image into the slot it already holds, because a generated material has the slot index compiled into it |
 | 2026-09-16 | Renders that estimate the same image differently are compared region by region against their own noise | Two unbiased estimators of one image agree in expectation and have independent noise, so the gallery's per-pixel gate fails them or has to be loosened until it means nothing. `hdClaudeImageDiff --expectation` compares 16-pixel block means by their difference over the standard error the blocks' own spread gives, which includes real structure and so can only make a difference harder to call; each such comparison is paired with a stage that must fail it |
+| 2026-09-17 | A dielectric's reflect/transmit split is taken at the microfacet in both modes, and the layer's macro factor is divided back out | MaterialX's layering convention is that a base knows nothing of the top's Fresnel: `layer` supplies it as `top.throughput`, the top's directional albedo at the *macro* normal. For a coat over a substrate that is the right statistic; for the two halves of one interface it is not, because what crosses a rough surface is decided per microfacet. Inside glass most microfacets a steep ray meets are past the critical angle, where nothing crosses at all, while the macro average stays well below one and hands the base light that cannot physically pass. So the transmission lobe now carries `1 - F(V.H)` in both modes and divides by `1 - A` to cancel what the layer will apply, which makes the layered form agree with RT exactly where they must: a smooth sphere reads 1.0047 against RT's 1.0046, where before it read 1.0021 |
+| 2026-09-17 | A transmission-only lobe offers no direction when its refraction fails | Its refraction failing *is* total internal reflection, and the reflection lobe layered above it already reflects every microfacet, the ones past the critical angle included. Falling back to a reflection there made the layer report a density that did not describe the sampling -- `mx_layer_bsdf` mixes the base's density, and a base asked about a reflection answers zero, so each such sample was weighed by the top's density alone though both halves had produced it. The estimator then divided by less than it should, once per crossing. Returning no direction loses no energy, because the transmission response is zero in exactly those configurations; it costs variance. A rough sphere of `layer(R, T)` at alpha 0.3 read 1.1747 at the centre and 1.9173 to 2.4257 off it, and reads 0.8654 and 0.8234 after -- which is RT's 0.8840 and 0.8538, the deficit of question 10, with the gain that had been hiding it gone |
 | 2026-09-14 | The furnace's reference is the response integrated by quadrature, not a second implementation | Item 2 compares the importance-sampled albedo with the same generated response integrated over the sphere. A host transcription of every closure could disagree with MaterialX for its own reasons and would then be a rival definition rather than a check; the quadrature is instead checked against closed forms where they exist. It catches what chi-squared cannot: a lobe that responds where the renderer discards has a sampler and density in perfect agreement and loses the light anyway |
 | 2026-09-14 | DLSS SDK moves from 310.3.0 to 310.9.1, and the pinned tag is the one that gets built | Every NGX call hdClaude makes is unchanged, and on the RTX 5060 Ti the runtime reports `NVIDIA DLSS 310.9.1.0` through all seven suites. Preset F -- `stable` -- is now marked deprecated but still present, so it is honoured and reported once rather than removed or remapped. The upgrade found why the pin had never been able to move: `setup_usd_env.bat` pointed `HDCLAUDE_DLSS_SDK` at FetchContent's own checkout, which made CMake treat it as a hand-supplied SDK and stop updating it, and the tag was a cache default a build tree kept anyway. The first rebuild after editing the tag printed the new version and linked the old SDK. The script no longer sets it, the override is cleared when the variable is unset, and the tag is a plain variable |
 | 2026-09-05 | The pbrlib override set is all-or-nothing | MaterialX resolves `#include` relative to the including file, so mixing one upstream closure with one hdClaude closure emits `struct ClosureData` twice. The set is exactly the 22 pbrlib files that include `mx_closure_type.glsl`; no stdlib file does |
@@ -376,16 +378,28 @@ Tracked here rather than decided prematurely.
    does not have -- supplies a farther hit instead of none. That is a lead
    rather than the answer, since padding removed only a tenth of it.
 
-7. **A thin-walled transmissive sheet passes nothing on a closed shape.** A
-   sphere of `open_pbr_surface` with `transmission_weight` 1 and
-   `geometry_thin_walled` set reads **0.0769** in a white furnace -- exactly the
-   sheet's own reflectance -- at three bounces and at thirty-two alike, against
-   0.95 to 1.03 for the identical material rendered solid. Every transmitted
-   path is lost. A flat sheet is measured correctly (it transmits 1.8400 against
-   a closed form of 1.8462), so what fails is the second crossing, which only a
-   closed shape has. This is a regression in the thin-walled work of 2026-09-15,
-   and the OpenPBR Playground's mason jar is exactly this configuration. Printed
-   by `tests/render_tests.cpp` and not yet asserted.
+7. **Withdrawn 2026-09-17: "a thin-walled transmissive sheet passes nothing on
+   a closed shape."** The entry recorded **0.0769** -- exactly the sheet's own
+   reflectance -- for a thin-walled `open_pbr_surface` sphere of pure
+   transmission, at three bounces and at thirty-two alike, and called it a
+   regression in the thin-walled work of 2026-09-15.
+
+   It does not reproduce. Nothing under `mtlx/`, `shaders/` or
+   `tests/render_tests.cpp` changed between the commit that recorded it and the
+   one that withdraws it, and the same printed line now reads 0.9246 at three
+   bounces and 0.9951 at eight, sixteen and thirty-two: a thin-walled sphere
+   converges, and the 0.5% it is short of one is the same deficit the solid
+   sphere has. Two runs of the suite agree to the last digit, so it is not
+   nondeterminism either. The likeliest explanation is that the number was
+   measured while a diagnostic edit was still in the working tree -- that
+   session had been switching the thin-walled path on and off by hand for most
+   of a day -- and the lesson is in
+   [debugging-a-render.md](debugging-a-render.md): a measurement is only
+   evidence if the tree it was taken from is the tree that gets committed.
+
+   The hunt was not wasted. The entry's other half -- "against 0.95 to 1.03 for
+   the identical material rendered solid" -- was a two-point sample of a defect
+   that a ladder exposes at once, and it is question 10.
 
 8. **Subsurface loses a tenth of its light in a furnace.** The same sphere with
    `subsurface_weight` 0.2 and a radius of 0.1 reads 0.83 solid and 0.90
@@ -403,6 +417,37 @@ Tracked here rather than decided prematurely.
    inserting it for anyone. It is the same opt-in that the NURBS approximation
    and light linking needed, and Karma renders these where hdClaude renders
    nothing. Found 2026-09-16 while building a cross-renderer test.
+
+10. **A rough dielectric loses light on a closed shape, and the rougher it is
+    the more.** A sphere of `dielectric_bsdf` in RT mode at alpha 0.3 reads
+    0.8840 at the centre of the disc and 0.8538 off it in a white furnace at
+    thirty-two bounces; `layer(R, T)` of the same interface -- the structure
+    `open_pbr_surface` builds -- reads 0.8654 and 0.8234. The same two smooth
+    read 1.0046 and 0.9902. An `open_pbr_surface` sphere of pure transmission at
+    the specification's default `specular_roughness` of 0.3, which its own
+    mapping squares to an alpha of 0.09, reads 0.9858 at thirty-two bounces.
+    A lossless interface is lossless at every roughness, so all of these must
+    read one.
+
+    What they measure is the energy single-scattering GGX loses to masking.
+    MaterialX compensates its *reflection* lobe -- `mx_ggx_energy_compensation`,
+    built from the reflection-only directional albedo -- and has no term at all
+    for the transmission lobe, so the light shadowed out of a crossing is simply
+    gone, and a path that crosses a sphere a dozen times loses it a dozen times.
+    OpenPBR specifies a specular BSDF that conserves energy, so this is a
+    shortfall against the specification rather than a reading of it.
+
+    The fix is a multiple-scattering compensation for the interface as a whole
+    rather than for one of its lobes -- Turquin (2019) tabulates the dielectric
+    directional albedo over cos(theta), alpha and eta, in both crossing
+    directions -- which is phase-4 work: a table, its generator, and its own
+    chi-squared and furnace gates. Until then the measurements are printed by
+    `tests/render_tests.cpp` and not asserted.
+
+    Recorded 2026-09-17, after two density defects that had been hiding it were
+    fixed (decision log). Before them the same rough `layer(R, T)` sphere read
+    1.1747 at the centre and 1.9173 to 2.4257 off it -- a gain, and the gain and
+    the deficit were partly cancelling.
 
 6. **Volume rendering.** MaterialX VDFs are declared and generated; hdClaude
    currently plans homogeneous interior media only. Heterogeneous volumes

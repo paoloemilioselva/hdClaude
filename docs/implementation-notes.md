@@ -7437,3 +7437,98 @@ instancing from 53 s to 28 s, texture quality from 48 s to 24 s.
 **What is left.** One `vkCreateDevice` of 3.8 s, which is a driver cost this
 renderer pays once per process and has not yet tried to reduce -- whether it
 depends on the extensions and features enabled is not known.
+
+## 2026-09-17 -- A rough dielectric, and two densities that did not describe the sampling
+
+Started as open question 7, which recorded that a thin-walled transmissive
+sphere rendered 0.0769 in a white furnace -- exactly the sheet's own
+reflectance, so every transmitted path lost -- and called it a regression in the
+thin-walled work of 2026-09-15.
+
+**It does not reproduce.** Nothing under `mtlx/`, `shaders/` or
+`tests/render_tests.cpp` had changed between the commit that recorded it and the
+one that withdrew it, and the same printed line read 0.9246 at three bounces and
+0.9951 at eight, sixteen and thirty-two, twice in a row to the last digit. The
+number was almost certainly measured with a diagnostic edit still in the working
+tree; the lesson is in [debugging-a-render.md](debugging-a-render.md) §10.
+
+What the entry had right was its other half, which nobody had looked at: "0.95
+to 1.03 for the identical material rendered solid". That was a two-point sample
+-- three bounces and thirty-two -- of a ladder, and a ladder of two rungs cannot
+tell a truncation loss from a compounding gain. Run at four:
+
+    solid transmission  0.9492  0.9968  1.0215  1.0425   (3, 8, 16, 32 bounces)
+
+which is a monotone climb, and a closed lossless object cannot gain light by
+being given more bounces.
+
+**Two entries that tested nothing.** The furnace matrix named two of its
+materials after a thin film, setting `thin_film_thickness` and nothing else.
+OpenPBR's `thin_film_weight` defaults to *zero* and its graph mixes the filmed
+reflection against the unfilmed one on it, so both entries were measuring an
+ordinary opaque surface: they read what the transmission-only entry beside them
+read, to the last digit, which is how it was noticed. A parameter that switches
+a lobe on has to be authored beside the parameter that shapes it.
+
+**Roughness was the variable.** Every transmissive furnace in the suite authored
+roughness zero. OpenPBR's `specular_roughness` defaults to 0.3, so the entries
+that used the whole graph were rough and nothing else was:
+
+    solid transmission, alpha from the 0.3 default   0.9492  0.9968  1.0215  1.0425
+    solid transmission, roughness authored zero      0.9590  0.9974  0.9974  0.9974
+
+The smooth one converges and the rough one climbs. Against that, a bare
+`dielectric_bsdf` sphere in RT mode at alpha 0.3 read 0.8840 at the centre of
+its disc and 0.8538 off it, while `layer(R, T)` of the same interface read
+1.1747 and 1.9173 to 2.4257. The same two smooth read 1.0046 and 1.0021. Two
+forms of one interface disagreeing by a factor of two is not a model's
+imprecision; one of them is not sampling what it says it is.
+
+**The first defect: a macro Fresnel where a microfacet one belongs.** MaterialX
+layering supplies the top's Fresnel to the base as `top.throughput`, which is
+`1 - A` for the top's directional albedo at the macro-surface normal. For a coat
+over a substrate that is the right statistic. For the two halves of one
+interface it is not: what crosses a rough surface is decided per microfacet, and
+inside glass most microfacets a steep ray meets are past the critical angle,
+where `F(V.H)` is exactly one and nothing crosses at all, while the macro
+average stays far below one and hands the base light that cannot physically
+pass. The transmission lobe now carries `1 - F(V.H)` in both modes and divides
+by `1 - A` to cancel what the layer will apply. It made the two forms agree
+exactly where they must -- a smooth sphere read 1.0047 against RT's 1.0046,
+where before it read 1.0021 -- and moved the rough one only from 1.1747 to
+1.1411.
+
+**The second defect: a fallback the layer could not see.** A transmission-only
+lobe that fails to refract fell back to reflecting. Its refraction failing *is*
+total internal reflection, and the reflection lobe layered above it already
+reflects every microfacet, the ones past the critical angle included -- so the
+reflection was not this lobe's to make. Worse, offering a direction for it made
+the layer report a density that did not describe the sampling: `mx_layer_bsdf`
+mixes the base's density at `1 - p_top`, a base asked about a reflection answers
+zero, and so every such sample was weighed by the top's density alone though
+both halves had produced it. The estimator divided by less than it should, once
+per crossing, which is why it needed a closed shape and a deep path limit to
+see at all.
+
+The lobe now returns no direction there. That loses no energy -- the
+transmission response is zero in exactly those configurations, so the samples
+carry nothing -- and costs variance, since the reflection is then sampled only
+by the lobe that owns it.
+
+    rough layer(R, T), centre     1.1747 -> 1.1411 -> 0.8654      (RT reads 0.8840)
+    rough layer(R, T), off-centre 1.9173 -> ...    -> 0.8234      (RT reads 0.8538)
+    open_pbr solid transmission   0.9492 0.9968 1.0215 1.0425
+                               -> 0.9479 0.9844 0.9855 0.9858
+
+**What is left is a loss, and it is question 10.** Both forms now agree, and
+both sit below one: single-scattering GGX loses light to masking, MaterialX
+compensates its reflection lobe and has no term at all for its transmission
+lobe, and a path that crosses a sphere a dozen times loses it a dozen times. At
+alpha 0.3 that is a seventh of the light; at the alpha 0.09 that OpenPBR's own
+default roughness maps to, 1.4%. The fix is a multiple-scattering compensation
+for the interface as a whole rather than for one of its lobes, which needs a
+tabulated dielectric albedo and gates of its own.
+
+Worth saying plainly: the gain and the deficit were partly cancelling. The
+rough sphere was 17% high because a density defect was overpaying it by about a
+third and the missing compensation was underpaying it by an eighth.

@@ -223,7 +223,8 @@ CompiledMaterial MakeLayeredDielectric(mx::DocumentPtr libraries,
                                        const GlslCompiler& compiler,
                                        const std::string& shadeKernel,
                                        float ior,
-                                       const std::string& name)
+                                       const std::string& name,
+                                       float roughness = 0.0f)
 {
     mx::DocumentPtr doc = mx::createDocument();
     doc->importLibrary(libraries);
@@ -231,13 +232,13 @@ CompiledMaterial MakeLayeredDielectric(mx::DocumentPtr libraries,
     mx::NodePtr reflection = AddNode(doc, "dielectric_bsdf", "dr", "BSDF");
     SetValue(reflection, "weight", 1.0f);
     SetValue(reflection, "ior", ior);
-    SetValue(reflection, "roughness", mx::Vector2(0.0f, 0.0f));
+    SetValue(reflection, "roughness", mx::Vector2(roughness, roughness));
     reflection->setInputValue("scatter_mode", std::string("R"), "string");
 
     mx::NodePtr transmission = AddNode(doc, "dielectric_bsdf", "dt", "BSDF");
     SetValue(transmission, "weight", 1.0f);
     SetValue(transmission, "ior", ior);
-    SetValue(transmission, "roughness", mx::Vector2(0.0f, 0.0f));
+    SetValue(transmission, "roughness", mx::Vector2(roughness, roughness));
     transmission->setInputValue("scatter_mode", std::string("T"), "string");
 
     mx::NodePtr layered = AddNode(doc, "layer", "ly", "BSDF");
@@ -2346,12 +2347,57 @@ int main()
                     "sphere layered");
                 CHECK(!layeredSphere.spirv.empty());
 
+                // The same two, rough.
+                //
+                // Every transmissive furnace in this file authors roughness
+                // zero, and OpenPBR's `specular_roughness` defaults to 0.3, so
+                // a rough interface crossed many times was measured nowhere: an
+                // `open_pbr_surface` sphere of pure transmission reads 1.0425
+                // at thirty-two bounces against 0.9974 for the same material
+                // smooth, and the excess grows with the path limit -- 0.9968 at
+                // eight and 1.0215 at sixteen -- which is a per-crossing gain
+                // compounding rather than a truncation. A lossless interface is
+                // lossless at any roughness, so these must read one too. The
+                // pair separates the lobe from the layering: RT weighs its own
+                // two lobes by Fresnel at the sampled microfacet, while
+                // `layer(R, T)` has `mx_layer_bsdf` split the energy from the
+                // reflection lobe's declared directional albedo.
+                const CompiledMaterial roughSolid = MakeDielectricMaterial(
+                    libraries, compiler, tracer.ShadeKernelSource(), 1.5f,
+                    "sphere bare rough", 0.3f, "RT");
+                CHECK(!roughSolid.spirv.empty());
+
+                const CompiledMaterial roughLayered = MakeLayeredDielectric(
+                    libraries, compiler, tracer.ShadeKernelSource(), 1.5f,
+                    "sphere layered rough", 0.3f);
+                CHECK(!roughLayered.spirv.empty());
+
                 for (const float u : {0.50f, 0.36f}) {
                     const Pixel bareSphere = sphereFurnace(solid, "RT", u, 256);
                     const Pixel layeredPatch =
                         sphereFurnace(layeredSphere, "layer(R, T)", u, 256);
                     CHECK_NEAR(bareSphere.g, 1.0, 0.03);
                     CHECK_NEAR(layeredPatch.g, 1.0, 0.03);
+                    // The absolute value is question 10 and is not asserted:
+                    // both of these sit below one because nothing compensates
+                    // the transmission lobe for what masking takes. What *is*
+                    // asserted is that the two agree, because they are two
+                    // encodings of one interface -- the same microfacet
+                    // distribution, the same index -- and a renderer that makes
+                    // them differ is sampling something other than what it
+                    // reports. They differed by a factor of two before the
+                    // density defects of 2026-09-17: 0.8840 against 1.1747 at
+                    // the centre, 0.8538 against 1.9173 off it.
+                    //
+                    // Eight per cent, which is wide enough for two 256-sample
+                    // measurements of a configuration this scattering and far
+                    // inside the factor of two it is there to catch. It
+                    // tightens when question 10 is answered.
+                    const Pixel roughBare =
+                        sphereFurnace(roughSolid, "RT rough", u, 256);
+                    const Pixel roughLayer =
+                        sphereFurnace(roughLayered, "layer(R, T) rough", u, 256);
+                    CHECK_NEAR(roughLayer.g, roughBare.g, roughBare.g * 0.08);
                 }
 
                 // --- The walk's own furnace waits for the defect it found ---
@@ -2989,9 +3035,36 @@ int main()
                      true},
                     // The OpenPBR Playground's `paper`, which is thin-walled
                     // with a thin film a thousandth thick and nothing else.
-                    {"thin film only", {{"thin_film_thickness", 1.0e-3f}}, true},
+                    //
+                    // The weight is authored beside the thickness because
+                    // OpenPBR's `thin_film_weight` defaults to *zero* and the
+                    // graph mixes the filmed reflection against the unfilmed
+                    // one on it. A thickness on its own therefore reaches a
+                    // lobe of weight nothing, and these two entries measured an
+                    // ordinary opaque surface while naming a film: they read
+                    // exactly what the transmission-only entry beside them
+                    // read, to the last digit.
+                    {"thin film only",
+                     {{"thin_film_weight", 1.0f},
+                      {"thin_film_thickness", 1.0e-3f}},
+                     true},
+                    // Transmission on its own, which is what separates the film
+                    // from the transmission when the pair of them does not read
+                    // one. Without this entry a failure of the pair has two
+                    // suspects and no way to tell them apart.
+                    {"transmission only", {{"transmission_weight", 1.0f}}, false},
+                    // The same transmission with a smooth interface. OpenPBR's
+                    // `specular_roughness` defaults to 0.3, so every entry here
+                    // that does not say otherwise is a *rough* dielectric,
+                    // while every transmissive furnace that passes elsewhere in
+                    // this file authors roughness zero. That is the difference
+                    // the pair of them isolates.
+                    {"transmission only, smooth",
+                     {{"transmission_weight", 1.0f}, {"specular_roughness", 0.0f}},
+                     false},
                     {"thin film and transmission",
-                     {{"thin_film_thickness", 1.0e-3f},
+                     {{"thin_film_weight", 1.0f},
+                      {"thin_film_thickness", 1.0e-3f},
                       {"transmission_weight", 1.0f}},
                      false},
                 };
@@ -3035,7 +3108,13 @@ int main()
                             continue;
                         }
                         material.thinWalled = thinWalled;
-                        for (const std::uint32_t bounces : {3u, 32u}) {
+                        // A ladder rather than two ends, because the two ways a
+                        // furnace misses one look the same at a single depth: a
+                        // path limit truncates transport and loses energy that
+                        // more bounces restore, while a per-crossing gain
+                        // compounds and grows with them. Only the shape of the
+                        // sequence separates them.
+                        for (const std::uint32_t bounces : {3u, 8u, 16u, 32u}) {
                             const double furnace =
                                 sphereFurnace(material, bounces);
                             std::printf("  %s %s sphere furnace at %u bounces: "
