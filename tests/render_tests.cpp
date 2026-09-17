@@ -2362,15 +2362,78 @@ int main()
                 // two lobes by Fresnel at the sampled microfacet, while
                 // `layer(R, T)` has `mx_layer_bsdf` split the energy from the
                 // reflection lobe's declared directional albedo.
-                const CompiledMaterial roughSolid = MakeDielectricMaterial(
-                    libraries, compiler, tracer.ShadeKernelSource(), 1.5f,
-                    "sphere bare rough", 0.3f, "RT");
-                CHECK(!roughSolid.spirv.empty());
+                // A lossless interface is lossless at every roughness, so the
+                // furnace is a ladder in alpha rather than one reading at zero.
+                //
+                // It was a reading at zero, and that is how a transmission lobe
+                // with no multiple-scattering compensation stayed invisible:
+                // every transmissive furnace in this file authored roughness
+                // zero, where a single-scattering model loses nothing. At alpha
+                // 0.3 the same closed sphere read 0.8840, and the deficit grows
+                // with alpha.
+                //
+                // Both encodings are measured at each rung. `RT` weighs its own
+                // two lobes by Fresnel at the sampled microfacet; `layer(R, T)`
+                // is what `open_pbr_surface` builds, with `mx_layer_bsdf`
+                // splitting the energy. They are the same interface and must
+                // read the same thing.
+                const struct {
+                    float alpha;
+                    const char* name;
+                    /// Whether the two encodings are held to agreeing. They do
+                    /// up to alpha 0.3 and part company at 0.6, which is its
+                    /// own finding and is recorded in open question 10 rather
+                    /// than asserted away here.
+                    bool agree;
+                } roughnesses[] = {{0.1f, "alpha 0.1", true},
+                                   {0.3f, "alpha 0.3", true},
+                                   {0.6f, "alpha 0.6", false}};
+                for (const auto& rough : roughnesses) {
+                    CompiledMaterial roughSolid = MakeDielectricMaterial(
+                        libraries, compiler, tracer.ShadeKernelSource(), 1.5f,
+                        std::string("sphere bare ") + rough.name, rough.alpha,
+                        "RT");
+                    CHECK(!roughSolid.spirv.empty());
 
-                const CompiledMaterial roughLayered = MakeLayeredDielectric(
-                    libraries, compiler, tracer.ShadeKernelSource(), 1.5f,
-                    "sphere layered rough", 0.3f);
-                CHECK(!roughLayered.spirv.empty());
+                    CompiledMaterial roughLayered = MakeLayeredDielectric(
+                        libraries, compiler, tracer.ShadeKernelSource(), 1.5f,
+                        std::string("sphere layered ") + rough.name,
+                        rough.alpha);
+                    CHECK(!roughLayered.spirv.empty());
+
+                    for (const float u : {0.50f, 0.36f}) {
+                        const std::string bareLabel =
+                            std::string("RT ") + rough.name;
+                        const std::string layerLabel =
+                            std::string("layer ") + rough.name;
+                        const Pixel roughBare =
+                            sphereFurnace(roughSolid, bareLabel.c_str(), u, 256);
+                        const Pixel roughLayer = sphereFurnace(
+                            roughLayered, layerLabel.c_str(), u, 256);
+                        // The distance from one is open question 10 and is
+                        // recorded rather than asserted: nothing compensates
+                        // the transmission lobe for what masking takes, so both
+                        // of these sit below one and further below it the
+                        // rougher they are.
+                        //
+                        // What *is* asserted, and only where it has been
+                        // measured to hold, is that the two agree: they are two
+                        // encodings of one interface -- the same microfacet
+                        // distribution, the same index -- and a renderer that
+                        // makes them differ is sampling something other than
+                        // what it reports. They differed by a factor of two
+                        // before the density defects of 2026-09-17: 0.8840
+                        // against 1.1747 at the centre, 0.8538 against 1.9173
+                        // off it. Eight per cent is wide enough for two
+                        // 256-sample measurements of a configuration this
+                        // scattering and far inside the factor of two it is
+                        // there to catch.
+                        if (rough.agree) {
+                            CHECK_NEAR(roughLayer.g, roughBare.g,
+                                       roughBare.g * 0.08);
+                        }
+                    }
+                }
 
                 for (const float u : {0.50f, 0.36f}) {
                     const Pixel bareSphere = sphereFurnace(solid, "RT", u, 256);
@@ -2378,26 +2441,6 @@ int main()
                         sphereFurnace(layeredSphere, "layer(R, T)", u, 256);
                     CHECK_NEAR(bareSphere.g, 1.0, 0.03);
                     CHECK_NEAR(layeredPatch.g, 1.0, 0.03);
-                    // The absolute value is question 10 and is not asserted:
-                    // both of these sit below one because nothing compensates
-                    // the transmission lobe for what masking takes. What *is*
-                    // asserted is that the two agree, because they are two
-                    // encodings of one interface -- the same microfacet
-                    // distribution, the same index -- and a renderer that makes
-                    // them differ is sampling something other than what it
-                    // reports. They differed by a factor of two before the
-                    // density defects of 2026-09-17: 0.8840 against 1.1747 at
-                    // the centre, 0.8538 against 1.9173 off it.
-                    //
-                    // Eight per cent, which is wide enough for two 256-sample
-                    // measurements of a configuration this scattering and far
-                    // inside the factor of two it is there to catch. It
-                    // tightens when question 10 is answered.
-                    const Pixel roughBare =
-                        sphereFurnace(roughSolid, "RT rough", u, 256);
-                    const Pixel roughLayer =
-                        sphereFurnace(roughLayered, "layer(R, T) rough", u, 256);
-                    CHECK_NEAR(roughLayer.g, roughBare.g, roughBare.g * 0.08);
                 }
 
                 // --- The walk's own furnace waits for the defect it found ---

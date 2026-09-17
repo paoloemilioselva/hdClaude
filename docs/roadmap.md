@@ -442,7 +442,50 @@ Tracked here rather than decided prematurely.
     directional albedo over cos(theta), alpha and eta, in both crossing
     directions -- which is phase-4 work: a table, its generator, and its own
     chi-squared and furnace gates. Until then the measurements are printed by
-    `tests/render_tests.cpp` and not asserted.
+    `tests/render_tests.cpp` and not asserted, over a ladder in alpha, because a
+    reading at roughness zero cannot see this at all.
+
+    **A closed form derived from the reflection lobe does not work, and the
+    measurement says why.** Requiring the two halves of a lossless interface to
+    sum to one gives the transmission lobe a factor with no free parameter in
+    it, if one assumes the transmission's single-scattering albedo is
+    `(1 - F) Ess` for the reflection lobe's own `Ess`:
+
+        k = [1 - F Ess - F^2 (1 - Ess)] / [(1 - F) Ess] = (1 + F) / Ess - F
+
+    It has both right limits -- exactly one when `Ess` is one, so no smooth
+    furnace moves, and `1 / Ess` when nothing reflects -- and it overshoots
+    anyway. Measured on the spheres: 0.993 and 0.991 at alpha 0.1, but 1.15 and
+    1.12 at alpha 0.3 where the uncompensated renderer reads 0.88 and 0.87, and
+    1.82 and 1.73 at alpha 0.6. Roughly three times too much light per crossing.
+
+    So the assumption is what fails: the transmission lobe loses far less to
+    masking than the reflection lobe does at the same roughness, which is what a
+    refracted direction bending toward the normal would do, and its albedo
+    depends on the index through the refraction Jacobian besides. It cannot be
+    had from `mx_ggx_dir_albedo`, which is a reflection-only fit. The next
+    attempt needs the transmission lobe's *own* directional albedo, measured
+    rather than derived, which is the table -- and this is the constraint it
+    has to satisfy. The ladder without compensation, at n = 1.5, thirty-two
+    bounces, `RT` and `layer(R, T)` at the centre of the disc and off it:
+
+        alpha 0.1   0.9826  0.9825   |   0.9777  0.9690
+        alpha 0.3   0.8761  0.8568   |   0.8546  0.8146
+        alpha 0.6   0.6321  0.6021   |   0.6114  0.5337
+
+    All twelve must read one, and the smooth readings beside them -- 1.0046 and
+    1.0047 -- must not move.
+
+    **The two encodings also part company at alpha 0.6**, by 12.7% off-centre,
+    where they agree to a fifth of a per cent when smooth and to 4.7% at alpha
+    0.3. That is a second thing to explain, and it is not the division guard in
+    `mx_dielectric_bsdf`: lowering that floor from 0.02 to 1e-4 changed the
+    reading by nothing at all, to the last digit. The layered form is the one
+    that loses more, and what it has that `RT` does not is `mx_layer_bsdf`
+    selecting on a directional albedo that comes from a *fit* -- which at alpha
+    0.6 is the regime where a fit of that family is worst. Suspected, not
+    shown. The suite asserts the agreement up to alpha 0.3 and records alpha
+    0.6 rather than asserting a tolerance wide enough to cover it.
 
     Recorded 2026-09-17, after two density defects that had been hiding it were
     fixed (decision log). Before them the same rough `layer(R, T)` sphere read
