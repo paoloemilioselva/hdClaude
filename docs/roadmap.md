@@ -418,8 +418,28 @@ Tracked here rather than decided prematurely.
    and light linking needed, and Karma renders these where hdClaude renders
    nothing. Found 2026-09-16 while building a cross-renderer test.
 
-10. **A rough dielectric loses light on a closed shape, and the rougher it is
-    the more.** A sphere of `dielectric_bsdf` in RT mode at alpha 0.3 reads
+10. **Mostly answered 2026-09-17: a rough dielectric loses light on a closed
+    shape, and the rougher it is the more.** The compensation described below
+    is now in `mx_dielectric_bsdf`, fitted to the measured grid, and the spheres
+    read 0.9953, 0.9859 and 0.9425 in RT mode at alpha 0.1, 0.3 and 0.6 against
+    0.9826, 0.8761 and 0.6321 without it -- and 0.9951, 0.9657 and 0.9117
+    layered, against 0.9825, 0.8568 and 0.6021. Off-centre, where the interior
+    angles are steepest, the layered sphere reads 0.8290 at alpha 0.6 against
+    0.5337. The smooth spheres do not move by a digit, which the form
+    guarantees rather than achieves: every term of the fit carries a factor of
+    alpha.
+
+    **What is left of it** is the fit's own residual, which compounds over the
+    six or so crossings a sphere makes: 1% at alpha 0.1, up to 7% at 0.3 and
+    17% at 0.6 in the worst corner. The suite asserts one to those bounds, so a
+    regression that lost the compensation would read 0.63 and fail loudly, and
+    they tighten when the residual does. Closing the rest means a better fit or
+    the table it approximates -- the grid generator is committed and the
+    measurements are the constraint.
+
+    The original finding and its evidence follow.
+
+    A sphere of `dielectric_bsdf` in RT mode at alpha 0.3 reads
     0.8840 at the centre of the disc and 0.8538 off it in a white furnace at
     thirty-two bounces; `layer(R, T)` of the same interface -- the structure
     `open_pbr_surface` builds -- reads 0.8654 and 0.8234. The same two smooth

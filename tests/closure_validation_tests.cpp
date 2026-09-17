@@ -1562,11 +1562,23 @@ int main()
             // the quantity MaterialX's own compensation is built from, and
             // printing it here is what says whether the interface's deficit is
             // that deficit wearing a different coat or something else entirely.
-            std::printf("  %-6s %-6s %-8s  %-8s %-8s %-8s %-8s\n", "ior",
-                        "alpha", "theta", "E_total", "E_R", "E_T", "Ess");
-            for (const float ior : {1.33f, 1.5f, 2.0f}) {
-                for (const float alpha : {0.1f, 0.3f, 0.6f}) {
-                    for (const float viewTheta : {0.2f, 0.6f, 1.0f}) {
+            std::printf("  %-6s %-6s %-8s  %-8s %-8s %-8s %-8s %-8s\n", "ior",
+                        "alpha", "theta", "E_total", "E_R", "E_T", "Ess", "k_T");
+            // Both sides of the interface. The quadrature kernel reads a view
+            // angle past 90 degrees as a path *inside* the dense medium, which
+            // is where a glass sphere spends most of its crossings and where
+            // everything past the critical angle is reflected outright, so a
+            // compensation fitted to the outside alone would be fitted to the
+            // rarer half.
+            const float kPi = 3.14159265358979323846f;
+            for (const float ior : {1.2f, 1.33f, 1.5f, 1.8f, 2.4f}) {
+                for (const float alpha :
+                     {0.05f, 0.1f, 0.2f, 0.3f, 0.45f, 0.6f, 0.8f}) {
+                    for (const float angle :
+                         {0.1f, 0.3f, 0.5f, 0.7f, 0.9f, 1.1f, 1.3f, 1.45f,
+                          kPi - 0.1f, kPi - 0.3f, kPi - 0.5f, kPi - 0.7f,
+                          kPi - 0.9f, kPi - 1.1f, kPi - 1.3f, kPi - 1.45f}) {
+                        const float viewTheta = angle;
                         const auto measure = [&](const char* mode,
                                                  const char* tag) {
                             mx::DocumentPtr doc = validator.NewDocument();
@@ -1586,6 +1598,15 @@ int main()
                         };
                         const double total = measure("RT", "aRT");
                         const double reflected = measure("R", "aR");
+                        const double transmitted = total - reflected;
+                        // What the transmission lobe would have to be scaled by
+                        // for the interface to conserve: the reflection half
+                        // keeps what it keeps, and the rest has to cross. This
+                        // is the quantity a fit has to reproduce, so it is
+                        // printed rather than left to be derived twice.
+                        const double compensation =
+                            transmitted > 1.0e-3 ? (1.0 - reflected) / transmitted
+                                                 : 1.0;
 
                         mx::DocumentPtr mirrorDoc = validator.NewDocument();
                         mx::NodePtr mirror = AddNode(
@@ -1606,11 +1627,11 @@ int main()
                                     viewTheta, 4)
                                 .integratedAlbedo;
 
-                        std::printf("  %-6.2f %-6.2f %-8.2f  %-8.4f %-8.4f "
-                                    "%-8.4f %-8.4f\n",
+                        std::printf("  %-6.3f %-6.3f %-8.4f  %-8.4f %-8.4f "
+                                    "%-8.4f %-8.4f %-8.4f\n",
                                     double(ior), double(alpha),
                                     double(viewTheta), total, reflected,
-                                    total - reflected, ess);
+                                    transmitted, ess, compensation);
                     }
                 }
             }

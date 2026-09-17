@@ -2385,9 +2385,18 @@ int main()
                     /// own finding and is recorded in open question 10 rather
                     /// than asserted away here.
                     bool agree;
-                } roughnesses[] = {{0.1f, "alpha 0.1", true},
-                                   {0.3f, "alpha 0.3", true},
-                                   {0.6f, "alpha 0.6", false}};
+                    /// How far from one this roughness is allowed to read.
+                    ///
+                    /// One is what the physics says, and these are not that:
+                    /// they are the residual of the fitted multiple-scattering
+                    /// compensation, stated so that losing it fails loudly.
+                    /// Without it these read 0.98, 0.88 and 0.63, so every one
+                    /// of these bounds is far inside what a regression would
+                    /// produce. They tighten when question 10's residual does.
+                    double tolerance;
+                } roughnesses[] = {{0.1f, "alpha 0.1", true, 0.03},
+                                   {0.3f, "alpha 0.3", true, 0.08},
+                                   {0.6f, "alpha 0.6", false, 0.20}};
                 for (const auto& rough : roughnesses) {
                     CompiledMaterial roughSolid = MakeDielectricMaterial(
                         libraries, compiler, tracer.ShadeKernelSource(), 1.5f,
@@ -2410,11 +2419,11 @@ int main()
                             sphereFurnace(roughSolid, bareLabel.c_str(), u, 256);
                         const Pixel roughLayer = sphereFurnace(
                             roughLayered, layerLabel.c_str(), u, 256);
-                        // The distance from one is open question 10 and is
-                        // recorded rather than asserted: nothing compensates
-                        // the transmission lobe for what masking takes, so both
-                        // of these sit below one and further below it the
-                        // rougher they are.
+                        // One, to the tolerance the fitted compensation leaves.
+                        // Before it these read 0.9826, 0.8761 and 0.6321 in RT
+                        // mode and 0.9825, 0.8568 and 0.6021 layered.
+                        CHECK_NEAR(roughBare.g, 1.0, rough.tolerance);
+                        CHECK_NEAR(roughLayer.g, 1.0, rough.tolerance);
                         //
                         // What *is* asserted, and only where it has been
                         // measured to hold, is that the two agree: they are two

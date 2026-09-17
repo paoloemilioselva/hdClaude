@@ -21,6 +21,141 @@
 #include "lib/mx_microfacet_specular.glsl"
 #include "lib/mx_pt_sampling.glsl"
 
+// ---- hdClaude: the transmission lobe's share of the multiple scattering -----
+//
+// A single-scattering microfacet model loses light: `G2` drops every ray that
+// leaves into another microfacet, and never puts it back. MaterialX restores
+// that for the *reflection* lobe -- `mx_ggx_energy_compensation` -- and has no
+// term at all for the transmission lobe, so a transmissive interface loses the
+// rest of it, once per crossing. A closed sphere of rough glass rendered 0.88
+// at alpha 0.3 and 0.63 at 0.6 where it must render one.
+//
+// The factor below is what the transmission lobe has to be scaled by for the
+// interface to conserve: the reflection half keeps what it keeps, and the rest
+// has to cross, so `k = (1 - E_R) / E_T` for the two halves' directional
+// albedos. Those albedos were *measured*, by integrating this closure's own
+// generated response over the whole sphere by quadrature at 560 combinations
+// of index, roughness and angle -- `HDCLAUDE_ALBEDO_GRID=1` on the closure
+// validation suite prints the grid -- and this is a polynomial fitted to them,
+// which is the same shape of answer MaterialX gives for `mx_ggx_dir_albedo`.
+//
+// Deriving it instead was tried and does not work: assuming the transmission
+// lobe loses what the reflection lobe loses gives a closed form with no free
+// parameter and both right limits, and it overshoots by three times the
+// deficit. A refracted direction bends toward the normal, where masking is
+// weaker, so it loses far less -- between 7% and 38% of what a mirror of the
+// same roughness loses, varying by a factor of five over the grid.
+//
+// Three things about the form, each of which the measurements forced:
+//
+//  * Every term carries a factor of alpha, so `k` is exactly one at roughness
+//    zero. A smooth interface loses nothing to masking and must not move by so
+//    much as a bit; every furnace that passes today is a smooth one.
+//  * Inside the dense medium the critical angle is a near-discontinuity in
+//    both albedos, and it sits at a different angle for every index. Snell puts
+//    it at exactly one in `n sin(theta)`, so the inside fit is in the cosine of
+//    the *refracted* angle, which no polynomial in the incident cosine could
+//    have followed: fitted the other way, the compensation more than doubled
+//    the energy at some configurations.
+//  * Past the critical angle nothing crosses, so there is nothing to restore
+//    and `k` is one. The measurements agree -- the interface already conserves
+//    there -- and the ratio is meaningless, since it is zero over zero.
+//
+// Fitted with a small ridge penalty, chosen by watching what the polynomial
+// does on a grid finer than the one it was fitted to rather than by the
+// residual alone: without it the coefficients reach 451 and cancel each other,
+// which is accurate where there is a sample and unconstrained between them. It
+// conserves to a mean of exactly 1.0000, an rms of 0.6% outside and 1.3%
+// inside, and a worst case of 2.6% and 4.6% at the corners of the grid.
+float hdclaude_dielectric_transmission_compensation(float mu, float alpha,
+                                                    float f0, bool inside)
+{
+    float a = alpha;
+    float a2 = a * a;
+    float a3 = a2 * a;
+    float a4 = a3 * a;
+    float m = mu;
+    float m2 = m * m;
+    float m3 = m2 * m;
+    float f = f0;
+    float f2 = f * f;
+
+    float logK;
+    if (inside)
+    {
+        logK = +0.445462 * a
+            -2.704971 * a * f
+            -5.784432 * a * f2
+            +2.049298 * a2
+            +8.316458 * a2 * f
+            -9.211329 * a2 * f2
+            -4.087932 * a3
+            +3.350091 * a3 * f
+            -9.014799 * a3 * f2
+            +2.190566 * a4
+            -2.156331 * a4 * f
+            -0.587647 * m * a
+            +5.625889 * m * a * f
+            -7.308736 * m * a * f2
+            +0.562698 * m * a2
+            +4.418787 * m * a2 * f
+            -10.046942 * m * a2 * f2
+            +1.031128 * m * a3
+            -2.659937 * m * a3 * f
+            -2.063579 * m * a4
+            -0.718397 * m2 * a
+            +2.457740 * m2 * a * f
+            -8.819443 * m2 * a * f2
+            -0.487563 * m2 * a2
+            -0.760301 * m2 * a2 * f
+            +2.457627 * m2 * a3
+            +0.734684 * m3 * a
+            -1.824643 * m3 * a * f
+            -1.182291 * m3 * a2
+        ;
+    }
+    else
+    {
+        logK = +1.078175 * a
+            -1.152702 * a * f
+            +4.090793 * a * f2
+            -2.699899 * a2
+            -1.953423 * a2 * f
+            +1.206703 * a2 * f2
+            +3.996316 * a3
+            +0.855338 * a3 * f
+            +0.170801 * a3 * f2
+            -2.117668 * a4
+            +0.629496 * a4 * f
+            -2.428790 * m * a
+            +3.189865 * m * a * f
+            -3.625603 * m * a * f2
+            +7.125180 * m * a2
+            +4.058791 * m * a2 * f
+            -3.015603 * m * a2 * f2
+            -6.424579 * m * a3
+            -2.528791 * m * a3 * f
+            +2.323907 * m * a4
+            +1.186253 * m2 * a
+            -1.698790 * m2 * a * f
+            -2.590402 * m2 * a * f2
+            -5.164590 * m2 * a2
+            +0.566014 * m2 * a2 * f
+            +2.122729 * m2 * a3
+            +0.151367 * m3 * a
+            -0.066219 * m3 * a * f
+            +0.912418 * m3 * a2
+        ;
+    }
+
+    // Never below one, since the interface cannot keep more than it received
+    // and this only restores what masking took; and capped, because a fit
+    // evaluated outside the roughness range it was measured over is a
+    // polynomial with an opinion rather than a measurement. The cap is above
+    // the largest value the grid produces, 3.8, so it binds only off the grid.
+    return clamp(exp(logK), 1.0, 4.0);
+}
+
 void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float ior, vec2 roughness, float thinfilm_thickness, float thinfilm_ior, vec3 N, vec3 X, int distribution, int scatter_mode, inout BSDF bsdf)
 {
     if (weight < M_FLOAT_EPS)
@@ -173,6 +308,34 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
     // choosing on a stale value.
     vec3 Fv = mx_compute_fresnel(NdotV, fd);
     vec3 compV = mx_ggx_energy_compensation(NdotV, avgAlpha, Fv);
+
+    // The transmission lobe's multiple-scattering factor, at the macro normal
+    // like the reflection lobe's own, because both are statements about a
+    // directional albedo rather than about one direction.
+    //
+    // Inside the dense medium it is read at the *refracted* angle, which is
+    // where the fit lives: `relativeIor` is `1 / n` there, so `n sin(theta)` is
+    // `sin(theta) / relativeIor`, and it reaches one at the critical angle. Past
+    // that the interface transmits nothing and there is nothing to restore.
+    float transmissionCompensation = 1.0;
+    if (scatter_mode != 0)
+    {
+        float mu = NdotV;
+        bool crossing = true;
+        if (insideDenseMedium)
+        {
+            float sinTheta = sqrt(max(0.0, 1.0 - NdotV * NdotV));
+            float sinCritical = sinTheta / max(relativeIor, M_FLOAT_EPS);
+            crossing = sinCritical < 1.0;
+            mu = sqrt(max(0.0, 1.0 - sinCritical * sinCritical));
+        }
+        if (crossing)
+        {
+            transmissionCompensation =
+                hdclaude_dielectric_transmission_compensation(
+                    mu, avgAlpha, F0, insideDenseMedium);
+        }
+    }
 
     // This albedo is not decoration: `layer` reads it as the *energy split*, and
     // gives the base `1 - albedo` of the light. So it has to agree with the
@@ -587,7 +750,8 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
         {
             fresnelWeight = vec3(1.0) - F;
         }
-        bsdf.response = fresnelWeight * btdf * safeTint * weight;
+        bsdf.response =
+            fresnelWeight * transmissionCompensation * btdf * safeTint * weight;
 
         // ---- hdClaude: density -----------------------------------------------
         float G1V = mx_pt_ggx_smith_G1_anisotropic(
