@@ -124,6 +124,27 @@ std::string UnhonouredInputs(HdSceneDelegate* delegate, const SdfPath& id)
     colour(HdLightTokens->shadowColor);
     colour(HdLightTokens->shapingFocusTint);
 
+    // `treatAsPoint` is not an `inputs:` property: UsdLux declares it as a plain
+    // uniform bool on the sphere light, so it is read by its own name.
+    //
+    // Authored true, it says to shade the light as a point emitter rather than
+    // as a sphere of the authored radius -- which is a different light, with
+    // hard shadow edges instead of a penumbra the radius sets. hdClaude samples
+    // the sphere either way, so this says so rather than quietly rendering the
+    // softer light. The same goes for `treatAsLine` on a cylinder light, which
+    // is reported for the same reason even though hdClaude has no cylinder
+    // light at all yet and says so separately.
+    const auto asPoint = [&](const TfToken& name, const char* shape) {
+        if (Param<bool>(delegate, id, name, false)) {
+            Unhonoured(&report,
+                       TfStringPrintf("%s = 1 is not honoured; the light is "
+                                      "sampled as %s of its authored size",
+                                      name.GetText(), shape));
+        }
+    };
+    asPoint(UsdLuxTokens->treatAsPoint, "a sphere");
+    asPoint(UsdLuxTokens->treatAsLine, "a cylinder");
+
     const VtValue filters = delegate->GetLightParamValue(id, HdTokens->filters);
     if (filters.IsHolding<SdfPathVector>() &&
         !filters.UncheckedGet<SdfPathVector>().empty()) {
@@ -459,13 +480,21 @@ void HdClaudeLight::Sync(HdSceneDelegate* sceneDelegate,
     entry.light = light;
     entry.lightLink = lightLink;
     entry.shadowLink = shadowLink;
-    entry.report = std::move(entryReport);
+    entry.report = entryReport;
     param->SceneStore()->PublishLight(id, std::move(entry));
 
     HdClaudeTrace(
         "light <%s>: type %u, radiance %.3f %.3f %.3f, area %.4f, shadows %s",
         id.GetText(), light.type, light.radiance[0], light.radiance[1],
         light.radiance[2], light.area, light.castsShadows ? "yes" : "no");
+
+    // And what this light asked for that it did not get. The report already
+    // travels to `GetRenderStats`, which is where a host reads it, but that is
+    // no help to anyone looking at a render from a terminal -- and this is the
+    // channel every other finding about a scene comes out of.
+    if (!entryReport.empty()) {
+        HdClaudeTrace("light <%s>: %s", id.GetText(), entryReport.c_str());
+    }
 
     *dirtyBits = HdLight::Clean;
 }
