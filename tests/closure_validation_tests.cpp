@@ -40,6 +40,7 @@
 #include <cmath>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <functional>
 #include <sstream>
@@ -1523,6 +1524,94 @@ int main()
                     label == "generalized_schlick R (0.3)" ||
                     label == "multiply(conductor, 0.5)") {
                     CheckSpecularAlbedo(c.label, h);
+                }
+            }
+        }
+
+        // --- The dielectric interface's own directional albedo ---------------
+        //
+        // What open question 10 needs and what guessing it got wrong. A rough
+        // dielectric loses light -- a closed sphere of one reads 0.88 at alpha
+        // 0.3 and 0.63 at 0.6 where it must read one -- because single
+        // scattering drops every ray that leaves into another microfacet, and
+        // MaterialX compensates only the reflection lobe. Restoring the rest
+        // means scaling by the interface's albedo, so the first thing to know
+        // is what that albedo *is*.
+        //
+        // An attempt at deriving it from `mx_ggx_dir_albedo`, which is a
+        // reflection-only fit, overshot by three times the deficit: it assumed
+        // the transmission lobe loses as much to masking as the reflection lobe
+        // does at the same roughness. This measures both instead. The quadrature
+        // integrates the response over the *whole* sphere, evaluating each
+        // direction as the shade kernel would -- reflection above the surface,
+        // transmission below -- so an RT lobe's integrated albedo is the whole
+        // interface and an R lobe's is its reflection half. Their difference is
+        // the transmission half.
+        //
+        // Off by default, because it is a generator rather than a gate: a grid
+        // of these is what a table would be built from, and nothing asserts
+        // them yet. `HDCLAUDE_ALBEDO_GRID=1` prints it.
+        const char* const albedoGrid = std::getenv("HDCLAUDE_ALBEDO_GRID");
+        if (albedoGrid != nullptr && albedoGrid[0] != '\0' &&
+            albedoGrid[0] != '0') {
+            std::printf("\n  dielectric interface albedo "
+                        "(quadrature, entering)\n");
+            // `Ess` beside them, which is the same GGX lobe with its Fresnel
+            // held at one -- `generalized_schlick` with both colours white --
+            // and so is the energy a *mirror* of this roughness keeps. It is
+            // the quantity MaterialX's own compensation is built from, and
+            // printing it here is what says whether the interface's deficit is
+            // that deficit wearing a different coat or something else entirely.
+            std::printf("  %-6s %-6s %-8s  %-8s %-8s %-8s %-8s\n", "ior",
+                        "alpha", "theta", "E_total", "E_R", "E_T", "Ess");
+            for (const float ior : {1.33f, 1.5f, 2.0f}) {
+                for (const float alpha : {0.1f, 0.3f, 0.6f}) {
+                    for (const float viewTheta : {0.2f, 0.6f, 1.0f}) {
+                        const auto measure = [&](const char* mode,
+                                                 const char* tag) {
+                            mx::DocumentPtr doc = validator.NewDocument();
+                            mx::NodePtr n =
+                                AddNode(doc, "dielectric_bsdf", tag, "BSDF");
+                            SetValue(n, "weight", 1.0f);
+                            SetValue(n, "ior", ior);
+                            SetValue(n, "roughness",
+                                     mx::Vector2(alpha, alpha));
+                            n->setInputValue("scatter_mode", std::string(mode),
+                                             "string");
+                            return validator
+                                .MeasureDistribution(WrapInMaterial(doc, n),
+                                                     std::string("vAlb") + tag,
+                                                     viewTheta, 4)
+                                .integratedAlbedo;
+                        };
+                        const double total = measure("RT", "aRT");
+                        const double reflected = measure("R", "aR");
+
+                        mx::DocumentPtr mirrorDoc = validator.NewDocument();
+                        mx::NodePtr mirror = AddNode(
+                            mirrorDoc, "generalized_schlick_bsdf", "aE", "BSDF");
+                        SetValue(mirror, "weight", 1.0f);
+                        SetValue(mirror, "color0",
+                                 mx::Color3(1.0f, 1.0f, 1.0f));
+                        SetValue(mirror, "color82",
+                                 mx::Color3(1.0f, 1.0f, 1.0f));
+                        SetValue(mirror, "color90",
+                                 mx::Color3(1.0f, 1.0f, 1.0f));
+                        SetValue(mirror, "roughness",
+                                 mx::Vector2(alpha, alpha));
+                        const double ess =
+                            validator
+                                .MeasureDistribution(
+                                    WrapInMaterial(mirrorDoc, mirror), "vAlbE",
+                                    viewTheta, 4)
+                                .integratedAlbedo;
+
+                        std::printf("  %-6.2f %-6.2f %-8.2f  %-8.4f %-8.4f "
+                                    "%-8.4f %-8.4f\n",
+                                    double(ior), double(alpha),
+                                    double(viewTheta), total, reflected,
+                                    total - reflected, ess);
+                    }
                 }
             }
         }

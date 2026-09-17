@@ -476,6 +476,40 @@ Tracked here rather than decided prematurely.
     All twelve must read one, and the smooth readings beside them -- 1.0046 and
     1.0047 -- must not move.
 
+    **The interface's own albedo is now measured, and it settles the design.**
+    `HDCLAUDE_ALBEDO_GRID=1` on the closure validation suite prints it: the
+    quadrature integrates the response over the whole sphere, evaluating each
+    direction as the shade kernel would, so an `RT` lobe's integrated albedo is
+    the whole interface and an `R` lobe's is its reflection half. At n = 1.5,
+    entering:
+
+        alpha   theta 0.2   theta 0.6   theta 1.0
+        0.1     0.9988      0.9980      0.9939
+        0.3     0.9881      0.9807      0.9552
+        0.6     0.9545      0.9312      0.8732
+
+    That is the per-crossing loss, and it predicts the spheres: 0.98^6.5 is
+    0.877 against a measured 0.8761 at alpha 0.3, and 0.93^6.5 is 0.63 against
+    0.6321 at alpha 0.6. So the deficit is exactly "one crossing's albedo, as
+    many times as the path crosses", and the fix is to divide by it.
+
+    It cannot be had from the reflection lobe's fit. Against `Ess` from
+    `mx_ggx_dir_albedo(cos theta, alpha, 1, 1)`, the interface's deficit is
+    between **7% and 38%** of the mirror's, varying by a factor of five over
+    the same grid and strongly with angle -- 0.08 at theta 0.2 against 0.34 at
+    theta 1.0, at alpha 0.6 -- so it is not `(1 - Ess)` times any function of
+    the index alone. A dielectric loses far less than a mirror of the same
+    roughness because most of its light transmits, and a refracted direction is
+    much less exposed to masking. Hence the table, over cos(theta), alpha and
+    eta, with the grid generator above as its source.
+
+    Worth recording beside it: the *mirror* is already lossless. The `Ess`
+    column of that grid, measured on `generalized_schlick` with both colours
+    white, reads between 0.9873 and 1.0130 at every roughness, because
+    MaterialX's compensation is applied to it. The defect is not that the
+    renderer cannot conserve energy at a rough interface; it is that only one of
+    the two lobes was ever given the term that does it.
+
     **The two encodings also part company at alpha 0.6**, by 12.7% off-centre,
     where they agree to a fifth of a per cent when smooth and to 4.7% at alpha
     0.3. That is a second thing to explain, and it is not the division guard in
