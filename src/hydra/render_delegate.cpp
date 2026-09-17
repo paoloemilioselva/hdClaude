@@ -12,6 +12,8 @@
 #include "render_pass.h"
 #include "texture_loader.h"
 
+#include "hdclaude/core/environment.h"
+
 #include "pxr/base/plug/plugin.h"
 #include "pxr/base/plug/registry.h"
 #include "pxr/base/tf/diagnostic.h"
@@ -303,8 +305,11 @@ void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
 
     try {
         hdclaude::VulkanContextOptions options;
+        // Through `EnvironmentFlag`, which every layer shares, so that this
+        // agrees with the trace about what a value means -- including the
+        // trailing space cmd leaves on `set VAR=1 && program`.
         options.enableValidation =
-            TfGetenvBool("HDCLAUDE_ENABLE_VULKAN_VALIDATION", false);
+            hdclaude::EnvironmentFlag("HDCLAUDE_ENABLE_VULKAN_VALIDATION");
         options.preferredDeviceName = TfGetenv("HDCLAUDE_DEVICE");
 
         // NGX will not initialise without instance and device extensions of its

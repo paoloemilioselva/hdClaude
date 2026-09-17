@@ -1,5 +1,7 @@
 #include "hdclaude/gpu/acceleration_structure.h"
 
+#include "hdclaude/core/environment.h"
+
 #include <iterator>
 #include <unordered_set>
 
@@ -887,10 +889,14 @@ void SceneAccelerator::Update(const Scene& scene)
         instances.push_back(entry);
     }
 
-    // DIAGNOSTIC: what the instances span, so two publications of the same
-    // stage can be compared. A tree over instances scattered far wider than
-    // the model traverses badly however good each prototype is.
-    if (std::getenv("HDCLAUDE_TRACE") != nullptr) {
+    // Under the trace: what the instances span, so two publications of the
+    // same stage can be compared. A tree over instances scattered far wider
+    // than the model traverses badly however good each prototype is.
+    //
+    // Read through `EnvironmentFlag` like every other reader of this variable.
+    // Asking only whether it is *set* made `HDCLAUDE_TRACE=0` switch the trace
+    // on, which is the opposite of what anyone typing it means.
+    if (hdclaude::EnvironmentFlag("HDCLAUDE_TRACE")) {
         float lo[3] = {1e30f, 1e30f, 1e30f};
         float hi[3] = {-1e30f, -1e30f, -1e30f};
         for (const auto& entry : instances) {

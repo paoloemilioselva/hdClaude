@@ -8,7 +8,7 @@
 // names the stage that failed. Cheap enough to keep in the shipping build --
 // the check is one cached bool and the calls do nothing when it is off.
 
-#include "pxr/base/tf/getenv.h"
+#include "hdclaude/core/environment.h"
 
 #include <algorithm>
 #include <cstdarg>
@@ -17,9 +17,18 @@
 
 PXR_NAMESPACE_OPEN_SCOPE
 
+/// Read the way every other layer reads it, rather than through `TfGetenvBool`.
+///
+/// The two disagreed, and the disagreement was invisible: `TfGetenvBool` matches
+/// its words exactly, so a value of `"1 "` -- which is what cmd assigns for
+/// `set HDCLAUDE_TRACE=1 && program`, trailing space and all -- left this
+/// silent while the GPU layer, which looked only at the first character, traced
+/// normally. A half-traced render is worse than an untraced one: the Vulkan
+/// stages announce themselves, every light and material stays quiet, and it
+/// reads exactly like a renderer that never synced its lights.
 inline bool HdClaudeTraceEnabled()
 {
-    static const bool enabled = TfGetenvBool("HDCLAUDE_TRACE", false);
+    static const bool enabled = hdclaude::EnvironmentFlag("HDCLAUDE_TRACE");
     return enabled;
 }
 

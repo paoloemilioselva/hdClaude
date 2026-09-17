@@ -1,6 +1,7 @@
 #include "hdclaude/gpu/path_tracer.h"
 
 #include "hdclaude/gpu/environment_distribution.h"
+#include "hdclaude/core/environment.h"
 #include "hdclaude/core/spectrum.h"
 
 #include <cstring>
@@ -2123,7 +2124,8 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     // free, so removing it means the explicit ones now carry the whole weight;
     // the synchronisation validation gate is what says they do, and it is part
     // of the GPU suite for exactly this class of change (2026-09-06).
-    // DIAGNOSTIC: poison the path state before the frame touches it.
+    // Under HDCLAUDE_POISON_PATH_STATE: poison the path state before the
+    // frame touches it.
     //
     // A rare, scale-dependent difference that is stable within a process and
     // varies between them is the shape of a read of uninitialised memory: the
@@ -2140,15 +2142,15 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     // whether a slow frame was slow on the device or waiting on the host,
     // and it cannot answer that without the device's own time.
     const bool profileAsked =
-        std::getenv("HDCLAUDE_PROFILE_KERNELS") != nullptr ||
-        std::getenv("HDCLAUDE_FRAME_LOG") != nullptr;
+        hdclaude::EnvironmentFlag("HDCLAUDE_PROFILE_KERNELS") ||
+        hdclaude::EnvironmentFlag("HDCLAUDE_FRAME_LOG");
     if (!_profileKernels && profileAsked &&
         _context.Capabilities().timestampPeriod > 0.0f &&
         _context.Capabilities().timestampValidBits > 0) {
         _profileKernels = true;
     }
 
-    if (std::getenv("HDCLAUDE_POISON_PATH_STATE") != nullptr) {
+    if (hdclaude::EnvironmentFlag("HDCLAUDE_POISON_PATH_STATE")) {
         _context.SubmitImmediate([&](VkCommandBuffer command) {
             for (VulkanBuffer* buffer :
                  {&slot.origin, &slot.direction, &slot.throughput, &slot.radiance,

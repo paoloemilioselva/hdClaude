@@ -470,7 +470,7 @@ void HdClaudeRenderPass::_Execute(
 
     // --- Scene upload ----------------------------------------------------------
     //
-    // DIAGNOSTIC: republish once, at a chosen frame.
+    // Under HDCLAUDE_REPUBLISH_AT: republish once, at a chosen frame.
     //
     // An interactive session that republishes and then keeps rendering
     // reaches a state tens of times faster than a batch render ever does.

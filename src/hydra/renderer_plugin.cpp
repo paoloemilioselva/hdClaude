@@ -5,6 +5,7 @@
 
 #include "hdclaude/gpu/vulkan_context.h"
 
+#include "pxr/base/tf/getenv.h"
 #include "pxr/imaging/hd/rendererPluginRegistry.h"
 
 #include <chrono>

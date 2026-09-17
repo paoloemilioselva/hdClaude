@@ -1,5 +1,7 @@
 #include "hdclaude/gpu/vulkan_context.h"
 
+#include "hdclaude/core/environment.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -15,42 +17,11 @@
 namespace hdclaude {
 namespace {
 
-bool EnvironmentFlag(const char* name)
-{
-#if defined(_MSC_VER)
-    char* value = nullptr;
-    std::size_t size = 0;
-    if (_dupenv_s(&value, &size, name) != 0 || value == nullptr) {
-        return false;
-    }
-    const bool enabled = value[0] == '1';
-    std::free(value);
-    return enabled;
-#else
-    const char* value = std::getenv(name);
-    return value != nullptr && value[0] == '1';
-#endif
-}
-
-/// An environment variable's value, or empty. Mirrors EnvironmentFlag rather
-/// than reaching for TfGetenv: this layer does not depend on pxr and a cache
-/// path is not a reason to start.
-std::string EnvironmentValue(const char* name)
-{
-#if defined(_MSC_VER)
-    char* value = nullptr;
-    std::size_t size = 0;
-    if (_dupenv_s(&value, &size, name) != 0 || value == nullptr) {
-        return {};
-    }
-    std::string text(value);
-    std::free(value);
-    return text;
-#else
-    const char* value = std::getenv(name);
-    return value != nullptr ? std::string(value) : std::string();
-#endif
-}
+// Both read from `hdclaude/core/environment.h`, so that every layer agrees on
+// what a variable set to `1`, to `true`, or to `1 ` with the trailing space cmd
+// leaves on `set VAR=1 && program` means.
+using hdclaude::EnvironmentFlag;
+using hdclaude::EnvironmentValue;
 
 std::string ToLower(std::string text)
 {
@@ -504,7 +475,7 @@ VulkanContext::VulkanContext(const VulkanContextOptions& options)
     Check(vkCreateInstance(&instanceInfo, nullptr, &_instance), "vkCreateInstance");
     volkLoadInstanceOnly(_instance);
     const auto hdclaudeInstanceDone = std::chrono::steady_clock::now();
-    if (std::getenv("HDCLAUDE_TRACE") != nullptr) {
+    if (EnvironmentFlag("HDCLAUDE_TRACE")) {
         std::fprintf(stderr, "[hdClaude] vkCreateInstance: %.0f ms\n",
                      std::chrono::duration<double, std::milli>(
                          hdclaudeInstanceDone - hdclaudeInstanceStart)
@@ -530,7 +501,7 @@ VulkanContext::VulkanContext(const VulkanContextOptions& options)
     SelectPhysicalDevice(options);
     const auto hdclaudeSelectDone = std::chrono::steady_clock::now();
     CreateDevice(options);
-    if (std::getenv("HDCLAUDE_TRACE") != nullptr) {
+    if (EnvironmentFlag("HDCLAUDE_TRACE")) {
         std::fprintf(stderr,
                      "[hdClaude] selectPhysicalDevice: %.0f ms, vkCreateDevice: "
                      "%.0f ms\n",

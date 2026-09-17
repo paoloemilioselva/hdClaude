@@ -3,6 +3,7 @@
 #include "hdclaude/core/hash.h"
 #include "hdclaude/core/shader_cache.h"
 #include "hdclaude/core/curve_sweep.h"
+#include "hdclaude/core/environment.h"
 #include "hdclaude/core/display.h"
 #include "hdclaude/core/image_metrics.h"
 #include "hdclaude/core/spectrum.h"
@@ -1321,10 +1322,60 @@ void TestCubicCurveBasesMatchTheirDefinitions()
     }
 }
 
+/// Every layer reads a flag the same way, and a stray space does not silence
+/// one of them.
+///
+/// hdClaude read `HDCLAUDE_TRACE` three ways at once: `TfGetenvBool` in the
+/// Hydra layer, the first character in the Vulkan context, and "is it set at
+/// all" in the acceleration structure -- so `HDCLAUDE_TRACE=0` switched two of
+/// the three on, and `"1 "` switched one of them off. That is not hypothetical
+/// whitespace: `set HDCLAUDE_TRACE=1 && program` in cmd assigns everything up
+/// to the `&&`, the space included, which produced a render that traced its
+/// Vulkan stages and none of its lights.
+void TestEnvironmentFlagReadsOneWay()
+{
+    const auto set = [](const char* value) {
+#if defined(_MSC_VER)
+        _putenv_s("HDCLAUDE_TEST_FLAG", value);
+#else
+        setenv("HDCLAUDE_TEST_FLAG", value, 1);
+#endif
+    };
+
+    for (const char* yes : {"1", "true", "TRUE", "yes", "on", " 1", "1 ",
+                            "\t1\n", "  true  "}) {
+        set(yes);
+        CHECK(hdclaude::EnvironmentFlag("HDCLAUDE_TEST_FLAG"));
+    }
+    for (const char* no : {"0", "false", "FALSE", "no", "off", " 0 ", "0\t"}) {
+        set(no);
+        CHECK(!hdclaude::EnvironmentFlag("HDCLAUDE_TEST_FLAG"));
+    }
+
+    // Unset and unrecognised both take the caller's default rather than a
+    // guess. Guessing is how "0" came to mean "trace".
+    set("");
+    CHECK(!hdclaude::EnvironmentFlag("HDCLAUDE_TEST_FLAG"));
+    CHECK(hdclaude::EnvironmentFlag("HDCLAUDE_TEST_FLAG", true));
+    set("banana");
+    CHECK(!hdclaude::EnvironmentFlag("HDCLAUDE_TEST_FLAG"));
+    CHECK(hdclaude::EnvironmentFlag("HDCLAUDE_TEST_FLAG", true));
+    CHECK(!hdclaude::EnvironmentFlag("HDCLAUDE_TEST_UNSET_FLAG"));
+    CHECK(hdclaude::EnvironmentFlag("HDCLAUDE_TEST_UNSET_FLAG", true));
+
+    // And the value comes back trimmed, since a path or a device name typed
+    // beside an `&&` carries the same space.
+    set("  RTX 5060 Ti  ");
+    CHECK_EQ(hdclaude::EnvironmentValue("HDCLAUDE_TEST_FLAG"),
+             std::string("RTX 5060 Ti"));
+    set("");
+}
+
 }  // namespace
 
 int main()
 {
+    TestEnvironmentFlagReadsOneWay();
     TestSha256KnownVectors();
     TestSha256FieldsAreUnambiguous();
     TestShaderCacheRoundTrip();
