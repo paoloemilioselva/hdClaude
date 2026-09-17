@@ -24,6 +24,22 @@ using namespace MaterialX;
 /// implementations than the design needs. In a compute shader a global is
 /// per-invocation, so this is a naming convention, not shared state.
 constexpr const char* kBsdfGlobal = "hdclaude_bsdf";
+constexpr const char* kDisplacementGlobal = "hdclaude_displacement";
+
+/// Whether this graph produces a displacement rather than a surface.
+///
+/// Asked of the output socket's type rather than of the node's classification:
+/// MaterialX classifies the `displacement` constructor as a shader node, the
+/// same as `surface`, and the two are told apart by what they output.
+bool IsDisplacementGraph(const mx::ShaderGraph& graph)
+{
+    for (mx::ShaderGraphOutputSocket* socket : graph.getOutputSockets()) {
+        if (socket->getType() == mx::Type::DISPLACEMENTSHADER) {
+            return true;
+        }
+    }
+    return false;
+}
 constexpr const char* kEmissionGlobal = "hdclaude_emission";
 constexpr const char* kOpacityGlobal = "hdclaude_opacity";
 
@@ -687,6 +703,13 @@ void PathTracerShaderGenerator::emitPixelStage(const ShaderGraph& graph,
     emitLine("BSDF " + string(kBsdfGlobal), stage);
     emitLine("vec3 " + string(kEmissionGlobal) + " = vec3(0.0)", stage);
     emitLine("float " + string(kOpacityGlobal) + " = 1.0", stage);
+    // Where a displacement program leaves its answer. Declared for every
+    // material rather than only for the ones that displace: the struct costs
+    // nothing in a program that never writes it, and declaring it
+    // conditionally would make the ABI depend on the document.
+    emitLine("displacementshader " + string(kDisplacementGlobal) +
+                 " = displacementshader(vec3(0.0), 1.0)",
+             stage);
     emitLineBreak(stage);
 
     // --- Token substitutions ---------------------------------------------------
@@ -707,6 +730,37 @@ void PathTracerShaderGenerator::emitPixelStage(const ShaderGraph& graph,
 
     // --- Node function definitions ------------------------------------------
     emitFunctionDefinitions(graph, context, stage);
+
+    // --- A displacement program ---------------------------------------------
+    //
+    // MaterialX's `displacement` terminal is a separate output from `surface`
+    // with its own graph, so a displacing material generates twice: once for
+    // what the surface looks like and once for where it is. The graph here
+    // terminates in a `displacementshader` rather than a `surfaceshader`, and
+    // the whole entry point is the pattern nodes that feed it plus the struct
+    // they produce -- there are no closures to sample and no ClosureData to
+    // thread, which is why it takes no parameter.
+    //
+    // A displacement is evaluated per *vertex*, before the acceleration
+    // structure is built, so this runs in the `displace` kernel rather than in
+    // `shade`, over geometry rather than over paths.
+    if (IsDisplacementGraph(graph)) {
+        setFunctionName(kMaterialDisplaceEntryPoint, stage);
+        emitLine("void " + string(kMaterialDisplaceEntryPoint) + "()", stage,
+                 false);
+        emitScopeBegin(stage);
+        emitFunctionCalls(graph, context, stage);
+        for (ShaderGraphOutputSocket* socket : graph.getOutputSockets()) {
+            if (socket->getConnection()) {
+                emitLine(string(kDisplacementGlobal) + " = " +
+                             socket->getConnection()->getVariable(),
+                         stage);
+            }
+        }
+        emitScopeEnd(stage);
+        emitLineBreak(stage);
+        return;
+    }
 
     // --- Entry point --------------------------------------------------------
     //

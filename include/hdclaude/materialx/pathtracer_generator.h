@@ -51,6 +51,33 @@ inline constexpr std::uint32_t kMaterialAbiVersion = 1;
 /// Name of the generated entry point the `shade` kernel calls.
 inline constexpr const char* kMaterialShadeEntryPoint = "hdclaude_material_shade";
 
+/// Name of the generated entry point the `displace` kernel calls.
+///
+/// A material's displacement is a second program generated from the same
+/// document: MaterialX's `displacement` terminal is a separate output from
+/// `surface`, with its own graph, and a mesh is displaced before it is traced
+/// rather than while it is shaded. It leaves its answer in
+/// `hdclaude_displacement`, the `displacementshader` struct MaterialX defines
+/// as an offset and a scale.
+inline constexpr const char* kMaterialDisplaceEntryPoint =
+    "hdclaude_material_displace";
+
+/// How the offset in `hdclaude_displacement` is to be read.
+///
+/// MaterialX has two constructors for one struct, and they mean different
+/// things by the same three floats: `ND_displacement_float` documents "scalar
+/// displacement amount along the surface normal direction" and packs it as
+/// `vec3(disp)`, while `ND_displacement_vector3` documents "vector
+/// displacement in (dPdu, dPdv, N) tangent/normal space". The generated code
+/// is identical for both -- it is the constructor that carries the meaning --
+/// so the host records which one it compiled and the kernel is told.
+enum class DisplacementSpace : std::uint32_t {
+    /// Along the shading normal, from `ND_displacement_float`.
+    AlongNormal = 0,
+    /// In the (dPdu, dPdv, N) frame, from `ND_displacement_vector3`.
+    Tangent = 1,
+};
+
 /// Syntax for `genglsl_pt`.
 ///
 /// Identical to Vulkan GLSL except that `BSDF` carries the path-tracing fields.

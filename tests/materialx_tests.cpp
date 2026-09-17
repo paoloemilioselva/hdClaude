@@ -206,6 +206,39 @@ struct Generated {
     std::string error;
 };
 
+/// Generate from one named element rather than from whatever the document
+/// declares renderable.
+///
+/// `findRenderableElements` answers with surfaces, and a material that only
+/// displaces is not one -- which is exactly the case a displacement program is
+/// generated for. The compiler names the terminal it wants for the same
+/// reason: Hydra hands it a `displacement` terminal by name.
+Generated GenerateElement(mx::DocumentPtr doc, mx::TypedElementPtr element,
+                          const std::string& name)
+{
+    Generated result;
+    try {
+        mx::ShaderGeneratorPtr generator = PathTracerShaderGenerator::create();
+        mx::GenContext context(generator);
+        context.registerSourceCodeSearchPath(SourceSearchPath());
+        context.getOptions().hwMaxActiveLightSources = 0;
+
+        mx::ShaderPtr shader = generator->generate(name, element, context);
+        if (!shader) {
+            result.error = "generator returned no shader";
+            return result;
+        }
+        result.source = shader->getSourceCode(mx::Stage::PIXEL);
+        result.ok = !result.source.empty();
+        if (!result.ok) {
+            result.error = "generated source is empty";
+        }
+    } catch (const std::exception& error) {
+        result.error = error.what();
+    }
+    return result;
+}
+
 Generated GenerateMaterial(mx::DocumentPtr doc, const std::string& name)
 {
     Generated result;
@@ -603,6 +636,109 @@ void TestThinWalledIsReadFromTheDocument(mx::DocumentPtr libraries)
 
 }  // namespace
 
+/// A displacement terminal generates its own program, and it compiles.
+///
+/// MaterialX's `displacement` output is a separate terminal from `surface`
+/// with its own graph, so a displacing material generates twice. The graph
+/// terminates in a `displacementshader` rather than a `surfaceshader`, which
+/// is what the generator keys on: the constructor is classified as a shader
+/// node exactly as `surface` is, and only its output type tells them apart.
+///
+/// What this asserts is that the second program exists, names the displacement
+/// entry point rather than the shading one, writes the struct, and is valid
+/// GLSL. Whether the *number* it computes is right is a question for a render,
+/// and a sphere of known radius answers it there.
+void TestDisplacementGeneratesItsOwnProgram(const GlslCompiler& compiler,
+                                            mx::DocumentPtr libraries)
+{
+    mx::DocumentPtr doc = mx::createDocument();
+    doc->importLibrary(libraries);
+
+    // A height that varies over the surface rather than a constant, so the
+    // pattern nodes that feed a displacement are generated too -- a constant
+    // would fold away and prove nothing about the graph being walked.
+    mx::NodePtr texcoord = AddNode(doc, "texcoord", "dTex", "vector2");
+    mx::NodePtr height = AddNode(doc, "extract", "dHeight", "float");
+    CHECK(texcoord && height);
+    if (!texcoord || !height) {
+        return;
+    }
+    height->addInputFromNodeDef("in")->setNodeName(texcoord->getName());
+    height->addInputFromNodeDef("index")->setValue(0);
+
+    mx::NodePtr displacement =
+        AddNode(doc, "displacement", "dDisp", "displacementshader");
+    CHECK(displacement != nullptr);
+    if (!displacement) {
+        return;
+    }
+    displacement->addInputFromNodeDef("displacement")
+        ->setNodeName(height->getName());
+    displacement->addInputFromNodeDef("scale")->setValue(0.25f);
+
+    mx::NodePtr material = AddNode(doc, "surfacematerial", "dMat", "material");
+    CHECK(material != nullptr);
+    if (!material) {
+        return;
+    }
+    material->addInputFromNodeDef("displacementshader")
+        ->setNodeName(displacement->getName());
+
+    const Generated generated =
+        GenerateElement(doc, displacement, "hdclaude_displacement");
+    if (!generated.ok) {
+        std::fprintf(stderr, "  displacement: %s\n", generated.error.c_str());
+    }
+    CHECK(generated.ok);
+    if (!generated.ok) {
+        return;
+    }
+
+    CHECK(generated.source.find(kMaterialDisplaceEntryPoint) !=
+          std::string::npos);
+    CHECK(generated.source.find("hdclaude_displacement =") != std::string::npos);
+    // And *not* the shading entry point: a displacement graph has no closures
+    // to sample, so a program that declared one would be generating a surface
+    // it was not asked for.
+    CHECK(generated.source.find(std::string(kMaterialShadeEntryPoint) + "(") ==
+          std::string::npos);
+
+    // The displacement entry point takes no parameters and needs no path
+    // state, so the harness is a bare dispatch that calls it -- which is also
+    // what the displace kernel will do over a vertex buffer.
+    const std::string kernel = generated.source + R"(
+layout(local_size_x = 64) in;
+
+void main()
+{
+    hdclaude_set_surface_hit(vec3(0.0), vec3(0.0, 0.0, 1.0), vec3(1.0, 0.0, 0.0),
+                             vec3(0.0, 1.0, 0.0), vec3(0.0), vec3(0.0, 0.0, 1.0),
+                             vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0),
+                             vec2(0.5));
+
+    hdclaude_material_displace();
+
+    // Consume the result so nothing is optimised away.
+    if (hdclaude_displacement.offset.x * hdclaude_displacement.scale < -1.0e30)
+    {
+        hdclaude_opacity = 0.0;
+    }
+}
+)";
+
+    GlslCompileOptions options;
+    options.moduleName = "hdclaude_displacement";
+    const GlslCompileResult compiled = compiler.Compile(kernel, options);
+    if (!compiled.ok) {
+        std::fprintf(stderr, "  displacement compile: %s\n",
+                     compiled.log.c_str());
+        SaveForInspection("displacement", generated.source);
+    }
+    CHECK(compiled.ok);
+    std::printf("  displacement program: %zu bytes of GLSL, %zu SPIR-V words\n",
+                generated.source.size(), compiled.spirv.size());
+}
+
 int main()
 {
     // Unbuffered: a crash inside MaterialX would otherwise discard every
@@ -627,6 +763,7 @@ int main()
     TestNamedSurfaceGeneratesAndCompiles(compiler, libraries, "open_pbr_surface");
     TestDispersionIsReadFromTheDocument(libraries);
     TestThinWalledIsReadFromTheDocument(libraries);
+    TestDisplacementGeneratesItsOwnProgram(compiler, libraries);
 
     return hdclaude_test::Summarize("hdClaudeMaterialXTests");
 }
