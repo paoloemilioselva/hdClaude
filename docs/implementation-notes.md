@@ -7199,6 +7199,12 @@ from a light that authored `false` deliberately. hdClaude honoured it exactly as
 UsdLux defines it, which is the right thing to do with the value it was given
 and the wrong picture.
 
+The report for OpenUSD is written up as
+[openusd-valueless-attribute-report.md](openusd-valueless-attribute-report.md),
+with a reproduction that stands on its own: a light declaring the property with
+no value reads `Get() = None` and no schema fallback, while the same light with
+`ShadowAPI` applied reads `True`. It is not filed yet.
+
 **What was done.** The value the specification already gives these lights is
 authored in `gallery/openpbr_playground.usda`, which sublayers the asset, as
 every other gallery correction is. No guess is added to the renderer: it cannot
