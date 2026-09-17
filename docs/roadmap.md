@@ -409,7 +409,20 @@ Tracked here rather than decided prematurely.
    boundary and the walk together, over a shape a path re-enters. Printed and
    not asserted.
 
-9. **Implicit surfaces are not rendered.** A stage whose only geometry is a
+9. **Answered 2026-09-17: implicit surfaces are not rendered.** hdClaude now
+   registers `HdsiImplicitSurfaceSceneIndex` and asks it for meshes, so the
+   stage below renders five shapes where it rendered an empty frame:
+   `tests/usd/implicit_surfaces.usda` arrives as 5 prototypes, 5 instances and
+   7,312 triangles, and each shape reads 0.17 to 0.18 against a background of
+   1.00, at the frame position its own camera arithmetic predicts. The test is
+   gated as `usd_implicit_surfaces`, and it was run with the plugin removed
+   from the *installed* plugInfo to check that it fails: every shape then reads
+   the background and all five fail, which is what says the test measures the
+   conversion rather than the dome.
+
+   The original finding follows.
+
+   A stage whose only geometry is a
    `UsdGeomSphere` arrives as "0 prototypes, 0 instances": spheres, cubes,
    cylinders, cones and capsules reach a delegate as their own prim types, and
    OpenUSD ships `HdsiImplicitSurfaceSceneIndex` to turn them into meshes (or

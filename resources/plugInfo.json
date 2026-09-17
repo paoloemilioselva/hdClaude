@@ -14,6 +14,12 @@
             "priority": 0,
             "displayName": "Approximates NURBS curves as the linear cage hdClaude draws"
           },
+          "HdClaude_ImplicitSurfaceSceneIndexPlugin": {
+            "bases": ["HdSceneIndexPlugin"],
+            "loadWithRenderer": "Claude GPU Path Tracer",
+            "priority": 0,
+            "displayName": "Turns UsdGeom spheres, cubes, cones, cylinders, capsules and planes into meshes"
+          },
           "HdClaude_LightLinkingSceneIndexPlugin": {
             "bases": ["HdSceneIndexPlugin"],
             "loadWithRenderer": "Claude GPU Path Tracer",

@@ -1,0 +1,96 @@
+#usda 1.0
+(
+    doc = """Geometry that is not a mesh.
+
+    `UsdGeomSphere`, `Cube`, `Cone`, `Cylinder` and `Capsule` reach a render
+    delegate as their own prim types rather than as meshes, and a renderer that
+    traces triangles sees nothing at all unless something converts them.
+    OpenUSD ships `HdsiImplicitSurfaceSceneIndex` for that and inserts it for
+    no renderer, so before hdClaude registered it this stage arrived as
+    "0 prototypes, 0 instances" and rendered an empty frame -- with no warning,
+    because nothing had been dropped: the prims were simply never of a type the
+    delegate creates.
+
+    Five shapes in a row across the frame, each of a known size, under a dome
+    of radiance one, and each a dark grey so that it reads as a silhouette
+    against it. What the test asserts is *coverage* -- that a shape is there,
+    and where -- rather than a shade, so the albedo only has to differ from the
+    background. It has to: a white shape under a dome of one renders exactly
+    one, which is the background, and the first version of this scene was
+    invisible for that reason.
+
+    A renderer that ignores implicit surfaces renders the dome alone, and every
+    shape's patch reads the background instead.
+
+    Render it with:
+      usdrecord --colorCorrectionMode disabled --renderer <name> \\
+                --disableCameraLight --purposes render --imageWidth 320 \\
+                --camera /camera implicit_surfaces.usda out.exr
+    """
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Camera "camera"
+{
+    float focalLength = 50
+    float horizontalAperture = 36
+    double3 xformOp:translate = (0, 0, 22)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}
+
+def DomeLight "sky"
+{
+    float inputs:intensity = 1
+}
+
+def Sphere "sphere"
+{
+    double radius = 1.4
+    color3f[] primvars:displayColor = [(0.18, 0.18, 0.18)]
+    uniform token purpose = "render"
+    double3 xformOp:translate = (-6, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}
+
+def Cube "cube"
+{
+    double size = 2.4
+    color3f[] primvars:displayColor = [(0.18, 0.18, 0.18)]
+    uniform token purpose = "render"
+    double3 xformOp:translate = (-3, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}
+
+def Cone "cone"
+{
+    double height = 2.8
+    double radius = 1.3
+    uniform token axis = "Y"
+    color3f[] primvars:displayColor = [(0.18, 0.18, 0.18)]
+    uniform token purpose = "render"
+    double3 xformOp:translate = (0, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}
+
+def Cylinder "cylinder"
+{
+    double height = 2.8
+    double radius = 1.2
+    uniform token axis = "Y"
+    color3f[] primvars:displayColor = [(0.18, 0.18, 0.18)]
+    uniform token purpose = "render"
+    double3 xformOp:translate = (3, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}
+
+def Capsule "capsule"
+{
+    double height = 1.6
+    double radius = 0.9
+    uniform token axis = "Y"
+    color3f[] primvars:displayColor = [(0.18, 0.18, 0.18)]
+    uniform token purpose = "render"
+    double3 xformOp:translate = (6, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}

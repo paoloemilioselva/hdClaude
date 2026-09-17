@@ -15,6 +15,7 @@ add_library(hdClaude MODULE
     camera.cpp
     instancer.cpp
     light.cpp
+    implicit_surface_scene_index_plugin.cpp
     light_linking_scene_index_plugin.cpp
     material.cpp
     material_compiler.cpp

@@ -63,6 +63,8 @@ int Usage()
                  "[--rms <value>] [--worst <value>] "
                  "[--failed-fraction <value>] [--per-pixel <value>]\n"
                  "       hdClaudeImageDiff --scan <image>\n"
+                 "       hdClaudeImageDiff --window <image> <u0> <u1> <v0> <v1>"
+                 "   (mean of a region, in fractions of the image)\n"
                  "       hdClaudeImageDiff --energy <reference> <candidate>\n"
                  "       hdClaudeImageDiff --expectation <reference> <candidate> "
                  "[<block px> <z limit>]\n";
@@ -153,6 +155,69 @@ bool Read(const char* path, Image* result)
 /// check placed after it cannot see either. The gallery gate compares display
 /// JPEGs, which is the right thing for a visual baseline and blind to this, so
 /// the scan runs separately and earlier, on the EXR.
+/// The mean of one rectangle of an image, named in fractions of its size.
+///
+/// For a test that asks *where* something is rather than what shade it is: a
+/// shape's patch against the patch beside it. Fractions rather than pixels
+/// because the caller knows where a thing is in the frame and should not have
+/// to know the resolution the frame was rendered at.
+///
+/// Each channel is reported, and the green one is first, because that is the
+/// channel every other measurement in this project reads.
+int Window(const char* path, double u0, double u1, double v0, double v1)
+{
+    Image image;
+    if (!Read(path, &image)) {
+        return 1;
+    }
+    if (!(u0 < u1) || !(v0 < v1)) {
+        std::cerr << "window: expected u0 < u1 and v0 < v1\n";
+        return 1;
+    }
+
+    const auto clampIndex = [](double fraction, int size) {
+        const auto index = static_cast<int>(fraction * size);
+        return std::min(std::max(index, 0), size - 1);
+    };
+    const int x0 = clampIndex(u0, image.width);
+    const int x1 = clampIndex(u1, image.width);
+    const int y0 = clampIndex(v0, image.height);
+    const int y1 = clampIndex(v1, image.height);
+
+    double sums[3] = {0.0, 0.0, 0.0};
+    std::size_t counted = 0;
+    for (int y = y0; y <= y1; ++y) {
+        for (int x = x0; x <= x1; ++x) {
+            const auto pixel =
+                static_cast<std::size_t>(y) * image.width + static_cast<std::size_t>(x);
+            bool finite = true;
+            for (int channel = 0; channel < 3; ++channel) {
+                finite = finite &&
+                         std::isfinite(image.pixels[pixel * 4 +
+                                                    static_cast<std::size_t>(channel)]);
+            }
+            if (!finite) {
+                continue;
+            }
+            for (int channel = 0; channel < 3; ++channel) {
+                sums[channel] +=
+                    image.pixels[pixel * 4 + static_cast<std::size_t>(channel)];
+            }
+            ++counted;
+        }
+    }
+    if (counted == 0) {
+        std::cerr << "window: no finite pixels in the region\n";
+        return 1;
+    }
+
+    std::cout << sums[1] / static_cast<double>(counted) << ' '
+              << sums[0] / static_cast<double>(counted) << ' '
+              << sums[2] / static_cast<double>(counted) << ' '
+              << counted << " pixels\n";
+    return 0;
+}
+
 int Scan(const char* path)
 {
     Image image;
@@ -439,6 +504,10 @@ int main(int argc, char** argv)
 try {
     if (argc == 3 && std::string(argv[1]) == "--scan") {
         return Scan(argv[2]);
+    }
+    if (argc == 7 && std::string(argv[1]) == "--window") {
+        return Window(argv[2], std::stod(argv[3]), std::stod(argv[4]),
+                      std::stod(argv[5]), std::stod(argv[6]));
     }
     if (argc == 4 && std::string(argv[1]) == "--energy") {
         return Energy(argv[2], argv[3]);
