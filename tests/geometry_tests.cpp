@@ -15,9 +15,12 @@
 #include "hdclaude/gpu/compute_pipeline.h"
 #include "hdclaude/gpu/glsl_compiler.h"
 #include "hdclaude/gpu/scene.h"
+#include "hdclaude/gpu/vertex_frames.h"
 #include "hdclaude/gpu/vulkan_context.h"
 #include "hdclaude/gpu/vulkan_resources.h"
 
+#include <array>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -408,6 +411,149 @@ void TestOpacityClassIsPartOfIdentity()
     CHECK_EQ(opaque.Fingerprint(), renamed.Fingerprint());
 }
 
+/// Direction of an interleaved xyz entry, or the zero vector.
+std::array<float, 3> Direction(const std::vector<float>& values,
+                               std::size_t index)
+{
+    const float x = values[index * 3 + 0];
+    const float y = values[index * 3 + 1];
+    const float z = values[index * 3 + 2];
+    const float length = std::sqrt(x * x + y * y + z * z);
+    if (!(length > 0.0f)) {
+        return {0.0f, 0.0f, 0.0f};
+    }
+    return {x / length, y / length, z / length};
+}
+
+bool NearlyEqual(const std::array<float, 3>& value,
+                 const std::array<float, 3>& expected, float tolerance = 1.0e-5f)
+{
+    return std::fabs(value[0] - expected[0]) <= tolerance &&
+           std::fabs(value[1] - expected[1]) <= tolerance &&
+           std::fabs(value[2] - expected[2]) <= tolerance;
+}
+
+/// The frame at a vertex is the surface around it, not the surface of one of
+/// its triangles.
+///
+/// Displacement moves a vertex, and a vertex belongs to every triangle that
+/// shares it. Answering per triangle would move the same vertex to several
+/// places and open the mesh along every edge, so the frame is accumulated and
+/// the answers here are closed forms a quad can be checked against exactly.
+void TestVertexFramesAreTheSurfaceAtEachVertex()
+{
+    // The quad spans [-1, 1] in x and y, so a texture coordinate running 0 to
+    // 1 across it makes dP/du exactly (2, 0, 0) and dP/dv exactly (0, 2, 0) --
+    // the same value on both triangles, so the accumulation cannot hide a
+    // wrong one behind a right one.
+    {
+        MeshPrototype quad = MakeQuad("frames");
+        quad.uvs = {0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f};
+
+        const VertexFrames frames = ComputeVertexFrames(quad);
+        CHECK_EQ(frames.VertexCount(), quad.VertexCount());
+        CHECK_EQ(frames.uvs.size(), quad.uvs.size());
+        for (std::size_t v = 0; v < frames.VertexCount(); ++v) {
+            CHECK(NearlyEqual(Direction(frames.normals, v), {0.0f, 0.0f, 1.0f}));
+            CHECK(NearlyEqual(Direction(frames.dpdu, v), {1.0f, 0.0f, 0.0f}));
+            CHECK(NearlyEqual(Direction(frames.dpdv, v), {0.0f, 1.0f, 0.0f}));
+        }
+        std::printf("  vertex frames: dP/du along +x, dP/dv along +y\n");
+    }
+
+    // A mirrored UV island runs u the other way, which is how half of a
+    // symmetric asset is normally laid out. The derivative has to turn with
+    // it: a frame that did not would displace the two halves of such an asset
+    // in opposite directions.
+    {
+        MeshPrototype quad = MakeQuad("mirrored");
+        quad.uvs = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f};
+
+        const VertexFrames frames = ComputeVertexFrames(quad);
+        for (std::size_t v = 0; v < frames.VertexCount(); ++v) {
+            CHECK(NearlyEqual(Direction(frames.dpdu, v), {-1.0f, 0.0f, 0.0f}));
+            CHECK(NearlyEqual(Direction(frames.dpdv, v), {0.0f, 1.0f, 0.0f}));
+        }
+    }
+
+    // No coordinates at all: the parameterisation is the triangle's own
+    // barycentrics, the same fallback the shade kernel takes, so a frame still
+    // exists and still lies in the surface.
+    {
+        const MeshPrototype quad = MakeQuad("no uvs");
+        const VertexFrames frames = ComputeVertexFrames(quad);
+        CHECK(frames.uvs.empty());
+        for (std::size_t v = 0; v < frames.VertexCount(); ++v) {
+            const std::array<float, 3> dpdu = Direction(frames.dpdu, v);
+            const std::array<float, 3> dpdv = Direction(frames.dpdv, v);
+            CHECK(!NearlyEqual(dpdu, {0.0f, 0.0f, 0.0f}));
+            CHECK(!NearlyEqual(dpdv, {0.0f, 0.0f, 0.0f}));
+            // In the surface: the quad is flat in z, so nothing in its
+            // parameterisation may point out of the plane.
+            CHECK(std::fabs(dpdu[2]) <= 1.0e-5f);
+            CHECK(std::fabs(dpdv[2]) <= 1.0e-5f);
+        }
+    }
+
+    // A UV seam authors two coordinates at one vertex. Their mean is a
+    // coordinate that appears nowhere on the surface -- u = 0 and u = 1 average
+    // to the middle of the map -- so the first authored one is kept instead.
+    {
+        MeshPrototype quad = MakeQuad("seam");
+        quad.uvsPerCorner = true;
+        quad.uvs = {
+            // Triangle 0: vertices 0, 1, 2 at the right-hand end of the map.
+            1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f,
+            // Triangle 1: vertices 0, 2, 3, the same two vertices at the left.
+            0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f,
+        };
+
+        const VertexFrames frames = ComputeVertexFrames(quad);
+        CHECK_EQ(frames.uvs.size(), quad.VertexCount() * 2);
+        // Vertex 0 is authored 1.0 by the first triangle and 0.0 by the
+        // second. The first wins, and 0.5 -- which is what an average would
+        // give -- appears nowhere.
+        CHECK(std::fabs(frames.uvs[0] - 1.0f) <= 1.0e-5f);
+        // Vertex 3 is only in the second triangle and keeps its own.
+        CHECK(std::fabs(frames.uvs[3 * 2 + 0] - 0.0f) <= 1.0e-5f);
+    }
+
+    // Face-varying normals: a crease authors two normals at one vertex, and a
+    // vertex can only be displaced in one direction. The sum of the two is the
+    // only direction that keeps both faces attached to it.
+    {
+        MeshPrototype quad = MakeQuad("crease");
+        quad.normalsPerCorner = true;
+        quad.normals = {
+            // Triangle 0 faces +z.
+            0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+            // Triangle 1 faces +x, which is what a hard edge looks like.
+            1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+        };
+
+        const VertexFrames frames = ComputeVertexFrames(quad);
+        // Vertex 1 belongs to the first triangle alone and keeps +z; vertex 3
+        // belongs to the second alone and keeps +x; vertex 0 is in both and
+        // takes the direction between them, the two triangles having equal
+        // area.
+        const float root = 1.0f / std::sqrt(2.0f);
+        CHECK(NearlyEqual(Direction(frames.normals, 1), {0.0f, 0.0f, 1.0f}));
+        CHECK(NearlyEqual(Direction(frames.normals, 3), {1.0f, 0.0f, 0.0f}));
+        CHECK(NearlyEqual(Direction(frames.normals, 0), {root, 0.0f, root}));
+    }
+
+    // A curve prototype has no surface parameterisation, and displacing one is
+    // a different question. It answers with nothing rather than with zeros.
+    {
+        MeshPrototype curve;
+        curve.debugName = "curve";
+        curve.segments = {0.0f, 0.0f, 0.0f, 0.1f, 0.0f,
+                          0.0f, 1.0f, 0.0f, 0.1f, 1.0f};
+        const VertexFrames frames = ComputeVertexFrames(curve);
+        CHECK(frames.Empty());
+    }
+}
+
 }  // namespace
 
 int main()
@@ -417,6 +563,7 @@ int main()
     std::printf("hdClaudeGeometryTests\n");
 
     TestOpacityClassIsPartOfIdentity();
+    TestVertexFramesAreTheSurfaceAtEachVertex();
 
     std::unique_ptr<VulkanContext> context;
     try {

@@ -15,6 +15,7 @@ add_library(hdClaudeGpu STATIC
     glsl_compiler.cpp
     ngx_support.cpp
     path_tracer.cpp
+    vertex_frames.cpp
     vulkan_context.cpp
     vulkan_memory.cpp
     vulkan_resources.cpp
