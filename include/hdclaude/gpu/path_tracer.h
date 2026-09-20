@@ -483,6 +483,17 @@ class PathTracer {
     /// without duplicating knowledge of the ABI.
     const std::string& ShadeKernelSource() const { return _shadeKernelSource; }
 
+    /// The displace kernel source, joined to a generated material's
+    /// *displacement* program to produce a displacement pipeline.
+    ///
+    /// The geometry counterpart of the above, and exposed for the same reason:
+    /// a material's two programs are compiled by the Hydra layer, and the ABI
+    /// each is joined to is stated here rather than restated there.
+    const std::string& DisplaceKernelSource() const
+    {
+        return _displaceKernelSource;
+    }
+
     /// How many paths each material's dispatch covered in the last bounce of
     /// the last completed `Render`, read back from the device.
     ///
@@ -655,6 +666,7 @@ class PathTracer {
     std::filesystem::path _shaderDirectory;
     GlslCompiler _compiler;
     std::string _shadeKernelSource;
+    std::string _displaceKernelSource;
 
     std::unique_ptr<SceneAccelerator> _accelerator;
     VulkanBuffer _instanceTable;

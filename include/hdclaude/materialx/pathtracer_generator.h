@@ -46,7 +46,7 @@ namespace mx = MaterialX;
 /// Bumped whenever the entry-point signature, the BSDF struct, or the ClosureData
 /// struct changes. It is part of the shader cache key, so a change here
 /// invalidates every cached module by construction rather than by remembering.
-inline constexpr std::uint32_t kMaterialAbiVersion = 1;
+inline constexpr std::uint32_t kMaterialAbiVersion = 2;
 
 /// Name of the generated entry point the `shade` kernel calls.
 inline constexpr const char* kMaterialShadeEntryPoint = "hdclaude_material_shade";

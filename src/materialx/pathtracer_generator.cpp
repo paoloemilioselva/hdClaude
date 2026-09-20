@@ -516,7 +516,31 @@ void PathTracerShaderGenerator::emitInputs(GenContext& context,
         // generated code declares precisely the geometry it uses, and the
         // `shade` kernel fills precisely that much.
         const VariableBlock& vertexData = stage.getInputBlock(HW::VERTEX_DATA);
-        if (!vertexData.empty())
+
+        // The setter's signature is the ABI and does not depend on the
+        // document. Only its *body* does.
+        const string setter = "void " + string(kSurfaceHitSetter) +
+                              "(vec3 P, vec3 N, vec3 T, vec3 B, vec3 Pobj, "
+                              "vec3 Nobj, vec3 Tobj, vec3 Bobj, vec2 uv)";
+
+        if (vertexData.empty())
+        {
+            // A material that reads no geometry at all. A surface graph never
+            // is one -- the surface node registers the position and the normal
+            // itself -- but a *displacement* graph can be: a constant height
+            // asks the mesh nothing. The kernel calls the setter regardless of
+            // which material it was linked against, so an empty one is emitted
+            // rather than none, and the ABI stops depending on what the
+            // document happens to read.
+            emitComment("This material reads no geometry; the setter is the "
+                        "ABI and is kept", stage);
+            emitLine(setter, stage, false);
+            emitScopeBegin(stage);
+            emitScopeEnd(stage);
+            emitLineBreak(stage);
+            return;
+        }
+
         {
             emitComment("Interpolated geometry supplied by the shade kernel", stage);
             emitLine("struct " + string(kSurfaceHitStruct), stage, false);
@@ -540,10 +564,7 @@ void PathTracerShaderGenerator::emitInputs(GenContext& context,
             // one is a compile error. Emitting the setter here moves that
             // knowledge to the only place that has it.
             emitComment("Filled by the shade kernel; members vary by material", stage);
-            emitLine("void " + string(kSurfaceHitSetter) +
-                         "(vec3 P, vec3 N, vec3 T, vec3 B, vec3 Pobj, "
-                         "vec3 Nobj, vec3 Tobj, vec3 Bobj, vec2 uv)",
-                     stage, false);
+            emitLine(setter, stage, false);
             emitScopeBegin(stage);
             // Names are matched case-insensitively. A vertex-data variable can
             // reach here either substituted (`i_geomprop_st`) or as the token

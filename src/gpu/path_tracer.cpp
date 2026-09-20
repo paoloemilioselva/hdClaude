@@ -450,6 +450,12 @@ PathTracer::PathTracer(const VulkanContext& context, VulkanAllocator& allocator,
                               _shaderDirectory.string());
     }
 
+    // Not fatal when absent in the way the shade kernel is. A build without
+    // it can still render everything that does not displace, and saying so at
+    // the moment a displacement is compiled names the material as well as the
+    // missing file.
+    _displaceKernelSource = LoadKernel(_shaderDirectory, "displace.comp.glsl");
+
     const std::vector<BindingDescription> bindings = KernelBindings();
 
     auto build = [&](const char* name, std::uint32_t pushBytes) {

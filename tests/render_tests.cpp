@@ -13,7 +13,9 @@
 
 #include "test_support.h"
 
+#include "hdclaude/gpu/displacement.h"
 #include "hdclaude/gpu/glsl_compiler.h"
+#include "hdclaude/gpu/vertex_frames.h"
 #include "hdclaude/core/spectrum.h"
 #include "hdclaude/core/image_metrics.h"
 #include "hdclaude/gpu/path_tracer.h"
@@ -5589,6 +5591,251 @@ int main()
 
             CHECK(brightest > 0.1f);
             CHECK(darkestLit < brightest * 0.6f);
+        }
+
+        // --- Displacement ----------------------------------------------------
+        //
+        // The generated displacement program decides where the surface is, and
+        // this is the first thing that runs it. A quad of known vertices is
+        // displaced by an amount known in closed form, so the assertion is the
+        // arithmetic itself rather than a picture of it: every vertex must
+        // land exactly where the authored number puts it.
+        {
+            CHECK(!tracer.DisplaceKernelSource().empty());
+
+            // The quad spans [-1, 1] in x and y with normals along +z, and a
+            // texture coordinate running 0 to 1 across it. That makes the
+            // frame exact: dP/du is (2, 0, 0), dP/dv is (0, 2, 0), so the
+            // tangent is +x, the bitangent +y and the normal +z at every
+            // vertex.
+            MeshPrototype quad = MakeQuad();
+            quad.uvs = {0, 0, 1, 0, 1, 1, 0, 1};
+            const VertexFrames frames = ComputeVertexFrames(quad);
+            CHECK_EQ(frames.VertexCount(), quad.VertexCount());
+
+            struct Probe {
+                const char* name;
+                const char* nodeDef;
+                mx::Vector3 amount;
+                float scale;
+                DisplacementSpace space;
+            };
+            const Probe probes[] = {
+                // A scalar displacement is "along the surface normal
+                // direction", so a quad facing +z rises in z and moves in
+                // nothing else.
+                {"along the normal", "ND_displacement_float",
+                 mx::Vector3(0.25f, 0.0f, 0.0f), 2.0f,
+                 DisplacementSpace::AlongNormal},
+                // A vector displacement is in "(dPdu, dPdv, N) tangent/normal
+                // space", which on this quad is (x, y, z) -- so each component
+                // has somewhere different to go and a frame built in the wrong
+                // order cannot pass.
+                {"tangent frame", "ND_displacement_vector3",
+                 mx::Vector3(0.5f, -0.25f, 0.125f), 3.0f,
+                 DisplacementSpace::Tangent},
+            };
+
+            for (const Probe& probe : probes) {
+                mx::DocumentPtr doc = mx::createDocument();
+                doc->importLibrary(libraries);
+
+                const mx::NodeDefPtr definition = doc->getNodeDef(probe.nodeDef);
+                CHECK(definition != nullptr);
+                if (!definition) {
+                    continue;
+                }
+                mx::NodePtr displacement = doc->addNodeInstance(definition, "d");
+                CHECK(displacement != nullptr);
+                if (!displacement) {
+                    continue;
+                }
+                if (probe.space == DisplacementSpace::Tangent) {
+                    SetValue(displacement, "displacement", probe.amount);
+                } else {
+                    SetValue(displacement, "displacement", probe.amount[0]);
+                }
+                SetValue(displacement, "scale", probe.scale);
+
+                mx::NodePtr material =
+                    AddNode(doc, "surfacematerial", "m", "material");
+                Connect(material, "displacementshader", displacement);
+
+                // Found the way the material compiler finds it, and with it
+                // the only thing that says what the program's three floats
+                // mean.
+                std::vector<std::string> diagnostics;
+                const DisplacementTerminal terminal =
+                    AuthoredDisplacement(doc, &diagnostics);
+                CHECK(terminal.terminal == displacement);
+                CHECK(terminal.space == probe.space);
+                CHECK(diagnostics.empty());
+                if (!terminal.terminal) {
+                    continue;
+                }
+
+                mx::ShaderGeneratorPtr generator =
+                    PathTracerShaderGenerator::create();
+                mx::GenContext genContext(generator);
+                genContext.registerSourceCodeSearchPath(
+                    DefaultMaterialXSourceSearchPath());
+                genContext.getOptions().shaderInterfaceType =
+                    mx::SHADER_INTERFACE_REDUCED;
+                mx::ShaderPtr shader = generator->generate(
+                    "hdclaude_displace_" + std::string(probe.nodeDef),
+                    terminal.terminal, genContext);
+                CHECK(shader != nullptr);
+                if (!shader) {
+                    continue;
+                }
+
+                GlslCompileOptions options;
+                options.moduleName = probe.nodeDef;
+                const GlslCompileResult compiled = compiler.Compile(
+                    shader->getSourceCode(mx::Stage::PIXEL) +
+                        tracer.DisplaceKernelSource(),
+                    options);
+                if (!compiled.ok) {
+                    std::fprintf(stderr, "  displace %s failed:\n%s\n",
+                                 probe.name, compiled.log.c_str());
+                }
+                CHECK(compiled.ok);
+                if (!compiled.ok) {
+                    continue;
+                }
+
+                DisplacementPass pass(*context, compiled.spirv, terminal.space,
+                                      std::string("displace.") + probe.nodeDef);
+                CHECK(pass.Valid());
+                if (!pass.Valid()) {
+                    continue;
+                }
+
+                const std::vector<float> displaced =
+                    pass.Displace(allocator, quad, frames);
+                CHECK_EQ(displaced.size(), quad.positions.size());
+                if (displaced.size() != quad.positions.size()) {
+                    continue;
+                }
+
+                // Where each vertex must be. The frame is the identity basis
+                // on this quad, so the offset applies componentwise -- and
+                // that is exactly what makes a wrong basis visible rather than
+                // hidden behind a rotation.
+                const mx::Vector3 expected =
+                    probe.space == DisplacementSpace::Tangent
+                        ? mx::Vector3(probe.amount[0] * probe.scale,
+                                      probe.amount[1] * probe.scale,
+                                      probe.amount[2] * probe.scale)
+                        : mx::Vector3(0.0f, 0.0f,
+                                      probe.amount[0] * probe.scale);
+
+                float worst = 0.0f;
+                for (std::size_t v = 0; v < quad.VertexCount(); ++v) {
+                    for (int axis = 0; axis < 3; ++axis) {
+                        const float want = quad.positions[v * 3 + axis] +
+                                           expected[axis];
+                        worst = std::max(
+                            worst,
+                            std::fabs(displaced[v * 3 + axis] - want));
+                    }
+                }
+                std::printf(
+                    "  displacement %s: worst error %.3e over %zu vertices\n",
+                    probe.name, worst, quad.VertexCount());
+                CHECK(worst < 1.0e-6f);
+            }
+
+            // A displacement that *varies*. The height is the u coordinate, so
+            // each vertex moves by its own texture coordinate and a program
+            // evaluated once and copied everywhere -- or handed the same
+            // vertex's geometry every time -- cannot pass.
+            {
+                mx::DocumentPtr doc = mx::createDocument();
+                doc->importLibrary(libraries);
+
+                mx::NodePtr texcoord = AddNode(doc, "texcoord", "t", "vector2");
+                mx::NodePtr height = AddNode(doc, "extract", "h", "float");
+                Connect(height, "in", texcoord);
+                SetValue(height, "index", 0);
+
+                const mx::NodeDefPtr definition =
+                    doc->getNodeDef("ND_displacement_float");
+                CHECK(definition != nullptr);
+                mx::NodePtr displacement =
+                    definition ? doc->addNodeInstance(definition, "d") : nullptr;
+                CHECK(displacement != nullptr);
+                if (displacement) {
+                    Connect(displacement, "displacement", height);
+                    SetValue(displacement, "scale", 0.5f);
+
+                    mx::NodePtr material =
+                        AddNode(doc, "surfacematerial", "m", "material");
+                    Connect(material, "displacementshader", displacement);
+
+                    const DisplacementTerminal terminal =
+                        AuthoredDisplacement(doc);
+                    CHECK(terminal.terminal == displacement);
+
+                    mx::ShaderGeneratorPtr generator =
+                        PathTracerShaderGenerator::create();
+                    mx::GenContext genContext(generator);
+                    genContext.registerSourceCodeSearchPath(
+                        DefaultMaterialXSourceSearchPath());
+                    genContext.getOptions().shaderInterfaceType =
+                        mx::SHADER_INTERFACE_REDUCED;
+                    mx::ShaderPtr shader = generator->generate(
+                        "hdclaude_displace_varying", terminal.terminal,
+                        genContext);
+                    CHECK(shader != nullptr);
+
+                    GlslCompileOptions options;
+                    options.moduleName = "displace_varying";
+                    const GlslCompileResult compiled =
+                        shader ? compiler.Compile(
+                                     shader->getSourceCode(mx::Stage::PIXEL) +
+                                         tracer.DisplaceKernelSource(),
+                                     options)
+                               : GlslCompileResult{};
+                    if (shader && !compiled.ok) {
+                        std::fprintf(stderr, "  displace varying failed:\n%s\n",
+                                     compiled.log.c_str());
+                    }
+                    CHECK(compiled.ok);
+
+                    if (compiled.ok) {
+                        DisplacementPass pass(*context, compiled.spirv,
+                                              terminal.space,
+                                              "displace.varying");
+                        CHECK(pass.Valid());
+                        const std::vector<float> displaced =
+                            pass.Displace(allocator, quad, frames);
+                        CHECK_EQ(displaced.size(), quad.positions.size());
+                        if (displaced.size() == quad.positions.size()) {
+                            float worst = 0.0f;
+                            for (std::size_t v = 0; v < quad.VertexCount();
+                                 ++v) {
+                                const float u = frames.uvs[v * 2 + 0];
+                                const float want =
+                                    quad.positions[v * 3 + 2] + 0.5f * u;
+                                worst = std::max(
+                                    worst,
+                                    std::fabs(displaced[v * 3 + 2] - want));
+                            }
+                            std::printf(
+                                "  displacement by u: worst error %.3e\n",
+                                worst);
+                            CHECK(worst < 1.0e-6f);
+                            // The two vertices at u = 0 did not move, and the
+                            // two at u = 1 moved by the whole scale. A
+                            // constant, however right its average, fails this.
+                            CHECK(std::fabs(displaced[0 * 3 + 2]) < 1.0e-6f);
+                            CHECK(std::fabs(displaced[1 * 3 + 2] - 0.5f) <
+                                  1.0e-6f);
+                        }
+                    }
+                }
+            }
         }
 
         const std::uint64_t errors = context->ValidationErrorCount();
