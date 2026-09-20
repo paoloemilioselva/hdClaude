@@ -62,22 +62,6 @@ inline constexpr const char* kMaterialShadeEntryPoint = "hdclaude_material_shade
 inline constexpr const char* kMaterialDisplaceEntryPoint =
     "hdclaude_material_displace";
 
-/// How the offset in `hdclaude_displacement` is to be read.
-///
-/// MaterialX has two constructors for one struct, and they mean different
-/// things by the same three floats: `ND_displacement_float` documents "scalar
-/// displacement amount along the surface normal direction" and packs it as
-/// `vec3(disp)`, while `ND_displacement_vector3` documents "vector
-/// displacement in (dPdu, dPdv, N) tangent/normal space". The generated code
-/// is identical for both -- it is the constructor that carries the meaning --
-/// so the host records which one it compiled and the kernel is told.
-enum class DisplacementSpace : std::uint32_t {
-    /// Along the shading normal, from `ND_displacement_float`.
-    AlongNormal = 0,
-    /// In the (dPdu, dPdv, N) frame, from `ND_displacement_vector3`.
-    Tangent = 1,
-};
-
 /// Syntax for `genglsl_pt`.
 ///
 /// Identical to Vulkan GLSL except that `BSDF` carries the path-tracing fields.
@@ -340,6 +324,51 @@ float AuthoredDispersion(const mx::DocumentPtr& document,
 /// is reported, as is a second surface node that disagrees with the first.
 bool AuthoredThinWalled(const mx::DocumentPtr& document,
                         std::vector<std::string>* diagnostics = nullptr);
+
+/// A document's displacement terminal, and how to read what it produces.
+struct DisplacementTerminal {
+    /// The element to generate the displacement program from, or null when the
+    /// document does not displace.
+    ///
+    /// Returned rather than left for the caller to find again, because the
+    /// generator has to be handed the terminal *by name*:
+    /// `findRenderableElements` answers with surfaces, and a material that only
+    /// displaces is not one -- which is precisely the case this exists for.
+    mx::NodePtr terminal;
+
+    /// How the offset that program leaves in `hdclaude_displacement` is to be
+    /// read. Meaningless when `terminal` is null.
+    DisplacementSpace space = DisplacementSpace::AlongNormal;
+};
+
+/// The displacement terminal a document authors, read from the document for the
+/// same reason dispersion and thin-walledness are: the generated code cannot
+/// carry it.
+///
+/// MaterialX declares two constructors for one `displacementshader` struct and
+/// they mean different things by the same three floats --
+/// `ND_displacement_float` a "scalar displacement amount along the surface
+/// normal direction", `ND_displacement_vector3` a "vector displacement in
+/// (dPdu, dPdv, N) tangent/normal space" -- and both emit the same two lines.
+/// Which one was authored is therefore a fact about the *document*, and the
+/// only place it can be read is here, before generation erases the
+/// distinction. It is the declared type of the constructor's `displacement`
+/// input that separates them, not the node's category, which is `displacement`
+/// for both.
+///
+/// The terminal is whatever a `surfacematerial` connects to its
+/// `displacementshader` input. A `displacement` node the document never
+/// connects to a material is not a terminal and is ignored, exactly as an
+/// unreferenced pattern node is. A `dot` between the two is followed rather
+/// than reported, because MaterialX defines it as a no-op routing point.
+///
+/// `diagnostics`, when given, collects what the caller should report: a second
+/// material whose displacement disagrees with the first, and a terminal that is
+/// not one of MaterialX's two constructors, whose offset cannot be known to be
+/// anything but along the normal.
+DisplacementTerminal AuthoredDisplacement(
+    const mx::DocumentPtr& document,
+    std::vector<std::string>* diagnostics = nullptr);
 
 }  // namespace hdclaude
 

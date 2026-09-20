@@ -1041,4 +1041,101 @@ float AuthoredDispersion(const mx::DocumentPtr& document,
     return effective;
 }
 
+
+namespace {
+
+/// Which of MaterialX's two displacement constructors a node is.
+///
+/// They share the category `displacement`, so the category cannot tell them
+/// apart. What does is the *declared* type of their `displacement` input:
+/// `ND_displacement_float` takes a float, "scalar displacement amount along the
+/// surface normal direction", and `ND_displacement_vector3` takes a vector3,
+/// "vector displacement in (dPdu, dPdv, N) tangent/normal space". Read from the
+/// nodedef rather than from the authored input, which a document need not have
+/// authored at all.
+DisplacementSpace ConstructorSpace(mx::NodePtr node,
+                                   std::vector<std::string>* diagnostics)
+{
+    // `dot` is defined as "a no-op ... used to define a routing point", so
+    // following one is honouring the specification rather than guessing: a
+    // node editor puts them wherever a connection turns a corner, and the
+    // terminal reached through one is still the constructor behind it.
+    //
+    // Bounded rather than recursive. A cycle is invalid MaterialX and
+    // `Document::validate` rejects it, but a renderer that hangs on a bad
+    // document is a worse answer than one that reports it.
+    for (int hop = 0; node && node->getCategory() == "dot" && hop < 64; ++hop) {
+        const mx::NodePtr routed = node->getConnectedNode("in");
+        if (!routed) {
+            break;
+        }
+        node = routed;
+    }
+    if (!node) {
+        return DisplacementSpace::AlongNormal;
+    }
+    if (const mx::NodeDefPtr definition = node->getNodeDef()) {
+        if (const mx::InputPtr declared =
+                definition->getActiveInput("displacement")) {
+            if (declared->getType() == "vector3") {
+                return DisplacementSpace::Tangent;
+            }
+            if (declared->getType() == "float") {
+                return DisplacementSpace::AlongNormal;
+            }
+        }
+    }
+    // Some other node that happens to produce a `displacementshader`. It is
+    // generated and run like any other -- the program is whatever the graph
+    // says -- but nothing declares what frame its three floats are in, so this
+    // is reported rather than assumed silently.
+    if (diagnostics) {
+        diagnostics->push_back(
+            "displacement terminal '" + node->getName() + "' is a '" +
+            node->getCategory() +
+            "' rather than one of MaterialX's two `displacement` constructors, "
+            "so the frame its offset is in is undeclared; it is read along the "
+            "surface normal");
+    }
+    return DisplacementSpace::AlongNormal;
+}
+
+}  // namespace
+
+DisplacementTerminal AuthoredDisplacement(const mx::DocumentPtr& document,
+                                          std::vector<std::string>* diagnostics)
+{
+    DisplacementTerminal result;
+    if (!document) {
+        return result;
+    }
+
+    for (const mx::NodePtr& material : document->getMaterialNodes()) {
+        const mx::InputPtr input = material->getInput("displacementshader");
+        if (!input) {
+            continue;
+        }
+        const mx::NodePtr terminal = input->getConnectedNode();
+        if (!terminal) {
+            continue;
+        }
+        if (result.terminal) {
+            if (terminal->getNamePath() != result.terminal->getNamePath() &&
+                diagnostics) {
+                diagnostics->push_back(
+                    "material '" + material->getName() + "' displaces with '" +
+                    terminal->getName() +
+                    "' where an earlier material displaces with '" +
+                    result.terminal->getName() +
+                    "'; one program is compiled per material network, so the "
+                    "first is used");
+            }
+            continue;
+        }
+        result.terminal = terminal;
+        result.space = ConstructorSpace(terminal, diagnostics);
+    }
+    return result;
+}
+
 }  // namespace hdclaude

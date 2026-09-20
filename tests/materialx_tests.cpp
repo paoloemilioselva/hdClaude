@@ -634,6 +634,198 @@ void TestThinWalledIsReadFromTheDocument(mx::DocumentPtr libraries)
     }
 }
 
+/// Add one of MaterialX's two displacement constructors, named explicitly.
+///
+/// `ND_displacement_float` and `ND_displacement_vector3` share the category
+/// `displacement` and the output type `displacementshader`, so adding one by
+/// category would leave which of them resolved up to the order the library
+/// happens to be in. Naming the nodedef is the whole point of these cases.
+mx::NodePtr AddDisplacement(mx::DocumentPtr doc, const std::string& nodeDef,
+                            const std::string& name)
+{
+    const mx::NodeDefPtr definition = doc->getNodeDef(nodeDef);
+    if (!definition) {
+        std::fprintf(stderr, "  no nodedef '%s' in the libraries\n",
+                     nodeDef.c_str());
+        return nullptr;
+    }
+    return doc->addNodeInstance(definition, name);
+}
+
+/// A material whose displacement terminal is `terminal`, or no terminal at all.
+mx::NodePtr AddDisplacingMaterial(mx::DocumentPtr doc, const std::string& name,
+                                  mx::NodePtr terminal)
+{
+    mx::NodePtr material = AddNode(doc, "surfacematerial", name, "material");
+    if (material && terminal) {
+        Connect(material, "displacementshader", terminal);
+    }
+    return material;
+}
+
+/// Which displacement a document authors, and in which frame, is read from the
+/// document -- because generation erases the difference.
+///
+/// MaterialX's two constructors emit the same two lines from the same struct
+/// and mean different things by them: a float is a "scalar displacement amount
+/// along the surface normal direction", a vector3 is a "vector displacement in
+/// (dPdu, dPdv, N) tangent/normal space". Nothing in the generated program says
+/// which was compiled, so the host has to have read it.
+void TestDisplacementIsReadFromTheDocument(mx::DocumentPtr libraries)
+{
+    struct Case {
+        const char* nodeDef;
+        hdclaude::DisplacementSpace expected;
+        const char* name;
+    };
+    const Case cases[] = {
+        {"ND_displacement_float", hdclaude::DisplacementSpace::AlongNormal,
+         "float constructor"},
+        {"ND_displacement_vector3", hdclaude::DisplacementSpace::Tangent,
+         "vector3 constructor"},
+    };
+
+    for (const Case& probe : cases) {
+        mx::DocumentPtr doc = mx::createDocument();
+        doc->importLibrary(libraries);
+        mx::NodePtr displacement = AddDisplacement(doc, probe.nodeDef, "d");
+        CHECK(displacement != nullptr);
+        if (!displacement) {
+            continue;
+        }
+        AddDisplacingMaterial(doc, "m", displacement);
+
+        std::vector<std::string> diagnostics;
+        const hdclaude::DisplacementTerminal read =
+            hdclaude::AuthoredDisplacement(doc, &diagnostics);
+        std::printf("  displacement %s: %s\n", probe.name,
+                    read.space == hdclaude::DisplacementSpace::Tangent
+                        ? "tangent frame"
+                        : "along the normal");
+        CHECK(read.terminal != nullptr);
+        CHECK(read.terminal == displacement);
+        CHECK(read.space == probe.expected);
+        CHECK(diagnostics.empty());
+    }
+
+    // A material that only shades has no displacement terminal, and that is an
+    // ordinary answer rather than a diagnostic: most materials do not displace.
+    {
+        mx::DocumentPtr doc = mx::createDocument();
+        doc->importLibrary(libraries);
+        mx::NodePtr shader = AddNode(doc, "open_pbr_surface", "s", "surfaceshader");
+        mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+        Connect(material, "surfaceshader", shader);
+
+        std::vector<std::string> diagnostics;
+        const hdclaude::DisplacementTerminal read =
+            hdclaude::AuthoredDisplacement(doc, &diagnostics);
+        CHECK(read.terminal == nullptr);
+        CHECK(diagnostics.empty());
+    }
+
+    // A displacement node no material connects is not a terminal. It is an
+    // unreferenced node like any other, and generating from it would displace
+    // a mesh whose material never asked to be displaced.
+    {
+        mx::DocumentPtr doc = mx::createDocument();
+        doc->importLibrary(libraries);
+        CHECK(AddDisplacement(doc, "ND_displacement_vector3", "d") != nullptr);
+        AddDisplacingMaterial(doc, "m", nullptr);
+
+        std::vector<std::string> diagnostics;
+        const hdclaude::DisplacementTerminal read =
+            hdclaude::AuthoredDisplacement(doc, &diagnostics);
+        CHECK(read.terminal == nullptr);
+        CHECK(diagnostics.empty());
+    }
+
+    // A `dot` is defined as a no-op routing point, so the constructor behind
+    // one is still the constructor. Node editors emit these freely.
+    {
+        mx::DocumentPtr doc = mx::createDocument();
+        doc->importLibrary(libraries);
+        mx::NodePtr displacement =
+            AddDisplacement(doc, "ND_displacement_vector3", "d");
+        mx::NodePtr dot = AddDisplacement(doc, "ND_dot_displacementshader", "r");
+        CHECK(displacement != nullptr);
+        CHECK(dot != nullptr);
+        if (!displacement || !dot) {
+            return;
+        }
+        Connect(dot, "in", displacement);
+        AddDisplacingMaterial(doc, "m", dot);
+
+        std::vector<std::string> diagnostics;
+        const hdclaude::DisplacementTerminal read =
+            hdclaude::AuthoredDisplacement(doc, &diagnostics);
+        CHECK(read.terminal == dot);
+        CHECK(read.space == hdclaude::DisplacementSpace::Tangent);
+        CHECK(diagnostics.empty());
+    }
+
+    // `mix` of two displacements is a legal terminal that is not a
+    // constructor, and MaterialX gives no answer for what frame the result is
+    // in -- a scalar along the normal blended with a vector in the tangent
+    // frame has no single meaning. Reported rather than settled by a guess.
+    {
+        mx::DocumentPtr doc = mx::createDocument();
+        doc->importLibrary(libraries);
+        mx::NodePtr along = AddDisplacement(doc, "ND_displacement_float", "a");
+        mx::NodePtr tangent =
+            AddDisplacement(doc, "ND_displacement_vector3", "b");
+        mx::NodePtr mix = AddDisplacement(doc, "ND_mix_displacementshader", "x");
+        CHECK(along != nullptr);
+        CHECK(tangent != nullptr);
+        CHECK(mix != nullptr);
+        if (!along || !tangent || !mix) {
+            return;
+        }
+        Connect(mix, "fg", along);
+        Connect(mix, "bg", tangent);
+        AddDisplacingMaterial(doc, "m", mix);
+
+        std::vector<std::string> diagnostics;
+        const hdclaude::DisplacementTerminal read =
+            hdclaude::AuthoredDisplacement(doc, &diagnostics);
+        CHECK(read.terminal == mix);
+        CHECK(read.space == hdclaude::DisplacementSpace::AlongNormal);
+        CHECK(!diagnostics.empty());
+        if (!diagnostics.empty()) {
+            std::printf("  displacement mix: %s\n", diagnostics.front().c_str());
+        }
+    }
+
+    // Two materials that displace differently. One program is compiled per
+    // material network, so the second cannot be honoured, and saying so is the
+    // only useful thing to do with it.
+    {
+        mx::DocumentPtr doc = mx::createDocument();
+        doc->importLibrary(libraries);
+        mx::NodePtr first = AddDisplacement(doc, "ND_displacement_float", "a");
+        mx::NodePtr second =
+            AddDisplacement(doc, "ND_displacement_vector3", "b");
+        CHECK(first != nullptr);
+        CHECK(second != nullptr);
+        if (!first || !second) {
+            return;
+        }
+        AddDisplacingMaterial(doc, "m1", first);
+        AddDisplacingMaterial(doc, "m2", second);
+
+        std::vector<std::string> diagnostics;
+        const hdclaude::DisplacementTerminal read =
+            hdclaude::AuthoredDisplacement(doc, &diagnostics);
+        CHECK(read.terminal == first);
+        CHECK(read.space == hdclaude::DisplacementSpace::AlongNormal);
+        CHECK(!diagnostics.empty());
+        if (!diagnostics.empty()) {
+            std::printf("  displacement disagreement: %s\n",
+                        diagnostics.front().c_str());
+        }
+    }
+}
+
 }  // namespace
 
 /// A displacement terminal generates its own program, and it compiles.
@@ -684,8 +876,22 @@ void TestDisplacementGeneratesItsOwnProgram(const GlslCompiler& compiler,
     material->addInputFromNodeDef("displacementshader")
         ->setNodeName(displacement->getName());
 
+    // Found the way the material compiler finds it, rather than named here:
+    // the terminal and the space that says how to read its offset are one
+    // answer about the document, and generating from a node the reader did not
+    // pick would let the two drift apart.
+    std::vector<std::string> diagnostics;
+    const hdclaude::DisplacementTerminal terminal =
+        hdclaude::AuthoredDisplacement(doc, &diagnostics);
+    CHECK(terminal.terminal == displacement);
+    CHECK(terminal.space == hdclaude::DisplacementSpace::AlongNormal);
+    CHECK(diagnostics.empty());
+    if (!terminal.terminal) {
+        return;
+    }
+
     const Generated generated =
-        GenerateElement(doc, displacement, "hdclaude_displacement");
+        GenerateElement(doc, terminal.terminal, "hdclaude_displacement");
     if (!generated.ok) {
         std::fprintf(stderr, "  displacement: %s\n", generated.error.c_str());
     }
@@ -763,6 +969,7 @@ int main()
     TestNamedSurfaceGeneratesAndCompiles(compiler, libraries, "open_pbr_surface");
     TestDispersionIsReadFromTheDocument(libraries);
     TestThinWalledIsReadFromTheDocument(libraries);
+    TestDisplacementIsReadFromTheDocument(libraries);
     TestDisplacementGeneratesItsOwnProgram(compiler, libraries);
 
     return hdclaude_test::Summarize("hdClaudeMaterialXTests");

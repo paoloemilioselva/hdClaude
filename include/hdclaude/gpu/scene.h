@@ -285,6 +285,22 @@ struct Light {
     std::int32_t shadowLink = -1;
 };
 
+/// How the offset in `hdclaude_displacement` is to be read.
+///
+/// MaterialX has two constructors for one struct, and they mean different
+/// things by the same three floats: `ND_displacement_float` documents "scalar
+/// displacement amount along the surface normal direction" and packs it as
+/// `vec3(disp)`, while `ND_displacement_vector3` documents "vector
+/// displacement in (dPdu, dPdv, N) tangent/normal space". The generated code
+/// is identical for both -- it is the constructor that carries the meaning --
+/// so the host records which one it compiled and the kernel is told.
+enum class DisplacementSpace : std::uint32_t {
+    /// Along the shading normal, from `ND_displacement_float`.
+    AlongNormal = 0,
+    /// In the (dPdu, dPdv, N) frame, from `ND_displacement_vector3`.
+    Tangent = 1,
+};
+
 /// Slots in the shared texture array.
 ///
 /// Fixed rather than sized to the scene, because every kernel shares one
