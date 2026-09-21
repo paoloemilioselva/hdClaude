@@ -84,4 +84,86 @@ HdClaudeRefinedMesh HdClaudeSubdivide(const HdMeshTopology& topology,
                                       const std::vector<float>& uvs = {},
                                       const std::vector<float>& faceVaryingUvs = {});
 
+/// One corner of a ptex face, named so that two faces sharing it agree.
+///
+/// A quad's ptex face is the face itself and its corners are coarse vertices.
+/// Any other face is split into one ptex face per corner, whose corners are
+/// then a coarse vertex, two coarse edge midpoints, and the face's centre.
+/// Naming them by *which* vertex, edge or face they come from -- rather than
+/// by a position -- is what makes the two faces either side of a shared side
+/// arrive at the same answer for it, exactly rather than nearly.
+struct HdClaudePtexCorner {
+    enum class Kind : std::uint8_t { Vertex, EdgeMidpoint, FaceCentre };
+    Kind kind = Kind::Vertex;
+    int index = 0;
+
+    bool operator<(const HdClaudePtexCorner& other) const
+    {
+        return kind != other.kind ? kind < other.kind : index < other.index;
+    }
+    bool operator==(const HdClaudePtexCorner& other) const
+    {
+        return kind == other.kind && index == other.index;
+    }
+};
+
+/// One quad of the limit surface's parameterisation, and where it came from.
+struct HdClaudePtexFace {
+    /// The coarse face this is part of, for carrying GeomSubsets through.
+    int coarseFace = 0;
+    /// Its four corners, in the order the domain's corners are: (0,0), (1,0),
+    /// (1,1), (0,1).
+    HdClaudePtexCorner corners[4];
+};
+
+/// The ptex faces of a topology, in the order OpenSubdiv numbers them.
+///
+/// A quad contributes one and anything else contributes one per corner, which
+/// is what `Far::PtexIndices` counts and what `Far::PatchMap::FindPatch`
+/// indexes by.
+std::vector<HdClaudePtexFace> HdClaudePtexFaces(const HdMeshTopology& topology);
+
+/// The object-space position of a ptex corner, for measuring a side.
+///
+/// The *cage's* position rather than the limit's, and deliberately: this
+/// decides a tessellation rate, which is a choice rather than a measurement,
+/// and it has to come out identical for the two faces that share a side. A
+/// limit position would be equal mathematically and not bit for bit, and a
+/// rate that disagreed in its last place at a threshold would open the seam it
+/// exists to close.
+void HdClaudePtexCornerPosition(const HdMeshTopology& topology,
+                                const std::vector<float>& points,
+                                const HdClaudePtexCorner& corner,
+                                float position[3]);
+
+/// Per-face refinement: the limit surface, sampled at a rate per side.
+///
+/// `edgeRates` is four rates per ptex face, in the order `HdClaudePtexFaces`
+/// returns them and the order a domain's sides run. Positions come from
+/// evaluating the limit surface rather than from a refined cage, which is what
+/// lets neighbouring faces be tessellated differently without a crack: they
+/// sample the same curve at the same parameters along the side they share.
+///
+/// `isolationLevel` is how far OpenSubdiv isolates irregular features before
+/// it caps them; it bounds the patch table's size and has nothing to do with
+/// how finely the result is tessellated.
+///
+/// Returns an invalid mesh when the topology cannot be refined or the rates do
+/// not describe it, which the caller should treat as "refine this uniformly
+/// instead" rather than as an error.
+///
+/// `worstSeamGap`, when given, receives the largest distance between two faces'
+/// answers for a point they share. It is the number the whole design rests on
+/// and it is measured rather than assumed: every sample on a side is recorded
+/// against that side's identity and the step along it, and a second face
+/// arriving at the same identity and step has to agree. Zero means the two
+/// faces produced bit-identical positions; anything above the scale of float
+/// rounding is a crack.
+HdClaudeRefinedMesh HdClaudeSubdivideAdaptive(
+    const HdMeshTopology& topology, const std::vector<float>& points,
+    const std::vector<int>& edgeRates, int isolationLevel,
+    const std::vector<float>& uvs = {},
+    const std::vector<float>& faceVaryingUvs = {},
+    float* worstSeamGap = nullptr);
+
 PXR_NAMESPACE_CLOSE_SCOPE

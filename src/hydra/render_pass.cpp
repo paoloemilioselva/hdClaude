@@ -51,6 +51,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (curveSegmentSamples)
                          (subdivisionLevel)
                          (adaptiveSubdivision)
+                         (perFaceSubdivision)
                          (subdivisionEdgePixels)
                          (subdivisionOffScreenLevel)
                          (subdivisionFaceBudget)
@@ -335,8 +336,14 @@ void HdClaudeRenderPass::_Execute(
         HdClaudeTessellationSettings tessellation;
         tessellation.level =
             _renderDelegate->GetRenderSetting<int>(_tokens->subdivisionLevel, 2);
-        tessellation.adaptive = _renderDelegate->GetRenderSetting<bool>(
-            _tokens->adaptiveSubdivision, false);
+        tessellation.perFace = _renderDelegate->GetRenderSetting<bool>(
+            _tokens->perFaceSubdivision, false);
+        // Per-face needs a sampled view exactly as per-mesh does, so it turns
+        // the same machinery on rather than duplicating it.
+        tessellation.adaptive =
+            tessellation.perFace ||
+            _renderDelegate->GetRenderSetting<bool>(
+                _tokens->adaptiveSubdivision, false);
         tessellation.targetEdgePixels =
             _renderDelegate->GetRenderSetting<float>(
                 _tokens->subdivisionEdgePixels, 4.0f);

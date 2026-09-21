@@ -6,6 +6,7 @@
 #include "hdclaude/core/environment.h"
 #include "hdclaude/core/display.h"
 #include "hdclaude/core/image_metrics.h"
+#include "hdclaude/core/quad_tessellation.h"
 #include "hdclaude/core/sphere_mesh.h"
 #include "hdclaude/core/spectrum.h"
 #include "hdclaude/core/tessellation.h"
@@ -1376,6 +1377,203 @@ void TestEnvironmentFlagReadsOneWay()
 
 }  // namespace
 
+/// The signed area of a tessellation, and whether any of it is degenerate.
+///
+/// The area is the instrument. A domain covered exactly once has area one; a
+/// gap makes it less, an overlap makes it more, and a triangle wound the other
+/// way subtracts where it should add. One number catches all three, which no
+/// amount of counting triangles does.
+double TessellationArea(const hdclaude::QuadTessellation& mesh, bool* degenerate)
+{
+    double total = 0.0;
+    *degenerate = false;
+    for (std::size_t t = 0; t < mesh.TriangleCount(); ++t) {
+        const std::uint32_t ia = mesh.indices[t * 3 + 0];
+        const std::uint32_t ib = mesh.indices[t * 3 + 1];
+        const std::uint32_t ic = mesh.indices[t * 3 + 2];
+        const double ax = mesh.uv[ia * 2 + 0], ay = mesh.uv[ia * 2 + 1];
+        const double bx = mesh.uv[ib * 2 + 0], by = mesh.uv[ib * 2 + 1];
+        const double cx = mesh.uv[ic * 2 + 0], cy = mesh.uv[ic * 2 + 1];
+        const double area =
+            0.5 * ((bx - ax) * (cy - ay) - (cx - ax) * (by - ay));
+        if (std::fabs(area) < 1e-12) {
+            *degenerate = true;
+        }
+        total += area;
+    }
+    return total;
+}
+
+/// An edge's rate is a power of two chosen from how many pixels it covers.
+void TestEdgeRateIsAPowerOfTwo()
+{
+    // Shorter than the target is one segment, not none: a face has to have a
+    // boundary.
+    CHECK_EQ(hdclaude::EdgeTessellationRate(0.0f, 4.0f), 1);
+    CHECK_EQ(hdclaude::EdgeTessellationRate(4.0f, 4.0f), 1);
+    // Exactly eight times the target is eight segments, not sixteen: the
+    // rounding is the same one a refinement level gets.
+    CHECK_EQ(hdclaude::EdgeTessellationRate(32.0f, 4.0f), 8);
+    // And anything above a power of two goes to the next one.
+    CHECK_EQ(hdclaude::EdgeTessellationRate(33.0f, 4.0f), 16);
+    CHECK_EQ(hdclaude::EdgeTessellationRate(5.0f, 4.0f), 2);
+    // Bounded, so one face cannot ask for more than anything has a chance to
+    // refuse.
+    CHECK_EQ(hdclaude::EdgeTessellationRate(1.0e9f, 1.0f), hdclaude::kMaxEdgeRate);
+}
+
+/// A quad tessellated at four independent rates covers its domain exactly
+/// once, and its boundary is cut exactly where the rates say.
+///
+/// Those two properties are the whole contract. The first is what makes the
+/// face itself sound; the second is what makes it agree with its neighbours,
+/// because a neighbour computes the same rate for the shared edge from the
+/// same two endpoints and so samples it at the same parameters.
+void TestQuadTessellationCoversItsDomain()
+{
+    using hdclaude::QuadTessellation;
+    using hdclaude::TessellateQuad;
+
+    // The degenerate case first: every side one segment is two triangles over
+    // four corners and nothing else.
+    {
+        const int rates[4] = {1, 1, 1, 1};
+        const QuadTessellation mesh = TessellateQuad(rates);
+        CHECK(mesh.Valid());
+        CHECK_EQ(mesh.SampleCount(), std::size_t(4));
+        CHECK_EQ(mesh.TriangleCount(), std::size_t(2));
+        bool degenerate = false;
+        CHECK_NEAR(TessellationArea(mesh, &degenerate), 1.0, 1e-6);
+        CHECK(!degenerate);
+    }
+
+    // Every combination of rates up to eight, which is 4096 quads and covers
+    // every ordering of finer and coarser sides there is.
+    const int choices[] = {1, 2, 4, 8, 3, 5};
+    std::size_t checked = 0;
+    double worstArea = 0.0;
+    bool anyDegenerate = false;
+    bool anyOutOfRange = false;
+    bool anyBadIndex = false;
+    for (const int a : choices) {
+        for (const int b : choices) {
+            for (const int c : choices) {
+                for (const int d : choices) {
+                    const int rates[4] = {a, b, c, d};
+                    const QuadTessellation mesh = TessellateQuad(rates);
+                    if (!mesh.Valid()) {
+                        anyBadIndex = true;
+                        continue;
+                    }
+                    bool degenerate = false;
+                    worstArea = std::max(
+                        worstArea,
+                        std::fabs(TessellationArea(mesh, &degenerate) - 1.0));
+                    anyDegenerate = anyDegenerate || degenerate;
+
+                    for (const float value : mesh.uv) {
+                        if (!(value >= 0.0f && value <= 1.0f)) {
+                            anyOutOfRange = true;
+                        }
+                    }
+                    for (const std::uint32_t index : mesh.indices) {
+                        if (index >= mesh.SampleCount()) {
+                            anyBadIndex = true;
+                        }
+                    }
+
+                    // The boundary, sample by sample, is where the rates put
+                    // it. This is the half of the contract a neighbour relies
+                    // on, so it is asserted against the arithmetic rather than
+                    // against a count.
+                    const float corners[4][2] = {
+                        {0, 0}, {1, 0}, {1, 1}, {0, 1}};
+                    std::size_t at = 0;
+                    for (int side = 0; side < 4; ++side) {
+                        for (int step = 0; step < rates[side]; ++step, ++at) {
+                            const float t = static_cast<float>(step) /
+                                            static_cast<float>(rates[side]);
+                            const float* from = corners[side];
+                            const float* to = corners[(side + 1) % 4];
+                            const float u = from[0] + (to[0] - from[0]) * t;
+                            const float v = from[1] + (to[1] - from[1]) * t;
+                            if (std::fabs(mesh.uv[at * 2 + 0] - u) > 1e-6f ||
+                                std::fabs(mesh.uv[at * 2 + 1] - v) > 1e-6f) {
+                                anyOutOfRange = true;
+                            }
+                        }
+                    }
+                    if (at != mesh.BoundarySampleCount()) {
+                        anyBadIndex = true;
+                    }
+                    ++checked;
+                }
+            }
+        }
+    }
+    std::printf("  quad tessellation: %zu rate combinations, worst area error "
+                "%.3e\n",
+                checked, worstArea);
+    CHECK_EQ(checked, std::size_t(1296));
+    // Exactly once: not 0.999 and not 1.001, because a gap and an overlap are
+    // both defects and neither has a tolerance worth granting.
+    CHECK(worstArea < 1e-6);
+    CHECK(!anyDegenerate);
+    CHECK(!anyOutOfRange);
+    CHECK(!anyBadIndex);
+}
+
+/// Two faces sharing an edge cut it identically, which is what closes the
+/// seam between them.
+///
+/// Asserted the way it actually happens: one quad has the shared edge as its
+/// side 1 and the other has it as its side 3 reversed, and the parameters they
+/// sample have to be the same set. A tessellator that derived its boundary
+/// from anything but the edge's own rate would fail this whatever else it got
+/// right.
+void TestQuadTessellationAgreesWithItsNeighbour()
+{
+    // The shared edge's rate is 8; everything else about the two faces
+    // differs, which is the point.
+    const int left[4] = {2, 8, 4, 1};
+    const int right[4] = {16, 2, 1, 8};
+
+    const hdclaude::QuadTessellation a = hdclaude::TessellateQuad(left);
+    const hdclaude::QuadTessellation b = hdclaude::TessellateQuad(right);
+    CHECK(a.Valid() && b.Valid());
+    if (!a.Valid() || !b.Valid()) {
+        return;
+    }
+
+    // Side 1 of the left quad: u = 1, v climbing.
+    std::vector<float> mine;
+    std::size_t at = static_cast<std::size_t>(left[0]);
+    for (int step = 0; step < left[1]; ++step, ++at) {
+        CHECK(std::fabs(a.uv[at * 2 + 0] - 1.0f) < 1e-6f);
+        mine.push_back(a.uv[at * 2 + 1]);
+    }
+    mine.push_back(1.0f);  // the corner the next side owns
+
+    // Side 3 of the right quad: u = 0, v falling.
+    std::vector<float> theirs;
+    at = static_cast<std::size_t>(right[0] + right[1] + right[2]);
+    for (int step = 0; step < right[3]; ++step, ++at) {
+        CHECK(std::fabs(b.uv[at * 2 + 0]) < 1e-6f);
+        theirs.push_back(b.uv[at * 2 + 1]);
+    }
+    theirs.push_back(0.0f);
+    std::sort(theirs.begin(), theirs.end());
+
+    CHECK_EQ(mine.size(), theirs.size());
+    float worst = 0.0f;
+    for (std::size_t i = 0; i < mine.size() && i < theirs.size(); ++i) {
+        worst = std::max(worst, std::fabs(mine[i] - theirs[i]));
+    }
+    std::printf("  quad seam: %zu samples each, worst disagreement %.3e\n",
+                mine.size(), worst);
+    CHECK(worst < 1e-6f);
+}
+
 /// The sphere cage is a sphere, and it is laid out the way OpenUSD lays one
 /// out.
 ///
@@ -1793,6 +1991,9 @@ void TestTessellationWithoutAViewIsUniform()
 int main()
 {
     TestEnvironmentFlagReadsOneWay();
+    TestEdgeRateIsAPowerOfTwo();
+    TestQuadTessellationCoversItsDomain();
+    TestQuadTessellationAgreesWithItsNeighbour();
     TestSphereMeshIsASphere();
     TestSphereMeshCoordinatesCloseTheSeam();
     TestTessellationViewIsSampledNotFollowed();

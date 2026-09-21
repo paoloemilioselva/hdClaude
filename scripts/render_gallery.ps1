@@ -80,7 +80,7 @@ $scenes = @(
     [pscustomobject]@{ Key = 'openpbr_playground';    Title = 'OpenPBR Playground';           Camera = 'renderCam_mainCU';  Purposes = 'render'; Subdivision = 2; UpAxis = 'Y' },
     [pscustomobject]@{ Key = 'subdivision_features';  Title = 'Subdivision Feature Matrix';   Camera = 'camera';            Purposes = $null;   Subdivision = 2; UpAxis = 'Y' },
     [pscustomobject]@{ Key = 'newzealand_heightmap';  Title = 'New Zealand Height Map';       Camera = 'camera';            Purposes = $null;   Subdivision = 6; UpAxis = 'Y' },
-    [pscustomobject]@{ Key = 'sphere_refinement';      Title = 'Sphere Refinement';            Camera = 'camera';            Purposes = $null;   Subdivision = 6; UpAxis = 'Y'; Adaptive = $true; SphereRadial = 24; SphereAxial = 16 }
+    [pscustomobject]@{ Key = 'sphere_refinement';      Title = 'Sphere Refinement';            Camera = 'camera';            Purposes = $null;   Subdivision = 6; UpAxis = 'Y'; Adaptive = $true; PerFace = $true; SphereRadial = 24; SphereAxial = 16 }
 )
 
 function Read-Timings {
@@ -383,6 +383,11 @@ foreach ($item in $selected) {
         $env:HDCLAUDE_ADAPTIVE_SUBDIVISION = '1'
     } else {
         Remove-Item Env:HDCLAUDE_ADAPTIVE_SUBDIVISION -ErrorAction SilentlyContinue
+    }
+    if ($item.PSObject.Properties['PerFace'] -and $item.PerFace) {
+        $env:HDCLAUDE_PER_FACE_SUBDIVISION = '1'
+    } else {
+        Remove-Item Env:HDCLAUDE_PER_FACE_SUBDIVISION -ErrorAction SilentlyContinue
     }
     if ($item.PSObject.Properties['SphereRadial'] -and $item.SphereRadial) {
         $env:HDCLAUDE_SPHERE_RADIAL = [string]$item.SphereRadial

@@ -8,6 +8,8 @@
 #include <chrono>
 #include "scene_store.h"
 #include "subdivision.h"
+
+#include "hdclaude/core/quad_tessellation.h"
 #include "trace.h"
 
 #include "pxr/base/gf/range3d.h"
@@ -24,6 +26,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <array>
+#include <limits>
+#include <map>
 #include <map>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -116,6 +121,182 @@ GfVec3f DisplayColor(HdSceneDelegate* delegate, const SdfPath& id)
     return GfVec3f(0.5f, 0.5f, 0.5f);
 }
 
+
+
+/// A rate for every side of every ptex face, from how many pixels it covers.
+///
+/// The two faces that share a side arrive at the same rate for it because they
+/// arrive at it the same way: the side is named by its two endpoints -- a
+/// coarse vertex, an edge midpoint or a face centre -- and its length and its
+/// depth come from those two positions and nothing else. Neither face's own
+/// shape, orientation or index enters the arithmetic, so there is nothing for
+/// them to disagree about.
+///
+/// The depth is the *side's* rather than the mesh's, which is the whole point:
+/// a ground plane running away from the camera gets short segments at the near
+/// end and long ones at the far end, and that is exactly what per-mesh
+/// refinement cannot express.
+///
+/// Returns empty when there is nothing to go on, which the caller should read
+/// as "refine this uniformly instead".
+std::vector<int> HdClaudePtexEdgeRates(
+    const HdClaudeTessellationSettings& settings,
+    const hdclaude::TessellationView& view, const HdMeshTopology& topology,
+    const std::vector<float>& points,
+    const std::vector<hdclaude::Transform3x4>& transforms,
+    std::size_t* budgetLimitedFrom)
+{
+    *budgetLimitedFrom = 0;
+    std::vector<int> rates;
+    if (!view.valid || points.empty() || transforms.empty()) {
+        return rates;
+    }
+
+    const std::vector<HdClaudePtexFace> faces = HdClaudePtexFaces(topology);
+    if (faces.empty()) {
+        return rates;
+    }
+
+    // One placement decides the rates for the prototype, because a prototype
+    // is refined once and instanced many times. The nearest is the one chosen:
+    // an instance that wanted more detail than it was given is a visible
+    // defect, and one that was given more than it needed is only a cost.
+    const hdclaude::Transform3x4* chosen = &transforms.front();
+    float nearest = std::numeric_limits<float>::max();
+    for (const hdclaude::Transform3x4& transform : transforms) {
+        const float distance = std::sqrt(transform.m[3] * transform.m[3] +
+                                         transform.m[7] * transform.m[7] +
+                                         transform.m[11] * transform.m[11]);
+        if (distance < nearest) {
+            nearest = distance;
+            chosen = &transform;
+        }
+    }
+
+    const auto toWorld = [chosen](const float local[3], float world[3]) {
+        for (int axis = 0; axis < 3; ++axis) {
+            const float* row = chosen->m + axis * 4;
+            world[axis] = row[0] * local[0] + row[1] * local[1] +
+                          row[2] * local[2] + row[3];
+        }
+    };
+
+    // Each distinct corner positioned once. A corner is shared by up to four
+    // ptex faces and the arithmetic has to be the same for all of them, which
+    // caching guarantees rather than merely encourages.
+    std::map<std::pair<int, int>, std::array<float, 3>> positions;
+    const auto positionOf = [&](const HdClaudePtexCorner& corner) {
+        const std::pair<int, int> key{static_cast<int>(corner.kind),
+                                      corner.index};
+        const auto found = positions.find(key);
+        if (found != positions.end()) {
+            return found->second;
+        }
+        float local[3] = {0.0f, 0.0f, 0.0f};
+        HdClaudePtexCornerPosition(topology, points, corner, local);
+        std::array<float, 3> world{};
+        toWorld(local, world.data());
+        positions.emplace(key, world);
+        return world;
+    };
+
+    rates.assign(faces.size() * 4, 1);
+    for (std::size_t face = 0; face < faces.size(); ++face) {
+        for (int side = 0; side < 4; ++side) {
+            const std::array<float, 3> from =
+                positionOf(faces[face].corners[side]);
+            const std::array<float, 3> to =
+                positionOf(faces[face].corners[(side + 1) % 4]);
+
+            const float dx = to[0] - from[0];
+            const float dy = to[1] - from[1];
+            const float dz = to[2] - from[2];
+            const float length = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+            // The side's own midpoint, so its depth is its own. Formed as a
+            // sum of the two ends in the order the corners are given, which is
+            // the same order for both faces: a side is the same side whichever
+            // face is asking.
+            const float midpoint[3] = {0.5f * (from[0] + to[0]),
+                                       0.5f * (from[1] + to[1]),
+                                       0.5f * (from[2] + to[2])};
+            const float bounds[3] = {midpoint[0], midpoint[1], midpoint[2]};
+            const float distance =
+                hdclaude::DistanceToBounds(view, bounds, bounds);
+            const float pixels =
+                hdclaude::PixelsPerWorldUnit(view, distance);
+
+            int rate = 1;
+            if (pixels > 0.0f) {
+                rate = hdclaude::EdgeTessellationRate(length * pixels,
+                                                      settings.targetEdgePixels);
+            } else {
+                // The eye is on the side. Nothing is closer, so nothing needs
+                // more.
+                rate = hdclaude::kMaxEdgeRate;
+            }
+
+            // Outside the frustum the side is held down rather than dropped,
+            // for the reason every other off-screen decision here is: a path
+            // tracer sees what the camera does not. Judged by the midpoint, so
+            // the two faces judge it alike.
+            if (hdclaude::BoundsAreOffScreen(view, bounds, bounds)) {
+                rate = std::min(rate, std::max(settings.offScreenLevel, 1));
+            }
+            rates[face * 4 + static_cast<std::size_t>(side)] = rate;
+        }
+    }
+
+    // --- The budget -----------------------------------------------------------
+    //
+    // Halving every rate at once, which is the only way to spend less without
+    // making two faces disagree: a reduction applied to some sides and not
+    // others is a crack. It is also exactly one level coarser everywhere,
+    // which is the same currency the per-mesh path is limited in.
+    const auto triangleCount = [&rates, &faces]() {
+        std::size_t total = 0;
+        for (std::size_t face = 0; face < faces.size(); ++face) {
+            int inner = 1;
+            int perimeter = 0;
+            for (int side = 0; side < 4; ++side) {
+                const int rate = rates[face * 4 + static_cast<std::size_t>(side)];
+                inner = std::max(inner, rate);
+                perimeter += rate;
+            }
+            // The interior grid plus the ring that stitches it to the sides:
+            // (inner-2)^2 quads and roughly the perimeter plus that ring in
+            // triangles. An estimate, and a generous one, which is what a
+            // budget wants to be.
+            const int span = std::max(inner - 1, 0);
+            const int interior = std::max(span - 1, 0);
+            total += static_cast<std::size_t>(interior) * interior * 2 +
+                     static_cast<std::size_t>(perimeter) +
+                     static_cast<std::size_t>(4 * span);
+        }
+        return total;
+    };
+
+    std::size_t wanted = triangleCount();
+    const std::size_t before = wanted;
+    while (wanted > settings.maxRefinedFaces) {
+        bool reduced = false;
+        for (int& rate : rates) {
+            if (rate > 1) {
+                rate = std::max(rate / 2, 1);
+                reduced = true;
+            }
+        }
+        if (!reduced) {
+            break;
+        }
+        wanted = triangleCount();
+    }
+    if (wanted != before) {
+        *budgetLimitedFrom = before;
+    }
+
+    return rates;
+}
 
 /// Everything a tessellation choice needs to know about one mesh, and the
 /// choice itself.
@@ -509,13 +690,76 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     }
 
     bool subdivided = false;
-    if (subdivisionLevel > 0 && HdClaudeWantsSubdivision(topology)) {
+    // Per-face refinement replaces the per-mesh level rather than refining on
+    // top of it, so it is gated on the *setting* rather than on the level this
+    // mesh was given: a mesh whose projected size earned level 0 still has
+    // faces, and some of them may be near the camera even when the mesh as a
+    // whole is not. That is the case per-face exists for.
+    const bool wantsSubdivision = HdClaudeWantsSubdivision(topology);
+    const bool perFace = tessellation.perFace && wantsSubdivision &&
+                         tessellation.level > 0;
+
+    if (perFace || (subdivisionLevel > 0 && wantsSubdivision)) {
         // Timed here rather than inside the refiner, because what a caller
         // wants to know is what refinement cost *this prim*, and the refiner is
         // a free function with no notion of which prim it is serving.
         const auto refineStart = std::chrono::steady_clock::now();
-        const HdClaudeRefinedMesh refined = HdClaudeSubdivide(
-            topology, points, subdivisionLevel, coarseUvs, coarseFaceVaryingUvs);
+
+        // Per face where that is asked for and possible, and uniformly
+        // otherwise. The fallback is not a failure: a mesh whose rates cannot
+        // be derived, or whose patch table cannot be built, is still a mesh
+        // and is still refined -- just everywhere alike.
+        HdClaudeRefinedMesh refined;
+        if (perFace) {
+            std::size_t budgetLimitedFrom = 0;
+            float seamGap = 0.0f;
+            const std::vector<int> rates = HdClaudePtexEdgeRates(
+                tessellation, param->TessellationCamera(), topology, points,
+                entry.transforms, &budgetLimitedFrom);
+            if (!rates.empty()) {
+                // The setting's level is the *isolation* here -- how far
+                // OpenSubdiv separates irregular features before capping them
+                // -- and not how finely anything is tessellated. That is the
+                // rates' job.
+                refined = HdClaudeSubdivideAdaptive(
+                    topology, points, rates, tessellation.level, coarseUvs,
+                    coarseFaceVaryingUvs, &seamGap);
+            }
+            if (refined.Valid()) {
+                int finest = 1;
+                for (const int rate : rates) {
+                    finest = std::max(finest, rate);
+                }
+                HdClaudeTrace(
+                    "mesh <%s>: per-face, %zu sides, finest rate %d, %zu "
+                    "triangles, worst seam gap %.3e%s",
+                    id.GetText(), rates.size(), finest,
+                    refined.indices.size() / 3,
+                    static_cast<double>(seamGap),
+                    budgetLimitedFrom != 0 ? " (held back by the face budget)"
+                                           : "");
+                // A seam that has opened is a crack, and a crack is a hole in
+                // a surface that is supposed to be closed. Said loudly,
+                // because it is invisible in any frame that does not happen to
+                // look through it.
+                if (seamGap > 1.0e-4f) {
+                    TF_WARN(
+                        "hdClaude: mesh <%s> has a seam between faces refined "
+                        "differently: two faces disagree by %g about a point "
+                        "they share",
+                        id.GetText(), static_cast<double>(seamGap));
+                }
+            } else {
+                HdClaudeTrace(
+                    "mesh <%s>: per-face refinement produced nothing; refined "
+                    "uniformly at level %d instead",
+                    id.GetText(), subdivisionLevel);
+            }
+        }
+        if (!refined.Valid() && subdivisionLevel > 0 && wantsSubdivision) {
+            refined = HdClaudeSubdivide(topology, points, subdivisionLevel,
+                                        coarseUvs, coarseFaceVaryingUvs);
+        }
         const double refineMs =
             std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - refineStart)

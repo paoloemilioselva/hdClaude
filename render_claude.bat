@@ -40,6 +40,8 @@ IF "%~1"=="" (
   ECHO   HDCLAUDE_SUBDIVISION_LEVEL     0-10, default 2, 0 disables refinement
   ECHO   HDCLAUDE_ADAPTIVE_SUBDIVISION  default off; the level per mesh from its
   ECHO                                  projected size, the above as a ceiling
+  ECHO   HDCLAUDE_PER_FACE_SUBDIVISION  default off; a rate per face side from
+  ECHO                                  its own depth, off the limit surface
   ECHO   HDCLAUDE_SUBDIVISION_EDGE_PIXELS       default 4; a refined edge's length
   ECHO   HDCLAUDE_SUBDIVISION_OFFSCREEN_LEVEL   default 1; outside the frustum
   ECHO   HDCLAUDE_SUBDIVISION_FACE_BUDGET       default 4194304 faces a mesh

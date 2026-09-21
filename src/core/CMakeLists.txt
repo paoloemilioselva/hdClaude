@@ -12,6 +12,7 @@ add_library(hdClaudeCore STATIC
     display.cpp
     hash.cpp
     image_metrics.cpp
+    quad_tessellation.cpp
     shader_cache.cpp
     sphere_mesh.cpp
     spectrum.cpp

@@ -57,6 +57,19 @@ struct HdClaudeTessellationSettings {
     /// it applied to and what that mesh wanted.
     std::size_t maxRefinedFaces = 4u * 1024u * 1024u;
 
+    /// Whether each *face* gets its own rate rather than each mesh.
+    ///
+    /// Per-mesh refinement gives a whole mesh one level, which is the wrong
+    /// answer for anything spanning a range of distances by itself: a ground
+    /// plane wants every level it can get at the near end and none at the far
+    /// end. Per-face gives each side of each face the rate its own depth
+    /// earns, and takes the positions from the limit surface so that faces
+    /// refined differently still meet exactly.
+    ///
+    /// Implies `adaptive`: the rates come from the sampled view, and without
+    /// one there is nothing to derive them from.
+    bool perFace = false;
+
     /// Whether a camera move re-derives the levels.
     ///
     /// Off by default, and deliberately. Published geometry is what
@@ -73,7 +86,8 @@ struct HdClaudeTessellationSettings {
 
     bool operator==(const HdClaudeTessellationSettings& other) const
     {
-        return adaptive == other.adaptive && level == other.level &&
+        return adaptive == other.adaptive && perFace == other.perFace &&
+               level == other.level &&
                offScreenLevel == other.offScreenLevel &&
                targetEdgePixels == other.targetEdgePixels &&
                maxRefinedFaces == other.maxRefinedFaces &&
@@ -122,7 +136,10 @@ inline HdClaudeTessellationSettings HdClaudeClampTessellation(
 inline HdClaudeTessellationSettings HdClaudeReadTessellationEnvironment()
 {
     HdClaudeTessellationSettings settings;
+    settings.perFace =
+        hdclaude::EnvironmentFlag("HDCLAUDE_PER_FACE_SUBDIVISION", false);
     settings.adaptive =
+        settings.perFace ||
         hdclaude::EnvironmentFlag("HDCLAUDE_ADAPTIVE_SUBDIVISION", false);
     settings.level = TfGetenvInt("HDCLAUDE_SUBDIVISION_LEVEL", 2);
     settings.offScreenLevel =

@@ -43,7 +43,14 @@ upsampling happens where a closure hands back its response. Dispersion is
 transported, and a path meeting a dispersive interface keeps its hero lane and
 terminates the other three, which costs four times the noise on those paths.
 
-**Refinement is uniform in these images.** `Adaptive subdivision` gives each
+**Refinement is per face in one of them.** `Per-face subdivision` gives each
+side of each face the rate its own depth earns and takes the positions from the
+limit surface rather than from a refined cage, so faces tessellated differently
+still meet: the renderer measures that and reports the worst disagreement per
+mesh, which on the one scene using it is 6.7e-08 on a sphere of radius one.
+Only `sphere_refinement` renders this way.
+
+**Refinement is uniform in the other ten.** `Adaptive subdivision` gives each
 mesh the level its projected size earns, with the level above as a ceiling, and
 it is off here so that every baseline is the same picture it was. What it buys,
 measured on Pixar's Kitchen Set at these settings: 2,109,620 triangles against
@@ -176,7 +183,7 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 | OpenPBR Playground | 2026-09-21 | 216.149 s (3m 36.149s) | 12.7 GiB | `37af1840a9a5f061f9fc8ebb34e5bcbef5087cf5ae52e2a7429611db138fdef2` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | Subdivision Feature Matrix | 2026-09-21 | 14.818 s (0m 14.818s) | 832.0 MiB | `5027c7a8b083f04ddd18f927de952bc2fbcf907bce7348346912b3a61854acb2` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | New Zealand Height Map | 2026-09-21 | 11.812 s (0m 11.812s) | 480.0 MiB | `e1801d60c65f221bbbc27bec010774632b2fbc62447498566a69e6e2f886afb6` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 6 |
-| Sphere Refinement | 2026-09-21 | 14.131 s (0m 14.131s) | 565.3 MiB | `76a5e7d21ec6d93808c57fc33f17d7cf84de10ffcd814900ff1cc73c11b33d4c` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 6 |
+| Sphere Refinement | 2026-09-21 | 14.141 s (0m 14.141s) | 599.0 MiB | `b7ddcf60886b340c0e427e73da08865462c76c9987a18823d7132f6431576c69` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 6 |
 <!-- gallery-timings:end -->
 
 ## Against hdCodex
@@ -713,15 +720,33 @@ set "HDCLAUDE_SPHERE_AXIAL=16"
 render_claude.bat --imageWidth 1024 --colorCorrectionMode disabled --camera camera gallery\sphere_refinement.usda build\gallery-linear\sphere_refinement.exr
 ```
 
-**Current state.** Each doubling of the distance costs exactly one level --
-3, 2, 1, 0 across the four in frame -- which is the claim adaptive refinement
-rests on, since the level is the log base two of how many pixels a coarse edge
-covers against how many it should. The sphere to the right and the one behind
-the camera are both judged off-screen and both held at level 1 rather than
-dropped to their control cage: neither is drawn by a camera ray and both still
-reach the film through the dome and through the ground. The ground asks for
-level 16 and is held at 6 by the ceiling. Uniform refinement at the same level
-renders 18,284,546 triangles where this renders 69,170.
+**Current state.** Rendered per face, which is what the ground is here to
+show. It is a grid of 256 quads running from just behind the camera to well
+past the last sphere, and its near faces are tessellated 64 segments to a side
+where its far faces are tessellated one -- a spread no single level can cover,
+since a level chosen for the horizon is missing in the foreground and one
+chosen for the foreground is wasted on the horizon. The four spheres read 8, 8,
+4 and 1 at the sides facing the camera, and the two off-screen ones read 1: a
+reduction rather than a cull, because neither is drawn by a camera ray and both
+still reach the film through the dome and through the ground.
+
+Nothing cracks, and that is measured rather than asserted. The renderer files
+every sample on a side under that side's identity and how far along it the
+sample is, both named the same way by whichever face is asking, and reports the
+largest disagreement it finds: 0 for most of these meshes and 6.7e-08 at worst,
+which is float rounding on a sphere of radius one. It is zero by construction
+rather than by luck -- the rate belongs to the side rather than to either face,
+and the positions come from evaluating the limit surface rather than from a
+refined cage, so two faces tessellated differently are sampling the same curve
+at the same parameters. The end caps are Gregory patches for the same reason:
+around an extraordinary vertex, which every pole of a sphere has, a B-spline
+cap is only approximately continuous with the regular patches beside it.
+
+Read per mesh instead, each doubling of the distance costs exactly one level --
+3, 2, 1, 0 across the four in frame -- which is the claim the projected-size
+arithmetic rests on. The ground asks for level 16 that way and is held at 6 by
+the ceiling; uniform refinement at that level renders 18,284,546 triangles for
+the spheres alone where the whole frame here renders 641,994.
 
 It also exercises two things a sphere could not do before. Its cage is
 hdClaude's rather than OpenUSD's, so the density is a render setting instead of

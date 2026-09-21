@@ -52,6 +52,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (curveSegmentSamples)
                          (subdivisionLevel)
                          (adaptiveSubdivision)
+                         (perFaceSubdivision)
                          (subdivisionEdgePixels)
                          (subdivisionOffScreenLevel)
                          (subdivisionFaceBudget)
@@ -719,6 +720,20 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         // same amount without it.
         {"Adaptive subdivision", _tokens->adaptiveSubdivision,
          VtValue(hdclaude::EnvironmentFlag("HDCLAUDE_ADAPTIVE_SUBDIVISION", false))},
+
+        // Whether each face, rather than each mesh, gets its own rate.
+        //
+        // A mesh is one level's worth of detail everywhere, which is the wrong
+        // answer for anything that spans a range of distances by itself: a
+        // ground plane, a terrain, a floor. This gives each side of each face
+        // the rate its own depth earns. It implies `Adaptive subdivision`,
+        // since the rates come from the sampled view, and it changes where the
+        // positions come from: the limit surface rather than a refined cage,
+        // which is what lets neighbouring faces be tessellated differently
+        // without a crack between them.
+        {"Per-face subdivision", _tokens->perFaceSubdivision,
+         VtValue(hdclaude::EnvironmentFlag("HDCLAUDE_PER_FACE_SUBDIVISION",
+                                           false))},
 
         // How long a refined edge should be on screen, in pixels. Smaller is
         // finer, and each halving is one more level.
