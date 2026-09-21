@@ -6,6 +6,7 @@
 #include "hdclaude/core/environment.h"
 #include "hdclaude/core/display.h"
 #include "hdclaude/core/image_metrics.h"
+#include "hdclaude/core/sphere_mesh.h"
 #include "hdclaude/core/spectrum.h"
 #include "hdclaude/core/tessellation.h"
 
@@ -1375,6 +1376,144 @@ void TestEnvironmentFlagReadsOneWay()
 
 }  // namespace
 
+/// The sphere cage is a sphere, and it is laid out the way OpenUSD lays one
+/// out.
+///
+/// The layout is asserted rather than merely produced because it is a
+/// compatibility claim: at the default density this has to be the cage
+/// hdClaude has always traced, so that adding texture coordinates changes the
+/// coordinates and nothing else.
+void TestSphereMeshIsASphere()
+{
+    using hdclaude::GenerateSphereMesh;
+    using hdclaude::SphereMesh;
+
+    // OpenUSD's `_SphereToMesh` is ten by ten: nine rings of ten points plus
+    // two poles, and ten quads in each of eight strips plus a ten-triangle fan
+    // at each pole.
+    CHECK_EQ(hdclaude::SphereMeshPointCount(10, 10), std::size_t(92));
+    CHECK_EQ(hdclaude::SphereMeshFaceCount(10, 10), std::size_t(100));
+
+    const float radius = 2.5f;
+    const SphereMesh mesh = GenerateSphereMesh(10, 10, radius);
+    CHECK(mesh.Valid());
+    CHECK_EQ(mesh.PointCount(), std::size_t(92));
+    CHECK_EQ(mesh.FaceCount(), std::size_t(100));
+
+    // Every point is on the sphere. This is the one assertion that cannot be
+    // satisfied by a plausible-looking blob.
+    float worst = 0.0f;
+    for (std::size_t i = 0; i < mesh.PointCount(); ++i) {
+        const float x = mesh.points[i * 3 + 0];
+        const float y = mesh.points[i * 3 + 1];
+        const float z = mesh.points[i * 3 + 2];
+        worst = std::max(worst,
+                         std::fabs(std::sqrt(x * x + y * y + z * z) - radius));
+    }
+    std::printf("  sphere cage: 92 points, worst radius error %.3e\n", worst);
+    CHECK(worst < 1.0e-5f);
+
+    // The poles are first and last, on Z, which is where UsdGeomSphere puts
+    // them and what the face indices below assume.
+    CHECK(std::fabs(mesh.points[0]) < 1e-6f);
+    CHECK(std::fabs(mesh.points[1]) < 1e-6f);
+    CHECK(std::fabs(mesh.points[2] + radius) < 1e-5f);
+    const std::size_t top = mesh.PointCount() - 1;
+    CHECK(std::fabs(mesh.points[top * 3 + 0]) < 1e-6f);
+    CHECK(std::fabs(mesh.points[top * 3 + 1]) < 1e-6f);
+    CHECK(std::fabs(mesh.points[top * 3 + 2] - radius) < 1e-5f);
+
+    // Twenty triangles at the poles and eighty quads between them, and every
+    // index names a point that exists.
+    std::size_t triangles = 0;
+    std::size_t quads = 0;
+    std::size_t corners = 0;
+    for (const int count : mesh.faceVertexCounts) {
+        if (count == 3) ++triangles;
+        if (count == 4) ++quads;
+        corners += static_cast<std::size_t>(count);
+    }
+    CHECK_EQ(triangles, std::size_t(20));
+    CHECK_EQ(quads, std::size_t(80));
+    CHECK_EQ(mesh.faceVertexIndices.size(), corners);
+    CHECK_EQ(mesh.faceVaryingUvs.size(), corners * 2);
+    bool inRange = true;
+    for (const int index : mesh.faceVertexIndices) {
+        inRange = inRange && index >= 0 &&
+                  static_cast<std::size_t>(index) < mesh.PointCount();
+    }
+    CHECK(inRange);
+
+    // A sphere with the fewest divisions it can have is two fans back to back
+    // and no quads at all, which is the case an off-by-one in the strip loop
+    // turns into a crash or an empty mesh.
+    const SphereMesh smallest = GenerateSphereMesh(3, 2, 1.0);
+    CHECK(smallest.Valid());
+    CHECK_EQ(smallest.FaceCount(), std::size_t(6));
+    CHECK_EQ(smallest.PointCount(), std::size_t(5));
+
+    // Below the minimum it refuses rather than producing something degenerate.
+    CHECK(!GenerateSphereMesh(2, 2, 1.0).Valid());
+    CHECK(!GenerateSphereMesh(3, 1, 1.0).Valid());
+}
+
+/// The seam closes, which is the whole reason the coordinates are per corner.
+///
+/// A sphere's longitude wraps, so the vertex carrying u = 0 is the same vertex
+/// that ought to carry u = 1. A vertex-interpolated coordinate can only say
+/// one of those, and the last column of faces would then run the texture
+/// backwards across the entire map.
+void TestSphereMeshCoordinatesCloseTheSeam()
+{
+    const hdclaude::SphereMesh mesh = hdclaude::GenerateSphereMesh(10, 10, 1.0);
+    CHECK(mesh.Valid());
+    if (!mesh.Valid()) {
+        return;
+    }
+
+    float lowU = 2.0f;
+    float highU = -1.0f;
+    float lowV = 2.0f;
+    float highV = -1.0f;
+    for (std::size_t i = 0; i * 2 + 1 < mesh.faceVaryingUvs.size(); ++i) {
+        lowU = std::min(lowU, mesh.faceVaryingUvs[i * 2 + 0]);
+        highU = std::max(highU, mesh.faceVaryingUvs[i * 2 + 0]);
+        lowV = std::min(lowV, mesh.faceVaryingUvs[i * 2 + 1]);
+        highV = std::max(highV, mesh.faceVaryingUvs[i * 2 + 1]);
+    }
+    std::printf("  sphere uvs: u %.3f..%.3f, v %.3f..%.3f\n", lowU, highU, lowV,
+                highV);
+    // The map is covered once, corner to corner: the poles reach v = 0 and
+    // v = 1, and the seam reaches u = 1.
+    CHECK(std::fabs(lowU) < 1e-6f);
+    CHECK(std::fabs(highU - 1.0f) < 1e-6f);
+    CHECK(std::fabs(lowV) < 1e-6f);
+    CHECK(std::fabs(highV - 1.0f) < 1e-6f);
+
+    // And the seam is closed rather than merely reaching one: some corner
+    // refers to a *first-column* vertex while carrying u = 1. That pair --
+    // one vertex, two coordinates -- is the thing vertex interpolation cannot
+    // express, so finding it is finding the seam.
+    bool wrapped = false;
+    std::size_t corner = 0;
+    for (const int count : mesh.faceVertexCounts) {
+        for (int i = 0; i < count; ++i, ++corner) {
+            const int index = mesh.faceVertexIndices[corner];
+            const float u = mesh.faceVaryingUvs[corner * 2 + 0];
+            // The first column of every ring: point 1 starts ring one, and the
+            // columns repeat every ten points from there.
+            const bool firstColumn = index > 0 &&
+                                     index < static_cast<int>(
+                                                 mesh.PointCount() - 1) &&
+                                     ((index - 1) % 10) == 0;
+            if (firstColumn && std::fabs(u - 1.0f) < 1e-6f) {
+                wrapped = true;
+            }
+        }
+    }
+    CHECK(wrapped);
+}
+
 /// A camera move is not a reason to refine again.
 ///
 /// The rule Paolo asked for, and the one thing about this feature that is a
@@ -1654,6 +1793,8 @@ void TestTessellationWithoutAViewIsUniform()
 int main()
 {
     TestEnvironmentFlagReadsOneWay();
+    TestSphereMeshIsASphere();
+    TestSphereMeshCoordinatesCloseTheSeam();
     TestTessellationViewIsSampledNotFollowed();
     TestTessellationProjectionIsThePinhole();
     TestTessellationLevelFollowsProjectedSize();

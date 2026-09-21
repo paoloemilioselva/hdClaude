@@ -1,0 +1,48 @@
+# hdClaude render stats -- sphere_refinement.usda
+#
+# Reported by the renderer through GetRenderStats(), not measured
+# from outside: only it knows what it is holding, and only it knows
+# the moment a frame holds all of it at once.
+#
+# Times are total work summed across Hydra's worker threads, so a
+# stage can exceed the frame's wall time -- that is threads working
+# at once, not an error.
+#
+# traceMs is the path tracing itself, summed over the progressive
+# calls. outsideSeconds is the wall time that trace, ingest and
+# publish do not claim: opening the stage, plugin discovery, the
+# scene index, writing the EXR and
+# tearing the device down, none of which the renderer can see.
+#
+# Regenerate with: render_gallery.bat -Scene sphere_refinement
+
+[scene]
+settings              1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 6
+instances             7
+triangles             69170
+blasBuilt             3
+blasReused            4
+meshesRefined         11
+subdivideInputPoints  11946
+subdivideOutputPoints 129522
+materialsCompiled     2
+texturesLoaded        1
+textureBytes          6782400
+cameraRays            737476608
+tracedRays            1185931231
+shadowRays            339581479
+rayHash               15316206389522411
+hitHash               9100783163866299625
+deviceBytesPeak       592707584
+
+[cost]
+device                NVIDIA GeForce RTX 5060 Ti
+measured              2026-09-21
+wallSeconds           14.131
+traceMs               3927
+ingestMs              4
+publishMs             56
+subdivideMs           13
+materialMs            289
+textureMs             11
+outsideSeconds        10.144

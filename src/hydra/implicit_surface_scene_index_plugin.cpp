@@ -1,5 +1,7 @@
 #include "implicit_surface_scene_index_plugin.h"
 
+#include "sphere_scene_index.h"
+
 #include "pxr/imaging/hd/retainedDataSource.h"
 #include "pxr/imaging/hd/sceneIndexPluginRegistry.h"
 #include "pxr/imaging/hd/tokens.h"
@@ -45,25 +47,33 @@ HdClaude_ImplicitSurfaceSceneIndexPlugin::_AppendSceneIndex(
 {
     TF_UNUSED(inputArgs);
 
-    // Every implicit type to a mesh. The alternative the scene index offers --
-    // `axisToTransform`, which keeps the prim and only rotates the spine of a
-    // cone, cylinder or capsule onto the axis it was authored around -- is for
-    // a renderer that intersects quadrics analytically. hdClaude traces
-    // triangles, so the mesh is what it needs for all six.
+    // Five of the six implicit types to a mesh. The alternative the scene
+    // index offers -- `axisToTransform`, which keeps the prim and only rotates
+    // the spine of a cone, cylinder or capsule onto the axis it was authored
+    // around -- is for a renderer that intersects quadrics analytically.
+    // hdClaude traces triangles, so the mesh is what it needs.
+    //
+    // The sixth, the sphere, is hdClaude's own and is converted *before* this,
+    // so no sphere prim reaches OpenUSD's index and it is not asked to handle
+    // one. Two things about a sphere needed to be ours: its density, which is
+    // a pair of `static constexpr` tens in OpenUSD and is a render setting
+    // here, and its texture coordinates, which OpenUSD does not supply at all
+    // -- so a material sampling an image on a sphere read one texel at every
+    // vertex (sphere_scene_index.h).
     const HdDataSourceBaseHandle toMesh =
         HdRetainedTypedSampledDataSource<TfToken>::New(
             HdsiImplicitSurfaceSceneIndexTokens->toMesh);
 
     const HdContainerDataSourceHandle arguments =
         HdRetainedContainerDataSource::New(
-            HdPrimTypeTokens->sphere, toMesh,
             HdPrimTypeTokens->cube, toMesh,
             HdPrimTypeTokens->cone, toMesh,
             HdPrimTypeTokens->cylinder, toMesh,
             HdPrimTypeTokens->capsule, toMesh,
             HdPrimTypeTokens->plane, toMesh);
 
-    return HdsiImplicitSurfaceSceneIndex::New(inputScene, arguments);
+    return HdsiImplicitSurfaceSceneIndex::New(
+        HdClaudeSphereSceneIndex::New(inputScene), arguments);
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

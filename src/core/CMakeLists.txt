@@ -13,6 +13,7 @@ add_library(hdClaudeCore STATIC
     hash.cpp
     image_metrics.cpp
     shader_cache.cpp
+    sphere_mesh.cpp
     spectrum.cpp
     tessellation.cpp
 )

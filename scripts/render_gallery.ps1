@@ -79,7 +79,8 @@ $scenes = @(
     [pscustomobject]@{ Key = 'collectiveproject001';  Title = 'Collective Project 001';       Camera = 'mono';              Purposes = 'render'; Subdivision = 2; UpAxis = 'Y'; Stage = 'C:\Users\paolo\Desktop\code\collectiveproject001\shots\s001_001\index.usda'; Frame = 1246 },
     [pscustomobject]@{ Key = 'openpbr_playground';    Title = 'OpenPBR Playground';           Camera = 'renderCam_mainCU';  Purposes = 'render'; Subdivision = 2; UpAxis = 'Y' },
     [pscustomobject]@{ Key = 'subdivision_features';  Title = 'Subdivision Feature Matrix';   Camera = 'camera';            Purposes = $null;   Subdivision = 2; UpAxis = 'Y' },
-    [pscustomobject]@{ Key = 'newzealand_heightmap';  Title = 'New Zealand Height Map';       Camera = 'camera';            Purposes = $null;   Subdivision = 6; UpAxis = 'Y' }
+    [pscustomobject]@{ Key = 'newzealand_heightmap';  Title = 'New Zealand Height Map';       Camera = 'camera';            Purposes = $null;   Subdivision = 6; UpAxis = 'Y' },
+    [pscustomobject]@{ Key = 'sphere_refinement';      Title = 'Sphere Refinement';            Camera = 'camera';            Purposes = $null;   Subdivision = 6; UpAxis = 'Y'; Adaptive = $true; SphereRadial = 24; SphereAxial = 16 }
 )
 
 function Read-Timings {
@@ -371,6 +372,25 @@ if (!$env:HDCLAUDE_GALLERY_EXPOSURE) { $env:HDCLAUDE_GALLERY_EXPOSURE = '0' }
 foreach ($item in $selected) {
     $env:HDCLAUDE_SUBDIVISION_LEVEL = [string]$item.Subdivision
     $env:HDCLAUDE_UP_AXIS = [string]$item.UpAxis
+
+    # Adaptive refinement is off unless a scene asks for it, and the sphere
+    # density is OpenUSD's ten by ten unless a scene says otherwise. Set per
+    # scene rather than once for the run, and *cleared* between scenes: a
+    # variable left set by the entry before would silently render the next
+    # scene under settings its baseline was not made with, which is the kind of
+    # difference that reads as a renderer regression.
+    if ($item.PSObject.Properties['Adaptive'] -and $item.Adaptive) {
+        $env:HDCLAUDE_ADAPTIVE_SUBDIVISION = '1'
+    } else {
+        Remove-Item Env:HDCLAUDE_ADAPTIVE_SUBDIVISION -ErrorAction SilentlyContinue
+    }
+    if ($item.PSObject.Properties['SphereRadial'] -and $item.SphereRadial) {
+        $env:HDCLAUDE_SPHERE_RADIAL = [string]$item.SphereRadial
+        $env:HDCLAUDE_SPHERE_AXIAL = [string]$item.SphereAxial
+    } else {
+        Remove-Item Env:HDCLAUDE_SPHERE_RADIAL -ErrorAction SilentlyContinue
+        Remove-Item Env:HDCLAUDE_SPHERE_AXIAL -ErrorAction SilentlyContinue
+    }
 
     # The stage, which is gallery/<key>.usda unless the entry names one.
     #

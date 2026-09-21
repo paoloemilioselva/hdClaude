@@ -13,6 +13,7 @@
 #include "texture_loader.h"
 
 #include "hdclaude/core/environment.h"
+#include "hdclaude/core/sphere_mesh.h"
 
 #include "pxr/base/plug/plugin.h"
 #include "pxr/base/plug/registry.h"
@@ -56,6 +57,8 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (subdivisionFaceBudget)
                          (subdivisionFollowsCamera)
                          (retessellate)
+                         (sphereRadial)
+                         (sphereAxial)
                          (textureQuality)
                          (diffuseAlbedo)
                          (specularAlbedo)
@@ -758,6 +761,23 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         // now. Any change is the request; the value itself means nothing.
         {"Retessellate", _tokens->retessellate,
          VtValue(TfGetenvInt("HDCLAUDE_RETESSELLATE", 0))},
+
+        // How many divisions a `UsdGeomSphere` becomes, round and pole to
+        // pole.
+        //
+        // Ten and ten, which is what OpenUSD's implicit-surface scene index
+        // uses as a pair of `static constexpr` values -- so the default cage
+        // is the one hdClaude has always traced, point for point, and the only
+        // new thing on a sphere is its texture coordinates. Raise them for a
+        // sphere that fills the frame or carries a displacement: a control
+        // cage of ten by ten is smooth at its limit but coarse as a surface to
+        // displace.
+        {"Sphere radial divisions", _tokens->sphereRadial,
+         VtValue(TfGetenvInt("HDCLAUDE_SPHERE_RADIAL",
+                             hdclaude::kDefaultSphereRadial))},
+        {"Sphere axial divisions", _tokens->sphereAxial,
+         VtValue(TfGetenvInt("HDCLAUDE_SPHERE_AXIAL",
+                             hdclaude::kDefaultSphereAxial))},
 
         // How much of each texture is kept, as a cap on its longest edge.
         //

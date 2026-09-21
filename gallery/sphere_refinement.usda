@@ -1,0 +1,211 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+# What adaptive refinement does, made visible.
+#
+# Six identical spheres of radius 1, differing only in where they are. The
+# camera is at the origin looking down -Z, and the four in frame recede from
+# 8 units to 64 -- a factor of eight, which is three levels of refinement at a
+# fixed target edge length. `outOfFrame` sits well to the right of the frustum
+# and `behindCamera` sits behind the eye: both are invisible to camera rays and
+# both still reach the film through the dome and through each other's shadows,
+# which is why hdClaude refines them to a floor rather than culling them.
+#
+# All six carry the same displacement, so how finely each is refined is visible
+# in its silhouette rather than only in a statistic. The displacement also needs
+# the sphere's texture coordinates, which exist only because hdClaude generates
+# them: OpenUSD's implicit-surface conversion supplies points and nothing else,
+# and a displacement driven through it reads one texel at every vertex.
+#
+# Rendering this with HDCLAUDE_ADAPTIVE_SUBDIVISION=1 and HDCLAUDE_TRACE=1
+# prints the level each one was given and whether it was judged in frustum.
+# What it should print, and what the gallery renders:
+#
+#   near          8 units    level 3   in frustum
+#   middle       16 units    level 2   in frustum
+#   far          32 units    level 1   in frustum
+#   distant      64 units    level 0   in frustum
+#   outOfFrame   to the right          level 1, off-screen
+#   behindCamera behind the eye        level 1, off-screen
+#   ground       fills the frame       level 6, wanted 16 -- the ceiling
+#
+# One level per doubling of the distance, which is the whole claim: the level
+# is the log base two of how many pixels a coarse edge covers over how many it
+# should. The two off-screen spheres are held at the floor rather than dropped
+# to their control cage, because a path tracer sees what the camera does not.
+
+def Xform "World"
+{
+    def Camera "camera"
+    {
+        float2 clippingRange = (0.1, 1000)
+        float focalLength = 35
+        float horizontalAperture = 36
+        float verticalAperture = 24
+        matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    def DistantLight "sun"
+    {
+        color3f inputs:color = (1, 0.96, 0.9)
+        float inputs:intensity = 4
+        float inputs:angle = 0.8
+        matrix4d xformOp:transform = ( (0.7071068, 0, -0.7071068, 0), (-0.4082483, 0.8164966, -0.4082483, 0), (0.5773503, 0.5773503, 0.5773503, 0), (0, 0, 0, 1) )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    def DomeLight "sky"
+    {
+        color3f inputs:color = (0.35, 0.44, 0.6)
+        float inputs:intensity = 0.6
+    }
+
+    # The receding row. Eight units to sixty-four, doubling each time.
+    def Sphere "near" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+        rel material:binding = </World/Looks/bumpy>
+        double radius = 1
+        matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (-2.9, 0, -8, 1) )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    def Sphere "middle" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+        rel material:binding = </World/Looks/bumpy>
+        double radius = 1
+        matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (-1.2, 0, -16, 1) )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    def Sphere "far" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+        rel material:binding = </World/Looks/bumpy>
+        double radius = 1
+        matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (4.1, 0, -32, 1) )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    def Sphere "distant" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+        rel material:binding = </World/Looks/bumpy>
+        double radius = 1
+        matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (16, 0, -64, 1) )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    # Outside the frustum to the right, and behind the eye. Neither is drawn by
+    # a camera ray; both are lit and both cast.
+    def Sphere "outOfFrame" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+        rel material:binding = </World/Looks/bumpy>
+        double radius = 1
+        matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (22, 0, -16, 1) )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    def Sphere "behindCamera" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+        rel material:binding = </World/Looks/bumpy>
+        double radius = 1
+        matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 6, 1) )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    # The floor, so the spheres sit in something and cast onto it.
+    def Mesh "ground" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        rel material:binding = </World/Looks/ground>
+        point3f[] points = [(-120, -1.05, 12), (120, -1.05, 12), (120, -1.05, -140), (-120, -1.05, -140)]
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "faceVarying"
+        )
+        uniform token subdivisionScheme = "none"
+    }
+
+    def Scope "Looks"
+    {
+        def Material "bumpy"
+        {
+            token outputs:mtlx:surface.connect = </World/Looks/bumpy/surface.outputs:out>
+            token outputs:mtlx:displacement.connect = </World/Looks/bumpy/displacement.outputs:out>
+
+            def Shader "surface"
+            {
+                uniform token info:id = "ND_standard_surface_surfaceshader"
+                color3f inputs:base_color = (0.62, 0.35, 0.22)
+                float inputs:specular_roughness = 0.45
+                token outputs:out
+            }
+
+            # The sphere's own texture coordinates, which only exist because
+            # hdClaude generates them: OpenUSD's implicit-surface conversion
+            # supplies points and nothing else.
+            def Shader "st"
+            {
+                uniform token info:id = "ND_texcoord_vector2"
+                int inputs:index = 0
+                float2 outputs:out
+            }
+
+            def Shader "height"
+            {
+                uniform token info:id = "ND_image_float"
+                asset inputs:file = @./textures/newzealand_height_map.png@ (
+                    colorSpace = "raw"
+                )
+                float2 inputs:texcoord.connect = </World/Looks/bumpy/st.outputs:out>
+                string inputs:uaddressmode = "periodic"
+                string inputs:vaddressmode = "periodic"
+                float outputs:out
+            }
+
+            def Shader "displacement"
+            {
+                uniform token info:id = "ND_displacement_float"
+                float inputs:displacement.connect = </World/Looks/bumpy/height.outputs:out>
+                float inputs:scale = 0.25
+                token outputs:out
+            }
+        }
+
+        def Material "ground"
+        {
+            token outputs:mtlx:surface.connect = </World/Looks/ground/surface.outputs:out>
+
+            def Shader "surface"
+            {
+                uniform token info:id = "ND_standard_surface_surfaceshader"
+                color3f inputs:base_color = (0.30, 0.31, 0.33)
+                float inputs:specular_roughness = 0.6
+                token outputs:out
+            }
+        }
+    }
+}

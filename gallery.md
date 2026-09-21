@@ -176,6 +176,7 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 | OpenPBR Playground | 2026-09-21 | 216.149 s (3m 36.149s) | 12.7 GiB | `37af1840a9a5f061f9fc8ebb34e5bcbef5087cf5ae52e2a7429611db138fdef2` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | Subdivision Feature Matrix | 2026-09-21 | 14.818 s (0m 14.818s) | 832.0 MiB | `5027c7a8b083f04ddd18f927de952bc2fbcf907bce7348346912b3a61854acb2` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | New Zealand Height Map | 2026-09-21 | 11.812 s (0m 11.812s) | 480.0 MiB | `e1801d60c65f221bbbc27bec010774632b2fbc62447498566a69e6e2f886afb6` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 6 |
+| Sphere Refinement | 2026-09-21 | 14.131 s (0m 14.131s) | 565.3 MiB | `76a5e7d21ec6d93808c57fc33f17d7cf84de10ffcd814900ff1cc73c11b33d4c` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 6 |
 <!-- gallery-timings:end -->
 
 ## Against hdCodex
@@ -693,6 +694,40 @@ adopted, so the seam test asserted nothing about a seam -- the gate only ever
 compared one flat colour against the same flat colour. `check_usd_materials.py`
 found the broken path on its first run, which is the argument for the tool in
 one line.
+
+### Sphere Refinement
+
+![Four bumpy brown spheres receding across a grey-blue plain under a blue sky, each smaller than the last, the nearest showing its displaced silhouette](gallery/sphere_refinement.jpg)
+
+A renderer-owned scene for adaptive refinement, and the only gallery entry
+rendered with it on. Six identical spheres of radius 1 differing only in where
+they are: four in frame at 8, 16, 32 and 64 units, one well to the right of the
+frustum, and one behind the eye.
+
+```cmd
+set "HDCLAUDE_ENABLE_SUBDIVISION=1"
+set "HDCLAUDE_SUBDIVISION_LEVEL=6"
+set "HDCLAUDE_ADAPTIVE_SUBDIVISION=1"
+set "HDCLAUDE_SPHERE_RADIAL=24"
+set "HDCLAUDE_SPHERE_AXIAL=16"
+render_claude.bat --imageWidth 1024 --colorCorrectionMode disabled --camera camera gallery\sphere_refinement.usda build\gallery-linear\sphere_refinement.exr
+```
+
+**Current state.** Each doubling of the distance costs exactly one level --
+3, 2, 1, 0 across the four in frame -- which is the claim adaptive refinement
+rests on, since the level is the log base two of how many pixels a coarse edge
+covers against how many it should. The sphere to the right and the one behind
+the camera are both judged off-screen and both held at level 1 rather than
+dropped to their control cage: neither is drawn by a camera ray and both still
+reach the film through the dome and through the ground. The ground asks for
+level 16 and is held at 6 by the ceiling. Uniform refinement at the same level
+renders 18,284,546 triangles where this renders 69,170.
+
+It also exercises two things a sphere could not do before. Its cage is
+hdClaude's rather than OpenUSD's, so the density is a render setting instead of
+a pair of `static constexpr` tens; and it carries face-varying texture
+coordinates, without which the displacement would read a single texel at every
+vertex and swell each sphere by a constant.
 
 ### New Zealand Height Map
 

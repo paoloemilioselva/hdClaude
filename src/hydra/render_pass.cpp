@@ -2,6 +2,9 @@
 
 #include "camera.h"
 #include "retessellation_scene_index_plugin.h"
+#include "sphere_scene_index.h"
+
+#include "hdclaude/core/sphere_mesh.h"
 #include "render_buffer.h"
 #include "render_delegate.h"
 #include "render_param.h"
@@ -53,6 +56,8 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (subdivisionFaceBudget)
                          (subdivisionFollowsCamera)
                          (retessellate)
+                         (sphereRadial)
+                         (sphereAxial)
                          (textureQuality)
                          (diffuseAlbedo)
                          (specularAlbedo)
@@ -368,6 +373,24 @@ void HdClaudeRenderPass::_Execute(
         if (HdClaudeTexturePool* pool = _renderDelegate->TexturePool()) {
             if (pool->SetMaxEdge(HdClaudeTextureEdgeCap(textureQuality))) {
                 _hasUploaded = false;
+            }
+        }
+
+        // How dense a converted sphere is. The scene index that does the
+        // conversion owns this, because the mesh is its answer rather than the
+        // mesh adapter's -- and it declares its own spheres dirty when it
+        // changes, which is a resync of exactly those prims rather than of the
+        // stage.
+        if (HdClaudeSphereSceneIndex* spheres =
+                HdClaudeFindSphereSceneIndex(GetRenderIndex())) {
+            if (spheres->SetDivisions(
+                    _renderDelegate->GetRenderSetting<int>(
+                        _tokens->sphereRadial, hdclaude::kDefaultSphereRadial),
+                    _renderDelegate->GetRenderSetting<int>(
+                        _tokens->sphereAxial, hdclaude::kDefaultSphereAxial))) {
+                HdClaudeTrace("sphere divisions now %d by %d",
+                              spheres->GetRadialDivisions(),
+                              spheres->GetAxialDivisions());
             }
         }
 
