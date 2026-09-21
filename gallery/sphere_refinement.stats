@@ -19,30 +19,30 @@
 [scene]
 settings              1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 6
 instances             7
-triangles             641994
-blasBuilt             5
-blasReused            2
+triangles             704508
+blasBuilt             7
+blasReused            0
 meshesRefined         14
 subdivideInputPoints  14766
-subdivideOutputPoints 1072755
+subdivideOutputPoints 1174587
 materialsCompiled     2
 texturesLoaded        1
 textureBytes          6782400
 cameraRays            737476608
-tracedRays            1185019135
-shadowRays            338888899
-rayHash               12539226345100569571
-hitHash               10548455377924411806
-deviceBytesPeak       628141312
+tracedRays            1185028558
+shadowRays            338895519
+rayHash               7321973306042395203
+hitHash               582258414363956065
+deviceBytesPeak       631713792
 
 [cost]
 device                NVIDIA GeForce RTX 5060 Ti
 measured              2026-09-21
-wallSeconds           14.141
-traceMs               3900
+wallSeconds           15.602
+traceMs               4124
 ingestMs              12
-publishMs             153
-subdivideMs           379
-materialMs            307
+publishMs             181
+subdivideMs           415
+materialMs            291
 textureMs             11
-outsideSeconds        10.076
+outsideSeconds        11.286

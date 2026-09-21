@@ -183,7 +183,7 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 | OpenPBR Playground | 2026-09-21 | 216.149 s (3m 36.149s) | 12.7 GiB | `37af1840a9a5f061f9fc8ebb34e5bcbef5087cf5ae52e2a7429611db138fdef2` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | Subdivision Feature Matrix | 2026-09-21 | 14.818 s (0m 14.818s) | 832.0 MiB | `5027c7a8b083f04ddd18f927de952bc2fbcf907bce7348346912b3a61854acb2` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | New Zealand Height Map | 2026-09-21 | 11.812 s (0m 11.812s) | 480.0 MiB | `e1801d60c65f221bbbc27bec010774632b2fbc62447498566a69e6e2f886afb6` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 6 |
-| Sphere Refinement | 2026-09-21 | 14.141 s (0m 14.141s) | 599.0 MiB | `b7ddcf60886b340c0e427e73da08865462c76c9987a18823d7132f6431576c69` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 6 |
+| Sphere Refinement | 2026-09-21 | 15.602 s (0m 15.602s) | 602.4 MiB | `75102b4e2842547d4f867063b451e7da1b52df2c4c449e94533bdbe931a70abc` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 6 |
 <!-- gallery-timings:end -->
 
 ## Against hdCodex
@@ -723,9 +723,10 @@ render_claude.bat --imageWidth 1024 --colorCorrectionMode disabled --camera came
 **Current state.** Rendered per face, which is what the ground is here to
 show. It is a grid of 256 quads running from just behind the camera to well
 past the last sphere, and its near faces are tessellated 64 segments to a side
-where its far faces are tessellated one -- a spread no single level can cover,
+where its far faces are tessellated 16 -- a spread no single level can cover,
 since a level chosen for the horizon is missing in the foreground and one
-chosen for the foreground is wasted on the horizon. The four spheres read 8, 8,
+chosen for the foreground is wasted on the horizon. 422 of its 1024 sides have
+nothing in frame at all and are held at the floor rather than dropped. The four spheres read 8, 8,
 4 and 1 at the sides facing the camera, and the two off-screen ones read 1: a
 reduction rather than a cull, because neither is drawn by a camera ray and both
 still reach the film through the dome and through the ground.

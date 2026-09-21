@@ -35,6 +35,12 @@ int EdgeTessellationRate(float lengthInPixels, float targetPixels)
     return std::clamp(rate, 1, kMaxEdgeRate);
 }
 
+int EdgeRateForLevel(int level)
+{
+    const int clamped = std::clamp(level, 0, 20);
+    return std::clamp(1 << clamped, 1, kMaxEdgeRate);
+}
+
 QuadTessellation TessellateQuad(const int edgeRates[4])
 {
     QuadTessellation result;

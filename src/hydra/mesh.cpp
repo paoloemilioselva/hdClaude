@@ -123,6 +123,21 @@ GfVec3f DisplayColor(HdSceneDelegate* delegate, const SdfPath& id)
 
 
 
+/// What the rates came out as, across one mesh.
+///
+/// Reported because a rate is chosen per side and read as a picture, and the
+/// two are far apart: the only way to see that the near end of something is
+/// coarser than its far end -- which is the shape of a frustum test gone wrong
+/// -- is to have the renderer say so.
+struct HdClaudeRateProbe {
+    float nearestDistance = std::numeric_limits<float>::max();
+    float farthestDistance = 0.0f;
+    int nearestRate = 0;
+    int farthestRate = 0;
+    /// How many sides had nothing at all in frame and were held at the floor.
+    std::size_t offScreenSides = 0;
+};
+
 /// A rate for every side of every ptex face, from how many pixels it covers.
 ///
 /// The two faces that share a side arrive at the same rate for it because they
@@ -144,7 +159,7 @@ std::vector<int> HdClaudePtexEdgeRates(
     const hdclaude::TessellationView& view, const HdMeshTopology& topology,
     const std::vector<float>& points,
     const std::vector<hdclaude::Transform3x4>& transforms,
-    std::size_t* budgetLimitedFrom)
+    std::size_t* budgetLimitedFrom, HdClaudeRateProbe* probe)
 {
     *budgetLimitedFrom = 0;
     std::vector<int> rates;
@@ -200,6 +215,12 @@ std::vector<int> HdClaudePtexEdgeRates(
         return world;
     };
 
+    // The floor as a *rate*, which is what this works in. A level and a rate
+    // are the same statement in different units -- one more level is one more
+    // halving, so level L is rate 2^L -- and using the level directly gave an
+    // off-screen mesh one segment a side where it was asked for two.
+    const int floorRate = hdclaude::EdgeRateForLevel(settings.offScreenLevel);
+
     rates.assign(faces.size() * 4, 1);
     for (std::size_t face = 0; face < faces.size(); ++face) {
         for (int side = 0; side < 4; ++side) {
@@ -236,14 +257,44 @@ std::vector<int> HdClaudePtexEdgeRates(
                 rate = hdclaude::kMaxEdgeRate;
             }
 
-            // Outside the frustum the side is held down rather than dropped,
-            // for the reason every other off-screen decision here is: a path
-            // tracer sees what the camera does not. Judged by the midpoint, so
-            // the two faces judge it alike.
-            if (hdclaude::BoundsAreOffScreen(view, bounds, bounds)) {
-                rate = std::min(rate, std::max(settings.offScreenLevel, 1));
+            // The off-screen floor, for a side that is *entirely* outside the
+            // frame -- the whole side, not the point in the middle of it.
+            //
+            // The midpoint was wrong in a way that only showed up close. Get
+            // near enough to something and its nearest parts are the ones that
+            // overflow the frame: they fall outside the frustum's side planes
+            // while the far side of the same object is still comfortably
+            // inside it. Every side whose middle had crossed the boundary was
+            // held at the floor, including the ones still half in frame, so a
+            // close object came out coarser at the front than at the back --
+            // an inversion of the whole point, showing as a ring of facets
+            // around the rim, exactly where the surface is largest.
+            //
+            // Testing the side's own extent fixes that at its cause: a side
+            // that straddles the frame edge is partly visible and keeps the
+            // rate its distance earns, and only one with nothing in frame at
+            // all is held down. The two faces sharing the side test the same
+            // two endpoints, so they still cannot disagree.
+            float sideLow[3];
+            float sideHigh[3];
+            for (int axis = 0; axis < 3; ++axis) {
+                sideLow[axis] = std::min(from[axis], to[axis]);
+                sideHigh[axis] = std::max(from[axis], to[axis]);
+            }
+            if (hdclaude::BoundsAreOffScreen(view, sideLow, sideHigh)) {
+                rate = std::min(rate, floorRate);
+                ++probe->offScreenSides;
             }
             rates[face * 4 + static_cast<std::size_t>(side)] = rate;
+
+            if (distance < probe->nearestDistance) {
+                probe->nearestDistance = distance;
+                probe->nearestRate = rate;
+            }
+            if (distance > probe->farthestDistance) {
+                probe->farthestDistance = distance;
+                probe->farthestRate = rate;
+            }
         }
     }
 
@@ -713,9 +764,10 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
         if (perFace) {
             std::size_t budgetLimitedFrom = 0;
             float seamGap = 0.0f;
+            HdClaudeRateProbe probe;
             const std::vector<int> rates = HdClaudePtexEdgeRates(
                 tessellation, param->TessellationCamera(), topology, points,
-                entry.transforms, &budgetLimitedFrom);
+                entry.transforms, &budgetLimitedFrom, &probe);
             if (!rates.empty()) {
                 // The setting's level is the *isolation* here -- how far
                 // OpenSubdiv separates irregular features before capping them
@@ -732,10 +784,16 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
                 }
                 HdClaudeTrace(
                     "mesh <%s>: per-face, %zu sides, finest rate %d, %zu "
-                    "triangles, worst seam gap %.3e%s",
+                    "triangles, worst seam gap %.3e; nearest side %.3g away at "
+                    "rate %d, farthest %.3g away at rate %d, %zu sides wholly "
+                    "out of frame%s",
                     id.GetText(), rates.size(), finest,
                     refined.indices.size() / 3,
                     static_cast<double>(seamGap),
+                    static_cast<double>(probe.nearestDistance),
+                    probe.nearestRate,
+                    static_cast<double>(probe.farthestDistance),
+                    probe.farthestRate, probe.offScreenSides,
                     budgetLimitedFrom != 0 ? " (held back by the face budget)"
                                            : "");
                 // A seam that has opened is a crack, and a crack is a hole in

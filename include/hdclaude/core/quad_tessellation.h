@@ -76,6 +76,18 @@ inline constexpr int kMaxEdgeRate = 64;
 /// all, because a face has to have a boundary.
 int EdgeTessellationRate(float lengthInPixels, float targetPixels);
 
+/// The rate that means the same as a refinement `level`.
+///
+/// A level and a rate are one statement in two units: one more level is one
+/// more halving of every edge, so level L cuts a side into 2^L segments.
+/// Level 0 is the control cage and is one segment, not none.
+///
+/// Named rather than written out, because the two units are easy to mix up and
+/// mixing them up is quiet: an off-screen floor given as a level and used as a
+/// rate held geometry one level coarser than it was asked to, which looks
+/// exactly like geometry that is simply far away.
+int EdgeRateForLevel(int level);
+
 /// Cover the unit square with triangles whose sides are cut at the given
 /// rates.
 ///

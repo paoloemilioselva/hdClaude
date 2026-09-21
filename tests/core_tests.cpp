@@ -1420,6 +1420,25 @@ void TestEdgeRateIsAPowerOfTwo()
     // Bounded, so one face cannot ask for more than anything has a chance to
     // refuse.
     CHECK_EQ(hdclaude::EdgeTessellationRate(1.0e9f, 1.0f), hdclaude::kMaxEdgeRate);
+
+    // A level and a rate are one statement in two units, and the conversion is
+    // named because mixing them up is quiet. An off-screen floor given as a
+    // level and used as a rate held geometry one level coarser than asked,
+    // which is indistinguishable from geometry that is far away.
+    CHECK_EQ(hdclaude::EdgeRateForLevel(0), 1);
+    CHECK_EQ(hdclaude::EdgeRateForLevel(1), 2);
+    CHECK_EQ(hdclaude::EdgeRateForLevel(3), 8);
+    CHECK_EQ(hdclaude::EdgeRateForLevel(6), 64);
+    CHECK_EQ(hdclaude::EdgeRateForLevel(30), hdclaude::kMaxEdgeRate);
+    CHECK_EQ(hdclaude::EdgeRateForLevel(-1), 1);
+
+    // And the two agree about what a level means: an edge covering 2^L times
+    // the target is exactly level L's worth of halvings.
+    for (int level = 0; level <= 6; ++level) {
+        const float length = 4.0f * static_cast<float>(1 << level);
+        CHECK_EQ(hdclaude::EdgeTessellationRate(length, 4.0f),
+                 hdclaude::EdgeRateForLevel(level));
+    }
 }
 
 /// A quad tessellated at four independent rates covers its domain exactly
