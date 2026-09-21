@@ -9,6 +9,7 @@
 #include <opensubdiv/far/topologyLevel.h>
 
 #include <algorithm>
+#include <cmath>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -47,6 +48,57 @@ struct RefinableUv {
 };
 
 }  // namespace
+
+std::size_t HdClaudeCoarseFaceCount(const HdMeshTopology& topology)
+{
+    return static_cast<std::size_t>(topology.GetFaceVertexCounts().size());
+}
+
+float HdClaudeMeanEdgeLength(const HdMeshTopology& topology,
+                             const std::vector<float>& points)
+{
+    const VtIntArray& counts = topology.GetFaceVertexCounts();
+    const VtIntArray& indices = topology.GetFaceVertexIndices();
+    const std::size_t vertexCount = points.size() / 3;
+    if (vertexCount == 0) {
+        return 0.0f;
+    }
+
+    double total = 0.0;
+    std::size_t edges = 0;
+    std::size_t cursor = 0;
+    for (const int count : counts) {
+        if (count < 2 || cursor + static_cast<std::size_t>(count) >
+                             static_cast<std::size_t>(indices.size())) {
+            cursor += static_cast<std::size_t>(std::max(count, 0));
+            continue;
+        }
+        for (int corner = 0; corner < count; ++corner) {
+            // Every edge of every face, closing the loop, so a quad
+            // contributes four. An edge shared by two faces is counted twice,
+            // which weights it as the two faces that use it -- and since this
+            // is a mean, weighting by use is what a mesh with a few long
+            // boundary edges wants.
+            const int a = indices[cursor + corner];
+            const int b = indices[cursor + (corner + 1) % count];
+            if (a < 0 || b < 0 ||
+                static_cast<std::size_t>(a) >= vertexCount ||
+                static_cast<std::size_t>(b) >= vertexCount) {
+                continue;
+            }
+            const double dx = points[a * 3 + 0] - points[b * 3 + 0];
+            const double dy = points[a * 3 + 1] - points[b * 3 + 1];
+            const double dz = points[a * 3 + 2] - points[b * 3 + 2];
+            total += std::sqrt(dx * dx + dy * dy + dz * dz);
+            ++edges;
+        }
+        cursor += static_cast<std::size_t>(count);
+    }
+    if (edges == 0) {
+        return 0.0f;
+    }
+    return static_cast<float>(total / static_cast<double>(edges));
+}
 
 bool HdClaudeWantsSubdivision(const HdMeshTopology& topology)
 {

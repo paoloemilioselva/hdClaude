@@ -50,6 +50,13 @@ class HDCLAUDE_API HdClaudeRenderPass final : public HdRenderPass {
     HdClaudeRenderDelegate* _renderDelegate;
 
     Framing _framing;
+    /// Whether every rprim has to be resynced before the next frame.
+    ///
+    /// Set when a setting that decides what geometry an rprim *is* changed,
+    /// and acted on after the framing is built rather than where it is
+    /// noticed: the camera a refinement level is derived against is only known
+    /// then, and resyncing first would refine the whole stage twice.
+    bool _resyncGeometry = false;
     bool _hasFraming = false;
     std::uint32_t _samplesCompleted = 0;
     std::uint32_t _targetSamples = 0;

@@ -7,8 +7,10 @@
 #include "hdclaude/core/display.h"
 #include "hdclaude/core/image_metrics.h"
 #include "hdclaude/core/spectrum.h"
+#include "hdclaude/core/tessellation.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <limits>
@@ -1373,9 +1375,291 @@ void TestEnvironmentFlagReadsOneWay()
 
 }  // namespace
 
+/// A camera move is not a reason to refine again.
+///
+/// The rule Paolo asked for, and the one thing about this feature that is a
+/// policy rather than a projection: published geometry is what acceleration
+/// structures are built over and what the accumulated film depends on, so a
+/// level that followed the camera would rebuild both on every viewport nudge.
+/// The view is sampled when there is none, when a refinement setting changes
+/// -- a retessellate being one of those settings -- and otherwise only when
+/// following was asked for.
+void TestTessellationViewIsSampledNotFollowed()
+{
+    // Nothing at all happens when the level is not adaptive, however much the
+    // camera moves and whatever the settings do.
+    CHECK(!hdclaude::ShouldSampleView(/*adaptive=*/false, /*haveView=*/false,
+                                      /*settingsChanged=*/true,
+                                      /*followCamera=*/true));
+
+    // The first frame: there is nothing to derive from yet.
+    CHECK(hdclaude::ShouldSampleView(true, false, false, false));
+
+    // A refinement setting changed -- the level, the target, the off-screen
+    // floor, or a retessellate, which is a setting like the others.
+    CHECK(hdclaude::ShouldSampleView(true, true, true, false));
+
+    // And the case the whole design turns on: a view already exists, nothing
+    // was asked for, and following is off. The camera may have moved anywhere;
+    // the answer is no.
+    CHECK(!hdclaude::ShouldSampleView(true, true, false, false));
+
+    // Unless following was turned on, which is a setting of its own.
+    CHECK(hdclaude::ShouldSampleView(true, true, false, true));
+}
+
+/// A perspective world-to-clip for a camera at the origin looking down -Z,
+/// column-major as GLSL reads it. The OpenGL form, which is what a USD host
+/// hands over.
+void MakeWorldToClip(float near, float far, float f, float aspect, float m[16])
+{
+    for (int i = 0; i < 16; ++i) {
+        m[i] = 0.0f;
+    }
+    m[0] = f / aspect;                       // column 0
+    m[5] = f;                                // column 1
+    m[10] = (far + near) / (near - far);     // column 2
+    m[11] = -1.0f;
+    m[14] = 2.0f * far * near / (near - far);  // column 3
+}
+
+hdclaude::TessellationView ViewAt(float eyeZ, std::uint32_t pixelHeight,
+                                  float tanHalfFov)
+{
+    hdclaude::TessellationView view;
+    view.cameraToWorld[12] = 0.0f;
+    view.cameraToWorld[13] = 0.0f;
+    view.cameraToWorld[14] = eyeZ;
+    view.tanHalfFov = tanHalfFov;
+    view.pixelHeight = pixelHeight;
+    view.valid = true;
+    return view;
+}
+
+/// The projection a tessellation level is chosen from is a pinhole, and can be
+/// read off by hand.
+void TestTessellationProjectionIsThePinhole()
+{
+    const hdclaude::TessellationView view = ViewAt(0.0f, 1000, 0.5f);
+
+    // The frame spans 2 * d * tanHalfFov world units vertically, so at ten
+    // units it is ten units tall and a thousand pixels: a hundred pixels to
+    // the unit.
+    CHECK_NEAR(hdclaude::PixelsPerWorldUnit(view, 10.0f), 100.0, 1e-4);
+    CHECK_NEAR(hdclaude::PixelsPerWorldUnit(view, 100.0f), 10.0, 1e-4);
+    // No distance, no projection -- and no crash.
+    CHECK_EQ(hdclaude::PixelsPerWorldUnit(view, 0.0f), 0.0f);
+
+    const float low[3] = {-1.0f, -1.0f, -1.0f};
+    const float high[3] = {1.0f, 1.0f, 1.0f};
+    // Eye at +11 on Z, the box reaching +1: ten units between them.
+    CHECK_NEAR(hdclaude::DistanceToBounds(ViewAt(11.0f, 1000, 0.5f), low, high),
+               10.0, 1e-5);
+    // An eye inside the box is as close as an eye can be, which is zero and
+    // not the distance to a corner.
+    CHECK_EQ(hdclaude::DistanceToBounds(ViewAt(0.0f, 1000, 0.5f), low, high),
+             0.0f);
+}
+
+/// The level is the one that brings a refined edge to the target pixel length,
+/// and ten times the distance is three levels coarser.
+void TestTessellationLevelFollowsProjectedSize()
+{
+    hdclaude::TessellationLimits limits;
+    limits.maxLevel = 10;
+    limits.minLevel = 0;
+    limits.targetEdgePixels = 4.0f;
+    limits.maxRefinedFaces = 1u << 30;
+
+    hdclaude::TessellationRequest request;
+    request.boundsMin[0] = request.boundsMin[1] = request.boundsMin[2] = -1.0f;
+    request.boundsMax[0] = request.boundsMax[1] = request.boundsMax[2] = 1.0f;
+    request.coarseEdgeLength = 1.0f;
+    request.coarseFaceCount = 1;
+    request.facesPerLevel = 4;
+
+    // Ten units away at a hundred pixels to the unit: a one-unit edge covers a
+    // hundred pixels, and reaching four needs a factor of 25, which is between
+    // sixteen and thirty-two -- five halvings.
+    const hdclaude::TessellationChoice near =
+        hdclaude::ChooseTessellation(ViewAt(11.0f, 1000, 0.5f), request, limits);
+    std::printf("  tessellation: 10 units -> level %d\n", near.level);
+    CHECK_EQ(near.level, 5);
+    CHECK(!near.offScreen);
+    CHECK(!near.budgetClamped);
+
+    // Ten times further is a tenth the pixels, so the ratio falls from 25 to
+    // 2.5: two halvings instead of five.
+    const hdclaude::TessellationChoice far =
+        hdclaude::ChooseTessellation(ViewAt(101.0f, 1000, 0.5f), request, limits);
+    std::printf("  tessellation: 100 units -> level %d\n", far.level);
+    CHECK_EQ(far.level, 2);
+
+    // Far enough that a whole coarse edge is already inside the target, and
+    // the answer is the control cage.
+    const hdclaude::TessellationChoice tiny =
+        hdclaude::ChooseTessellation(ViewAt(1001.0f, 1000, 0.5f), request, limits);
+    CHECK_EQ(tiny.level, 0);
+
+    // A ratio that is exactly a power of two answers exactly that power, not
+    // one more: at 32 units an edge covers 31.25 px... so ask for it directly
+    // by moving the target instead, which is the same arithmetic without a
+    // distance that has to come out round.
+    hdclaude::TessellationLimits exact = limits;
+    exact.targetEdgePixels = 100.0f / 8.0f;  // ratio exactly 8 at ten units
+    const hdclaude::TessellationChoice power =
+        hdclaude::ChooseTessellation(ViewAt(11.0f, 1000, 0.5f), request, exact);
+    CHECK_EQ(power.level, 3);
+
+    // The floor holds a mesh in the frustum above the control cage when the
+    // caller asks it to, and the ceiling is reported rather than silently
+    // becoming the answer.
+    hdclaude::TessellationLimits floored = limits;
+    floored.minLevel = 2;
+    CHECK_EQ(hdclaude::ChooseTessellation(ViewAt(1001.0f, 1000, 0.5f), request,
+                                          floored)
+                 .level,
+             2);
+
+    hdclaude::TessellationLimits capped = limits;
+    capped.maxLevel = 3;
+    const hdclaude::TessellationChoice clamped =
+        hdclaude::ChooseTessellation(ViewAt(11.0f, 1000, 0.5f), request, capped);
+    CHECK_EQ(clamped.level, 3);
+    CHECK_EQ(clamped.requested, 5);
+    CHECK(clamped.ceilingClamped);
+}
+
+/// Geometry outside the frustum is held at a floor, never dropped to its cage.
+///
+/// A path tracer sees what the camera does not -- in a mirror, through glass,
+/// as a shadow, in every indirect bounce -- so the saving off-screen is a
+/// reduction and not a cull.
+void TestTessellationHoldsOffScreenGeometryAtAFloor()
+{
+    hdclaude::TessellationView view = ViewAt(0.0f, 1000, 0.5f);
+    MakeWorldToClip(0.1f, 1000.0f, 2.0f, 1.0f, view.worldToClip);
+    view.hasClip = true;
+
+    hdclaude::TessellationLimits limits;
+    limits.maxLevel = 10;
+    limits.offScreenLevel = 1;
+    limits.targetEdgePixels = 4.0f;
+    limits.maxRefinedFaces = 1u << 30;
+
+    hdclaude::TessellationRequest request;
+    request.coarseEdgeLength = 1.0f;
+    request.coarseFaceCount = 1;
+    request.facesPerLevel = 4;
+
+    // In front of the camera, which looks down -Z.
+    const float inFrontMin[3] = {-1.0f, -1.0f, -11.0f};
+    const float inFrontMax[3] = {1.0f, 1.0f, -9.0f};
+    std::copy(inFrontMin, inFrontMin + 3, request.boundsMin);
+    std::copy(inFrontMax, inFrontMax + 3, request.boundsMax);
+    CHECK(!hdclaude::BoundsAreOffScreen(view, request.boundsMin,
+                                        request.boundsMax));
+    const hdclaude::TessellationChoice visible =
+        hdclaude::ChooseTessellation(view, request, limits);
+    CHECK(!visible.offScreen);
+    CHECK(visible.level > limits.offScreenLevel);
+
+    // Behind the camera: outside the near plane, and every bit as able to
+    // appear in a reflection.
+    const float behindMin[3] = {-1.0f, -1.0f, 9.0f};
+    const float behindMax[3] = {1.0f, 1.0f, 11.0f};
+    std::copy(behindMin, behindMin + 3, request.boundsMin);
+    std::copy(behindMax, behindMax + 3, request.boundsMax);
+    CHECK(hdclaude::BoundsAreOffScreen(view, request.boundsMin,
+                                       request.boundsMax));
+    const hdclaude::TessellationChoice behind =
+        hdclaude::ChooseTessellation(view, request, limits);
+    CHECK(behind.offScreen);
+    CHECK_EQ(behind.level, 1);
+
+    // Off to the side, past the right plane.
+    const float asideMin[3] = {999.0f, -1.0f, -11.0f};
+    const float asideMax[3] = {1001.0f, 1.0f, -9.0f};
+    std::copy(asideMin, asideMin + 3, request.boundsMin);
+    std::copy(asideMax, asideMax + 3, request.boundsMax);
+    CHECK(hdclaude::BoundsAreOffScreen(view, request.boundsMin,
+                                       request.boundsMax));
+
+    // A view with no projection cannot show anything to be outside it, and
+    // says so rather than guessing.
+    hdclaude::TessellationView unprojected = ViewAt(0.0f, 1000, 0.5f);
+    CHECK(!hdclaude::BoundsAreOffScreen(unprojected, request.boundsMin,
+                                        request.boundsMax));
+}
+
+/// The face budget is what "there is a limit" honestly looks like.
+void TestTessellationBudgetOverridesTheCeiling()
+{
+    CHECK_EQ(hdclaude::RefinedFaceCount(1000, 4, 0), std::size_t(1000));
+    CHECK_EQ(hdclaude::RefinedFaceCount(1000, 4, 3), std::size_t(64000));
+    // Saturating rather than wrapping: a count that wrapped would fit any
+    // budget, which is the one answer that must never come back.
+    CHECK_EQ(hdclaude::RefinedFaceCount(std::size_t(1) << 60, 4, 8),
+             std::numeric_limits<std::size_t>::max());
+
+    hdclaude::TessellationLimits limits;
+    limits.maxLevel = 10;
+    limits.targetEdgePixels = 4.0f;
+    limits.maxRefinedFaces = 100000;
+
+    hdclaude::TessellationRequest request;
+    request.boundsMin[0] = request.boundsMin[1] = request.boundsMin[2] = -1.0f;
+    request.boundsMax[0] = request.boundsMax[1] = request.boundsMax[2] = 1.0f;
+    request.coarseEdgeLength = 1.0f;
+    request.coarseFaceCount = 1000;
+    request.facesPerLevel = 4;
+
+    // The projection asks for five, which would be 1,024,000 faces. Three fits
+    // in the budget at 64,000 and four does not at 256,000.
+    const hdclaude::TessellationChoice choice =
+        hdclaude::ChooseTessellation(ViewAt(11.0f, 1000, 0.5f), request, limits);
+    std::printf("  tessellation: wanted level %d, budget gave %d\n",
+                choice.requested, choice.level);
+    CHECK_EQ(choice.requested, 5);
+    CHECK_EQ(choice.level, 3);
+    CHECK(choice.budgetClamped);
+}
+
+/// A view that says nothing gives back the uniform answer, not the cage.
+void TestTessellationWithoutAViewIsUniform()
+{
+    hdclaude::TessellationLimits limits;
+    limits.maxLevel = 4;
+
+    hdclaude::TessellationRequest request;
+    request.coarseEdgeLength = 1.0f;
+    request.coarseFaceCount = 1;
+
+    hdclaude::TessellationView none;  // valid defaults to false
+    const hdclaude::TessellationChoice choice =
+        hdclaude::ChooseTessellation(none, request, limits);
+    CHECK_EQ(choice.level, 4);
+    CHECK_EQ(choice.requested, 4);
+
+    // A mesh that cannot say how long its edges are is in the same position:
+    // the level it would have had, rather than a downgrade nobody asked for.
+    hdclaude::TessellationRequest sizeless;
+    sizeless.coarseFaceCount = 1;
+    CHECK_EQ(hdclaude::ChooseTessellation(ViewAt(11.0f, 1000, 0.5f), sizeless,
+                                          limits)
+                 .level,
+             4);
+}
+
 int main()
 {
     TestEnvironmentFlagReadsOneWay();
+    TestTessellationViewIsSampledNotFollowed();
+    TestTessellationProjectionIsThePinhole();
+    TestTessellationLevelFollowsProjectedSize();
+    TestTessellationHoldsOffScreenGeometryAtAFloor();
+    TestTessellationBudgetOverridesTheCeiling();
+    TestTessellationWithoutAViewIsUniform();
     TestSha256KnownVectors();
     TestSha256FieldsAreUnambiguous();
     TestShaderCacheRoundTrip();

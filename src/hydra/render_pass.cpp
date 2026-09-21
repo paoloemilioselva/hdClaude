@@ -1,6 +1,7 @@
 #include "render_pass.h"
 
 #include "camera.h"
+#include "retessellation_scene_index_plugin.h"
 #include "render_buffer.h"
 #include "render_delegate.h"
 #include "render_param.h"
@@ -46,6 +47,12 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (curveSides)
                          (curveSegmentSamples)
                          (subdivisionLevel)
+                         (adaptiveSubdivision)
+                         (subdivisionEdgePixels)
+                         (subdivisionOffScreenLevel)
+                         (subdivisionFaceBudget)
+                         (subdivisionFollowsCamera)
+                         (retessellate)
                          (textureQuality)
                          (diffuseAlbedo)
                          (specularAlbedo)
@@ -320,9 +327,26 @@ void HdClaudeRenderPass::_Execute(
             _renderDelegate->GetRenderSetting<int>(_tokens->curveSegmentSamples,
                                                    1),
             1, 32);
-        const int subdivision = std::clamp(
-            _renderDelegate->GetRenderSetting<int>(_tokens->subdivisionLevel, 2),
-            0, 6);
+        HdClaudeTessellationSettings tessellation;
+        tessellation.level =
+            _renderDelegate->GetRenderSetting<int>(_tokens->subdivisionLevel, 2);
+        tessellation.adaptive = _renderDelegate->GetRenderSetting<bool>(
+            _tokens->adaptiveSubdivision, false);
+        tessellation.targetEdgePixels =
+            _renderDelegate->GetRenderSetting<float>(
+                _tokens->subdivisionEdgePixels, 4.0f);
+        tessellation.offScreenLevel = _renderDelegate->GetRenderSetting<int>(
+            _tokens->subdivisionOffScreenLevel, 1);
+        tessellation.maxRefinedFaces =
+            static_cast<std::size_t>(std::max(
+                _renderDelegate->GetRenderSetting<int>(
+                    _tokens->subdivisionFaceBudget, 4 * 1024 * 1024),
+                1));
+        tessellation.followCamera = _renderDelegate->GetRenderSetting<bool>(
+            _tokens->subdivisionFollowsCamera, false);
+        tessellation.retessellate =
+            _renderDelegate->GetRenderSetting<int>(_tokens->retessellate, 0);
+        tessellation = HdClaudeClampTessellation(tessellation);
 
         // Texture quality. Unlike the geometry settings below it, this changes
         // nothing an rprim publishes: the pool re-decodes each image into the
@@ -351,16 +375,11 @@ void HdClaudeRenderPass::_Execute(
             _renderDelegate->GetRenderParam());
         if (param != nullptr &&
             param->SetGeometrySettings(curveGeometry != "swept", curveSides,
-                                       curveSegmentSamples, subdivision) &&
-            GetRenderIndex() != nullptr) {
-            HdChangeTracker& tracker = GetRenderIndex()->GetChangeTracker();
-            for (const SdfPath& rprim : GetRenderIndex()->GetRprimIds()) {
-                tracker.MarkRprimDirty(rprim, HdChangeTracker::DirtyTopology |
-                                                  HdChangeTracker::DirtyPoints |
-                                                  HdChangeTracker::DirtyWidths);
-            }
-            HdClaudeTrace("geometry settings changed; resyncing %zu rprims",
-                          GetRenderIndex()->GetRprimIds().size());
+                                       curveSegmentSamples, tessellation)) {
+            // Noted rather than acted on here. The camera the levels are
+            // derived against is only known once the framing below is built,
+            // and resyncing before sampling it would refine the stage twice.
+            _resyncGeometry = true;
         }
     }
 
@@ -459,6 +478,83 @@ void HdClaudeRenderPass::_Execute(
     framing.height = height;
     framing.sceneRevision = store->Revision();
     framing.settingsVersion = settingsVersion;
+
+    // --- Tessellation ---------------------------------------------------------
+    //
+    // The view a refinement level is derived from is *sampled*, not followed.
+    // Published geometry is what acceleration structures are built over and
+    // what the accumulated film depends on, so re-deriving whenever the camera
+    // moved would rebuild both on every viewport nudge and throw away the
+    // prototype reuse the fingerprints exist to provide. A sample is taken
+    // when there is none yet, when a refinement setting changed, when a
+    // retessellate was asked for, and otherwise only when the caller turned
+    // `Subdivision follows camera` on.
+    if (auto* param = static_cast<HdClaudeRenderParam*>(
+            _renderDelegate->GetRenderParam())) {
+        const HdClaudeTessellationSettings& tessellation =
+            param->Tessellation();
+        if (tessellation.adaptive) {
+            if (hdclaude::ShouldSampleView(
+                    tessellation.adaptive, param->TessellationCamera().valid,
+                    _resyncGeometry, tessellation.followCamera)) {
+                hdclaude::TessellationView view;
+                std::memcpy(view.cameraToWorld, cameraResult.camera.cameraToWorld,
+                            sizeof(view.cameraToWorld));
+                std::memcpy(view.worldToClip, cameraResult.camera.worldToClip,
+                            sizeof(view.worldToClip));
+                view.tanHalfFov = cameraResult.camera.tanHalfFov;
+                view.pixelHeight = height;
+                // Only when a projection was actually composed. An
+                // identity world-to-clip is not a frustum containing the
+                // world -- it is a unit cube at the origin, and believing it
+                // would call almost every mesh off-screen. The planes are
+                // extracted in the OpenGL convention, clip z in [-w, w],
+                // which is what a USD host's projection is.
+                static const float kIdentity[16] = {1, 0, 0, 0, 0, 1, 0, 0,
+                                                    0, 0, 1, 0, 0, 0, 0, 1};
+                view.hasClip =
+                    std::memcmp(view.worldToClip, kIdentity,
+                                sizeof(kIdentity)) != 0;
+                view.valid = true;
+                if (param->SetTessellationCamera(view)) {
+                    _resyncGeometry = true;
+                }
+            }
+        } else if (param->TessellationCamera().valid) {
+            // Adaptive was turned off. The held view would otherwise keep
+            // deciding nothing, but leaving it valid would make turning
+            // adaptive back on reuse a camera from before it was turned off.
+            param->SetTessellationCamera(hdclaude::TessellationView{});
+        }
+    }
+
+    if (_resyncGeometry && GetRenderIndex() != nullptr) {
+        _resyncGeometry = false;
+        // Through hdClaude's own scene index where there is one, and only
+        // through the change tracker where there is not. A render index driven
+        // by scene indices refuses `MarkRprimDirty` outright, and that is the
+        // pipeline `usdrecord` and `usdview` have used since OpenUSD turned
+        // scene indices on by default -- so the tracker is the fallback for a
+        // host still driving this through a scene delegate, not the other way
+        // round (retessellation_scene_index_plugin.h).
+        if (HdClaudeRetessellationSceneIndex* index =
+                HdClaudeFindRetessellationSceneIndex(GetRenderIndex())) {
+            const std::size_t dirtied = index->DirtyGeometry();
+            HdClaudeTrace(
+                "geometry settings changed; asked the scene index to resync "
+                "%zu prims",
+                dirtied);
+        } else {
+            HdChangeTracker& tracker = GetRenderIndex()->GetChangeTracker();
+            for (const SdfPath& rprim : GetRenderIndex()->GetRprimIds()) {
+                tracker.MarkRprimDirty(rprim, HdChangeTracker::DirtyTopology |
+                                                  HdChangeTracker::DirtyPoints |
+                                                  HdChangeTracker::DirtyWidths);
+            }
+            HdClaudeTrace("geometry settings changed; resyncing %zu rprims",
+                          GetRenderIndex()->GetRprimIds().size());
+        }
+    }
 
     const bool restart = !_hasFraming || framing != _framing;
     if (restart) {

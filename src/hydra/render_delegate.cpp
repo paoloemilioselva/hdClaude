@@ -50,6 +50,12 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (curveSides)
                          (curveSegmentSamples)
                          (subdivisionLevel)
+                         (adaptiveSubdivision)
+                         (subdivisionEdgePixels)
+                         (subdivisionOffScreenLevel)
+                         (subdivisionFaceBudget)
+                         (subdivisionFollowsCamera)
+                         (retessellate)
                          (textureQuality)
                          (diffuseAlbedo)
                          (specularAlbedo)
@@ -405,8 +411,8 @@ void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
     // than something the render pass can vary per frame. Changing it means a
     // new delegate, which is what a host does when it applies a render setting
     // that alters the scene.
-    const int subdivisionLevel =
-        std::clamp(TfGetenvInt("HDCLAUDE_SUBDIVISION_LEVEL", 2), 0, 6);
+    HdClaudeTessellationSettings tessellation =
+        HdClaudeReadTessellationEnvironment();
     // Six faces round a tube. Enough that a whisker reads as round at the size
     // curves are usually authored, cheap enough that a head of hair does not
     // pay for a smoothness nothing can see, and a setting because the right
@@ -444,7 +450,7 @@ void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
 
     _renderParam = std::make_unique<HdClaudeRenderParam>(
         _store.get(), _materialCompiler.get(), _texturePool.get(),
-        subdivisionLevel, curveSides, curveSegmentSamples, implicitCurves,
+        tessellation, curveSides, curveSegmentSamples, implicitCurves,
         &_stageStats);
 }
 
@@ -695,8 +701,63 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
          VtValue(TfGetenvInt("HDCLAUDE_CURVE_SIDES", 6))},
         {"Curve segment samples", _tokens->curveSegmentSamples,
          VtValue(TfGetenvInt("HDCLAUDE_CURVE_SEGMENT_SAMPLES", 1))},
+        // The refinement depth. A ceiling rather than the answer once
+        // `Adaptive subdivision` is on.
         {"Subdivision level", _tokens->subdivisionLevel,
          VtValue(TfGetenvInt("HDCLAUDE_SUBDIVISION_LEVEL", 2))},
+
+        // Whether each mesh gets the level its projected size earns.
+        //
+        // Off by default, because turning it on changes the geometry of every
+        // scene whose meshes are at more than one distance, and a default that
+        // quietly makes every committed image different is the wrong default.
+        // What it buys is spending refinement where it can be seen: a mesh
+        // three pixels across and a mesh filling the frame are refined the
+        // same amount without it.
+        {"Adaptive subdivision", _tokens->adaptiveSubdivision,
+         VtValue(hdclaude::EnvironmentFlag("HDCLAUDE_ADAPTIVE_SUBDIVISION", false))},
+
+        // How long a refined edge should be on screen, in pixels. Smaller is
+        // finer, and each halving is one more level.
+        {"Subdivision edge pixels", _tokens->subdivisionEdgePixels,
+         VtValue(static_cast<float>(
+             TfGetenvDouble("HDCLAUDE_SUBDIVISION_EDGE_PIXELS", 4.0)))},
+
+        // What a mesh entirely outside the frustum is held at.
+        //
+        // One rather than zero, and that is the whole difference between a
+        // reduction and a cull: a path tracer sees geometry the camera does
+        // not -- in a mirror, through glass, as a shadow, and in every
+        // indirect bounce -- so dropping off-screen meshes to their control
+        // cage is a defect that appears only in the scenes that have mirrors.
+        {"Off-screen subdivision level", _tokens->subdivisionOffScreenLevel,
+         VtValue(TfGetenvInt("HDCLAUDE_SUBDIVISION_OFFSCREEN_LEVEL", 1))},
+
+        // The most refined faces one mesh may be given, adaptive or not.
+        //
+        // A cap on the *level* gives every mesh the same answer whether or not
+        // it needed it; a cap on the faces says which mesh it applied to and
+        // what that mesh wanted, which is what makes it actionable.
+        {"Subdivision face budget", _tokens->subdivisionFaceBudget,
+         VtValue(TfGetenvInt("HDCLAUDE_SUBDIVISION_FACE_BUDGET",
+                             4 * 1024 * 1024))},
+
+        // Whether a camera move re-derives the levels.
+        //
+        // Off, deliberately. Published geometry is what acceleration
+        // structures are built over and what the accumulated film depends on,
+        // so following the camera would rebuild both on every viewport nudge
+        // and throw away the prototype reuse the fingerprints exist for. The
+        // view is sampled once and held; `Retessellate` asks for another
+        // sample explicitly.
+        {"Subdivision follows camera", _tokens->subdivisionFollowsCamera,
+         VtValue(hdclaude::EnvironmentFlag("HDCLAUDE_SUBDIVISION_FOLLOWS_CAMERA",
+                                         false))},
+
+        // Bump this to derive the levels again against the camera as it is
+        // now. Any change is the request; the value itself means nothing.
+        {"Retessellate", _tokens->retessellate,
+         VtValue(TfGetenvInt("HDCLAUDE_RETESSELLATE", 0))},
 
         // How much of each texture is kept, as a cap on its longest edge.
         //

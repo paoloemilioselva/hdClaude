@@ -267,6 +267,17 @@ Subdivision uses public `HdMeshTopology`/`PxOsd`/OpenSubdiv to produce cached
 uniform Catmull-Clark, Loop, or bilinear refinement, preserving creases,
 corners, holes, orientation, face-varying seams, and material subsets.
 
+How deep each mesh is refined can be chosen from the camera rather than fixed
+for the stage: `Adaptive subdivision` gives a mesh the level at which its
+refined edges are about a chosen number of pixels long. The view it is derived
+from is *sampled* — taken once and held — because published geometry is what
+acceleration structures are built over and what the accumulated film depends
+on, so following the camera would rebuild both on every nudge; a setting turns
+following on and `Retessellate` asks for a fresh sample. Geometry outside the
+frustum is refined to a floor rather than culled, because a path tracer sees
+what the camera does not. What limits the cost is a budget on refined faces,
+which applies whether or not the level is adaptive.
+
 MaterialX displacement is evaluated on the refined mesh **by the same generated
 MaterialX program** used for shading — a `displacementshader` output compiled
 through the same `genglsl_pt` path and run as a GPU compute pass, not a CPU

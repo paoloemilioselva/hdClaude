@@ -23,6 +23,7 @@
 #include "pxr/imaging/hdMtlx/hdMtlx.h"
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -113,6 +114,105 @@ GfVec3f DisplayColor(HdSceneDelegate* delegate, const SdfPath& id)
         }
     }
     return GfVec3f(0.5f, 0.5f, 0.5f);
+}
+
+
+/// Everything a tessellation choice needs to know about one mesh, and the
+/// choice itself.
+///
+/// Built here rather than in the chooser because only the adapter has the
+/// control cage and the placements. A prototype is refined once and instanced
+/// many times, so the bounds are the union over every placement and the level
+/// is the one its *largest* appearance earns -- refining per placement would
+/// mean a prototype per placement, which is the sharing that makes an
+/// instanced asset fit in memory at all.
+hdclaude::TessellationChoice HdClaudeChooseMeshTessellation(
+    const HdClaudeTessellationSettings& settings,
+    const hdclaude::TessellationView& sampled, const HdMeshTopology& topology,
+    const std::vector<float>& points,
+    const std::vector<hdclaude::Transform3x4>& transforms)
+{
+    hdclaude::TessellationLimits limits;
+    limits.maxLevel = settings.level;
+    limits.minLevel = 0;
+    limits.offScreenLevel = settings.offScreenLevel;
+    limits.targetEdgePixels = settings.targetEdgePixels;
+    limits.maxRefinedFaces = settings.maxRefinedFaces;
+
+    hdclaude::TessellationView view;  // invalid: the uniform answer
+    if (settings.adaptive) {
+        view = sampled;
+        if (!view.valid) {
+            // No camera has been sampled yet, which is every mesh's first
+            // Sync: the render pass only learns the camera once it executes.
+            // Refining the whole stage at the ceiling and then refining it
+            // again a frame later is exactly the cost adaptive refinement
+            // exists to avoid, so until something is known to be visible
+            // everything is treated as though it were not.
+            limits.maxLevel = std::min(limits.maxLevel, settings.offScreenLevel);
+        }
+    }
+
+    hdclaude::TessellationRequest request;
+    request.coarseFaceCount = HdClaudeCoarseFaceCount(topology);
+    request.facesPerLevel = 4;
+
+    const float objectEdge = HdClaudeMeanEdgeLength(topology, points);
+    const std::size_t vertexCount = points.size() / 3;
+    if (objectEdge > 0.0f && vertexCount > 0 && !transforms.empty()) {
+        // Object-space bounds first, then every placement of them. An
+        // axis-aligned box taken through a transform is bounded by its eight
+        // transformed corners, which is loose for a rotation and exact for
+        // anything axis-aligned -- and loose in the safe direction, since a
+        // larger box is nearer and refines more.
+        float low[3] = {points[0], points[1], points[2]};
+        float high[3] = {points[0], points[1], points[2]};
+        for (std::size_t i = 1; i < vertexCount; ++i) {
+            for (int axis = 0; axis < 3; ++axis) {
+                low[axis] = std::min(low[axis], points[i * 3 + axis]);
+                high[axis] = std::max(high[axis], points[i * 3 + axis]);
+            }
+        }
+
+        bool first = true;
+        float scale = 0.0f;
+        for (const hdclaude::Transform3x4& transform : transforms) {
+            for (int corner = 0; corner < 8; ++corner) {
+                const float local[3] = {(corner & 1) ? high[0] : low[0],
+                                        (corner & 2) ? high[1] : low[1],
+                                        (corner & 4) ? high[2] : low[2]};
+                for (int axis = 0; axis < 3; ++axis) {
+                    const float* row = transform.m + axis * 4;
+                    const float world = row[0] * local[0] + row[1] * local[1] +
+                                        row[2] * local[2] + row[3];
+                    if (first) {
+                        request.boundsMin[axis] = world;
+                        request.boundsMax[axis] = world;
+                    } else {
+                        request.boundsMin[axis] =
+                            std::min(request.boundsMin[axis], world);
+                        request.boundsMax[axis] =
+                            std::max(request.boundsMax[axis], world);
+                    }
+                }
+                first = false;
+            }
+
+            // The largest edge scale any placement applies, so an edge is
+            // measured where it is longest. A column's length is how far that
+            // basis vector stretches, and the largest of the three bounds how
+            // far any direction can.
+            for (int column = 0; column < 3; ++column) {
+                const float x = transform.m[0 * 4 + column];
+                const float y = transform.m[1 * 4 + column];
+                const float z = transform.m[2 * 4 + column];
+                scale = std::max(scale, std::sqrt(x * x + y * y + z * z));
+            }
+        }
+        request.coarseEdgeLength = objectEdge * scale;
+    }
+
+    return hdclaude::ChooseTessellation(view, request, limits);
 }
 
 }  // namespace
@@ -264,6 +364,57 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
         return;
     }
 
+    // Placed before refinement, because how finely this mesh is refined
+    // depends on how big it is on screen, and how big it is on screen
+    // depends on where its placements put it.
+    // --- Instancing ------------------------------------------------------------
+    // One prototype, many placements: the acceleration structure is built once
+    // and instanced, which is the whole reason geometry stays object-space.
+    //
+    // The placements come from hdClaude's own instancer, which composes them
+    // from the instancer's primvars. `HdRprim::GetInstancerTransforms` looks
+    // like the call for this and is not: it returns one matrix per instancer in
+    // the parent chain -- the instancer's own transform -- so reading it as the
+    // per-instance list draws a point-instanced prototype exactly once, which
+    // is how the OpenChessSet lost most of its pieces.
+    //
+    // An instanced rprim's own transform is *not* its world transform: it
+    // places the mesh within the prototype, and the instancer places the
+    // prototype. Both are needed. Dropping the first collapses every mesh of a
+    // model onto that model's origin, which is a failure that reads as missing
+    // geometry rather than as misplaced geometry -- an asset whose parts are
+    // authored a couple of hundred units from its root ends up scattered
+    // around the room or inside a wall. Pixar's Kitchen Set is 1462 meshes of
+    // which 1460 are placed this way, so it lost its refrigerator, its stove,
+    // its table and its chairs while still reporting every instance present.
+    //
+    // Local first, then the placement: USD composes a row vector's transforms
+    // left to right, so `mesh * instance` is the mesh taken into the
+    // prototype and the prototype into the world.
+    const GfMatrix4d meshTransform = sceneDelegate->GetTransform(id);
+    if (GetInstancerId().IsEmpty()) {
+        entry.transforms.push_back(ToTransform(meshTransform));
+    } else {
+        VtMatrix4dArray transforms;
+        HdInstancer* instancer =
+            sceneDelegate->GetRenderIndex().GetInstancer(GetInstancerId());
+        if (auto* claudeInstancer = dynamic_cast<HdClaudeInstancer*>(instancer)) {
+            transforms = claudeInstancer->ComputeInstanceTransforms(id);
+        }
+        entry.transforms.reserve(transforms.size());
+        for (const GfMatrix4d& matrix : transforms) {
+            entry.transforms.push_back(ToTransform(meshTransform * matrix));
+        }
+        if (entry.transforms.empty()) {
+            // An instancer with no instances draws nothing. Publishing the
+            // prim at the origin instead would put a copy on screen that the
+            // stage does not contain.
+            param->SceneStore()->RemoveMesh(id);
+            *dirtyBits = HdChangeTracker::Clean;
+            return;
+        }
+    }
+
     // --- Subdivision or triangulation ------------------------------------------
     //
     // A mesh whose scheme asks for subdivision is refined and the refined cage
@@ -328,7 +479,35 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
         }
     }
 
-    const int subdivisionLevel = param->SubdivisionLevel();
+    // --- How finely to refine ---------------------------------------------
+    //
+    // Uniformly, at the setting's level, unless adaptive refinement is on --
+    // and then at the level this mesh's own projected size earns, with the
+    // setting's level as a ceiling. Either way the face budget has the last
+    // word, because that one is about the machine rather than about a
+    // preference.
+    const HdClaudeTessellationSettings& tessellation = param->Tessellation();
+    const hdclaude::TessellationChoice choice = HdClaudeChooseMeshTessellation(
+        tessellation, param->TessellationCamera(), topology, points,
+        entry.transforms);
+    const int subdivisionLevel = choice.level;
+
+    if (choice.budgetClamped) {
+        // The one clamp worth a warning: it is the machine refusing, it names
+        // a mesh, and it is actionable -- raise the budget, or accept that
+        // this mesh is as fine as it is going to get.
+        TF_WARN(
+            "hdClaude: mesh <%s> asked to be refined to level %d and was held "
+            "at %d by the face budget of %zu; its control cage has %zu faces",
+            id.GetText(), choice.requested, choice.level,
+            tessellation.maxRefinedFaces, HdClaudeCoarseFaceCount(topology));
+    } else if (tessellation.adaptive) {
+        HdClaudeTrace("mesh <%s>: refined to level %d (%s, wanted %d)",
+                      id.GetText(), choice.level,
+                      choice.offScreen ? "off-screen" : "in frustum",
+                      choice.requested);
+    }
+
     bool subdivided = false;
     if (subdivisionLevel > 0 && HdClaudeWantsSubdivision(topology)) {
         // Timed here rather than inside the refiner, because what a caller
@@ -724,54 +903,6 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
             if (entry.prototype.uvs.size() != vertexCount * 2) {
                 entry.prototype.uvs.clear();
             }
-        }
-    }
-
-    // --- Instancing ------------------------------------------------------------
-    // One prototype, many placements: the acceleration structure is built once
-    // and instanced, which is the whole reason geometry stays object-space.
-    //
-    // The placements come from hdClaude's own instancer, which composes them
-    // from the instancer's primvars. `HdRprim::GetInstancerTransforms` looks
-    // like the call for this and is not: it returns one matrix per instancer in
-    // the parent chain -- the instancer's own transform -- so reading it as the
-    // per-instance list draws a point-instanced prototype exactly once, which
-    // is how the OpenChessSet lost most of its pieces.
-    //
-    // An instanced rprim's own transform is *not* its world transform: it
-    // places the mesh within the prototype, and the instancer places the
-    // prototype. Both are needed. Dropping the first collapses every mesh of a
-    // model onto that model's origin, which is a failure that reads as missing
-    // geometry rather than as misplaced geometry -- an asset whose parts are
-    // authored a couple of hundred units from its root ends up scattered
-    // around the room or inside a wall. Pixar's Kitchen Set is 1462 meshes of
-    // which 1460 are placed this way, so it lost its refrigerator, its stove,
-    // its table and its chairs while still reporting every instance present.
-    //
-    // Local first, then the placement: USD composes a row vector's transforms
-    // left to right, so `mesh * instance` is the mesh taken into the
-    // prototype and the prototype into the world.
-    const GfMatrix4d meshTransform = sceneDelegate->GetTransform(id);
-    if (GetInstancerId().IsEmpty()) {
-        entry.transforms.push_back(ToTransform(meshTransform));
-    } else {
-        VtMatrix4dArray transforms;
-        HdInstancer* instancer =
-            sceneDelegate->GetRenderIndex().GetInstancer(GetInstancerId());
-        if (auto* claudeInstancer = dynamic_cast<HdClaudeInstancer*>(instancer)) {
-            transforms = claudeInstancer->ComputeInstanceTransforms(id);
-        }
-        entry.transforms.reserve(transforms.size());
-        for (const GfMatrix4d& matrix : transforms) {
-            entry.transforms.push_back(ToTransform(meshTransform * matrix));
-        }
-        if (entry.transforms.empty()) {
-            // An instancer with no instances draws nothing. Publishing the
-            // prim at the origin instead would put a copy on screen that the
-            // stage does not contain.
-            param->SceneStore()->RemoveMesh(id);
-            *dirtyBits = HdChangeTracker::Clean;
-            return;
         }
     }
 

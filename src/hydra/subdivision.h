@@ -38,6 +38,23 @@ struct HdClaudeRefinedMesh {
     bool Valid() const { return !indices.empty(); }
 };
 
+/// How many faces the control cage has.
+///
+/// The count a refinement budget is reckoned against: every scheme hdClaude
+/// refines multiplies it by four a level, so this and the level are the whole
+/// of what a refined mesh will cost in faces.
+std::size_t HdClaudeCoarseFaceCount(const HdMeshTopology& topology);
+
+/// The mean length of a control-cage edge, in the mesh's own space.
+///
+/// The mean rather than the longest: a refinement level is a property of the
+/// mesh as a whole, and one long edge across an otherwise fine cage would pull
+/// every face of it up a level that only that edge needed. Zero for a topology
+/// with no edges, which the caller should read as "this mesh cannot say how
+/// big it is" rather than as "this mesh is small".
+float HdClaudeMeanEdgeLength(const HdMeshTopology& topology,
+                             const std::vector<float>& points);
+
 /// True if this topology asks to be subdivided at all.
 ///
 /// A scheme of "none" is a polygon mesh that happens to carry subdivision

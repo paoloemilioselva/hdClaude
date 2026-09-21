@@ -14,6 +14,7 @@ add_library(hdClaudeCore STATIC
     image_metrics.cpp
     shader_cache.cpp
     spectrum.cpp
+    tessellation.cpp
 )
 
 add_library(hdClaude::Core ALIAS hdClaudeCore)

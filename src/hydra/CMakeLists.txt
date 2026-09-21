@@ -22,6 +22,7 @@ add_library(hdClaude MODULE
     basis_curves.cpp
     mesh.cpp
     nurbs_scene_index_plugin.cpp
+    retessellation_scene_index_plugin.cpp
     render_buffer.cpp
     render_delegate.cpp
     render_pass.cpp

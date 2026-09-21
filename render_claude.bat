@@ -37,7 +37,14 @@ IF "%~1"=="" (
   ECHO   HDCLAUDE_SAMPLES_PER_PIXEL     default 64    samples in the image
   ECHO   HDCLAUDE_SAMPLES_PER_FRAME     default 4     samples per progressive update
   ECHO   HDCLAUDE_MAX_BOUNCES           default 8     path length
-  ECHO   HDCLAUDE_SUBDIVISION_LEVEL     0-6, default 2, 0 disables refinement
+  ECHO   HDCLAUDE_SUBDIVISION_LEVEL     0-10, default 2, 0 disables refinement
+  ECHO   HDCLAUDE_ADAPTIVE_SUBDIVISION  default off; the level per mesh from its
+  ECHO                                  projected size, the above as a ceiling
+  ECHO   HDCLAUDE_SUBDIVISION_EDGE_PIXELS       default 4; a refined edge's length
+  ECHO   HDCLAUDE_SUBDIVISION_OFFSCREEN_LEVEL   default 1; outside the frustum
+  ECHO   HDCLAUDE_SUBDIVISION_FACE_BUDGET       default 4194304 faces a mesh
+  ECHO   HDCLAUDE_SUBDIVISION_FOLLOWS_CAMERA    default off; re-derive on a move
+  ECHO   HDCLAUDE_RETESSELLATE          bump it to derive again from the camera
   ECHO   HDCLAUDE_TEXTURE_QUALITY       high ^(default^), medium or low. High is
   ECHO                                  the authored image; medium and low cap
   ECHO                                  each texture's longest edge at 1024 and

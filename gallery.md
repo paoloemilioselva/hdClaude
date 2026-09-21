@@ -43,6 +43,17 @@ upsampling happens where a closure hands back its response. Dispersion is
 transported, and a path meeting a dispersive interface keeps its hero lane and
 terminates the other three, which costs four times the noise on those paths.
 
+**Refinement is uniform in these images.** `Adaptive subdivision` gives each
+mesh the level its projected size earns, with the level above as a ceiling, and
+it is off here so that every baseline is the same picture it was. What it buys,
+measured on Pixar's Kitchen Set at these settings: 2,109,620 triangles against
+8,706,088 and 812 MiB of device memory against 1.29 GiB, for an image that
+differs by rms 0.0085 over 2.6% of the frame. Tracing is not faster -- 106.7 s
+against 104.7 s -- because a BVH is logarithmic in its primitive count and this
+frame's cost is shading and rays; the saving is memory and build time. The
+camera it is derived from is sampled once and held, so a camera move does not
+republish the geometry.
+
 **Displacement is evaluated by the generated MaterialX program**, on the GPU,
 over the refined mesh, before the acceleration structure is built. Two scenes
 here author one and both render it: the height map's quad is terrain, and the
@@ -154,13 +165,13 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 <!-- gallery-timings:start -->
 | Scene | Measured | Wall time | Device memory | SHA-256 | Device | Settings |
 |---|---:|---:|---:|---|---|---|
-| Intel Sponza | 2026-09-21 | 56.673 s (0m 56.673s) | 5.5 GiB | `96556c37922865701069f3571c91d51ad1530b01d6200c8f7c94430ade4954e6` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Intel Sponza | 2026-09-21 | 53.958 s (0m 53.958s) | 5.5 GiB | `96556c37922865701069f3571c91d51ad1530b01d6200c8f7c94430ade4954e6` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | OpenChessSet | 2026-09-17 | 28.735 s (0m 28.735s) | 1.7 GiB | `ec81fcdbfed5bc02ce5ea932559440b417236eda25d1a0b05e78eb9bc91130e9` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | StandardShaderBall Gold | 2026-09-21 | 31.641 s (0m 31.641s) | 1.4 GiB | `9187c371a81ca307a9ab8518bd5d719d2932dd29c5c8bbec2d02aafefa0e269c` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | StandardShaderBall Glass | 2026-09-21 | 35.391 s (0m 35.391s) | 1.4 GiB | `de14ffe541dae22c4c94b29f6057ee38169b33bf1ca094d65bb171d123918ba3` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | StandardShaderBall BubbleGum | 2026-09-21 | 79.980 s (1m 19.980s) | 1.4 GiB | `399cb9aeb5537de51c713177ad508c4989955e06b3e0ef073d785cd9c60cf266` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | StandardShaderBall Honey | 2026-09-21 | 39.213 s (0m 39.213s) | 1.4 GiB | `5df354f3977772083e47bfefeac9b70579b7ca9ad51a5dfb438b25118b0a9a67` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Pixar's KitchenSet | 2026-09-21 | 197.052 s (3m 17.052s) | 1.3 GiB | `00b231edeea1963a6330dc4334268fcf15aa2c1ef9d7d0b7105969923d2d0508` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Pixar's KitchenSet | 2026-09-21 | 177.299 s (2m 57.299s) | 1.3 GiB | `00b231edeea1963a6330dc4334268fcf15aa2c1ef9d7d0b7105969923d2d0508` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | Collective Project 001 | 2026-09-21 | 34.132 s (0m 34.132s) | 1.1 GiB | `69fa080b3bf559dc8184d71f2c4601fbe76d2015a43d08d6b928b5f98b08ee23` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | OpenPBR Playground | 2026-09-21 | 216.149 s (3m 36.149s) | 12.7 GiB | `37af1840a9a5f061f9fc8ebb34e5bcbef5087cf5ae52e2a7429611db138fdef2` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | Subdivision Feature Matrix | 2026-09-21 | 14.818 s (0m 14.818s) | 832.0 MiB | `5027c7a8b083f04ddd18f927de952bc2fbcf907bce7348346912b3a61854acb2` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
