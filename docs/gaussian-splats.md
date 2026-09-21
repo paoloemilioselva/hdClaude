@@ -78,6 +78,37 @@ zero off the plane, support radius 3) and
 1). They are flat rather than solid, which is the only difference that reaches
 the intersector.
 
+### 1.1 How the data reaches a delegate, measured
+
+Hydra declares the prim-type token `particleField` and **no schema for the data**
+-- there is no `HdParticleFieldSchema` beside `HdVolumeFieldSchema` -- so how the
+arrays arrive is a property of `UsdImagingParticleFieldAdapter` rather than of a
+documented interface. `UsdImaging` is not wrapped for Python in this
+distribution, so it was answered by rendering the stage with tracing on rather
+than by reading it off a data source. What arrives:
+
+| Primvar | Interpolation | Role |
+| --- | --- | --- |
+| `positions` | `vertex` | `point` |
+| `orientations` | `vertex` | — |
+| `scales` | `vertex` | — |
+| `opacities` | `vertex` | — |
+| `radiance:sphericalHarmonicsCoefficients` | `vertex` | — |
+| `radiance:sphericalHarmonicsDegree` | **`constant`** | — |
+
+So they are **primvars, named exactly as the schema names the attributes**, and
+the degree is a constant primvar rather than a plain attribute. An attribute that
+was not authored does not appear at all: the stage's `/unauthored` prim arrives
+carrying `positions` and nothing else, which is how the schema's documented
+defaults come to be the only thing there is to apply.
+
+Two consequences for this code. The names are declared in
+`GetBuiltinPrimvarNames()`, so they are not also reported as user primvars and do
+not fall into whatever generic primvar handling sits in a scene index. And the
+half-precision flavours are declared alongside the float ones, because the
+preference between them is the delegate's to apply -- the adapter forwards
+whichever the asset authored under its own name.
+
 ## 2. What the schema does not specify
 
 Recorded here because each one had to be decided, and a decision taken in the
@@ -135,6 +166,15 @@ the viewer** — the outgoing radiance direction, which is what "radiance" means
 everywhere else in this renderer — and reports the assumption, so that an asset
 which disagrees is diagnosable rather than merely wrong. This should be raised
 upstream.
+
+It is also **asserted rather than only reported**.
+`tests/usd/gaussian_splats.usda` carries a degree-1 particle whose only non-DC
+coefficient is the `(l=1, m=0)` one, chosen so that its radiance is 2 toward `+Z`
+and 0 toward `-Z` with the camera at `+Z`. Under hdClaude's convention it renders
+2.0 through its centre; under the opposite one it renders 0.0. That is the
+largest difference the question can produce, so whichever convention a future
+reference asset turns out to use, the disagreement is a failing number rather
+than a picture someone has to notice is inside out.
 
 ### 2.4 No extent computation, and no albedo
 
@@ -276,6 +316,8 @@ of image that can look plausible while being wrong:
    so that occlusion and visibility agree with each other.
 4. The SH basis is checked for orthonormality by numerical integration, and the
    documented default coefficient must evaluate to 0.5 in every direction.
+5. The degree-1 particle described in 2.3 renders 2.0 and not 0.0, which fixes
+   the one convention the specification leaves open.
 
-Items 1 to 3 are renderer gates; item 4 is a core unit test and runs without a
-GPU or a USD runtime.
+Items 1 to 3 and 5 are renderer gates; item 4 is a core unit test and runs
+without a GPU or a USD runtime.

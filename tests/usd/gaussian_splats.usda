@@ -147,6 +147,36 @@ def ParticleField3DGaussianSplat "anisotropic"
     float3[] radiance:sphericalHarmonicsCoefficients = [(3.5449077, 3.5449077, 0)]
 }
 
+def ParticleField3DGaussianSplat "directional"
+{
+    # The one convention the specification does not state, made measurable.
+    #
+    # Degree 1, with every coefficient zero but the DC term and the (l=1, m=0)
+    # one, whose basis is `0.4886025 z`. A DC of 3.5449077 is a radiance of 1,
+    # and 2.0466534 * 0.4886025 is another 1 along +z and -1 along -z. So the
+    # radiance is 2 toward +Z and 0 toward -Z.
+    #
+    # The camera sits at +Z looking down -Z, and hdClaude evaluates the harmonics
+    # in the direction from the particle *toward the viewer*, which is +Z here.
+    # This particle therefore renders 2.0 through its centre. Were the
+    # convention the other way round -- and nothing in the schema says which it
+    # is -- it would render 0.0, which is the largest difference the question can
+    # produce and is why this prim is worth having. It also fails if the degree
+    # is not read at all, since a degree of 0 would discard the array as being
+    # four times too long for one particle and fall back to 0.5.
+    point3f[] positions = [(0, 3.5, 0)]
+    float3[] scales = [(0.5, 0.5, 0.5)]
+    quatf[] orientations = [(1, 0, 0, 0)]
+    float[] opacities = [1]
+    uniform int radiance:sphericalHarmonicsDegree = 1
+    float3[] radiance:sphericalHarmonicsCoefficients = [
+        (3.5449077, 3.5449077, 3.5449077),
+        (0, 0, 0),
+        (2.0466534, 2.0466534, 2.0466534),
+        (0, 0, 0)
+    ]
+}
+
 def ParticleField3DGaussianSplat "unauthored"
 {
     # Positions and nothing else. Every other attribute takes the default its
