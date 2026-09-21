@@ -142,6 +142,80 @@ CompiledMaterial CompileMaterial(
     return material;
 }
 
+/// A diffuse material that also displaces, by a constant along the normal.
+///
+/// Both of a material's programs from one document, which is how an authored
+/// one arrives: MaterialX's `displacement` output is a terminal beside
+/// `surface` on the same `surfacematerial`, and the two are generated
+/// separately from it.
+CompiledMaterial MakeDisplacingMaterial(mx::DocumentPtr libraries,
+                                        const GlslCompiler& compiler,
+                                        const std::string& shadeKernel,
+                                        const std::string& displaceKernel,
+                                        const mx::Color3& colour, float height,
+                                        const std::string& name)
+{
+    mx::DocumentPtr doc = mx::createDocument();
+    doc->importLibrary(libraries);
+
+    mx::NodePtr bsdf = AddNode(doc, "oren_nayar_diffuse_bsdf", "b", "BSDF");
+    SetValue(bsdf, "weight", 1.0f);
+    SetValue(bsdf, "color", colour);
+    SetValue(bsdf, "roughness", 0.0f);
+
+    mx::NodePtr surface = AddNode(doc, "surface", "s", "surfaceshader");
+    Connect(surface, "bsdf", bsdf);
+    SetValue(surface, "opacity", 1.0f);
+
+    const mx::NodeDefPtr definition = doc->getNodeDef("ND_displacement_float");
+    CHECK(definition != nullptr);
+    if (!definition) {
+        return CompiledMaterial{};
+    }
+    mx::NodePtr displacement = doc->addNodeInstance(definition, "d");
+    SetValue(displacement, "displacement", height);
+    SetValue(displacement, "scale", 1.0f);
+
+    mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+    Connect(material, "surfaceshader", surface);
+    Connect(material, "displacementshader", displacement);
+
+    CompiledMaterial compiled = CompileMaterial(doc, compiler, shadeKernel, name);
+
+    // The second program, from the terminal the document names. The material
+    // compiler in the Hydra layer does exactly this from the network's own
+    // `displacement` terminal.
+    const DisplacementTerminal terminal = AuthoredDisplacement(doc);
+    CHECK(terminal.terminal != nullptr);
+    if (!terminal.terminal) {
+        return compiled;
+    }
+
+    mx::ShaderGeneratorPtr generator = PathTracerShaderGenerator::create();
+    mx::GenContext genContext(generator);
+    genContext.registerSourceCodeSearchPath(DefaultMaterialXSourceSearchPath());
+    genContext.getOptions().shaderInterfaceType = mx::SHADER_INTERFACE_REDUCED;
+    mx::ShaderPtr shader =
+        generator->generate(name + "_displace", terminal.terminal, genContext);
+    CHECK(shader != nullptr);
+    if (!shader) {
+        return compiled;
+    }
+
+    GlslCompileOptions options;
+    options.moduleName = name + "_displace";
+    const GlslCompileResult built = compiler.Compile(
+        shader->getSourceCode(mx::Stage::PIXEL) + displaceKernel, options);
+    if (!built.ok) {
+        std::fprintf(stderr, "  displacement %s failed:\n%s\n", name.c_str(),
+                     built.log.c_str());
+    }
+    CHECK(built.ok);
+    compiled.displaceSpirv = built.spirv;
+    compiled.displacementSpace = terminal.space;
+    return compiled;
+}
+
 /// Generate a diffuse material of the given colour and compile it with the
 /// shade kernel into a shading pipeline.
 ///
@@ -5591,6 +5665,93 @@ int main()
 
             CHECK(brightest > 0.1f);
             CHECK(darkestLit < brightest * 0.6f);
+        }
+
+        // --- A displaced prototype is what gets traced -----------------------
+        //
+        // The pass moves vertices, and this is what says the renderer traces
+        // the moved ones. Two quads: the first carries a material that
+        // displaces it a whole unit towards the camera, the second is plain
+        // white and sits half a unit in front of where the first one started.
+        // Undisplaced, the white quad hides the red one; displaced, the red
+        // one is half a unit in front of the white one and hides it. Which
+        // colour comes back is the assertion, and the two cases differ by
+        // nothing but the displacement.
+        {
+            CompiledMaterial displacing = MakeDisplacingMaterial(
+                libraries, compiler, tracer.ShadeKernelSource(),
+                tracer.DisplaceKernelSource(), mx::Color3(0.8f, 0.1f, 0.1f),
+                1.0f, "displacing_red");
+            CHECK(!displacing.spirv.empty());
+            CHECK(displacing.Displaces());
+
+            if (displacing.Displaces()) {
+                Scene scene;
+                // Two entries of identical geometry rather than one shared by
+                // both instances: a prototype is displaced as a whole, so a
+                // prototype that two materials disagreed about could not be
+                // displaced at all.
+                scene.prototypes.push_back(MakeQuad());
+                scene.prototypes.push_back(MakeQuad());
+                scene.instances.push_back({0, Transform3x4{}, 0, true});
+                scene.instances.push_back(
+                    {1, Transform(1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.5f), 1,
+                     true});
+
+                std::vector<CompiledMaterial> displaced;
+                displaced.push_back(displacing);
+                displaced.push_back(materials[0]);  // white, and displaces not
+
+                tracer.SetScene(scene, displaced);
+                std::printf("  displaced %u prototype(s), reused %u\n",
+                            tracer.LastDisplacedCount(),
+                            tracer.LastDisplacementReusedCount());
+                CHECK_EQ(tracer.LastDisplacedCount(), std::uint32_t(1));
+                CHECK_EQ(tracer.LastDisplacementReusedCount(),
+                         std::uint32_t(0));
+
+                const std::vector<float> image =
+                    tracer.Render(kWidth, kHeight, LookDownZ(4.0f), settings);
+                SavePpm(image, "displaced-quad");
+                const Pixel centre = At(image, 0.5f, 0.5f);
+                std::printf("  displaced centre %.4f %.4f %.4f\n", centre.r,
+                            centre.g, centre.b);
+
+                // Republishing the same scene must not run the program again:
+                // neither the geometry nor the material changed, and a
+                // displacement recomputed every publication is a cost that no
+                // image would show.
+                tracer.SetScene(scene, displaced);
+                std::printf("  republished: displaced %u, reused %u\n",
+                            tracer.LastDisplacedCount(),
+                            tracer.LastDisplacementReusedCount());
+                CHECK_EQ(tracer.LastDisplacedCount(), std::uint32_t(0));
+                CHECK_EQ(tracer.LastDisplacementReusedCount(),
+                         std::uint32_t(1));
+
+                // The control: the same two quads, the same two colours, the
+                // same places -- and a red material that does not displace.
+                // Nothing else differs, so a difference in the image is the
+                // displacement and can be nothing else.
+                std::vector<CompiledMaterial> undisplaced;
+                undisplaced.push_back(materials[1]);  // red, no displacement
+                undisplaced.push_back(materials[0]);  // white
+                tracer.SetScene(scene, undisplaced);
+                CHECK_EQ(tracer.LastDisplacedCount(), std::uint32_t(0));
+
+                const std::vector<float> control =
+                    tracer.Render(kWidth, kHeight, LookDownZ(4.0f), settings);
+                SavePpm(control, "displaced-quad-control");
+                const Pixel plain = At(control, 0.5f, 0.5f);
+                std::printf("  undisplaced centre %.4f %.4f %.4f\n", plain.r,
+                            plain.g, plain.b);
+
+                // Displaced: the red quad is in front, so the centre is red.
+                CHECK(centre.r > centre.g * 2.0f);
+                // Undisplaced: the white quad is in front, so it is not.
+                CHECK(plain.r < plain.g * 2.0f);
+                CHECK_NEAR(plain.r / plain.g, 1.0, 0.25);
+            }
         }
 
         // --- Displacement ----------------------------------------------------

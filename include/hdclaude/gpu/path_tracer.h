@@ -11,12 +11,15 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <unordered_map>
+#include <unordered_set>
 #include <string>
 #include <array>
 #include <vector>
 
 #include "hdclaude/gpu/acceleration_structure.h"
 #include "hdclaude/gpu/compute_pipeline.h"
+#include "hdclaude/gpu/displacement.h"
 #include "hdclaude/gpu/glsl_compiler.h"
 #include "hdclaude/gpu/reconstruction.h"
 #include "hdclaude/gpu/scene.h"
@@ -250,6 +253,39 @@ struct CompiledMaterial {
     /// dielectric that transmits without refracting. Read from the document,
     /// like `dispersionAbbe`; see `AuthoredThinWalled`.
     bool thinWalled = false;
+
+    // --- Displacement -----------------------------------------------------
+    //
+    // A material's `displacement` terminal is a second graph with a second
+    // program, run over a mesh's vertices before it is traced rather than
+    // over paths while it is shaded (docs/architecture.md 7). It is carried
+    // here rather than in a structure of its own because it belongs to the
+    // same material: one authored network produces both, and separating them
+    // would let a mesh be shaded by one material and displaced by another.
+
+    /// The displacement program joined to the displace kernel, or empty when
+    /// this material does not displace -- which is nearly all of them, and
+    /// costs an empty vector.
+    std::vector<std::uint32_t> displaceSpirv;
+
+    /// Where the *displacement* program's textures live in the scene's pool.
+    ///
+    /// Its own table rather than a share of `textureSlots`, because the two
+    /// programs are generated separately and each numbers its samplers from
+    /// zero. A height map is usually the only image a displacement reads, and
+    /// it is usually not one the surface reads.
+    std::vector<std::uint32_t> displaceTextureSlots;
+
+    /// How to read the offset the displacement program leaves.
+    ///
+    /// The one thing about a displacement that the generated code cannot
+    /// carry: MaterialX has two constructors for one struct, they mean
+    /// different things by the same three floats, and both emit the same two
+    /// lines. See `AuthoredDisplacement`.
+    DisplacementSpace displacementSpace = DisplacementSpace::AlongNormal;
+
+    /// Whether this material displaces at all.
+    bool Displaces() const { return !displaceSpirv.empty(); }
 };
 
 /// Resolves `#include` directives in the kernel sources.
@@ -494,6 +530,19 @@ class PathTracer {
         return _displaceKernelSource;
     }
 
+    /// How many prototypes the last `SetScene` displaced, and how many it
+    /// took from the cache without running the program again.
+    ///
+    /// A displacement that silently does not happen looks exactly like a
+    /// material that displaces by zero, and a displacement that re-runs every
+    /// publication is a performance defect invisible in the image. Both are
+    /// asserted by the tests, which is the only way either can be seen.
+    std::uint32_t LastDisplacedCount() const { return _lastDisplaced; }
+    std::uint32_t LastDisplacementReusedCount() const
+    {
+        return _lastDisplacementReused;
+    }
+
     /// How many paths each material's dispatch covered in the last bounce of
     /// the last completed `Render`, read back from the device.
     ///
@@ -654,6 +703,25 @@ class PathTracer {
 
     VulkanImage UploadTexture(const TextureImage& texture);
 
+    /// The image array for an arbitrary table of pool slots.
+    ///
+    /// Every element is written, the unused tail included: a declared
+    /// descriptor that is never written is undefined the moment a shader
+    /// indexes it. A null table writes the placeholder everywhere.
+    std::vector<VkDescriptorImageInfo> TextureBindings(
+        const std::vector<std::uint32_t>* slots) const;
+
+    /// Displace the prototypes whose material says where the surface is.
+    ///
+    /// Returns `scene` unchanged when nothing in it displaces, which is every
+    /// scene hdClaude has rendered so far; otherwise fills `storage` with a
+    /// copy whose displaced prototypes carry their new positions and returns
+    /// that. Run before the acceleration structures, because a structure built
+    /// over the undisplaced mesh is a structure over the wrong shape.
+    const Scene& ApplyDisplacement(const Scene& scene,
+                                   const std::vector<CompiledMaterial>& materials,
+                                   Scene* storage);
+
     /// The image array a material's descriptor set should be written with.
     /// `material` indexes the compiled materials; a negative index means a
     /// kernel that never samples, which gets placeholders throughout.
@@ -718,6 +786,19 @@ class PathTracer {
     VkSampler _sampler = VK_NULL_HANDLE;
     /// Per-material texture slots, parallel to _shade.
     std::vector<std::vector<std::uint32_t>> _materialTextureSlots;
+    /// Compiled displacement pipelines, keyed by a hash of the program they
+    /// were built from, so republishing a scene does not rebuild one.
+    std::unordered_map<std::uint64_t, DisplacementPass> _displacePasses;
+    /// Displaced positions, keyed by the undisplaced prototype's fingerprint
+    /// combined with the program's. A publication that changed neither the
+    /// geometry nor the material reuses them and the program does not run.
+    std::unordered_map<std::uint64_t, std::vector<float>> _displacedPositions;
+    /// Prototypes whose displacement has already been complained about, so a
+    /// scene that republishes every frame says it once.
+    std::unordered_set<std::uint64_t> _displacementReported;
+    std::uint32_t _lastDisplaced = 0;
+    std::uint32_t _lastDisplacementReused = 0;
+
     /// Per-material Abbe number, parallel to _shade. Pushed with the material
     /// id at each shading dispatch.
     std::vector<float> _materialDispersion;

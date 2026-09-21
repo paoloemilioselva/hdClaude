@@ -32,10 +32,12 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 class HdClaudeMaterialCompiler {
   public:
-    /// `shadeKernel` is PathTracer::ShadeKernelSource(): the generated material
-    /// is joined to it to make a shading pipeline, so the ABI is defined in one
-    /// place rather than restated here.
-    HdClaudeMaterialCompiler(std::string shadeKernel);
+    /// `shadeKernel` is PathTracer::ShadeKernelSource() and `displaceKernel`
+    /// is PathTracer::DisplaceKernelSource(): a material's surface program is
+    /// joined to the first and its displacement program to the second, so
+    /// each ABI is defined in one place rather than restated here.
+    HdClaudeMaterialCompiler(std::string shadeKernel,
+                             std::string displaceKernel);
 
     /// One texture a material samples: where it is, and how to read it.
     ///
@@ -55,6 +57,14 @@ class HdClaudeMaterialCompiler {
         /// assigned their local indices. The caller loads these and fills in
         /// `material.textureSlots`.
         std::vector<TextureRequest> texturePaths;
+        /// The same for the displacement program, which numbers its own
+        /// samplers from zero and fills `material.displaceTextureSlots`.
+        std::vector<TextureRequest> displacementTexturePaths;
+        /// Empty when the network authors no displacement, or says why one it
+        /// does author could not be compiled. A displacement that fails is not
+        /// a reason to fall back on the whole material: the surface is still
+        /// the surface, and the mesh is simply not displaced.
+        std::string displacementReason;
     };
 
     /// Compile a Hydra material network.
@@ -85,6 +95,25 @@ class HdClaudeMaterialCompiler {
         std::vector<TextureRequest>* texturePaths = nullptr,
         const std::map<std::string, std::string>* resolvedTextures = nullptr);
 
+    /// Generate and compile a document's *displacement* terminal.
+    ///
+    /// A separate entry point rather than a flag on the one above, because
+    /// almost nothing is shared: it generates from the terminal the document
+    /// names rather than from `findRenderableElements`, which answers with
+    /// surfaces; it joins the displace kernel rather than the shade kernel;
+    /// and it has its own texture order, because the two programs each number
+    /// their samplers from zero.
+    ///
+    /// Writes the SPIR-V and the space into `material`, and leaves it
+    /// untouched when the document authors no displacement. Returns false, and
+    /// says why in `error`, only when a displacement that *was* authored could
+    /// not be compiled.
+    bool CompileDisplacement(
+        MaterialX::DocumentPtr document, const std::string& name,
+        hdclaude::CompiledMaterial* material, std::string* error,
+        std::vector<TextureRequest>* texturePaths = nullptr,
+        const std::map<std::string, std::string>* resolvedTextures = nullptr);
+
     /// Serialises generation and compilation.
     ///
     /// Hydra syncs Rprims in parallel, and an unbound mesh compiles its own
@@ -94,6 +123,7 @@ class HdClaudeMaterialCompiler {
     /// lock is the right trade rather than per-object copies of the generator.
     mutable std::mutex _mutex;
     std::string _shadeKernel;
+    std::string _displaceKernel;
     hdclaude::GlslCompiler _compiler;
     MaterialX::DocumentPtr _libraries;
 };

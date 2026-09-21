@@ -429,10 +429,138 @@ void PruneUndeclaredInputs(const mx::DocumentPtr& document, const std::string& n
     }
 }
 
+/// Tell the generator which UDIM tiles each `filename` input resolves to.
+///
+/// This has to happen *before* generation, because a UDIM set takes one array
+/// slot per tile and the generated handle carries how many. `udimSubstitution`
+/// keeps every set found, including the ones of a single tile: such a set does
+/// not change the generated code but its path still carries the token and
+/// still has to be expanded, or the loader is left to guess which tile was
+/// meant.
+///
+/// Shared by a material's two programs. Each generates separately and numbers
+/// its own samplers from zero, and each has to be told about its own images.
+void TellGeneratorAboutUdimSets(
+    const mx::DocumentPtr& document, const std::string& name,
+    const std::map<std::string, std::string>* resolvedTextures,
+    mx::ShaderGenerator* generator,
+    std::map<std::string, std::vector<int>>* udimSubstitution)
+{
+    auto* ptGenerator =
+        dynamic_cast<hdclaude::PathTracerShaderGenerator*>(generator);
+    if (!ptGenerator || !document || !udimSubstitution) {
+        return;
+    }
+
+    std::map<std::string, std::vector<int>> udim;
+    for (const mx::ElementPtr& element : document->traverseTree()) {
+        mx::NodePtr node = element ? element->asA<mx::Node>() : nullptr;
+        if (!node) {
+            continue;
+        }
+        for (const mx::InputPtr& input : node->getInputs()) {
+            if (input->getType() != "filename") {
+                continue;
+            }
+            // Keyed by the uniform name MaterialX will build from the node and
+            // input names -- the same join `ResolveTexturePath` matches on, so
+            // the two cannot disagree about which image is which.
+            const std::string uniform = mx::createValidName(
+                node->getName() + "_" + input->getName());
+            std::string path = input->getResolvedValueString();
+            if (resolvedTextures) {
+                const auto found = resolvedTextures->find(uniform);
+                if (found != resolvedTextures->end() && !found->second.empty()) {
+                    path = found->second;
+                }
+            }
+            std::vector<int> tiles = ResolveUdimTiles(path);
+            if (tiles.empty()) {
+                continue;
+            }
+            HdClaudeTrace("material %s: '%s' is a UDIM set of %zu tiles "
+                          "(%d..%d)",
+                          name.c_str(), uniform.c_str(), tiles.size(),
+                          tiles.front(), tiles.back());
+            (*udimSubstitution)[uniform] = tiles;
+            if (tiles.size() >= 2) {
+                udim[uniform] = std::move(tiles);
+            }
+        }
+    }
+    ptGenerator->SetUdimTiles(std::move(udim));
+}
+
+/// The images a generated program samples, in the order it assigned them.
+///
+/// The generator is the authority on that order, so taking it from the
+/// generator rather than re-deriving it from the document is what keeps the
+/// two from drifting apart.
+void CollectTexturePaths(
+    const mx::DocumentPtr& document, const std::string& name,
+    const std::map<std::string, std::string>* resolvedTextures,
+    mx::ShaderGenerator* generator,
+    const std::map<std::string, std::vector<int>>& udimSubstitution,
+    std::vector<HdClaudeMaterialCompiler::TextureRequest>* texturePaths)
+{
+    if (!texturePaths) {
+        return;
+    }
+    auto* ptGenerator =
+        dynamic_cast<hdclaude::PathTracerShaderGenerator*>(generator);
+    if (!ptGenerator) {
+        return;
+    }
+
+    for (const auto& slot : ptGenerator->TextureOrder()) {
+        const std::string& uniform = slot.uniform;
+        // The colour space always comes from the document -- it is a property
+        // of the <image> node, which the network does not carry -- while the
+        // path prefers the network's resolved one and falls back to the
+        // document's authored one, which is what a material hdClaude built
+        // itself has.
+        HdClaudeMaterialCompiler::TextureRequest request =
+            ResolveTexturePath(document, uniform);
+        if (resolvedTextures) {
+            const auto found = resolvedTextures->find(uniform);
+            if (found != resolvedTextures->end() && !found->second.empty()) {
+                request.path = found->second;
+            }
+        }
+        // One slot per tile, in the order the generator assigned them, which
+        // is ascending tile number. A set of one tile has no tile on its slot
+        // and is substituted from the scan.
+        int tile = slot.tile;
+        if (tile == 0) {
+            const auto single = udimSubstitution.find(uniform);
+            if (single != udimSubstitution.end() &&
+                single->second.size() == 1) {
+                tile = single->second.front();
+            }
+        }
+        request.path = SubstituteUdimTile(request.path, tile);
+        if (request.path.empty()) {
+            // An image node with no file at all. That is legal and common --
+            // an asset authors the node and leaves the file to a stronger
+            // opinion that never arrives -- and MaterialX says such a node
+            // returns its `default`. The pool turns the empty path into that
+            // value, so this is worth tracing and not worth warning about; a
+            // file that is authored and cannot be read is the case that
+            // deserves to be loud.
+            HdClaudeTrace("material %s samples '%s', which no asset path "
+                          "backs; it reads the image node's default",
+                          name.c_str(), uniform.c_str());
+        }
+        texturePaths->push_back(std::move(request));
+    }
+}
+
 }  // namespace
 
-HdClaudeMaterialCompiler::HdClaudeMaterialCompiler(std::string shadeKernel)
-    : _shadeKernel(std::move(shadeKernel))
+HdClaudeMaterialCompiler::HdClaudeMaterialCompiler(std::string shadeKernel,
+                                                   std::string displaceKernel)
+    : _shadeKernel(std::move(shadeKernel)),
+      _displaceKernel(std::move(displaceKernel))
 {
     try {
         _libraries = hdclaude::LoadDefaultMaterialXLibraries();
@@ -497,51 +625,8 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
         // many. Keyed by the uniform name MaterialX will build from the node
         // and input names -- the same join `ResolveTexturePath` matches on, so
         // the two cannot disagree about which image is which.
-        if (auto* ptGenerator =
-                dynamic_cast<hdclaude::PathTracerShaderGenerator*>(
-                    generator.get())) {
-            std::map<std::string, std::vector<int>> udim;
-            for (const mx::ElementPtr& element : document->traverseTree()) {
-                mx::NodePtr node = element ? element->asA<mx::Node>() : nullptr;
-                if (!node) {
-                    continue;
-                }
-                for (const mx::InputPtr& input : node->getInputs()) {
-                    if (input->getType() != "filename") {
-                        continue;
-                    }
-                    const std::string uniform =
-                        mx::createValidName(node->getName() + "_" +
-                                            input->getName());
-                    std::string path = input->getResolvedValueString();
-                    if (resolvedTextures) {
-                        const auto found = resolvedTextures->find(uniform);
-                        if (found != resolvedTextures->end() &&
-                            !found->second.empty()) {
-                            path = found->second;
-                        }
-                    }
-                    std::vector<int> tiles = ResolveUdimTiles(path);
-                    if (tiles.empty()) {
-                        continue;
-                    }
-                    HdClaudeTrace(
-                        "material %s: '%s' is a UDIM set of %zu tiles "
-                        "(%d..%d)",
-                        name.c_str(), uniform.c_str(), tiles.size(),
-                        tiles.front(), tiles.back());
-                    // A set of one tile is not a UDIM set to the shader -- it
-                    // is an ordinary image at one slot -- but its path still
-                    // carries the token and still has to be expanded, or the
-                    // loader would be left to guess which tile was meant.
-                    udimSubstitution[uniform] = tiles;
-                    if (tiles.size() >= 2) {
-                        udim[uniform] = std::move(tiles);
-                    }
-                }
-            }
-            ptGenerator->SetUdimTiles(std::move(udim));
-        }
+        TellGeneratorAboutUdimSets(document, name, resolvedTextures,
+                                   generator.get(), &udimSubstitution);
 
         const std::vector<mx::TypedElementPtr> renderable =
             mx::findRenderableElements(document);
@@ -589,55 +674,8 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
         // assigned their array indices. The caller loads them and publishes
         // them at those indices; the generator is the authority on the order,
         // so the two cannot drift apart.
-        if (texturePaths) {
-            if (auto* ptGenerator =
-                    dynamic_cast<hdclaude::PathTracerShaderGenerator*>(
-                        generator.get())) {
-                for (const auto& slot : ptGenerator->TextureOrder()) {
-                    const std::string& uniform = slot.uniform;
-                    // The colour space always comes from the document --
-                    // it is a property of the <image> node, which the network
-                    // does not carry -- while the path prefers the network's
-                    // resolved one and falls back to the document's authored
-                    // one, which is what a material hdClaude built itself has.
-                    TextureRequest request = ResolveTexturePath(document, uniform);
-                    if (resolvedTextures) {
-                        const auto found = resolvedTextures->find(uniform);
-                        if (found != resolvedTextures->end() &&
-                            !found->second.empty()) {
-                            request.path = found->second;
-                        }
-                    }
-                    // One slot per tile, in the order the generator assigned
-                    // them, which is ascending tile number. A set of one tile
-                    // has no tile on its slot and is substituted from the scan.
-                    int tile = slot.tile;
-                    if (tile == 0) {
-                        const auto single = udimSubstitution.find(uniform);
-                        if (single != udimSubstitution.end() &&
-                            single->second.size() == 1) {
-                            tile = single->second.front();
-                        }
-                    }
-                    request.path = SubstituteUdimTile(request.path, tile);
-                    if (request.path.empty()) {
-                        // An image node with no file at all. That is legal and
-                        // common -- an asset authors the node and leaves the
-                        // file to a stronger opinion that never arrives -- and
-                        // MaterialX says such a node returns its `default`.
-                        // The pool turns the empty path into that value, so
-                        // this is worth tracing and not worth warning about;
-                        // a file that is authored and cannot be read is the
-                        // case that deserves to be loud.
-                        HdClaudeTrace(
-                            "material %s samples '%s', which no asset path "
-                            "backs; it reads the image node's default",
-                            name.c_str(), uniform.c_str());
-                    }
-                    texturePaths->push_back(std::move(request));
-                }
-            }
-        }
+        CollectTexturePaths(document, name, resolvedTextures, generator.get(),
+                            udimSubstitution, texturePaths);
 
         const std::string source = generated + _shadeKernel;
 
@@ -654,6 +692,108 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
         if (error) *error = std::string("generation failed: ") + exception.what();
     }
     return result;
+}
+
+bool HdClaudeMaterialCompiler::CompileDisplacement(
+    mx::DocumentPtr document, const std::string& name,
+    hdclaude::CompiledMaterial* material, std::string* error,
+    std::vector<TextureRequest>* texturePaths,
+    const std::map<std::string, std::string>* resolvedTextures)
+{
+    // Caller holds _mutex, as for CompileDocument and for the same reasons.
+    if (!material) {
+        return true;
+    }
+
+    // Which terminal, and what its three floats mean. Both are facts about the
+    // document that generation erases, so they are read first.
+    std::vector<std::string> diagnostics;
+    const hdclaude::DisplacementTerminal terminal =
+        hdclaude::AuthoredDisplacement(document, &diagnostics);
+    for (const std::string& diagnostic : diagnostics) {
+        TF_WARN("hdClaude: material %s: %s", name.c_str(), diagnostic.c_str());
+    }
+    if (!terminal.terminal) {
+        // The ordinary case. Most materials do not displace, and saying so is
+        // not a diagnostic.
+        return true;
+    }
+
+    if (_displaceKernel.empty()) {
+        if (error) {
+            *error =
+                "this build has no displace kernel (shaders/displace.comp.glsl "
+                "was not found beside the plugin), so the material's "
+                "displacement cannot be compiled";
+        }
+        return false;
+    }
+
+    try {
+        mx::ShaderGeneratorPtr generator =
+            hdclaude::PathTracerShaderGenerator::create();
+        mx::GenContext context(generator);
+        context.registerSourceCodeSearchPath(
+            hdclaude::DefaultMaterialXSourceSearchPath());
+        context.getOptions().shaderInterfaceType = mx::SHADER_INTERFACE_REDUCED;
+
+        // Its own scan and its own texture order. The two programs generate
+        // separately and each numbers its samplers from zero, so a height map
+        // is index 0 of the displacement whatever the surface reads.
+        std::map<std::string, std::vector<int>> udimSubstitution;
+        TellGeneratorAboutUdimSets(document, name, resolvedTextures,
+                                   generator.get(), &udimSubstitution);
+
+        // Generated from the terminal by name. `findRenderableElements`
+        // answers with surfaces, and a material that only displaces is not
+        // one -- which is precisely the case this exists for.
+        mx::ShaderPtr shader =
+            generator->generate(name + "_displace", terminal.terminal, context);
+        if (!shader) {
+            if (error) *error = "MaterialX generated no displacement shader";
+            return false;
+        }
+
+        const std::string generated = shader->getSourceCode(mx::Stage::PIXEL);
+        if (const std::string dumpDir = TfGetenv("HDCLAUDE_DUMP_SHADERS");
+            !dumpDir.empty()) {
+            std::error_code code;
+            std::filesystem::create_directories(dumpDir, code);
+            std::ofstream out(std::filesystem::path(dumpDir) /
+                              (name + "_displace.comp.glsl"));
+            out << generated;
+        }
+
+        CollectTexturePaths(document, name, resolvedTextures, generator.get(),
+                            udimSubstitution, texturePaths);
+
+        hdclaude::GlslCompileOptions options;
+        options.moduleName = name + "_displace";
+        const hdclaude::GlslCompileResult compiled =
+            _compiler.Compile(generated + _displaceKernel, options);
+        if (!compiled.ok) {
+            if (error) {
+                *error = "displacement compilation failed: " + compiled.log;
+            }
+            if (texturePaths) {
+                texturePaths->clear();
+            }
+            return false;
+        }
+
+        material->displaceSpirv = compiled.spirv;
+        material->displacementSpace = terminal.space;
+    } catch (const std::exception& exception) {
+        if (error) {
+            *error = std::string("displacement generation failed: ") +
+                     exception.what();
+        }
+        if (texturePaths) {
+            texturePaths->clear();
+        }
+        return false;
+    }
+    return true;
 }
 
 hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDiffuse(
@@ -759,11 +899,15 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::Compile(
         return result;
     }
 
+    // Hoisted out of the try below because the displacement terminal is built
+    // from the same translated network: the two terminals are two graphs of
+    // one material, and translating twice could translate them differently.
+    const HdMaterialNetwork2 translated = TranslateUsdNodeTypes(network);
+
     mx::DocumentPtr document;
     std::map<std::string, std::string> resolvedTextures;
     try {
         HdMtlxTexturePrimvarData mxHdData;
-        const HdMaterialNetwork2 translated = TranslateUsdNodeTypes(network);
         const auto translatedTerminal = translated.nodes.find(terminalPath);
         document = HdMtlxCreateMtlxDocumentFromHdNetwork(
             translated, translatedTerminal->second, terminalPath, path,
@@ -798,6 +942,69 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::Compile(
                          path.GetText(), error.c_str());
         lock.unlock();
         result.material = CompileDiffuse(fallbackColor, name + "_fallback");
+        return result;
+    }
+
+    // --- The displacement terminal ------------------------------------------
+    //
+    // A second graph of the same material, with a second program: MaterialX's
+    // `displacement` output is a terminal beside `surface`, and hdMtlx builds
+    // a document from whichever terminal node it is handed. Attempted only
+    // after the surface compiled, because the fallback the surface falls back
+    // to has no displacement to attach one to.
+    //
+    // A displacement that fails does not take the material with it. The
+    // surface is still the surface as authored, and the honest consequence is
+    // an undisplaced mesh with a message saying so -- not a grey stand-in for
+    // shading that was perfectly good.
+    const auto displacement =
+        network.terminals.find(HdMaterialTerminalTokens->displacement);
+    if (displacement != network.terminals.end()) {
+        const SdfPath& displacementPath = displacement->second.upstreamNode;
+        const auto displacementNode = translated.nodes.find(displacementPath);
+        if (displacementNode == translated.nodes.end()) {
+            result.displacementReason =
+                "the displacement terminal names a missing node";
+        } else {
+            try {
+                HdMtlxTexturePrimvarData displaceHdData;
+                mx::DocumentPtr displaceDocument =
+                    HdMtlxCreateMtlxDocumentFromHdNetwork(
+                        translated, displacementNode->second, displacementPath,
+                        path, _libraries, &displaceHdData);
+                if (!displaceDocument) {
+                    result.displacementReason =
+                        "could not build a MaterialX document for the "
+                        "displacement terminal";
+                } else {
+                    std::map<std::string, std::string> displaceTextures =
+                        ResolvedTexturePaths(translated, displaceHdData);
+                    ResolvePrimvarReaders(displaceDocument, name);
+                    PruneUndeclaredInputs(displaceDocument, name);
+
+                    std::string displaceError;
+                    CompileDisplacement(displaceDocument, name,
+                                        &result.material, &displaceError,
+                                        &result.displacementTexturePaths,
+                                        &displaceTextures);
+                    result.displacementReason = std::move(displaceError);
+                }
+            } catch (const std::exception& built) {
+                result.displacementReason =
+                    std::string(
+                        "could not build a MaterialX document for the "
+                        "displacement terminal: ") +
+                    built.what();
+            }
+        }
+
+        if (!result.displacementReason.empty()) {
+            result.displacementTexturePaths.clear();
+            TF_WARN(
+                "hdClaude: material <%s> authors a displacement that was not "
+                "compiled: %s; the mesh is rendered undisplaced",
+                path.GetText(), result.displacementReason.c_str());
+        }
     }
     return result;
 }

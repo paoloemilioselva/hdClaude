@@ -43,8 +43,11 @@ upsampling happens where a closure hands back its response. Dispersion is
 transported, and a path meeting a dispersive interface keeps its hero lane and
 terminates the other three, which costs four times the noise on those paths.
 
-There is no displacement — that is phase 16, so the height map's quad is refined
-and flat.
+**Displacement is evaluated by the generated MaterialX program**, on the GPU,
+over the refined mesh, before the acceleration structure is built. Two scenes
+here author one and both render it: the height map's quad is terrain, and the
+subdivision matrix's magenta panel tilts. A displaced surface is shaded with
+the normals of the shape it now has, not the ones the mesh arrived with.
 
 The renderer's output is always scene-linear. `render_gallery.bat` records
 temporary EXRs under `build/gallery-linear`, then writes the display JPEGs
@@ -151,17 +154,17 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 <!-- gallery-timings:start -->
 | Scene | Measured | Wall time | Device memory | SHA-256 | Device | Settings |
 |---|---:|---:|---:|---|---|---|
-| Intel Sponza | 2026-09-17 | 55.151 s (0m 55.151s) | 5.5 GiB | `96556c37922865701069f3571c91d51ad1530b01d6200c8f7c94430ade4954e6` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Intel Sponza | 2026-09-21 | 56.673 s (0m 56.673s) | 5.5 GiB | `96556c37922865701069f3571c91d51ad1530b01d6200c8f7c94430ade4954e6` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | OpenChessSet | 2026-09-17 | 28.735 s (0m 28.735s) | 1.7 GiB | `ec81fcdbfed5bc02ce5ea932559440b417236eda25d1a0b05e78eb9bc91130e9` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall Gold | 2026-09-17 | 32.247 s (0m 32.247s) | 1.4 GiB | `9187c371a81ca307a9ab8518bd5d719d2932dd29c5c8bbec2d02aafefa0e269c` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall Glass | 2026-09-17 | 34.989 s (0m 34.989s) | 1.4 GiB | `de14ffe541dae22c4c94b29f6057ee38169b33bf1ca094d65bb171d123918ba3` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall BubbleGum | 2026-09-17 | 75.429 s (1m 15.429s) | 1.4 GiB | `399cb9aeb5537de51c713177ad508c4989955e06b3e0ef073d785cd9c60cf266` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| StandardShaderBall Honey | 2026-09-17 | 38.266 s (0m 38.266s) | 1.4 GiB | `5df354f3977772083e47bfefeac9b70579b7ca9ad51a5dfb438b25118b0a9a67` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Pixar's KitchenSet | 2026-09-17 | 169.675 s (2m 49.675s) | 1.3 GiB | `00b231edeea1963a6330dc4334268fcf15aa2c1ef9d7d0b7105969923d2d0508` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Collective Project 001 | 2026-09-17 | 21.468 s (0m 21.468s) | 1.1 GiB | `74b9f1a25b1bcf0e892a69face4bf2331c22bc2981f8a6295cc54f3a7e636929` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| OpenPBR Playground | 2026-09-17 | 94.863 s (1m 34.863s) | 12.7 GiB | `4cada45379efdbab3de32b1ea67f6eca082bbfd8c57d007e0859b7a29e930861` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Subdivision Feature Matrix | 2026-09-17 | 15.499 s (0m 15.499s) | 832.0 MiB | `679c8ef413b04f9dd948483e15ff9f6aa5a012b581e719cce2823623310788f4` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| New Zealand Height Map | 2026-09-17 | 12.385 s (0m 12.385s) | 480.0 MiB | `5191a50c17b45f17af4e9e4d22b99c73d07994d0dbf54a98f29e504b4e4c7fc5` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 6 |
+| StandardShaderBall Gold | 2026-09-21 | 31.641 s (0m 31.641s) | 1.4 GiB | `9187c371a81ca307a9ab8518bd5d719d2932dd29c5c8bbec2d02aafefa0e269c` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall Glass | 2026-09-21 | 35.391 s (0m 35.391s) | 1.4 GiB | `de14ffe541dae22c4c94b29f6057ee38169b33bf1ca094d65bb171d123918ba3` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall BubbleGum | 2026-09-21 | 79.980 s (1m 19.980s) | 1.4 GiB | `399cb9aeb5537de51c713177ad508c4989955e06b3e0ef073d785cd9c60cf266` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| StandardShaderBall Honey | 2026-09-21 | 39.213 s (0m 39.213s) | 1.4 GiB | `5df354f3977772083e47bfefeac9b70579b7ca9ad51a5dfb438b25118b0a9a67` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Pixar's KitchenSet | 2026-09-21 | 197.052 s (3m 17.052s) | 1.3 GiB | `00b231edeea1963a6330dc4334268fcf15aa2c1ef9d7d0b7105969923d2d0508` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Collective Project 001 | 2026-09-21 | 34.132 s (0m 34.132s) | 1.1 GiB | `69fa080b3bf559dc8184d71f2c4601fbe76d2015a43d08d6b928b5f98b08ee23` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| OpenPBR Playground | 2026-09-21 | 216.149 s (3m 36.149s) | 12.7 GiB | `37af1840a9a5f061f9fc8ebb34e5bcbef5087cf5ae52e2a7429611db138fdef2` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Subdivision Feature Matrix | 2026-09-21 | 14.818 s (0m 14.818s) | 832.0 MiB | `5027c7a8b083f04ddd18f927de952bc2fbcf907bce7348346912b3a61854acb2` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| New Zealand Height Map | 2026-09-21 | 11.812 s (0m 11.812s) | 480.0 MiB | `e1801d60c65f221bbbc27bec010774632b2fbc62447498566a69e6e2f886afb6` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 6 |
 <!-- gallery-timings:end -->
 
 ## Against hdCodex
@@ -290,6 +293,16 @@ until the environment gained a distribution built from its own luminance. What
 the scene shows now is a room lit through a window, with the window's light
 where it belongs. RMS against hdCodex has gone 0.199, 0.108, 0.060 across the
 three changes.
+
+**Open: this scene does not reproduce.** Its render differs from the committed
+baseline by rms 1.6e-3 with a worst pixel of 0.53 against the gate's limit of
+0.3, on 0.026% of the frame -- a handful of pixels, which is the shape of a
+firefly rather than of a changed image. Nor is it deterministic: two
+consecutive runs of one binary differ from each other by rms 3.7e-4 with a
+worst pixel of 0.28. Rebuilt at `ad57ff5` it fails identically, so it predates
+the displacement work that found it. The baseline is deliberately not
+accepted, because adopting an image the next run will not reproduce would turn
+the gate off for this scene. It is the only scene in the gallery in this state.
 
 ### StandardShaderBall Gold
 
@@ -650,7 +663,10 @@ render_claude.bat --imageWidth 1024 --colorCorrectionMode disabled --camera came
 ```
 
 **Current state.** Renders, and is the cheapest scene in the gallery. The
-displacement panel is flat, because displacement is phase 16.
+displacement panel is no longer flat: its graph is `u - 0.5` scaled by 1.1, a
+ramp across the patch rather than a bump, so the quad tilts about its vertical
+axis by a little over half a unit at each edge -- which is what that graph
+says and what the scene was authored to show.
 
 The creased cube was a smooth brown blob until 2026-09-07, when subdivision
 tags started reaching the refiner. Its creases, corners and boundary rule had
@@ -669,7 +685,7 @@ one line.
 
 ### New Zealand Height Map
 
-![A dark brown quad seen in perspective, with the two islands of New Zealand picked out in green by the height map, and no relief at all](gallery/newzealand_heightmap.jpg)
+![A dark brown quad seen in perspective, with the two islands of New Zealand standing out of it in green relief, the Southern Alps a ridge of peaks along the lower island](gallery/newzealand_heightmap.jpg)
 
 One authored bilinear quad displaced by a MaterialX `ND_image_float` height map
 after uniform level-6 refinement. The same map drives surface colour, so texture
@@ -683,9 +699,16 @@ set "HDCLAUDE_ENABLE_DISPLACEMENT=1"
 render_claude.bat --imageWidth 1024 --colorCorrectionMode disabled --camera camera gallery\newzealand_heightmap.usda build\gallery-linear\newzealand_heightmap.exr
 ```
 
-**Current state.** The map reaches the surface: both islands are legible in
-the quad's colour, which is what says the image node, the UV orientation and
-the texture resolution are all right. The quad is refined to level 6 and is
-still perfectly flat, because displacement is phase 16 -- so what this scene
-now isolates is displacement alone, where it used to be failing at the texture
-before it ever got there.
+**Current state.** The map reaches the surface and now moves it. Both islands
+are legible in the quad's colour, which is what says the image node, the UV
+orientation and the texture resolution are all right, and the same scalar
+raises the terrain: the Southern Alps are a ridge of peaks along the lower
+island and the North Island's ranges stand up behind them, at the 0.3 units
+the graph's scale asks for.
+
+The normals are recomputed from the moved positions, because the array the
+refiner produced describes the flat quad and shading a mountain with it would
+light a surface that is not there. On this asset that is worth rms 4.1e-4 and
+at most 0.037 in a pixel -- small, because the terrain is mostly flat, and not
+because the normals go unread: forcing every one of them to (1, 0, 0) moves
+8.6% of the frame where recomputing them moves 0.004%.

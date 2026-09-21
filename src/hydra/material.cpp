@@ -69,37 +69,55 @@ void HdClaudeMaterial::Sync(HdSceneDelegate* sceneDelegate,
         // The generator numbered this material's samplers from zero; the pool
         // turns each asset path into a slot shared with every other material
         // that names the same image.
+        //
+        // Done twice, over two tables. A material's surface and its
+        // displacement are generated separately and each numbers its own
+        // samplers from zero, so a height map is index 0 of the displacement
+        // whatever the surface happens to read. The pool is one pool either
+        // way -- an image both programs name is decoded once and shared.
         if (HdClaudeTexturePool* pool = param->TexturePool()) {
-            entry.compiled.textureSlots.reserve(compiled.texturePaths.size());
-            for (const HdClaudeMaterialCompiler::TextureRequest& texture :
-                 compiled.texturePaths) {
-                // Timed around Acquire rather than around the decoder, because
-                // the pool shares an image between every material that names
-                // it: the second ask costs a lookup, and counting it as a load
-                // would say a scene decoded far more than it did.
-                const std::size_t before = pool->Images().size();
-                const auto textureStart = std::chrono::steady_clock::now();
-                const std::uint32_t slot =
-                    pool->Acquire(texture.path, texture.colorSpace);
-                const double textureMs =
-                    std::chrono::duration<double, std::milli>(
-                        std::chrono::steady_clock::now() - textureStart)
-                        .count();
-                entry.compiled.textureSlots.push_back(slot);
+            const auto acquire =
+                [&](const std::vector<
+                        HdClaudeMaterialCompiler::TextureRequest>& requests,
+                    std::vector<std::uint32_t>* slots) {
+                    slots->reserve(requests.size());
+                    for (const HdClaudeMaterialCompiler::TextureRequest&
+                             texture : requests) {
+                        // Timed around Acquire rather than around the decoder,
+                        // because the pool shares an image between every
+                        // material that names it: the second ask costs a
+                        // lookup, and counting it as a load would say a scene
+                        // decoded far more than it did.
+                        const std::size_t before = pool->Images().size();
+                        const auto textureStart =
+                            std::chrono::steady_clock::now();
+                        const std::uint32_t slot =
+                            pool->Acquire(texture.path, texture.colorSpace);
+                        const double textureMs =
+                            std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - textureStart)
+                                .count();
+                        slots->push_back(slot);
 
-                if (HdClaudeStageStats* stats = param->StageStats()) {
-                    HdClaudeAddMilliseconds(stats->textureMilliseconds, textureMs);
-                    if (pool->Images().size() > before &&
-                        slot < pool->Images().size()) {
-                        const hdclaude::TextureImage& image =
-                            pool->Images()[slot];
-                        stats->texturesLoaded.fetch_add(1,
-                                                        std::memory_order_relaxed);
-                        stats->textureBytes.fetch_add(image.texels.size(),
-                                                      std::memory_order_relaxed);
+                        if (HdClaudeStageStats* stats = param->StageStats()) {
+                            HdClaudeAddMilliseconds(stats->textureMilliseconds,
+                                                    textureMs);
+                            if (pool->Images().size() > before &&
+                                slot < pool->Images().size()) {
+                                const hdclaude::TextureImage& image =
+                                    pool->Images()[slot];
+                                stats->texturesLoaded.fetch_add(
+                                    1, std::memory_order_relaxed);
+                                stats->textureBytes.fetch_add(
+                                    image.texels.size(),
+                                    std::memory_order_relaxed);
+                            }
+                        }
                     }
-                }
-            }
+                };
+            acquire(compiled.texturePaths, &entry.compiled.textureSlots);
+            acquire(compiled.displacementTexturePaths,
+                    &entry.compiled.displaceTextureSlots);
         }
     } else {
         entry.fallbackReason =

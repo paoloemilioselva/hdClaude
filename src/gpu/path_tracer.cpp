@@ -1,5 +1,8 @@
 #include "hdclaude/gpu/path_tracer.h"
 
+#include "hdclaude/core/hash.h"
+#include "hdclaude/gpu/vertex_frames.h"
+
 #include "hdclaude/gpu/environment_distribution.h"
 #include "hdclaude/core/environment.h"
 #include "hdclaude/core/spectrum.h"
@@ -672,17 +675,22 @@ void PathTracer::UploadTextures(const std::vector<TextureImage>& textures)
 std::vector<VkDescriptorImageInfo> PathTracer::TextureBindingsFor(
     int material) const
 {
-    // Every element is written, the unused tail included. A declared
-    // descriptor that is never written is undefined the moment a shader
-    // indexes it, and an out-of-range index in generated code should give a
-    // wrong pixel rather than a lost device.
-    std::vector<VkDescriptorImageInfo> bindings(kTextureCapacity);
-
     const std::vector<std::uint32_t>* slots = nullptr;
     if (material >= 0 &&
         static_cast<std::size_t>(material) < _materialTextureSlots.size()) {
         slots = &_materialTextureSlots[static_cast<std::size_t>(material)];
     }
+    return TextureBindings(slots);
+}
+
+std::vector<VkDescriptorImageInfo> PathTracer::TextureBindings(
+    const std::vector<std::uint32_t>* slots) const
+{
+    // Every element is written, the unused tail included. A declared
+    // descriptor that is never written is undefined the moment a shader
+    // indexes it, and an out-of-range index in generated code should give a
+    // wrong pixel rather than a lost device.
+    std::vector<VkDescriptorImageInfo> bindings(kTextureCapacity);
 
     for (std::uint32_t i = 0; i < kTextureCapacity; ++i) {
         VkImageView view = _placeholderTexture.View();
@@ -699,10 +707,203 @@ std::vector<VkDescriptorImageInfo> PathTracer::TextureBindingsFor(
     return bindings;
 }
 
-void PathTracer::SetScene(const Scene& scene,
+const Scene& PathTracer::ApplyDisplacement(
+    const Scene& scene, const std::vector<CompiledMaterial>& materials,
+    Scene* storage)
+{
+    _lastDisplaced = 0;
+    _lastDisplacementReused = 0;
+
+    bool anyMaterialDisplaces = false;
+    for (const CompiledMaterial& material : materials) {
+        if (material.Displaces()) {
+            anyMaterialDisplaces = true;
+            break;
+        }
+    }
+    if (!anyMaterialDisplaces) {
+        // Every scene hdClaude has rendered so far. Nothing is copied and
+        // nothing is allocated.
+        _displacePasses.clear();
+        _displacedPositions.clear();
+        return scene;
+    }
+
+    // Which material displaces each prototype.
+    //
+    // A prototype is displaced once, because it has one set of vertices, and
+    // it is shared by every instance that names it. Two materials asking for
+    // two different displacements of one prototype is therefore a question
+    // the geometry cannot answer, and it is reported rather than settled by
+    // taking whichever was found first -- a subset that displaces and a
+    // sibling subset that does not still share the vertices along the seam
+    // between them.
+    std::vector<int> displacer(scene.prototypes.size(), -1);
+    std::vector<bool> conflicted(scene.prototypes.size(), false);
+    const auto note = [&](std::size_t prototype, std::uint32_t material) {
+        if (prototype >= displacer.size() || material >= materials.size() ||
+            !materials[material].Displaces()) {
+            return;
+        }
+        if (displacer[prototype] < 0) {
+            displacer[prototype] = static_cast<int>(material);
+        } else if (displacer[prototype] != static_cast<int>(material)) {
+            conflicted[prototype] = true;
+        }
+    };
+
+    for (std::size_t p = 0; p < scene.prototypes.size(); ++p) {
+        for (const std::uint32_t material :
+             scene.prototypes[p].triangleMaterials) {
+            note(p, material);
+        }
+    }
+    for (const MeshInstance& instance : scene.instances) {
+        note(instance.prototype, instance.material);
+    }
+
+    *storage = scene;
+    std::unordered_map<std::uint64_t, std::vector<float>> stillUsed;
+    bool displacedAny = false;
+
+    for (std::size_t p = 0; p < storage->prototypes.size(); ++p) {
+        if (displacer[p] < 0) {
+            continue;
+        }
+        MeshPrototype& prototype = storage->prototypes[p];
+        const CompiledMaterial& material =
+            materials[static_cast<std::size_t>(displacer[p])];
+
+        // Keyed on the program and on what it reads, not on the material's
+        // index: a scene that reorders its materials has not changed any of
+        // them, and recompiling on a reorder is exactly the reuse failure the
+        // prototype fingerprints exist to avoid.
+        std::uint64_t program = Fnv1a64(
+            material.displaceSpirv.data(),
+            material.displaceSpirv.size() * sizeof(std::uint32_t));
+        program = HashCombine(
+            program, static_cast<std::uint64_t>(material.displacementSpace));
+        for (const std::uint32_t slot : material.displaceTextureSlots) {
+            program = HashCombine(program, slot);
+        }
+
+        const std::uint64_t geometry = prototype.Fingerprint();
+        const std::uint64_t key = HashCombine(geometry, program);
+
+        const auto report = [&](const char* why) {
+            if (_displacementReported.insert(key).second) {
+                std::fprintf(stderr,
+                             "hdClaude: prototype '%s' is not displaced: %s\n",
+                             prototype.debugName.c_str(), why);
+            }
+        };
+
+        if (conflicted[p]) {
+            report("two materials ask for two different displacements of it, "
+                   "and it has one set of vertices");
+            continue;
+        }
+        if (prototype.IsCurve()) {
+            report("it is a curve, and a curve has no surface "
+                   "parameterisation to displace along");
+            continue;
+        }
+
+        // The normal of a displaced surface is the displaced surface's
+        // normal. Whatever the mesh carried describes where the surface used
+        // to be, and shading with it would light a shape that is no longer
+        // there -- every peak of a displaced height field would be lit as
+        // though it were still the flat plane it was cut from.
+        //
+        // Recomputed from the moved positions by the same accumulation the
+        // frames use, so a vertex gets one normal and the surface stays
+        // closed. A face-varying array cannot survive that: its two normals
+        // at a crease belong to the undisplaced faces, and the displaced
+        // vertex has one position and one neighbourhood. It is said rather
+        // than silently dropped.
+        const auto renormalise = [&]() {
+            if (prototype.normalsPerCorner && !prototype.normals.empty()) {
+                report("its face-varying normals describe the surface before "
+                       "it moved; the displaced surface is shaded with the "
+                       "normals of the shape it now has");
+            }
+            prototype.normals.clear();
+            prototype.normalsPerCorner = false;
+            VertexFrames moved = ComputeVertexFrames(prototype);
+            prototype.normals = std::move(moved.normals);
+        };
+
+        const auto cached = _displacedPositions.find(key);
+        if (cached != _displacedPositions.end()) {
+            prototype.positions = cached->second;
+            stillUsed.emplace(key, cached->second);
+            renormalise();
+            ++_lastDisplacementReused;
+            displacedAny = true;
+            continue;
+        }
+
+        auto pass = _displacePasses.find(program);
+        if (pass == _displacePasses.end()) {
+            DisplacementPass created(_context, material.displaceSpirv,
+                                     material.displacementSpace,
+                                     material.debugName + ".displace");
+            if (!created.Valid()) {
+                report("its displacement program did not make a pipeline");
+                continue;
+            }
+            pass = _displacePasses.emplace(program, std::move(created)).first;
+        }
+        // Written every publication rather than once at creation: the texture
+        // pool is rebuilt with the scene, so a pass kept from the last one
+        // holds image views that no longer exist.
+        pass->second.SetTextures(
+            TextureBindings(&material.displaceTextureSlots));
+
+        const VertexFrames frames = ComputeVertexFrames(prototype);
+        std::vector<float> displaced =
+            pass->second.Displace(_allocator, prototype, frames);
+        if (displaced.size() != prototype.positions.size()) {
+            report("the displacement pass produced nothing for it");
+            continue;
+        }
+        stillUsed.emplace(key, displaced);
+        prototype.positions = std::move(displaced);
+        renormalise();
+        ++_lastDisplaced;
+        displacedAny = true;
+    }
+
+    // Only what this scene used survives, so a cache entry does not outlive
+    // the geometry it belongs to.
+    _displacedPositions = std::move(stillUsed);
+
+    if (!displacedAny) {
+        *storage = Scene();
+        return scene;
+    }
+    return *storage;
+}
+
+void PathTracer::SetScene(const Scene& publishedScene,
                           const std::vector<CompiledMaterial>& materials)
 {
     _context.RequireLive("PathTracer::SetScene");
+
+    // Textures first, because a displacement reads them: a height map is the
+    // usual way a displacement varies, and the pass below samples the same
+    // pool the shade kernel does.
+    UploadTextures(publishedScene.textures);
+
+    // Then the displacement, before anything is built over the geometry. A
+    // displacement is where the surface *is*, so an acceleration structure
+    // built over the undisplaced mesh would be a structure over the wrong
+    // shape -- and the fingerprint that decides whether to rebuild one is
+    // taken from the displaced positions, so a displacement that changed is a
+    // rebuild and one that did not is not.
+    Scene displacedStorage;
+    const Scene& scene =
+        ApplyDisplacement(publishedScene, materials, &displacedStorage);
 
     _accelerator->Update(scene);
 
@@ -885,7 +1086,8 @@ void PathTracer::SetScene(const Scene& scene,
     }
 
     // --- Textures ------------------------------------------------------------
-    UploadTextures(scene.textures);
+    // Uploaded at the top of this function, before the displacement pass that
+    // samples them.
 
     // The dome map is bound separately from the array, so it is remembered
     // here rather than resolved per frame.
