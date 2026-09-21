@@ -138,6 +138,45 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
 
         const std::uint32_t material = resolve(mesh.material);
 
+        // A material that samples an image on a mesh with no texture
+        // coordinates.
+        //
+        // Every sample then reads the same texel, so a texture map is a flat
+        // colour and a *displacement* map is a uniform swell -- the surface
+        // keeps its shape and only changes size, which is indistinguishable
+        // from displacement not working at all. Nothing else in the renderer
+        // is in a position to notice: the mesh does not know what its material
+        // samples and the material does not know what mesh it is bound to, and
+        // this is the one place the two meet.
+        //
+        // Reported rather than worked around. A `UsdGeomSphere` is the case
+        // that raised it and the coordinates are genuinely absent: OpenUSD's
+        // implicit-surface scene index gives a generated sphere `points` and
+        // nothing else, so it reaches every Hydra renderer this way, and
+        // inventing a spherical projection here would be hdClaude answering a
+        // question the scene did not ask. What fixes it is a `st` primvar on
+        // the mesh, or a `texcoord`/`geompropvalue` node the material drives
+        // its image with.
+        if (material < materials.size() && !mesh.prototype.IsCurve() &&
+            mesh.prototype.uvs.empty()) {
+            const hdclaude::CompiledMaterial& bound = materials[material];
+            const std::size_t images =
+                bound.textureSlots.size() + bound.displaceTextureSlots.size();
+            if (images > 0 && _reportedMissingUvs.insert(path).second) {
+                TF_WARN(
+                    "hdClaude: mesh <%s> has no texture coordinates, and its "
+                    "material samples %zu image(s)%s. Every sample reads the "
+                    "same texel, so a texture reads as a flat colour and a "
+                    "displacement as a uniform change of size. Give the mesh "
+                    "an `st` primvar, or drive the image from a `texcoord` or "
+                    "`geompropvalue` node.",
+                    path.GetText(), images,
+                    bound.displaceTextureSlots.empty()
+                        ? ""
+                        : ", one of them for its displacement");
+            }
+        }
+
         // GeomSubsets become a per-triangle material index. Resolved here
         // rather than at Sync because only the store knows what index a
         // material path ended up with, and a subset may name a material whose

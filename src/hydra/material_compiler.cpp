@@ -715,7 +715,13 @@ bool HdClaudeMaterialCompiler::CompileDisplacement(
     }
     if (!terminal.terminal) {
         // The ordinary case. Most materials do not displace, and saying so is
-        // not a diagnostic.
+        // not a diagnostic -- but it is worth tracing, because "this material
+        // does not displace" and "this material's displacement did not
+        // arrive" look identical from the outside.
+        HdClaudeTrace(
+            "material %s: the displacement document names no terminal, so "
+            "nothing displaces",
+            name.c_str());
         return true;
     }
 
@@ -783,6 +789,14 @@ bool HdClaudeMaterialCompiler::CompileDisplacement(
 
         material->displaceSpirv = compiled.spirv;
         material->displacementSpace = terminal.space;
+        HdClaudeTrace(
+            "material %s: displacement compiled, %zu SPIR-V words, offset read "
+            "%s, %zu texture(s)",
+            name.c_str(), compiled.spirv.size(),
+            terminal.space == hdclaude::DisplacementSpace::Tangent
+                ? "in the (dPdu, dPdv, N) frame"
+                : "along the normal",
+            texturePaths != nullptr ? texturePaths->size() : std::size_t(0));
     } catch (const std::exception& exception) {
         if (error) {
             *error = std::string("displacement generation failed: ") +
@@ -959,6 +973,13 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::Compile(
     // shading that was perfectly good.
     const auto displacement =
         network.terminals.find(HdMaterialTerminalTokens->displacement);
+    if (displacement == network.terminals.end()) {
+        // Traced rather than passed over in silence: a network whose
+        // displacement terminal never reached Hydra is indistinguishable, from
+        // the image, from a material that does not displace.
+        HdClaudeTrace("material <%s>: the network has no displacement terminal",
+                      path.GetText());
+    }
     if (displacement != network.terminals.end()) {
         const SdfPath& displacementPath = displacement->second.upstreamNode;
         const auto displacementNode = translated.nodes.find(displacementPath);

@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -137,6 +138,12 @@ class HdClaudeSceneStore {
     /// does. A mesh absent from this map has no history and is reported as
     /// having none, which the renderer turns into no motion.
     std::map<SdfPath, std::vector<hdclaude::Transform3x4>> _previousTransforms;
+
+    /// Meshes already reported for sampling an image with no texture
+    /// coordinates. Said once per mesh rather than once per publication: a
+    /// stage that republishes every frame would otherwise bury the message it
+    /// is trying to deliver.
+    std::set<SdfPath> _reportedMissingUvs;
     std::map<SdfPath, HdClaudeMaterialEntry> _materials;
     std::map<SdfPath, HdClaudeLightEntry> _lights;
     /// What the last snapshot could not honour across lights, such as two dome

@@ -630,7 +630,10 @@ void HdClaudeRenderPass::_Execute(
                                     std::memory_order_relaxed);
             stages.blasRefit.store(tracer->BlasRefit(),
                                    std::memory_order_relaxed);
-            HdClaudeTrace("scene published");
+            HdClaudeTrace(
+                "scene published; %u prototype(s) displaced, %u reused",
+                tracer->LastDisplacedCount(),
+                tracer->LastDisplacementReusedCount());
             _uploadedRevision = framing.sceneRevision;
             _hasUploaded = true;
         } catch (const std::exception& error) {

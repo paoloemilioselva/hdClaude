@@ -1,0 +1,63 @@
+#usda 1.0
+(
+    framesPerSecond = 24
+    metersPerUnit = 1
+    timeCodesPerSecond = 24
+)
+
+def Sphere "sphere1" (
+    apiSchemas = ["MaterialBindingAPI"]
+)
+{
+    float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+    rel material:binding = </materials/mtlxmaterial>
+    double radius = 1
+    matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) )
+    uniform token[] xformOpOrder = ["xformOp:transform"]
+}
+
+def Scope "materials"
+{
+    def Material "mtlxmaterial" (
+        apiSchemas = ["MaterialXConfigAPI"]
+    )
+    {
+        string config:mtlx:version = "1.39"
+        token outputs:mtlx:displacement.connect = </materials/mtlxmaterial/mtlxdisplacement.outputs:out>
+        token outputs:mtlx:surface.connect = </materials/mtlxmaterial/mtlxstandard_surface.outputs:out>
+
+        def Shader "mtlxstandard_surface"
+        {
+            uniform token info:id = "ND_standard_surface_surfaceshader"
+            float inputs:base
+            color3f inputs:base_color = (0.1, 0.1, 0.1)
+            float inputs:coat
+            float inputs:coat_roughness
+            float inputs:emission
+            color3f inputs:emission_color
+            float inputs:metalness
+            float inputs:specular
+            color3f inputs:specular_color
+            float inputs:specular_IOR
+            float inputs:specular_roughness
+            float inputs:transmission
+            token outputs:out
+        }
+
+        def Shader "mtlxdisplacement"
+        {
+            uniform token info:id = "ND_displacement_float"
+            float inputs:displacement.connect = </materials/mtlxmaterial/mtlximage1.outputs:out>
+            float inputs:scale = -0.01
+            token outputs:out
+        }
+
+        def Shader "mtlximage1"
+        {
+            uniform token info:id = "ND_image_float"
+            asset inputs:file = @./textures/horizontal_scrathed_black_plastic_41_52_diffuse.jpg@
+            float outputs:out
+        }
+    }
+}
+

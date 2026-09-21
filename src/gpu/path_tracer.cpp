@@ -867,6 +867,39 @@ const Scene& PathTracer::ApplyDisplacement(
             report("the displacement pass produced nothing for it");
             continue;
         }
+        // How far it actually moved, before the positions are replaced.
+        //
+        // Reported because "the displacement did not happen" and "the
+        // displacement happened and was too small to see" are the same picture
+        // and completely different problems, and nothing else in the renderer
+        // can tell them apart. A range whose two ends are equal is a constant
+        // displacement, which is what a material sampling a texture on a mesh
+        // with no texture coordinates produces.
+        float shortest = std::numeric_limits<float>::max();
+        float longest = 0.0f;
+        for (std::size_t v = 0; v + 2 < displaced.size(); v += 3) {
+            const float dx = displaced[v + 0] - prototype.positions[v + 0];
+            const float dy = displaced[v + 1] - prototype.positions[v + 1];
+            const float dz = displaced[v + 2] - prototype.positions[v + 2];
+            const float moved = std::sqrt(dx * dx + dy * dy + dz * dz);
+            shortest = std::min(shortest, moved);
+            longest = std::max(longest, moved);
+        }
+        if (shortest > longest) {
+            shortest = 0.0f;
+        }
+        std::fprintf(stderr,
+                     "hdClaude: displaced '%s' by %.6g to %.6g over %zu "
+                     "vertices%s%c",
+                     prototype.debugName.c_str(),
+                     static_cast<double>(shortest),
+                     static_cast<double>(longest), prototype.VertexCount(),
+                     longest - shortest <= 1.0e-9f
+                         ? " (the same everywhere, so the surface keeps its "
+                           "shape and only its size changes)"
+                         : "",
+                     10);
+
         stillUsed.emplace(key, displaced);
         prototype.positions = std::move(displaced);
         renormalise();
