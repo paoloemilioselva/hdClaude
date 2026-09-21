@@ -242,6 +242,39 @@ std::uint64_t MeshPrototype::TopologyFingerprint() const
     return hash;
 }
 
+std::uint64_t SplatPrototype::Fingerprint() const
+{
+    // The particles, their radiance, and the kernel that interprets both. The
+    // kernel is part of the identity because it decides the boxes the structure
+    // is partitioned over: the same particles read as ellipsoids and as
+    // surflets are two different bodies.
+    std::uint64_t hash = 0xcbf29ce484222325ULL;
+    if (!cloud.splats.empty()) {
+        hash = Fnv1a64(cloud.splats.data(), cloud.splats.size() * sizeof(Splat),
+                       hash);
+    }
+    if (!cloud.sphericalHarmonics.empty()) {
+        hash = Fnv1a64(cloud.sphericalHarmonics.data(),
+                       cloud.sphericalHarmonics.size() * sizeof(float), hash);
+    }
+    const auto kernel = static_cast<std::uint32_t>(cloud.kernel);
+    hash = Fnv1a64(&kernel, sizeof(kernel), hash);
+    const auto degree = static_cast<std::int32_t>(cloud.sphericalHarmonicsDegree);
+    hash = Fnv1a64(&degree, sizeof(degree), hash);
+    return hash;
+}
+
+std::size_t Scene::TotalSplats() const
+{
+    std::size_t total = 0;
+    for (const SplatInstance& instance : splatInstances) {
+        if (instance.prototype < splatPrototypes.size()) {
+            total += splatPrototypes[instance.prototype].ParticleCount();
+        }
+    }
+    return total;
+}
+
 std::size_t Scene::TotalTriangles() const
 {
     std::size_t total = 0;

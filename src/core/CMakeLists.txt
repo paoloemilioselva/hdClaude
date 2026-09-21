@@ -10,6 +10,7 @@
 add_library(hdClaudeCore STATIC
     curve_sweep.cpp
     display.cpp
+    gaussian_splats.cpp
     hash.cpp
     image_metrics.cpp
     quad_tessellation.cpp

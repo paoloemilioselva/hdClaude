@@ -1,0 +1,157 @@
+#usda 1.0
+(
+    doc = """Gaussian splats with closed-form answers.
+
+    `UsdVolParticleField3DGaussianSplat` is rendered by nothing in the OpenUSD
+    distribution -- only `usd_hd` (for the prim-type token) and `usd_usdVol`
+    even contain the name -- so there is no reference image to compare against
+    and no renderer to agree with. What there is instead is arithmetic, and
+    every prim on this stage exists to make one number checkable.
+
+    hdClaude estimates the schema's own definition -- front-to-back alpha
+    compositing -- as stochastic coverage: along a ray, a particle stops it with
+    probability `a`, and the first one that does is what the pixel sees. That
+    mean is exactly `sum_i c_i a_i prod_{j<i}(1 - a_j)`, so every expectation
+    below is the compositing formula and is reached without sorting anything.
+    See docs/gaussian-splats.md.
+
+    The camera is the one implicit_surfaces.usda uses, at z = 22 with a 50mm
+    lens on a 36mm aperture, so the frame is 15.84 units wide and a 3-sigma
+    splat of scale 0.5 is about 60 pixels across at an image width of 320.
+
+    Spherical harmonics are degree 0 here, where `radiance = c * Y(0,0)` and
+    `Y(0,0) = 1/(2 sqrt(pi))`. A coefficient of 3.5449077 (2 sqrt(pi)) is
+    therefore a radiance of exactly 1, and 1.7724539 (sqrt(pi)) is exactly 0.5 --
+    which is also the schema's own documented fallback, so the numbers here and
+    the fallback are the same convention.
+
+    None of these prims authors `extent`. That is deliberate: OpenUSD registers
+    no extent plugin for `ParticleField`, so hdClaude computes the bound itself
+    from each particle's own 3-sigma support, and a stage that authored one
+    would not exercise it.
+
+    What each prim asserts:
+
+    /profile      One particle, isotropic scale 0.5, opacity 1, radiance (1,0,0).
+                  A ray passing at perpendicular distance d from the centre
+                  renders red = exp(-0.5 (d/0.5)^2): 1.0 through the centre,
+                  exp(-0.5) = 0.6065 at d = 0.5, exp(-2) = 0.1353 at d = 1.0,
+                  and exactly 0 past d = 1.5, which is the 3-sigma support the
+                  specification names.
+
+    /composite    Two particles on the view axis at x = 3, the nearer at z = 0.4
+                  with opacity 0.6 and radiance (0,1,0), the farther at z = -0.4
+                  with opacity 0.8 and radiance (0,0,1). Through their common
+                  centre line the expectation is
+                      (0, 1, 0) * 0.6 + (0, 0, 1) * 0.8 * (1 - 0.6)
+                    = (0, 0.6, 0.32).
+
+    /reversed     The same two particles with the array order swapped. It must
+                  render *identically* to /composite. This is the assertion
+                  worth having: the composite is determined by depth along the
+                  ray, and a dependence on array order -- or on which
+                  axis-aligned box traversal happened to visit first, which a
+                  driver is free to vary -- is invisible in any single image and
+                  is exactly what went wrong once already for curve joints.
+
+    /anisotropic  One particle, scale (0.8, 0.1, 0.4), rotated 45 degrees about
+                  Z, radiance (1, 1, 0). Nothing here has a one-line expected
+                  value; it is the prim that fails if the rotation is
+                  transposed, since a transpose leaves an isotropic particle
+                  unchanged and tilts this one the other way.
+
+    /occluder     A grey quad behind the splats under a dome light, so that
+                  coverage can be read against something other than black and
+                  so that the interleaving of splats with ordinary triangle
+                  geometry -- one traversal, one `t`, no compositing pass -- is
+                  exercised rather than assumed.
+
+    Render it with:
+      usdrecord --colorCorrectionMode disabled --renderer hdClaude \\
+                --disableCameraLight --purposes render --imageWidth 320 \\
+                --camera /camera gaussian_splats.usda out.exr
+    """
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Camera "camera"
+{
+    float focalLength = 50
+    float horizontalAperture = 36
+    double3 xformOp:translate = (0, 0, 22)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}
+
+def DomeLight "dome"
+{
+    float inputs:intensity = 1
+    color3f inputs:color = (1, 1, 1)
+}
+
+def Mesh "occluder"
+{
+    int[] faceVertexCounts = [4]
+    int[] faceVertexIndices = [0, 1, 2, 3]
+    point3f[] points = [(-8, -5, -4), (8, -5, -4), (8, 5, -4), (-8, 5, -4)]
+    color3f[] primvars:displayColor = [(0.18, 0.18, 0.18)]
+    uniform token subdivisionScheme = "none"
+}
+
+def ParticleField3DGaussianSplat "profile"
+{
+    point3f[] positions = [(0, 0, 0)]
+    float3[] scales = [(0.5, 0.5, 0.5)]
+    quatf[] orientations = [(1, 0, 0, 0)]
+    float[] opacities = [1]
+    uniform int radiance:sphericalHarmonicsDegree = 0
+    float3[] radiance:sphericalHarmonicsCoefficients = [(3.5449077, 0, 0)]
+}
+
+def ParticleField3DGaussianSplat "composite"
+{
+    # Nearer particle first, which is also front-to-back. The renderer must not
+    # depend on that being so; /reversed is the same pair the other way round.
+    point3f[] positions = [(3, 0, 0.4), (3, 0, -0.4)]
+    float3[] scales = [(0.5, 0.5, 0.5), (0.5, 0.5, 0.5)]
+    quatf[] orientations = [(1, 0, 0, 0), (1, 0, 0, 0)]
+    float[] opacities = [0.6, 0.8]
+    uniform int radiance:sphericalHarmonicsDegree = 0
+    float3[] radiance:sphericalHarmonicsCoefficients = [
+        (0, 3.5449077, 0),
+        (0, 0, 3.5449077)
+    ]
+}
+
+def ParticleField3DGaussianSplat "reversed"
+{
+    point3f[] positions = [(-3, 0, -0.4), (-3, 0, 0.4)]
+    float3[] scales = [(0.5, 0.5, 0.5), (0.5, 0.5, 0.5)]
+    quatf[] orientations = [(1, 0, 0, 0), (1, 0, 0, 0)]
+    float[] opacities = [0.8, 0.6]
+    uniform int radiance:sphericalHarmonicsDegree = 0
+    float3[] radiance:sphericalHarmonicsCoefficients = [
+        (0, 0, 3.5449077),
+        (0, 3.5449077, 0)
+    ]
+}
+
+def ParticleField3DGaussianSplat "anisotropic"
+{
+    point3f[] positions = [(6, 0, 0)]
+    float3[] scales = [(0.8, 0.1, 0.4)]
+    # 45 degrees about Z: (cos 22.5, 0, 0, sin 22.5).
+    quatf[] orientations = [(0.9238795, 0, 0, 0.3826834)]
+    float[] opacities = [1]
+    uniform int radiance:sphericalHarmonicsDegree = 0
+    float3[] radiance:sphericalHarmonicsCoefficients = [(3.5449077, 3.5449077, 0)]
+}
+
+def ParticleField3DGaussianSplat "unauthored"
+{
+    # Positions and nothing else. Every other attribute takes the default its
+    # applied schema documents -- unit scale, no rotation, fully opaque, and a
+    # DC radiance of (0.5, 0.5, 0.5) -- so this prim is the fallback path, and
+    # it is off to one side where it overlaps nothing.
+    point3f[] positions = [(-6, 0, 0)]
+}

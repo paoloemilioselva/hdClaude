@@ -7,6 +7,7 @@
 #include "light.h"
 #include "material.h"
 #include "basis_curves.h"
+#include "particle_field.h"
 #include "mesh.h"
 #include "render_buffer.h"
 #include "render_pass.h"
@@ -74,6 +75,11 @@ const TfTokenVector kSupportedRprimTypes = {
     // evaluated NURBS, so a stage's curves reach every Hydra renderer as
     // polylines.
     HdPrimTypeTokens->basisCurves,
+    // UsdVolParticleField3DGaussianSplat, through UsdImaging's ParticleField
+    // adapter, which is registered with `includeDerivedPrimTypes` and inserts
+    // an rprim of this type. Nothing in the OpenUSD distribution renders one,
+    // so what hdClaude draws comes from the schema (docs/gaussian-splats.md).
+    HdPrimTypeTokens->particleField,
 };
 
 /// Light types hdClaude samples. A type absent from this list is never created
@@ -530,6 +536,9 @@ HdRprim* HdClaudeRenderDelegate::CreateRprim(const TfToken& typeId,
     }
     if (typeId == HdPrimTypeTokens->basisCurves) {
         return new HdClaudeBasisCurves(rprimId);
+    }
+    if (typeId == HdPrimTypeTokens->particleField) {
+        return new HdClaudeParticleField(rprimId);
     }
     TF_WARN("hdClaude: unsupported rprim type <%s>", typeId.GetText());
     return nullptr;

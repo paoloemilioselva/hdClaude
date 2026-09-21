@@ -13,6 +13,8 @@
 #ifndef HDCLAUDE_GPU_SCENE_H
 #define HDCLAUDE_GPU_SCENE_H
 
+#include "hdclaude/core/gaussian_splats.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -179,6 +181,43 @@ struct MeshInstance {
 
     /// The light-linking categories this placement belongs to, as indices
     /// into `Scene::linkCategoryCount`. Empty for geometry no light links.
+    std::vector<std::uint32_t> linkCategories;
+};
+
+/// One object-space Gaussian splat cloud prototype.
+///
+/// A separate prototype kind rather than a third variant of `MeshPrototype`.
+/// Curve segments earned their place inside the mesh prototype because they
+/// share its shading path -- a swept tube and an implicit cone are the same
+/// material on the same surface -- and a splat cloud shares none of it: it has
+/// no material, no texture coordinates, no normals, and its radiance is
+/// geometry rather than shading (docs/gaussian-splats.md 3).
+struct SplatPrototype {
+    SplatCloud cloud;
+    std::string debugName;
+
+    std::size_t ParticleCount() const { return cloud.Count(); }
+
+    /// Identity for acceleration-structure reuse, over the actual bytes, as
+    /// `MeshPrototype::Fingerprint` is.
+    std::uint64_t Fingerprint() const;
+};
+
+/// One placement of a splat cloud.
+struct SplatInstance {
+    std::uint32_t prototype = 0;
+    Transform3x4 transform;
+    bool visible = true;
+
+    /// Where this placement was on the previous published scene, and whether
+    /// that is actually known. Same contract as `MeshInstance`: no history
+    /// means no motion rather than motion from the origin.
+    Transform3x4 previousTransform;
+    bool hasPreviousTransform = false;
+
+    /// The light-linking categories this placement belongs to. A splat cloud
+    /// emits rather than reflects, so these do not decide whether it is lit;
+    /// they decide whose shadow rays it occludes.
     std::vector<std::uint32_t> linkCategories;
 };
 
@@ -376,6 +415,12 @@ struct Scene {
     std::vector<MeshInstance> instances;
     std::vector<Light> lights;
 
+    /// Gaussian splat clouds, and their placements. Separate lists from the
+    /// mesh ones because they build a different kind of acceleration structure
+    /// and are shaded by no material at all.
+    std::vector<SplatPrototype> splatPrototypes;
+    std::vector<SplatInstance> splatInstances;
+
     /// Textures, indexed by the array index a generated material refers to.
     std::vector<TextureImage> textures;
 
@@ -430,6 +475,9 @@ struct Scene {
     std::uint64_t revision = 0;
 
     std::size_t TotalTriangles() const;
+    /// How many particles the placed splat clouds amount to, instances
+    /// included, which is what the scene costs rather than what it stores.
+    std::size_t TotalSplats() const;
 };
 
 }  // namespace hdclaude

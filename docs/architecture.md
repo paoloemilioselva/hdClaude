@@ -1,6 +1,6 @@
 # hdClaude architecture
 
-Status: design of record. Last revised 2026-09-05.
+Status: design of record. Last revised 2026-09-22.
 
 `hdClaude` is an out-of-tree OpenUSD Hydra render delegate whose renderer is a
 **spectral, wavefront GPU path tracer** with **shading executed from
@@ -14,6 +14,7 @@ Related documents:
 - [Spectral rendering](spectral-rendering.md) — wavelengths, upsampling, sensor.
 - [Wavefront integrator](wavefront-integrator.md) — queues, kernels, scheduling.
 - [DLSS integration](dlss-integration.md) — guides, resolution, history.
+- [Gaussian splats](gaussian-splats.md) -- the splat schema, and what "properly path traced" means for it.
 - [Lessons from hdCodex](lessons-from-hdcodex.md) — defects inherited as rules.
 - [Debugging a render](debugging-a-render.md) — how a reported image is turned into a measurement.
 - [Implementation notes](implementation-notes.md) — findings that corrected this design.
@@ -277,6 +278,17 @@ following on and `Retessellate` asks for a fresh sample. Geometry outside the
 frustum is refined to a floor rather than culled, because a path tracer sees
 what the camera does not. What limits the cost is a budget on refined faces,
 which applies whether or not the level is adaptive.
+
+**Gaussian splat clouds are a third kind of prototype**, not a third variant of
+the mesh. `UsdVolParticleField3DGaussianSplat` arrives as a Hydra `particleField`
+rprim and builds an acceleration structure of axis-aligned boxes -- one per
+particle, at the 3-sigma support the schema itself names -- whose kernel is
+intersected in the traversal kernel, as a curve segment's cone is. It shares
+nothing else with a mesh: it has no material, no texture coordinates and no
+normals, and its radiance is spherical harmonics carried as geometry rather than
+anything a shader evaluates. Which is also why it does not contradict commitment
+1.1: no MaterialX program runs for a splat because the schema has no reflectance
+for one to consume. See [gaussian-splats.md](gaussian-splats.md).
 
 MaterialX displacement is evaluated on the refined mesh **by the same generated
 MaterialX program** used for shading — a `displacementshader` output compiled

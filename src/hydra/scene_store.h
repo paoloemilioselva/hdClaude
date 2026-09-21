@@ -49,6 +49,27 @@ struct HdClaudeMeshEntry {
     std::vector<std::vector<TfToken>> instanceCategories;
 };
 
+/// A Gaussian splat cloud as published by its Hydra prim.
+///
+/// No material path, deliberately. A splat carries its own radiance as
+/// spherical harmonics and there is no reflectance anywhere in the schema to
+/// shade it with, so a material bound to a `ParticleField` is reported rather
+/// than applied (docs/gaussian-splats.md 4).
+struct HdClaudeSplatEntry {
+    hdclaude::SplatPrototype prototype;
+    /// One entry per instance. A non-instanced cloud publishes exactly one.
+    std::vector<hdclaude::Transform3x4> transforms;
+    bool visible = true;
+
+    /// The light-linking categories each entry of `transforms` belongs to.
+    std::vector<std::vector<TfToken>> instanceCategories;
+
+    /// What about this cloud is not honoured as authored, if anything: the
+    /// schema's own validation rules, plus the rasterizer hints a ray tracer
+    /// has nothing to do with. Reported once rather than per frame.
+    std::vector<std::string> reports;
+};
+
 /// A compiled material, keyed by the path of the Hydra material prim.
 struct HdClaudeMaterialEntry {
     hdclaude::CompiledMaterial compiled;
@@ -94,6 +115,9 @@ class HdClaudeSceneStore {
     void PublishMesh(const SdfPath& id, HdClaudeMeshEntry entry);
     void RemoveMesh(const SdfPath& id);
 
+    void PublishSplats(const SdfPath& id, HdClaudeSplatEntry entry);
+    void RemoveSplats(const SdfPath& id);
+
     void PublishMaterial(const SdfPath& id, HdClaudeMaterialEntry entry);
     void RemoveMaterial(const SdfPath& id);
 
@@ -128,6 +152,10 @@ class HdClaudeSceneStore {
   private:
     mutable std::mutex _mutex;
     std::map<SdfPath, HdClaudeMeshEntry> _meshes;
+    std::map<SdfPath, HdClaudeSplatEntry> _splats;
+    /// Where each splat cloud's instances were on the previous snapshot, for
+    /// the same reason `_previousTransforms` holds it for meshes.
+    std::map<SdfPath, std::vector<hdclaude::Transform3x4>> _previousSplatTransforms;
 
     /// Where each mesh's instances were on the previous snapshot.
     ///

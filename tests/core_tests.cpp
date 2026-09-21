@@ -3,6 +3,7 @@
 #include "hdclaude/core/hash.h"
 #include "hdclaude/core/shader_cache.h"
 #include "hdclaude/core/curve_sweep.h"
+#include "hdclaude/core/gaussian_splats.h"
 #include "hdclaude/core/environment.h"
 #include "hdclaude/core/display.h"
 #include "hdclaude/core/image_metrics.h"
@@ -2007,6 +2008,584 @@ void TestTessellationWithoutAViewIsUniform()
              4);
 }
 
+// ---------------------------------------------------------------------------
+// Gaussian splats
+// ---------------------------------------------------------------------------
+
+/// Rotate a vector by a quaternion the long way, as q v q*.
+///
+/// Written out rather than taken from a matrix on purpose: the implementation
+/// under test builds a matrix from the same quaternion, and a test that used
+/// that matrix would assert only that the code agrees with itself.
+void RotateByQuaternion(const float q[4], const double v[3], double out[3])
+{
+    const double w = q[0], x = q[1], y = q[2], z = q[3];
+    // t = q * (0, v)
+    const double tw = -(x * v[0] + y * v[1] + z * v[2]);
+    const double tx = w * v[0] + y * v[2] - z * v[1];
+    const double ty = w * v[1] + z * v[0] - x * v[2];
+    const double tz = w * v[2] + x * v[1] - y * v[0];
+    // out = t * conjugate(q), imaginary part only, over the squared norm --
+    // which is what rotation by a quaternion means when the quaternion has not
+    // been normalised, and the splat builder normalises its own.
+    const double squaredNorm = w * w + x * x + y * y + z * z;
+    const double inverse = squaredNorm > 0.0 ? 1.0 / squaredNorm : 1.0;
+    out[0] = (tw * -x + tx * w + ty * -z - tz * -y) * inverse;
+    out[1] = (tw * -y + ty * w + tz * -x - tx * -z) * inverse;
+    out[2] = (tw * -z + tz * w + tx * -y - ty * -x) * inverse;
+}
+
+Splat OneSplat(const float center[3], const float quaternion[4],
+               const float scale[3], float opacity,
+               SplatKernel kernel = SplatKernel::GaussianEllipsoid)
+{
+    SplatCloudSource source;
+    source.kernel = kernel;
+    source.positions = {center[0], center[1], center[2]};
+    source.orientations = {quaternion[0], quaternion[1], quaternion[2],
+                           quaternion[3]};
+    source.scales = {scale[0], scale[1], scale[2]};
+    source.opacities = {opacity};
+    source.sphericalHarmonicsDegree = 0;
+    source.sphericalHarmonics = {1.0f, 1.0f, 1.0f};
+    const SplatCloud cloud = BuildSplatCloud(source);
+    return cloud.Valid() ? cloud.splats[0] : Splat{};
+}
+
+/// One basis function, by asking for a radiance whose only coefficient is it.
+double Harmonic(int index, int degree, const double direction[3])
+{
+    std::vector<float> coefficients(
+        SphericalHarmonicsCoefficientCount(degree) * 3, 0.0f);
+    coefficients[static_cast<std::size_t>(index) * 3] = 1.0f;
+    const float unit[3] = {static_cast<float>(direction[0]),
+                           static_cast<float>(direction[1]),
+                           static_cast<float>(direction[2])};
+    float rgb[3];
+    EvaluateSphericalHarmonics(coefficients.data(), degree, unit, rgb);
+    return rgb[0];
+}
+
+void TestSphericalHarmonicsAreOrthonormal()
+{
+    // The instrument the rest of the radiance work rests on. A basis that is
+    // merely close to orthonormal produces a radiance that is merely close to
+    // the one the asset authored, in a way no picture reveals: the error is a
+    // smooth tint that varies with view direction.
+    //
+    // Integrated on a product rule in (cos theta, phi), which is the measure
+    // the sphere's area element already is, so no Jacobian is involved.
+    const int degree = 3;
+    const int functions =
+        static_cast<int>(SphericalHarmonicsCoefficientCount(degree));
+    const int zSteps = 300;
+    const int phiSteps = 600;
+    const double dz = 2.0 / zSteps;
+    const double dphi = 2.0 * 3.14159265358979323846 / phiSteps;
+
+    std::vector<double> integral(
+        static_cast<std::size_t>(functions) * functions, 0.0);
+    std::vector<double> value(static_cast<std::size_t>(functions), 0.0);
+
+    for (int iz = 0; iz < zSteps; ++iz) {
+        const double z = -1.0 + (iz + 0.5) * dz;
+        const double sinTheta = std::sqrt(std::max(0.0, 1.0 - z * z));
+        for (int ip = 0; ip < phiSteps; ++ip) {
+            const double phi = (ip + 0.5) * dphi;
+            const double direction[3] = {sinTheta * std::cos(phi),
+                                         sinTheta * std::sin(phi), z};
+            for (int i = 0; i < functions; ++i) {
+                value[static_cast<std::size_t>(i)] =
+                    Harmonic(i, degree, direction);
+            }
+            for (int i = 0; i < functions; ++i) {
+                for (int j = 0; j < functions; ++j) {
+                    integral[static_cast<std::size_t>(i) * functions + j] +=
+                        value[static_cast<std::size_t>(i)] *
+                        value[static_cast<std::size_t>(j)] * dz * dphi;
+                }
+            }
+        }
+    }
+
+    for (int i = 0; i < functions; ++i) {
+        for (int j = 0; j < functions; ++j) {
+            const double expected = i == j ? 1.0 : 0.0;
+            CHECK_NEAR(integral[static_cast<std::size_t>(i) * functions + j],
+                       expected, 3.0e-3);
+        }
+    }
+}
+
+void TestSphericalHarmonicsMatchTheirClosedForms()
+{
+    // The published real spherical harmonics, Condon-Shortley phase included,
+    // as every 3D Gaussian splatting implementation writes them. Checked
+    // against the closed forms rather than against a golden output, so a change
+    // of convention here is a failure rather than a new baseline.
+    const double c0 = 0.28209479177387814;
+    const double c1 = 0.4886025119029199;
+    const double c2[5] = {1.0925484305920792, -1.0925484305920792,
+                          0.31539156525252005, -1.0925484305920792,
+                          0.5462742152960396};
+    const double c3[7] = {-0.5900435899266435, 2.890611442640554,
+                          -0.4570457994644658, 0.3731763325901154,
+                          -0.4570457994644658, 1.445305721320277,
+                          -0.5900435899266435};
+
+    const double directions[4][3] = {
+        {0.0, 0.0, 1.0},
+        {0.6, 0.0, 0.8},
+        {-0.36, 0.48, 0.8},
+        {0.4242640687, -0.5656854249, -0.7071067812}};
+
+    // The tolerance is float precision, because that is what the API returns:
+    // the basis is evaluated in double and the radiance handed back in float.
+    for (const auto& d : directions) {
+        const double x = d[0], y = d[1], z = d[2];
+        const double xx = x * x, yy = y * y, zz = z * z;
+        const double xy = x * y, yz = y * z, xz = x * z;
+
+        CHECK_NEAR(Harmonic(0, 3, d), c0, 2.0e-6);
+
+        CHECK_NEAR(Harmonic(1, 3, d), -c1 * y, 2.0e-6);
+        CHECK_NEAR(Harmonic(2, 3, d), c1 * z, 2.0e-6);
+        CHECK_NEAR(Harmonic(3, 3, d), -c1 * x, 2.0e-6);
+
+        CHECK_NEAR(Harmonic(4, 3, d), c2[0] * xy, 2.0e-6);
+        CHECK_NEAR(Harmonic(5, 3, d), c2[1] * yz, 2.0e-6);
+        CHECK_NEAR(Harmonic(6, 3, d), c2[2] * (2.0 * zz - xx - yy), 2.0e-6);
+        CHECK_NEAR(Harmonic(7, 3, d), c2[3] * xz, 2.0e-6);
+        CHECK_NEAR(Harmonic(8, 3, d), c2[4] * (xx - yy), 2.0e-6);
+
+        CHECK_NEAR(Harmonic(9, 3, d), c3[0] * y * (3.0 * xx - yy), 2.0e-6);
+        CHECK_NEAR(Harmonic(10, 3, d), c3[1] * xy * z, 2.0e-6);
+        CHECK_NEAR(Harmonic(11, 3, d), c3[2] * y * (4.0 * zz - xx - yy), 2.0e-6);
+        CHECK_NEAR(Harmonic(12, 3, d),
+                   c3[3] * z * (2.0 * zz - 3.0 * xx - 3.0 * yy), 2.0e-6);
+        CHECK_NEAR(Harmonic(13, 3, d), c3[4] * x * (4.0 * zz - xx - yy), 2.0e-6);
+        CHECK_NEAR(Harmonic(14, 3, d), c3[5] * z * (xx - yy), 2.0e-6);
+        CHECK_NEAR(Harmonic(15, 3, d), c3[6] * x * (xx - 3.0 * yy), 2.0e-6);
+    }
+}
+
+void TestSphericalHarmonicsFallbackIsTheSchemasDcSignal()
+{
+    // UsdVolParticleFieldSphericalHarmonicsAttributeAPI says a discarded or
+    // absent coefficient array should behave as "a SH coefficient corresponding
+    // to a DC signal of (0.5, 0.5, 0.5), with degree 0". That pins the basis
+    // normalisation, so it is asserted rather than assumed.
+    const float dc = SphericalHarmonicsFallbackCoefficient();
+    CHECK_NEAR(dc, std::sqrt(3.14159265358979323846), 1.0e-6);
+
+    const float coefficients[3] = {dc, dc, dc};
+    const float directions[5][3] = {{0.0f, 0.0f, 1.0f},
+                                    {0.0f, 0.0f, -1.0f},
+                                    {1.0f, 0.0f, 0.0f},
+                                    {0.0f, -1.0f, 0.0f},
+                                    {0.577f, 0.577f, 0.577f}};
+    for (const auto& direction : directions) {
+        float rgb[3];
+        EvaluateSphericalHarmonics(coefficients, 0, direction, rgb);
+        CHECK_NEAR(rgb[0], 0.5, 1.0e-6);
+        CHECK_NEAR(rgb[1], 0.5, 1.0e-6);
+        CHECK_NEAR(rgb[2], 0.5, 1.0e-6);
+    }
+}
+
+void TestSplatKernelIsUnitSigmaOnItsOwnAxes()
+{
+    // The specification's kernel: standard deviation 1 in the kernel's own
+    // space, so one scale along a principal axis is one sigma whatever the
+    // scale's magnitude, and the 3-sigma point is where the support ends.
+    const float center[3] = {2.0f, -1.0f, 0.5f};
+    // 40 degrees about a slanted axis, so no principal axis is a world axis.
+    const double angle = 40.0 * 3.14159265358979323846 / 180.0;
+    const double axis[3] = {0.4082482905, 0.8164965809, 0.4082482905};
+    const float quaternion[4] = {
+        static_cast<float>(std::cos(angle * 0.5)),
+        static_cast<float>(axis[0] * std::sin(angle * 0.5)),
+        static_cast<float>(axis[1] * std::sin(angle * 0.5)),
+        static_cast<float>(axis[2] * std::sin(angle * 0.5))};
+    const float scale[3] = {0.4f, 0.05f, 1.7f};
+    const Splat splat = OneSplat(center, quaternion, scale, 1.0f);
+
+    CHECK_NEAR(
+        SplatKernelResponse(splat, SplatKernel::GaussianEllipsoid, center), 1.0,
+        1.0e-6);
+
+    for (int principal = 0; principal < 3; ++principal) {
+        double unit[3] = {0.0, 0.0, 0.0};
+        unit[principal] = 1.0;
+        double rotated[3];
+        RotateByQuaternion(quaternion, unit, rotated);
+
+        for (const double sigmas : {1.0, -1.0, 2.0, 3.0}) {
+            const float point[3] = {
+                static_cast<float>(center[0] +
+                                   sigmas * scale[principal] * rotated[0]),
+                static_cast<float>(center[1] +
+                                   sigmas * scale[principal] * rotated[1]),
+                static_cast<float>(center[2] +
+                                   sigmas * scale[principal] * rotated[2])};
+            CHECK_NEAR(SplatKernelResponse(
+                           splat, SplatKernel::GaussianEllipsoid, point),
+                       std::exp(-0.5 * sigmas * sigmas), 1.0e-5);
+        }
+
+        // Just past the support the field is exactly zero, at the radius the
+        // specification names rather than at one chosen here.
+        const double beyond =
+            SplatSupportRadius(SplatKernel::GaussianEllipsoid) + 1.0e-3;
+        const float outside[3] = {
+            static_cast<float>(center[0] +
+                               beyond * scale[principal] * rotated[0]),
+            static_cast<float>(center[1] +
+                               beyond * scale[principal] * rotated[1]),
+            static_cast<float>(center[2] +
+                               beyond * scale[principal] * rotated[2])};
+        CHECK_EQ(
+            SplatKernelResponse(splat, SplatKernel::GaussianEllipsoid, outside),
+            0.0f);
+    }
+}
+
+void TestSplatKernelWithEqualScalesIsIsotropic()
+{
+    // A structural check that needs no formula: whatever the rotation, three
+    // equal scales must make the response a function of distance alone. A
+    // transposed rotation or a row-for-column slip fails this and passes the
+    // axis test.
+    const float center[3] = {0.0f, 0.0f, 0.0f};
+    const float quaternion[4] = {0.5f, 0.5f, -0.5f, 0.5f};
+    const float scale[3] = {0.3f, 0.3f, 0.3f};
+    const Splat splat = OneSplat(center, quaternion, scale, 1.0f);
+
+    const double directions[4][3] = {
+        {1.0, 0.0, 0.0},
+        {0.0, 1.0, 0.0},
+        {0.0, 0.0, 1.0},
+        {0.5773502692, 0.5773502692, 0.5773502692}};
+    for (const auto& direction : directions) {
+        for (const double distance : {0.15, 0.3, 0.6}) {
+            const float point[3] = {
+                static_cast<float>(distance * direction[0]),
+                static_cast<float>(distance * direction[1]),
+                static_cast<float>(distance * direction[2])};
+            const double sigmas = distance / 0.3;
+            CHECK_NEAR(SplatKernelResponse(
+                           splat, SplatKernel::GaussianEllipsoid, point),
+                       std::exp(-0.5 * sigmas * sigmas), 1.0e-5);
+        }
+    }
+}
+
+void TestSplatRayPeakMatchesASearchAlongTheRay()
+{
+    // The closed form the traversal kernel mirrors, against a dense search. An
+    // analytic peak that is subtly the wrong root produces an image that is
+    // merely a little dim, which is why this is asserted rather than looked at.
+    std::uint32_t state = 0x9e3779b9u;
+    const auto next = [&state]() {
+        state = state * 1664525u + 1013904223u;
+        return static_cast<double>(state >> 8) / static_cast<double>(1u << 24);
+    };
+
+    int tested = 0;
+    for (int trial = 0; trial < 24; ++trial) {
+        const float center[3] = {static_cast<float>(next() * 4.0 - 2.0),
+                                 static_cast<float>(next() * 4.0 - 2.0),
+                                 static_cast<float>(next() * 4.0 - 2.0)};
+        double raw[4] = {next() * 2.0 - 1.0, next() * 2.0 - 1.0,
+                         next() * 2.0 - 1.0, next() * 2.0 - 1.0};
+        const double norm = std::sqrt(raw[0] * raw[0] + raw[1] * raw[1] +
+                                      raw[2] * raw[2] + raw[3] * raw[3]);
+        if (!(norm > 0.0)) {
+            continue;
+        }
+        const float quaternion[4] = {static_cast<float>(raw[0] / norm),
+                                     static_cast<float>(raw[1] / norm),
+                                     static_cast<float>(raw[2] / norm),
+                                     static_cast<float>(raw[3] / norm)};
+        const float scale[3] = {static_cast<float>(0.05 + next() * 0.9),
+                                static_cast<float>(0.05 + next() * 0.9),
+                                static_cast<float>(0.05 + next() * 0.9)};
+        const Splat splat = OneSplat(center, quaternion, scale, 1.0f);
+
+        const float origin[3] = {static_cast<float>(next() * 12.0 - 6.0),
+                                 static_cast<float>(next() * 12.0 - 6.0),
+                                 static_cast<float>(next() * 12.0 - 6.0)};
+        double toward[3] = {center[0] - origin[0] + (next() * 2.0 - 1.0) * 0.4,
+                            center[1] - origin[1] + (next() * 2.0 - 1.0) * 0.4,
+                            center[2] - origin[2] + (next() * 2.0 - 1.0) * 0.4};
+        const double length = std::sqrt(toward[0] * toward[0] +
+                                        toward[1] * toward[1] +
+                                        toward[2] * toward[2]);
+        if (!(length > 0.0)) {
+            continue;
+        }
+        const float direction[3] = {static_cast<float>(toward[0] / length),
+                                    static_cast<float>(toward[1] / length),
+                                    static_cast<float>(toward[2] / length)};
+
+        const float tMin = 0.0f;
+        const float tMax = 40.0f;
+        const int steps = 200000;
+        double bestT = 0.0;
+        double bestResponse = 0.0;
+        for (int step = 0; step <= steps; ++step) {
+            const double t =
+                tMin + (tMax - tMin) * (static_cast<double>(step) / steps);
+            const float point[3] = {
+                static_cast<float>(origin[0] + t * direction[0]),
+                static_cast<float>(origin[1] + t * direction[1]),
+                static_cast<float>(origin[2] + t * direction[2])};
+            const double response = SplatKernelResponse(
+                splat, SplatKernel::GaussianEllipsoid, point);
+            if (response > bestResponse) {
+                bestResponse = response;
+                bestT = t;
+            }
+        }
+
+        float peakT = 0.0f;
+        float peakResponse = 0.0f;
+        const bool hit =
+            SplatRayPeak(splat, SplatKernel::GaussianEllipsoid, origin,
+                         direction, tMin, tMax, &peakT, &peakResponse);
+        if (bestResponse <= 0.0) {
+            // The search found nothing inside the support. The closed form may
+            // still report a peak just inside its boundary, so all that is
+            // asserted is that it does not claim a response the search missed.
+            CHECK(!hit || peakResponse < 1.0e-3f);
+            continue;
+        }
+        CHECK(hit);
+        if (!hit) {
+            continue;
+        }
+        ++tested;
+        CHECK_NEAR(peakResponse, bestResponse, 1.0e-4);
+        CHECK_NEAR(peakT, bestT, 2.0 * (tMax - tMin) / steps + 1.0e-3);
+    }
+    // The trial set has to actually exercise the thing.
+    CHECK(tested >= 12);
+}
+
+void TestSplatBoundsHoldTheSupportAndAreTight()
+{
+    // The boxes the acceleration structure is partitioned over. Too small clips
+    // the falloff; too large costs traversal on every ray that misses.
+    const float center[3] = {-0.75f, 1.25f, 3.0f};
+    const float quaternion[4] = {0.8f, 0.2f, -0.4f, 0.39799497f};
+    const float scale[3] = {0.5f, 0.12f, 0.9f};
+    const Splat splat = OneSplat(center, quaternion, scale, 1.0f);
+
+    float minimum[3];
+    float maximum[3];
+    SplatBounds(splat, SplatKernel::GaussianEllipsoid, minimum, maximum);
+
+    const double radius = SplatSupportRadius(SplatKernel::GaussianEllipsoid);
+    double reached[3] = {0.0, 0.0, 0.0};
+    const int samples = 40000;
+    const double golden = 3.14159265358979323846 * (3.0 - std::sqrt(5.0));
+    for (int i = 0; i < samples; ++i) {
+        // A Fibonacci sphere, so the support is covered evenly rather than
+        // sampled thickly at the poles.
+        const double z = 1.0 - 2.0 * (i + 0.5) / samples;
+        const double r = std::sqrt(std::max(0.0, 1.0 - z * z));
+        const double phi = golden * i;
+        const double unit[3] = {r * std::cos(phi), r * std::sin(phi), z};
+
+        // A point on the surface of the support: out to the support radius in
+        // the kernel's own space, scaled, then rotated.
+        const double scaled[3] = {unit[0] * radius * scale[0],
+                                  unit[1] * radius * scale[1],
+                                  unit[2] * radius * scale[2]};
+        double rotated[3];
+        RotateByQuaternion(quaternion, scaled, rotated);
+        for (int axis = 0; axis < 3; ++axis) {
+            const double coordinate = center[axis] + rotated[axis];
+            CHECK(coordinate >= minimum[axis] - 1.0e-4);
+            CHECK(coordinate <= maximum[axis] + 1.0e-4);
+            reached[axis] = std::max(reached[axis], std::fabs(rotated[axis]));
+        }
+    }
+
+    // Tightness is asserted at the exact extreme rather than at the best of a
+    // finite sample set. The support is the image of a ball of radius r under
+    // the forward transform M, so the largest coordinate along an axis is
+    // r |row(M)| and it is reached at x = r row(M)/|row(M)|. Sampling gets
+    // within a covering radius of that and no closer, which is a property of
+    // the sample set and not of the bounds.
+    double forward[3][3];
+    for (int column = 0; column < 3; ++column) {
+        double unit[3] = {0.0, 0.0, 0.0};
+        unit[column] = scale[column];
+        double rotated[3];
+        RotateByQuaternion(quaternion, unit, rotated);
+        for (int row = 0; row < 3; ++row) {
+            forward[row][column] = rotated[row];
+        }
+    }
+    for (int axis = 0; axis < 3; ++axis) {
+        const double half = 0.5 * (maximum[axis] - minimum[axis]);
+        const double* row = forward[axis];
+        const double length =
+            std::sqrt(row[0] * row[0] + row[1] * row[1] + row[2] * row[2]);
+        CHECK_NEAR(radius * length, half, 1.0e-5 * half + 1.0e-6);
+        CHECK_NEAR(0.5 * (maximum[axis] + minimum[axis]), center[axis], 1.0e-5);
+
+        // And the sampled maximum must have got close to it, which is what
+        // says the two calculations are describing the same body.
+        CHECK(reached[axis] > 0.99 * half);
+    }
+}
+
+void TestSplatBuildAppliesTheSchemasLengthRules()
+{
+    // ParticleFieldPositionBaseAPI: positions define the count, a longer array
+    // is truncated, and a shorter one is discarded entirely for the attribute's
+    // default. Padding a short array would be the silent repair the project does
+    // not do, so both outcomes are asserted along with the report.
+    SplatCloudSource source;
+    source.positions = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 2.0f, 0.0f, 0.0f};
+    // One scale too many: truncated.
+    source.scales = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f,
+                     0.5f, 0.5f, 0.5f, 9.0f, 9.0f, 9.0f};
+    // One opacity short: discarded, so every particle is fully opaque.
+    source.opacities = {0.25f, 0.25f};
+    source.sphericalHarmonicsDegree = 0;
+    source.sphericalHarmonics = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+                                 1.0f, 1.0f, 1.0f, 1.0f};
+
+    const SplatCloud cloud = BuildSplatCloud(source);
+    CHECK_EQ(cloud.Count(), std::size_t(3));
+    for (const Splat& splat : cloud.splats) {
+        CHECK_EQ(splat.opacity, 1.0f);
+        // A scale of 0.5 puts one sigma at 0.5, so the inverse is 2.
+        CHECK_NEAR(splat.inverseTransform[0], 2.0, 1.0e-6);
+    }
+    bool saidTruncated = false;
+    bool saidDiscarded = false;
+    for (const std::string& report : cloud.reports) {
+        if (report.find("scales") != std::string::npos &&
+            report.find("truncated") != std::string::npos) {
+            saidTruncated = true;
+        }
+        if (report.find("opacities") != std::string::npos &&
+            report.find("discards") != std::string::npos) {
+            saidDiscarded = true;
+        }
+    }
+    CHECK(saidTruncated);
+    CHECK(saidDiscarded);
+}
+
+void TestSplatBuildFallsBackToTheSchemasRadiance()
+{
+    // No coefficients at all: degree 0, and the DC signal the schema names.
+    SplatCloudSource source;
+    source.positions = {0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f};
+    source.sphericalHarmonicsDegree = 3;
+
+    const SplatCloud cloud = BuildSplatCloud(source);
+    CHECK_EQ(cloud.Count(), std::size_t(2));
+    CHECK_EQ(cloud.sphericalHarmonicsDegree, 0);
+    CHECK_EQ(cloud.CoefficientsPerParticle(), std::size_t(1));
+    CHECK_EQ(cloud.sphericalHarmonics.size(), std::size_t(6));
+    const float direction[3] = {0.0f, 1.0f, 0.0f};
+    for (std::size_t particle = 0; particle < cloud.Count(); ++particle) {
+        float rgb[3];
+        EvaluateSphericalHarmonics(
+            cloud.sphericalHarmonics.data() + particle * 3, 0, direction, rgb);
+        CHECK_NEAR(rgb[0], 0.5, 1.0e-6);
+        CHECK_NEAR(rgb[2], 0.5, 1.0e-6);
+    }
+}
+
+void TestSplatBuildKeepsHarmonicsWithTheirParticles()
+{
+    // A dropped particle must take its coefficients with it, or every particle
+    // after it wears the radiance of its neighbour -- which looks like noise in
+    // the asset rather than like a bug here.
+    SplatCloudSource source;
+    source.positions = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 2.0f, 0.0f, 0.0f};
+    source.scales = {0.5f, 0.5f, 0.5f, 0.0f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+    source.sphericalHarmonicsDegree = 0;
+    source.sphericalHarmonics = {1.0f, 0.0f, 0.0f,   // particle 0: red
+                                 0.0f, 1.0f, 0.0f,   // particle 1: dropped
+                                 0.0f, 0.0f, 1.0f};  // particle 2: blue
+    const SplatCloud cloud = BuildSplatCloud(source);
+    CHECK_EQ(cloud.Count(), std::size_t(2));
+    CHECK_EQ(cloud.sphericalHarmonics.size(), std::size_t(6));
+    CHECK_EQ(cloud.sphericalHarmonics[0], 1.0f);
+    CHECK_EQ(cloud.sphericalHarmonics[1], 0.0f);
+    CHECK_EQ(cloud.sphericalHarmonics[5], 1.0f);
+    CHECK_EQ(cloud.splats[1].center[0], 2.0f);
+
+    bool saidDropped = false;
+    for (const std::string& report : cloud.reports) {
+        if (report.find("dropped") != std::string::npos) {
+            saidDropped = true;
+        }
+    }
+    CHECK(saidDropped);
+}
+
+void TestSurfletSupportIsADisk()
+{
+    // The two surflet kernels are flat: opacity on the local XY plane and
+    // exactly zero off it. A ray meets the plane, which is the one place the
+    // flatness changes the intersector rather than the bounds.
+    const float center[3] = {0.0f, 0.0f, 0.0f};
+    const float identity[4] = {1.0f, 0.0f, 0.0f, 0.0f};
+    const float scale[3] = {1.0f, 1.0f, 1.0f};
+
+    const Splat gaussian =
+        OneSplat(center, identity, scale, 1.0f, SplatKernel::GaussianSurflet);
+    const float onPlane[3] = {1.0f, 0.0f, 0.0f};
+    const float offPlane[3] = {1.0f, 0.0f, 0.25f};
+    CHECK_NEAR(
+        SplatKernelResponse(gaussian, SplatKernel::GaussianSurflet, onPlane),
+        std::exp(-0.5), 1.0e-6);
+    CHECK_EQ(
+        SplatKernelResponse(gaussian, SplatKernel::GaussianSurflet, offPlane),
+        0.0f);
+
+    // A ray down -Z crosses the plane at the disk, whatever its own start.
+    const float origin[3] = {0.5f, 0.0f, 4.0f};
+    const float direction[3] = {0.0f, 0.0f, -1.0f};
+    float t = 0.0f;
+    float response = 0.0f;
+    CHECK(SplatRayPeak(gaussian, SplatKernel::GaussianSurflet, origin, direction,
+                       0.0f, 100.0f, &t, &response));
+    CHECK_NEAR(t, 4.0, 1.0e-5);
+    CHECK_NEAR(response, std::exp(-0.5 * 0.25), 1.0e-6);
+
+    // A ray in the plane never meets it.
+    const float grazing[3] = {1.0f, 0.0f, 0.0f};
+    CHECK(!SplatRayPeak(gaussian, SplatKernel::GaussianSurflet, origin, grazing,
+                        0.0f, 100.0f, &t, &response));
+
+    // The constant surflet is a hard disk of radius one, and its bounds are
+    // flat along the axis it has no thickness in.
+    const Splat constant =
+        OneSplat(center, identity, scale, 1.0f, SplatKernel::ConstantSurflet);
+    const float inside[3] = {0.9f, 0.0f, 0.0f};
+    const float outside[3] = {1.1f, 0.0f, 0.0f};
+    CHECK_EQ(SplatKernelResponse(constant, SplatKernel::ConstantSurflet, inside),
+             1.0f);
+    CHECK_EQ(
+        SplatKernelResponse(constant, SplatKernel::ConstantSurflet, outside),
+        0.0f);
+    float minimum[3];
+    float maximum[3];
+    SplatBounds(constant, SplatKernel::ConstantSurflet, minimum, maximum);
+    CHECK_NEAR(maximum[0] - minimum[0], 2.0, 1.0e-5);
+    CHECK_NEAR(maximum[2] - minimum[2], 0.0, 1.0e-5);
+}
+
 int main()
 {
     TestEnvironmentFlagReadsOneWay();
@@ -2053,5 +2632,16 @@ int main()
     TestSsimMatchesItsDefinition();
     TestTemporalInstabilityMeasuresFlicker();
     TestShiftEstimatorRecoversAKnownDisplacement();
+    TestSphericalHarmonicsAreOrthonormal();
+    TestSphericalHarmonicsMatchTheirClosedForms();
+    TestSphericalHarmonicsFallbackIsTheSchemasDcSignal();
+    TestSplatKernelIsUnitSigmaOnItsOwnAxes();
+    TestSplatKernelWithEqualScalesIsIsotropic();
+    TestSplatRayPeakMatchesASearchAlongTheRay();
+    TestSplatBoundsHoldTheSupportAndAreTight();
+    TestSplatBuildAppliesTheSchemasLengthRules();
+    TestSplatBuildFallsBackToTheSchemasRadiance();
+    TestSplatBuildKeepsHarmonicsWithTheirParticles();
+    TestSurfletSupportIsADisk();
     return hdclaude_test::Summarize("hdClaudeCoreTests");
 }

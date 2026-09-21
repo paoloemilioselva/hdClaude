@@ -21,6 +21,22 @@ void HdClaudeSceneStore::RemoveMesh(const SdfPath& id)
     }
 }
 
+void HdClaudeSceneStore::PublishSplats(const SdfPath& id,
+                                      HdClaudeSplatEntry entry)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    _splats[id] = std::move(entry);
+    ++_revision;
+}
+
+void HdClaudeSceneStore::RemoveSplats(const SdfPath& id)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (_splats.erase(id) > 0) {
+        ++_revision;
+    }
+}
+
 void HdClaudeSceneStore::PublishMaterial(const SdfPath& id, HdClaudeMaterialEntry entry)
 {
     std::lock_guard<std::mutex> lock(_mutex);
@@ -228,6 +244,44 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
         }
     }
 
+    // Splat clouds. Their own prototype and instance lists: they build a
+    // different kind of acceleration structure and are shaded by no material,
+    // so nothing above resolves a binding for them.
+    scene.splatPrototypes.reserve(_splats.size());
+    for (const auto& [path, splats] : _splats) {
+        if (!splats.prototype.cloud.Valid() || !splats.visible) {
+            continue;
+        }
+        const auto prototype =
+            static_cast<std::uint32_t>(scene.splatPrototypes.size());
+        scene.splatPrototypes.push_back(splats.prototype);
+
+        const auto previous = _previousSplatTransforms.find(path);
+        const bool matched = previous != _previousSplatTransforms.end() &&
+                             previous->second.size() == splats.transforms.size();
+
+        for (std::size_t i = 0; i < splats.transforms.size(); ++i) {
+            hdclaude::SplatInstance instance;
+            instance.prototype = prototype;
+            instance.transform = splats.transforms[i];
+            if (matched) {
+                instance.previousTransform = previous->second[i];
+                instance.hasPreviousTransform = true;
+            }
+            instance.visible = true;
+            if (i < splats.instanceCategories.size() && !categoryIndex.empty()) {
+                for (const TfToken& token : splats.instanceCategories[i]) {
+                    const auto found = categoryIndex.find(token);
+                    if (found != categoryIndex.end()) {
+                        instance.linkCategories.push_back(
+                            static_cast<std::uint32_t>(found->second));
+                    }
+                }
+            }
+            scene.splatInstances.push_back(std::move(instance));
+        }
+    }
+
     // Lights, and the environment a dome light supplies.
     //
     // Several dome lights are legal in USD and rare in practice; their
@@ -308,6 +362,10 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
     for (const auto& [path, mesh] : _meshes) {
         _previousTransforms[path] = mesh.transforms;
     }
+    _previousSplatTransforms.clear();
+    for (const auto& [path, splats] : _splats) {
+        _previousSplatTransforms[path] = splats.transforms;
+    }
 
     return scene;
 }
@@ -324,6 +382,11 @@ std::vector<std::string> HdClaudeSceneStore::FallbackReports() const
     for (const auto& [path, entry] : _lights) {
         if (!entry.report.empty()) {
             reports.push_back(path.GetString() + ": " + entry.report);
+        }
+    }
+    for (const auto& [path, entry] : _splats) {
+        for (const std::string& report : entry.reports) {
+            reports.push_back(path.GetString() + ": " + report);
         }
     }
     reports.insert(reports.end(), _snapshotReports.begin(),
