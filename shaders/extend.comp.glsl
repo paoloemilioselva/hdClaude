@@ -230,7 +230,67 @@ void main()
                     rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
                 InstanceGeometry candidateGeometry =
                     instances.values[candidateInstance];
-                if (candidateGeometry.segments != 0ul)
+                if (candidateGeometry.splats != 0ul)
+                {
+                    // A Gaussian splat. The box says a particle's support is
+                    // somewhere ahead; what decides whether the ray stops is the
+                    // kernel's response at its peak along the ray, times the
+                    // particle's opacity, taken as the probability that this
+                    // particle covers the ray. The nearest particle that accepts
+                    // is committed, and Vulkan's own closest-hit rule is what
+                    // makes that the front-to-back answer -- nothing here sorts
+                    // anything (docs/gaussian-splats.md 3).
+                    int candidateSplat =
+                        rayQueryGetIntersectionPrimitiveIndexEXT(query, false);
+                    Splat splat = hdclaude_splat(candidateGeometry.splats,
+                                                 candidateSplat);
+
+                    vec3 candidateOrigin =
+                        rayQueryGetIntersectionObjectRayOriginEXT(query, false);
+                    vec3 candidateDirection =
+                        rayQueryGetIntersectionObjectRayDirectionEXT(query, false);
+
+                    float committedT =
+                        rayQueryGetIntersectionTypeEXT(query, true) !=
+                                gl_RayQueryCommittedIntersectionNoneEXT
+                            ? rayQueryGetIntersectionTEXT(query, true)
+                            : 1.0e30;
+
+                    // The peak is searched over the *ray*, not over the part of
+                    // it that is still unoccluded, and the committed distance is
+                    // applied afterwards. Those are not the same thing, and
+                    // conflating them is a real defect that measured itself: a
+                    // particle behind the committed hit had its peak clamped
+                    // onto that hit, evaluated its falloff there instead of at
+                    // its own centre, and generated an intersection at exactly
+                    // the committed distance -- where the driver was free to
+                    // prefer either. Two particles whose composite should have
+                    // been 0.6 and 0.32 came out 0.48 and 0.51, which is the
+                    // signature of the nearer one winning only half the time.
+                    float hit;
+                    float response;
+                    if (hdclaude_splat_peak(splat, candidateGeometry.splatKernel,
+                                            candidateOrigin, candidateDirection,
+                                            rayQueryGetRayTMinEXT(query), 1.0e30,
+                                            hit, response) &&
+                        hit < committedT)
+                    {
+                        // Clamped because this is a probability. The opacity is
+                        // carried as authored -- an asset outside [0, 1] is
+                        // reported rather than corrected -- so the clamp belongs
+                        // here, where the number is used as one, and not on the
+                        // data.
+                        float alpha = clamp(splat.opacity * response, 0.0, 1.0);
+                        float coin = hdclaude_splat_coin(path, frame.sampleIndex,
+                                                         candidateInstance,
+                                                         candidateSplat);
+                        if (coin < alpha)
+                        {
+                            rayQueryGenerateIntersectionEXT(query, hit);
+                        }
+                    }
+                }
+                else if (candidateGeometry.segments != 0ul)
                 {
                     int candidateSegment =
                         rayQueryGetIntersectionPrimitiveIndexEXT(query, false);
@@ -434,6 +494,16 @@ void main()
         // left at the walk's last vertex, because that kernel re-intersects the
         // light to recover the distance and normal the density needs.
         record.x = -2 - light;
+    }
+    else if (hitGeometry && instances.values[instance].splats != 0ul)
+    {
+        // A Gaussian splat that accepted the ray. Recorded in a band of its own
+        // so the per-material sort skips it: there is no material to sort it
+        // into, and the kernel that retires misses adds its radiance instead.
+        record.x = HDCLAUDE_HIT_SPLAT;
+        record.y = instance;
+        record.z = primitive;
+        pathOrigin.values[path] = origin + direction * tGeometry;
     }
     else if (hitGeometry)
     {

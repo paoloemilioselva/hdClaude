@@ -213,6 +213,32 @@ std::vector<VkAabbPositionsKHR> CurveBounds(const MeshPrototype& prototype)
     return boxes;
 }
 
+/// One box per particle, at the kernel's own support.
+///
+/// Named `Boxes` rather than `Bounds` so it cannot be confused with
+/// `hdclaude::SplatBounds`, which it calls: the boxes the structure is
+/// partitioned over and the bound a unit test asserts have to be the same
+/// calculation, and the only way to guarantee that is for there to be one.
+std::vector<VkAabbPositionsKHR> SplatBoxes(const SplatPrototype& prototype)
+{
+    std::vector<VkAabbPositionsKHR> boxes;
+    boxes.reserve(prototype.ParticleCount());
+    for (const Splat& splat : prototype.cloud.splats) {
+        float minimum[3];
+        float maximum[3];
+        SplatBounds(splat, prototype.cloud.kernel, minimum, maximum);
+        VkAabbPositionsKHR box{};
+        box.minX = minimum[0];
+        box.minY = minimum[1];
+        box.minZ = minimum[2];
+        box.maxX = maximum[0];
+        box.maxY = maximum[1];
+        box.maxZ = maximum[2];
+        boxes.push_back(box);
+    }
+    return boxes;
+}
+
 std::uint64_t MeshPrototype::TopologyFingerprint() const
 {
     std::uint64_t hash = 0x9e3779b97f4a7c15ULL;
@@ -468,6 +494,114 @@ BottomLevelStructure::BottomLevelStructure(const VulkanContext& context,
     _address = StructureAddress(context, _structure);
 }
 
+BottomLevelStructure::BottomLevelStructure(const VulkanContext& context,
+                                           VulkanAllocator& allocator,
+                                           const SplatPrototype& prototype)
+    : _context(&context)
+{
+    context.RequireLive("BottomLevelStructure(splats)");
+
+    _splat = true;
+    _triangleCount = static_cast<std::uint32_t>(prototype.ParticleCount());
+    _harmonicsDegree =
+        static_cast<std::uint32_t>(std::max(0, prototype.cloud.sphericalHarmonicsDegree));
+    _kernel = prototype.cloud.kernel;
+    if (_triangleCount == 0) {
+        return;
+    }
+
+    const std::string name = prototype.debugName.empty()
+                                 ? std::string("splats")
+                                 : prototype.debugName;
+
+    // Three buffers. The particles and their radiance are what the traversal and
+    // retiring kernels read; the boxes are what the structure is partitioned
+    // over, and they have a layout the build requires rather than one a kernel
+    // would choose. A curve set is split the same way and for the same reason.
+    std::vector<float> packed(prototype.cloud.splats.size() * 13);
+    for (std::size_t i = 0; i < prototype.cloud.splats.size(); ++i) {
+        const Splat& splat = prototype.cloud.splats[i];
+        float* out = packed.data() + i * 13;
+        out[0] = splat.center[0];
+        out[1] = splat.center[1];
+        out[2] = splat.center[2];
+        out[3] = splat.opacity;
+        std::copy(std::begin(splat.inverseTransform),
+                  std::end(splat.inverseTransform), out + 4);
+    }
+    _splats = UploadDeviceLocal(context, allocator, packed,
+                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                               (name + ".splats").c_str());
+    _harmonics = UploadDeviceLocal(context, allocator,
+                                   prototype.cloud.sphericalHarmonics,
+                                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                   (name + ".harmonics").c_str());
+    _aabbs = UploadDeviceLocal(context, allocator, SplatBoxes(prototype),
+                               kBuildInputUsage, (name + ".aabbs").c_str());
+
+    VkAccelerationStructureGeometryKHR geometry{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+    // Not marked opaque, and that is the whole design rather than an oversight.
+    // A box is always a candidate, so the flag would change nothing about
+    // whether the kernel is consulted -- but a particle's coverage is decided by
+    // a coin flip in that kernel, and calling the geometry opaque would be
+    // claiming an answer it does not have.
+    geometry.flags = VkGeometryFlagsKHR{0};
+    geometry.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
+    VkAccelerationStructureGeometryAabbsDataKHR& boxes = geometry.geometry.aabbs;
+    boxes.sType =
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR;
+    boxes.data.deviceAddress = _aabbs.DeviceAddress();
+    boxes.stride = sizeof(VkAabbPositionsKHR);
+
+    VkAccelerationStructureBuildGeometryInfoKHR buildInfo{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+    buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    buildInfo.geometryCount = 1;
+    buildInfo.pGeometries = &geometry;
+
+    VkAccelerationStructureBuildSizesInfoKHR sizes{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+    vkGetAccelerationStructureBuildSizesKHR(
+        context.Device(), VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+        &buildInfo, &_triangleCount, &sizes);
+
+    BufferDescription storageDescription;
+    storageDescription.size = sizes.accelerationStructureSize;
+    storageDescription.usage =
+        VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    storageDescription.debugName = name + ".blas";
+    _storage = VulkanBuffer(allocator, storageDescription);
+
+    VkAccelerationStructureCreateInfoKHR createInfo{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
+    createInfo.buffer = _storage.Handle();
+    createInfo.size = sizes.accelerationStructureSize;
+    createInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    context.Check(vkCreateAccelerationStructureKHR(context.Device(), &createInfo,
+                                                   nullptr, &_structure),
+                  "vkCreateAccelerationStructureKHR(" + name + ")");
+
+    const AlignedScratch scratch =
+        MakeScratch(context, allocator, sizes.buildScratchSize, name + ".scratch");
+
+    buildInfo.dstAccelerationStructure = _structure;
+    buildInfo.scratchData.deviceAddress = scratch.address;
+
+    VkAccelerationStructureBuildRangeInfoKHR range{};
+    range.primitiveCount = _triangleCount;
+    const VkAccelerationStructureBuildRangeInfoKHR* ranges = &range;
+
+    context.SubmitImmediate([&](VkCommandBuffer command) {
+        vkCmdBuildAccelerationStructuresKHR(command, 1, &buildInfo, &ranges);
+    });
+
+    _address = StructureAddress(context, _structure);
+}
+
 void BottomLevelStructure::Reset()
 {
     if (_context != nullptr && _structure != VK_NULL_HANDLE) {
@@ -483,7 +617,11 @@ void BottomLevelStructure::Reset()
     _segments.Reset();
     _segmentMaterials.Reset();
     _aabbs.Reset();
+    _splats.Reset();
+    _harmonics.Reset();
     _curve = false;
+    _splat = false;
+    _harmonicsDegree = 0;
     _context = nullptr;
     _triangleCount = 0;
     _vertexCount = 0;
@@ -594,7 +732,12 @@ BottomLevelStructure::BottomLevelStructure(BottomLevelStructure&& other) noexcep
       _segments(std::move(other._segments)),
       _segmentMaterials(std::move(other._segmentMaterials)),
       _aabbs(std::move(other._aabbs)),
+      _splats(std::move(other._splats)),
+      _harmonics(std::move(other._harmonics)),
       _curve(std::exchange(other._curve, false)),
+      _splat(std::exchange(other._splat, false)),
+      _harmonicsDegree(std::exchange(other._harmonicsDegree, 0)),
+      _kernel(other._kernel),
       _triangleCount(std::exchange(other._triangleCount, 0)),
       _fingerprint(std::exchange(other._fingerprint, 0)),
       _topology(std::exchange(other._topology, 0)),
@@ -620,7 +763,12 @@ BottomLevelStructure& BottomLevelStructure::operator=(
         _segments = std::move(other._segments);
         _segmentMaterials = std::move(other._segmentMaterials);
         _aabbs = std::move(other._aabbs);
+        _splats = std::move(other._splats);
+        _harmonics = std::move(other._harmonics);
         _curve = std::exchange(other._curve, false);
+        _splat = std::exchange(other._splat, false);
+        _harmonicsDegree = std::exchange(other._harmonicsDegree, 0);
+        _kernel = other._kernel;
         _triangleCount = std::exchange(other._triangleCount, 0);
         _fingerprint = std::exchange(other._fingerprint, 0);
         _topology = std::exchange(other._topology, 0);
@@ -776,6 +924,20 @@ SceneAccelerator::SceneAccelerator(const VulkanContext& context,
 {
 }
 
+const BottomLevelStructure* SceneAccelerator::SplatBlas(
+    std::uint32_t prototype) const
+{
+    if (prototype >= _splatPrototypeFingerprints.size()) {
+        return nullptr;
+    }
+    const std::uint64_t fingerprint = _splatPrototypeFingerprints[prototype];
+    if (fingerprint == 0) {
+        return nullptr;
+    }
+    const auto found = _bySplatFingerprint.find(fingerprint);
+    return found == _bySplatFingerprint.end() ? nullptr : &found->second;
+}
+
 void SceneAccelerator::Update(const Scene& scene)
 {
     _context.RequireLive("SceneAccelerator::Update");
@@ -895,6 +1057,55 @@ void SceneAccelerator::Update(const Scene& scene)
     // Anything left in the old map is no longer referenced and is released here.
     _byFingerprint = std::move(retained);
 
+    // --- Splat clouds -------------------------------------------------------
+    //
+    // The same reuse by fingerprint, in a map of their own: the two prototype
+    // lists are numbered independently, so splat prototype 0 and mesh prototype
+    // 0 both exist and are different bodies. No refit path, because a splat
+    // cloud has no topology to keep -- every particle carries its own transform,
+    // so a cloud that moved has different particles and not the same ones
+    // somewhere else.
+    _splatPrototypeFingerprints.assign(scene.splatPrototypes.size(), 0);
+    {
+        std::unordered_set<std::uint64_t> wanted;
+        for (const SplatPrototype& prototype : scene.splatPrototypes) {
+            if (prototype.ParticleCount() == 0) {
+                continue;
+            }
+            wanted.insert(prototype.Fingerprint());
+        }
+        for (auto it = _bySplatFingerprint.begin();
+             it != _bySplatFingerprint.end();) {
+            it = wanted.count(it->first) != 0 ? std::next(it)
+                                              : _bySplatFingerprint.erase(it);
+        }
+    }
+
+    std::unordered_map<std::uint64_t, BottomLevelStructure> retainedSplats;
+    for (std::size_t i = 0; i < scene.splatPrototypes.size(); ++i) {
+        const SplatPrototype& prototype = scene.splatPrototypes[i];
+        if (prototype.ParticleCount() == 0) {
+            continue;
+        }
+        const std::uint64_t fingerprint = prototype.Fingerprint();
+        _splatPrototypeFingerprints[i] = fingerprint;
+        if (retainedSplats.count(fingerprint) != 0) {
+            ++_lastReused;
+            continue;
+        }
+        auto existing = _bySplatFingerprint.find(fingerprint);
+        if (existing != _bySplatFingerprint.end()) {
+            retainedSplats.emplace(fingerprint, std::move(existing->second));
+            _bySplatFingerprint.erase(existing);
+            ++_lastReused;
+            continue;
+        }
+        retainedSplats.emplace(
+            fingerprint, BottomLevelStructure(_context, _allocator, prototype));
+        ++_lastBuilt;
+    }
+    _bySplatFingerprint = std::move(retainedSplats);
+
     // --- Instances ----------------------------------------------------------
     std::vector<VkAccelerationStructureInstanceKHR> instances;
     instances.reserve(scene.instances.size());
@@ -915,6 +1126,34 @@ void SceneAccelerator::Update(const Scene& scene)
         // hit, and through it the material and the geometry buffers.
         entry.instanceCustomIndex =
             static_cast<std::uint32_t>(&instance - scene.instances.data()) & 0xFFFFFF;
+        entry.mask = instance.visible ? 0xFF : 0x00;
+        entry.instanceShaderBindingTableRecordOffset = 0;
+        entry.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+        entry.accelerationStructureReference = found->second.DeviceAddress();
+        instances.push_back(entry);
+    }
+
+    // Splat placements, after every mesh placement, because the custom index a
+    // ray query reports indexes one instance table and the host builds that
+    // table in this order (path_tracer.cpp).
+    for (std::size_t i = 0; i < scene.splatInstances.size(); ++i) {
+        const SplatInstance& instance = scene.splatInstances[i];
+        if (instance.prototype >= _splatPrototypeFingerprints.size()) {
+            continue;
+        }
+        const std::uint64_t fingerprint =
+            _splatPrototypeFingerprints[instance.prototype];
+        auto found = _bySplatFingerprint.find(fingerprint);
+        if (fingerprint == 0 || found == _bySplatFingerprint.end() ||
+            !found->second.Valid()) {
+            continue;
+        }
+
+        VkAccelerationStructureInstanceKHR entry{};
+        std::memcpy(&entry.transform, instance.transform.m,
+                    sizeof(instance.transform.m));
+        entry.instanceCustomIndex =
+            static_cast<std::uint32_t>(scene.instances.size() + i) & 0xFFFFFF;
         entry.mask = instance.visible ? 0xFF : 0x00;
         entry.instanceShaderBindingTableRecordOffset = 0;
         entry.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;

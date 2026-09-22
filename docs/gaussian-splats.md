@@ -285,6 +285,27 @@ applied to a volume, it needs no invented constant beyond section 2.1's, and
 is missing is the `volumeshader` terminal in the material compiler, which today
 handles `surfaceshader` and `displacementshader` only.
 
+### 3.2 What a candidate costs, and the one thing that is easy to get wrong
+
+Per candidate box: two three-vector transforms, three dot products, one
+exponential and one hash. The hash is where the coin comes from, and it is
+deliberately *not* drawn from the path's own generator -- a ray query reports
+boxes in whatever order traversal reaches them, so consuming the path's stream
+inside the candidate loop would make every later random number the path uses
+depend on that order. Hashing the path, the sample, the instance and the particle
+instead makes the decision independent per particle, identical whichever order
+the boxes arrive in, and reproducible between two runs of the same frame.
+
+The mistake worth recording is a different one, because it produced a plausible
+image and was found only by a number. The peak must be searched over **the ray**,
+and the already-committed distance applied afterwards -- not passed into the
+search as its upper bound. Clamping the search to the committed hit makes a
+particle behind that hit evaluate its falloff at the hit's depth rather than at
+its own centre, and then generate an intersection at exactly the committed
+distance, where the driver is free to prefer either. Two particles whose
+composite should have been 0.6 and 0.32 rendered 0.48 and 0.51: the signature of
+the nearer one winning half the time. Nothing about the picture looked wrong.
+
 ## 5. How the data is laid out
 
 Object space, like every other prototype: one acceleration structure per
@@ -331,3 +352,22 @@ of image that can look plausible while being wrong:
 
 Items 1 to 3 and 5 are renderer gates; item 4 is a core unit test and runs
 without a GPU or a USD runtime.
+
+Measured on `tests/usd/gaussian_splats.usda` at 1024 samples, 320 x 135:
+
+| | expected | measured |
+| --- | --- | --- |
+| `/profile` peak | 1.0 | 0.968 |
+| `/profile` at 0.5, 1, 1.5, 2 sigma (with the backdrop showing through) | 0.903, 0.673, 0.440, 0.282 | 0.932, 0.652, 0.408, 0.288 |
+| `/composite` centre | 0.614 green, 0.334 blue | 0.623, 0.373 |
+| `/reversed` centre, the same pair authored backwards | as `/composite` | 0.613, 0.350 |
+| `/composite` against `/reversed`, whole blob | identical | within 1.0% |
+| `/directional` | **2.0**, or 0.0 under the opposite convention | 1.96, 2.01, 1.95 |
+| `/unauthored`, which authors only positions | 0.5 | 0.513, 0.475, 0.500 |
+
+The spacing of that stage is not decorative either. `/unauthored` takes the
+schema's unit scale, so its support is six units across -- four times any other
+kernel there -- and at the stage's first spacing it reached into `/reversed` and
+laid a uniform 0.008 of grey over it. That made the two halves of the
+order-independence check differ by 3.4% for a reason that had nothing to do with
+ordering, which is exactly how a gate stops measuring what it claims to.

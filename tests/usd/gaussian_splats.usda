@@ -15,9 +15,18 @@
     below is the compositing formula and is reached without sorting anything.
     See docs/gaussian-splats.md.
 
-    The camera is the one implicit_surfaces.usda uses, at z = 22 with a 50mm
-    lens on a 36mm aperture, so the frame is 15.84 units wide and a 3-sigma
-    splat of scale 0.5 is about 60 pixels across at an image width of 320.
+    The camera is at z = 34 with a 50mm lens on a 36mm horizontal aperture and
+    UsdGeomCamera's default 15.2908mm vertical one, so the frame is 24.48 units
+    wide and 10.40 tall, and an image 320 wide is 135 tall.
+
+    The spacing is not decorative. `/unauthored` authors no scale, so it takes
+    the schema's unit default and its 3-sigma support is *six units across* --
+    four times any other kernel here. At the first spacing this stage had, it
+    reached into `/reversed` and put a uniform 0.008 of grey over it, which made
+    the two halves of the order-independence check differ by 3.4% for a reason
+    that had nothing to do with ordering. Every kernel below is clear of every
+    other by at least half a unit, and that is what makes a difference between
+    two of them mean something.
 
     Spherical harmonics are degree 0 here, where `radiance = c * Y(0,0)` and
     `Y(0,0) = 1/(2 sqrt(pi))`. A coefficient of 3.5449077 (2 sqrt(pi)) is
@@ -39,7 +48,7 @@
                   and exactly 0 past d = 1.5, which is the 3-sigma support the
                   specification names.
 
-    /composite    Two particles on the view axis at x = 3, the nearer at z = 0.4
+    /composite    Two particles on the view axis at x = 3.5, the nearer at z = 0.4
                   with opacity 0.6 and radiance (0,1,0), the farther at z = -0.4
                   with opacity 0.8 and radiance (0,0,1). Through their common
                   centre line the expectation is
@@ -79,7 +88,7 @@ def Camera "camera"
 {
     float focalLength = 50
     float horizontalAperture = 36
-    double3 xformOp:translate = (0, 0, 22)
+    double3 xformOp:translate = (0, 0, 34)
     uniform token[] xformOpOrder = ["xformOp:translate"]
 }
 
@@ -93,7 +102,7 @@ def Mesh "occluder"
 {
     int[] faceVertexCounts = [4]
     int[] faceVertexIndices = [0, 1, 2, 3]
-    point3f[] points = [(-8, -5, -4), (8, -5, -4), (8, 5, -4), (-8, 5, -4)]
+    point3f[] points = [(-16, -8, -4), (16, -8, -4), (16, 8, -4), (-16, 8, -4)]
     color3f[] primvars:displayColor = [(0.18, 0.18, 0.18)]
     uniform token subdivisionScheme = "none"
 }
@@ -112,7 +121,7 @@ def ParticleField3DGaussianSplat "composite"
 {
     # Nearer particle first, which is also front-to-back. The renderer must not
     # depend on that being so; /reversed is the same pair the other way round.
-    point3f[] positions = [(3, 0, 0.4), (3, 0, -0.4)]
+    point3f[] positions = [(3.5, 0, 0.4), (3.5, 0, -0.4)]
     float3[] scales = [(0.5, 0.5, 0.5), (0.5, 0.5, 0.5)]
     quatf[] orientations = [(1, 0, 0, 0), (1, 0, 0, 0)]
     float[] opacities = [0.6, 0.8]
@@ -125,7 +134,7 @@ def ParticleField3DGaussianSplat "composite"
 
 def ParticleField3DGaussianSplat "reversed"
 {
-    point3f[] positions = [(-3, 0, -0.4), (-3, 0, 0.4)]
+    point3f[] positions = [(-3.5, 0, -0.4), (-3.5, 0, 0.4)]
     float3[] scales = [(0.5, 0.5, 0.5), (0.5, 0.5, 0.5)]
     quatf[] orientations = [(1, 0, 0, 0), (1, 0, 0, 0)]
     float[] opacities = [0.8, 0.6]
@@ -138,7 +147,7 @@ def ParticleField3DGaussianSplat "reversed"
 
 def ParticleField3DGaussianSplat "anisotropic"
 {
-    point3f[] positions = [(6, 0, 0)]
+    point3f[] positions = [(7, 0, 0)]
     float3[] scales = [(0.8, 0.1, 0.4)]
     # 45 degrees about Z: (cos 22.5, 0, 0, sin 22.5).
     quatf[] orientations = [(0.9238795, 0, 0, 0.3826834)]
@@ -164,7 +173,7 @@ def ParticleField3DGaussianSplat "directional"
     # produce and is why this prim is worth having. It also fails if the degree
     # is not read at all, since a degree of 0 would discard the array as being
     # four times too long for one particle and fall back to 0.5.
-    point3f[] positions = [(0, 3.5, 0)]
+    point3f[] positions = [(0, 3.4, 0)]
     float3[] scales = [(0.5, 0.5, 0.5)]
     quatf[] orientations = [(1, 0, 0, 0)]
     float[] opacities = [1]
@@ -183,5 +192,5 @@ def ParticleField3DGaussianSplat "unauthored"
     # applied schema documents -- unit scale, no rotation, fully opaque, and a
     # DC radiance of (0.5, 0.5, 0.5) -- so this prim is the fallback path, and
     # it is off to one side where it overlaps nothing.
-    point3f[] positions = [(-6, 0, 0)]
+    point3f[] positions = [(-8.5, 0, 0)]
 }

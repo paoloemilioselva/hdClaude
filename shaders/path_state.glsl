@@ -354,6 +354,8 @@ layout(buffer_reference, scalar) readonly buffer IndexBuffer    { uint values[];
 layout(buffer_reference, scalar) readonly buffer NormalBuffer   { vec3 values[]; };
 layout(buffer_reference, scalar) readonly buffer UvBuffer       { vec2 values[]; };
 layout(buffer_reference, scalar) readonly buffer TriMaterialBuffer { uint values[]; };
+layout(buffer_reference, scalar) readonly buffer SplatBuffer    { float values[]; };
+layout(buffer_reference, scalar) readonly buffer HarmonicBuffer { float values[]; };
 
 /// Per-instance geometry, reached by device address so that adding a prototype
 /// does not touch any descriptor set.
@@ -370,6 +372,14 @@ struct InstanceGeometry {
     // Per-triangle material, from GeomSubsets. Zero when every triangle uses
     // the instance's own binding, which is the common case.
     uint64_t triangleMaterials;
+    /// Particles, thirteen floats each: centre, opacity, then the nine of
+    /// inv(S) transpose(R). Non-zero exactly when this instance is a Gaussian
+    /// splat cloud, which is how every kernel tells it from a mesh and a curve
+    /// set -- the buffer's presence is the fact, as it is for `segments`.
+    uint64_t splats;
+    /// Spherical-harmonics coefficients, particle-major: three floats a
+    /// coefficient, (degree+1)^2 coefficients a particle.
+    uint64_t harmonics;
     mat3x4 objectToWorld;
     mat3x4 worldToObject;
     // The previous frame's placement. With worldToObject it takes a hit point
@@ -386,8 +396,32 @@ struct InstanceGeometry {
     /// is the only way a hard edge can be expressed: the two sides of a crease
     /// need different normals at the same vertex.
     uint normalsPerCorner;
+    /// The degree every particle of a splat cloud shares.
+    uint harmonicsDegree;
+    /// Which spatial basis function the particles instantiate. Matches
+    /// `hdclaude::SplatKernel`: 0 ellipsoid, 1 Gaussian surflet, 2 constant
+    /// surflet.
+    uint splatKernel;
+    /// Explicit padding, so neither this struct nor its C++ mirror has any
+    /// *implicit* padding: eight addresses, three matrices, six words, 232
+    /// bytes. See the mirror in path_tracer.cpp for why that matters.
     uint pad1;
 };
+
+/// What a hit record's first component holds when the ray was stopped by a
+/// Gaussian splat, with the instance in `.y` and the particle in `.z`.
+///
+/// A band of its own rather than an instance index, because a splat hit is not
+/// shaded: it has no material, and routing it through the per-material sort
+/// would hand it the fallback material and shade a particle as though it were a
+/// surface. Negative, so the sort and the shading kernel skip it exactly as they
+/// skip a miss, and tested *before* the analytic-light band -- a light is encoded
+/// as `-2 - index`, which is also negative.
+const int HDCLAUDE_HIT_SPLAT = int(0x80000000u);
+
+const uint HDCLAUDE_SPLAT_KERNEL_ELLIPSOID = 0u;
+const uint HDCLAUDE_SPLAT_KERNEL_GAUSSIAN_SURFLET = 1u;
+const uint HDCLAUDE_SPLAT_KERNEL_CONSTANT_SURFLET = 2u;
 
 /// The 3x3 linear part of an instance transform.
 ///
@@ -1028,6 +1062,263 @@ uint hdclaude_seed(uint pixel, uint sampleIndex, uint bounce)
     h *= 2246822519u;
     h ^= h >> 13;
     return h + 1u;
+}
+
+// --- Gaussian splats --------------------------------------------------------
+//
+// The device half of include/hdclaude/core/gaussian_splats.h. Every formula here
+// has a host twin the unit tests assert against -- the peak response along a
+// ray, the support radius, the spherical-harmonics basis -- and the two are
+// written the same way on purpose, because a renderer whose gate is a closed
+// form and whose kernel is a second derivation of it gates nothing.
+//
+// A hit is never composited and never sorted. A particle stops a ray with
+// probability equal to its opacity times the kernel's falloff, the nearest one
+// that does is what the ray sees, and the expectation of that is exactly the
+// front-to-back alpha compositing the schema defines. See
+// docs/gaussian-splats.md 3.
+
+/// How far a kernel's support reaches, in units of its own sigma.
+///
+/// Three for either Gaussian, which is the specification's own figure -- "the
+/// 3-sigma point is 3.0 and 99.7% of the splat support is within a spherical
+/// region of radius 3" -- and one for the constant surflet, whose support it
+/// bounds exactly.
+float hdclaude_splat_support(uint kernel)
+{
+    return kernel == HDCLAUDE_SPLAT_KERNEL_CONSTANT_SURFLET ? 1.0 : 3.0;
+}
+
+bool hdclaude_splat_flat(uint kernel)
+{
+    return kernel != HDCLAUDE_SPLAT_KERNEL_ELLIPSOID;
+}
+
+/// One particle: its centre, its opacity, and the map into the kernel's own
+/// space where the falloff is exp(-0.5 |x|^2).
+struct Splat {
+    vec3 center;
+    float opacity;
+    mat3 inverseTransform;
+};
+
+Splat hdclaude_splat(uint64_t address, int particle)
+{
+    SplatBuffer particles = SplatBuffer(address);
+    uint base = uint(particle) * 13u;
+    Splat splat;
+    splat.center = vec3(particles.values[base + 0u], particles.values[base + 1u],
+                        particles.values[base + 2u]);
+    splat.opacity = particles.values[base + 3u];
+    // Row-major on the host; GLSL's mat3 constructor takes columns, so the rows
+    // are handed over as columns of the transpose and read back transposed. The
+    // alternative is three dot products written out, which is the same work
+    // said less clearly.
+    splat.inverseTransform = transpose(mat3(
+        vec3(particles.values[base + 4u], particles.values[base + 5u],
+             particles.values[base + 6u]),
+        vec3(particles.values[base + 7u], particles.values[base + 8u],
+             particles.values[base + 9u]),
+        vec3(particles.values[base + 10u], particles.values[base + 11u],
+             particles.values[base + 12u])));
+    return splat;
+}
+
+/// Where an object-space ray comes closest to a particle in the particle's own
+/// metric, and how strongly the kernel responds there.
+///
+/// The specification says where the kernel is evaluated for a *projection* and
+/// says nothing about a ray, so hdClaude evaluates it at its maximum response
+/// along the ray: exact for every ray rather than for one projection, and
+/// closed-form (docs/gaussian-splats.md 2.2). Returns false when the ray misses
+/// the support.
+bool hdclaude_splat_peak(Splat splat, uint kernel, vec3 origin, vec3 direction,
+                         float tMin, float tMax, out float t, out float response)
+{
+    vec3 b = splat.inverseTransform * (origin - splat.center);
+    vec3 a = splat.inverseTransform * direction;
+    float radius = hdclaude_splat_support(kernel);
+
+    if (hdclaude_splat_flat(kernel))
+    {
+        // A flat kernel has no thickness, so there is one candidate distance
+        // rather than a peak: where the ray crosses the plane the disk lies in.
+        if (a.z == 0.0)
+        {
+            return false;
+        }
+        float hit = -b.z / a.z;
+        if (hit < tMin || hit > tMax)
+        {
+            return false;
+        }
+        vec2 planar = b.xy + hit * a.xy;
+        float distance = length(planar);
+        if (distance > radius)
+        {
+            return false;
+        }
+        t = hit;
+        response = kernel == HDCLAUDE_SPLAT_KERNEL_CONSTANT_SURFLET
+                       ? 1.0
+                       : exp(-0.5 * distance * distance);
+        return true;
+    }
+
+    float aa = dot(a, a);
+    float ab = dot(a, b);
+    float bb = dot(b, b);
+    float peak = aa > 0.0 ? -ab / aa : tMin;
+    peak = clamp(peak, tMin, tMax);
+
+    float squared = max(0.0, bb + peak * (2.0 * ab + peak * aa));
+    if (squared > radius * radius)
+    {
+        return false;
+    }
+    t = peak;
+    response = exp(-0.5 * squared);
+    return true;
+}
+
+/// The radiance a particle emits along `direction`.
+///
+/// The normalised real spherical harmonics, l-major and m-ascending, evaluated
+/// by the same Legendre recurrence the host uses -- rather than the four bands
+/// written out longhand, because two derivations of one basis is two things to
+/// keep in agreement and the recurrence handles any degree an asset carries.
+///
+/// `direction` points from the particle *toward the viewer*. Nothing in the
+/// schema says which way round it should be; this is hdClaude's choice, it is
+/// recorded in docs/gaussian-splats.md 2.3, and the test stage asserts it.
+vec3 hdclaude_splat_radiance(uint64_t address, uint degree, int particle,
+                             vec3 direction)
+{
+    HarmonicBuffer coefficients = HarmonicBuffer(address);
+    uint count = (degree + 1u) * (degree + 1u);
+    uint base = uint(particle) * count * 3u;
+
+    float length2 = dot(direction, direction);
+    if (length2 <= 0.0)
+    {
+        // No direction at all. The DC term is the only one that does not depend
+        // on one, and returning it is the honest answer rather than black.
+        float y00 = 0.28209479177387814;
+        return y00 * vec3(coefficients.values[base + 0u], coefficients.values[base + 1u],
+                          coefficients.values[base + 2u]);
+    }
+    vec3 d = direction * inversesqrt(length2);
+
+    float sinTheta = sqrt(max(0.0, 1.0 - d.z * d.z));
+    // At a pole the azimuth is undefined and every term that would use it is
+    // multiplied by a power of sin(theta), so any value does.
+    float cosPhi = sinTheta > 0.0 ? d.x / sinTheta : 1.0;
+    float sinPhi = sinTheta > 0.0 ? d.y / sinTheta : 0.0;
+
+    vec3 radiance = vec3(0.0);
+    float cosMPhi = 1.0;
+    float sinMPhi = 0.0;
+
+    for (uint m = 0u; m <= degree; ++m)
+    {
+        if (m > 0u)
+        {
+            float nextCos = cosMPhi * cosPhi - sinMPhi * sinPhi;
+            float nextSin = sinMPhi * cosPhi + cosMPhi * sinPhi;
+            cosMPhi = nextCos;
+            sinMPhi = nextSin;
+        }
+
+        // P(m,m) = (-1)^m (2m-1)!! sin(theta)^m, Condon-Shortley phase included,
+        // which is what makes this agree with the published closed forms.
+        float pmm = 1.0;
+        for (uint i = 1u; i <= m; ++i)
+        {
+            pmm *= -(2.0 * float(i) - 1.0) * sinTheta;
+        }
+
+        float previous = 0.0;
+        float beforePrevious = 0.0;
+        for (uint l = m; l <= degree; ++l)
+        {
+            float legendre;
+            if (l == m)
+            {
+                legendre = pmm;
+            }
+            else if (l == m + 1u)
+            {
+                legendre = d.z * (2.0 * float(m) + 1.0) * previous;
+            }
+            else
+            {
+                legendre = (d.z * (2.0 * float(l) - 1.0) * previous -
+                            (float(l) + float(m) - 1.0) * beforePrevious) /
+                           (float(l) - float(m));
+            }
+            beforePrevious = previous;
+            previous = legendre;
+
+            // sqrt((2l+1)/(4 pi) * (l-m)!/(l+m)!), as a running quotient rather
+            // than two factorials, which is what keeps it finite at any degree.
+            float normalisation = (2.0 * float(l) + 1.0) / 12.566370614359173;
+            for (uint k = l - m + 1u; k <= l + m; ++k)
+            {
+                normalisation /= float(k);
+            }
+            normalisation = sqrt(normalisation);
+
+            uint band = l * l + l;
+            if (m == 0u)
+            {
+                uint at = base + band * 3u;
+                radiance += normalisation * legendre *
+                            vec3(coefficients.values[at + 0u], coefficients.values[at + 1u],
+                                 coefficients.values[at + 2u]);
+            }
+            else
+            {
+                float scale = 1.4142135623730951 * normalisation * legendre;
+                uint positive = base + (band + m) * 3u;
+                uint negative = base + (band - m) * 3u;
+                radiance += scale * cosMPhi *
+                            vec3(coefficients.values[positive + 0u],
+                                 coefficients.values[positive + 1u],
+                                 coefficients.values[positive + 2u]);
+                radiance += scale * sinMPhi *
+                            vec3(coefficients.values[negative + 0u],
+                                 coefficients.values[negative + 1u],
+                                 coefficients.values[negative + 2u]);
+            }
+        }
+    }
+    return radiance;
+}
+
+/// The coin a particle's coverage is decided by.
+///
+/// Deliberately *not* drawn from the path's own generator. A ray query reports
+/// candidate boxes in whatever order traversal reaches them, so consuming the
+/// path's stream inside the candidate loop would make the number of draws -- and
+/// therefore every random number the rest of the path uses -- depend on
+/// traversal order. That is not a bias, but it is irreproducible, and it would
+/// make every existing hash in the test suite depend on a driver's choice of
+/// tree walk.
+///
+/// Hashed from the path, the sample and the particle instead, so the decision is
+/// independent per particle, identical whichever order the boxes arrive in, and
+/// the same on two runs of the same frame.
+float hdclaude_splat_coin(uint path, uint sampleIndex, int instance,
+                          int particle)
+{
+    uint seed = path * 2654435761u;
+    seed ^= sampleIndex * 2246822519u;
+    seed ^= uint(instance) * 3266489917u;
+    seed ^= uint(particle) * 668265263u;
+    // Two rounds, because one leaves the low bits of `particle` visible in the
+    // result and neighbouring particles are exactly what must not correlate.
+    seed = hdclaude_pcg(seed);
+    return float(hdclaude_pcg(seed) >> 8) * (1.0 / 16777216.0);
 }
 
 // --- Geometry helpers -------------------------------------------------------

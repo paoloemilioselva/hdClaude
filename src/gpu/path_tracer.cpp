@@ -219,6 +219,12 @@ struct InstanceGeometry {
     std::uint64_t normals;
     std::uint64_t uvs;
     std::uint64_t triangleMaterials;
+    /// Particles, thirteen floats each. Non-zero exactly when this instance is
+    /// a Gaussian splat cloud, which is how a kernel tells it from a mesh and a
+    /// curve set -- the buffer's presence is the fact, as it is for `segments`.
+    std::uint64_t splats;
+    /// Spherical-harmonics coefficients, particle-major.
+    std::uint64_t harmonics;
     float objectToWorld[12];
     float worldToObject[12];
     /// The previous frame's placement, for motion vectors. Composed with
@@ -229,8 +235,26 @@ struct InstanceGeometry {
     std::uint32_t uvsPerCorner;
     /// 1 when `normals` holds one normal per triangle corner.
     std::uint32_t normalsPerCorner;
-    std::uint32_t pad;
+    /// The degree every particle of this cloud shares, which is what says how
+    /// long each particle's block of coefficients is.
+    std::uint32_t harmonicsDegree;
+    /// Which spatial basis function the particles instantiate, matching
+    /// `SplatKernel`.
+    std::uint32_t splatKernel;
+    /// Explicit, so this struct has no *implicit* padding anywhere.
+    ///
+    /// The eight addresses come first and the six words last precisely so that
+    /// nothing has to be inserted between them: 64 + 144 + 24 = 232, a multiple
+    /// of the eight bytes a 64-bit member is aligned to, under C++ and under
+    /// GLSL's scalar block layout alike. Relying on two compilers to insert the
+    /// same invisible bytes in the same places is the kind of agreement that
+    /// holds until it does not, and a disagreement here reads every buffer
+    /// address off by a word.
+    std::uint32_t pad1;
 };
+static_assert(sizeof(InstanceGeometry) == 232,
+              "InstanceGeometry must be 232 bytes with no implicit padding; "
+              "path_state.glsl mirrors this layout member for member");
 
 VulkanBuffer MakeStorage(VulkanAllocator& allocator, VkDeviceSize size,
                          const char* name)
@@ -989,15 +1013,24 @@ void PathTracer::SetScene(const Scene& publishedScene,
         });
     }
 
-    std::vector<InstanceGeometry> table;
-    table.reserve(scene.instances.size());
+    // Sized to the scene's instance lists and written *by index*, not appended.
+    //
+    // The custom index a ray query reports is the scene's instance index, so a
+    // table built by appending would be off by one for every instance after any
+    // that was skipped -- which is what a prototype that failed to build causes.
+    // Every entry is written, and one whose prototype has no structure stays
+    // zeroed: nothing references it, because the accelerator emits no top-level
+    // instance for it either.
+    std::vector<InstanceGeometry> table(scene.instances.size() +
+                                        scene.splatInstances.size());
 
-    for (const MeshInstance& instance : scene.instances) {
+    for (std::size_t index = 0; index < scene.instances.size(); ++index) {
+        const MeshInstance& instance = scene.instances[index];
         const BottomLevelStructure* blas = _accelerator->Blas(instance.prototype);
         if (blas == nullptr) {
             continue;
         }
-        InstanceGeometry entry{};
+        InstanceGeometry& entry = table[index];
         entry.positions = blas->Positions().DeviceAddress();
         entry.indices = blas->Indices().DeviceAddress();
         entry.segments =
@@ -1027,7 +1060,34 @@ void PathTracer::SetScene(const Scene& publishedScene,
             entry.normalsPerCorner =
                 scene.prototypes[instance.prototype].normalsPerCorner ? 1u : 0u;
         }
-        table.push_back(entry);
+    }
+
+    // Splat placements occupy the table after every mesh placement, which is the
+    // numbering the accelerator gives their top-level instances.
+    for (std::size_t i = 0; i < scene.splatInstances.size(); ++i) {
+        const SplatInstance& instance = scene.splatInstances[i];
+        const BottomLevelStructure* blas =
+            _accelerator->SplatBlas(instance.prototype);
+        if (blas == nullptr || !blas->Splats().Valid()) {
+            continue;
+        }
+        InstanceGeometry& entry = table[scene.instances.size() + i];
+        entry.splats = blas->Splats().DeviceAddress();
+        entry.harmonics =
+            blas->Harmonics().Valid() ? blas->Harmonics().DeviceAddress() : 0;
+        entry.harmonicsDegree = blas->HarmonicsDegree();
+        entry.splatKernel = static_cast<std::uint32_t>(blas->Kernel());
+        std::memcpy(entry.objectToWorld, instance.transform.m,
+                    sizeof(entry.objectToWorld));
+        InvertTransform3x4(instance.transform.m, entry.worldToObject);
+        std::memcpy(entry.previousObjectToWorld,
+                    instance.hasPreviousTransform ? instance.previousTransform.m
+                                                  : instance.transform.m,
+                    sizeof(entry.previousObjectToWorld));
+        // No material index. A splat cloud is shaded by nothing: its radiance is
+        // its own, and index 0 here would name the fallback material as though
+        // one applied.
+        entry.material = 0;
     }
     _instanceCount = static_cast<std::uint32_t>(table.size());
 

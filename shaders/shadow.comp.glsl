@@ -59,7 +59,57 @@ void main()
                 rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
             InstanceGeometry candidateGeometry =
                 instances.values[candidateInstance];
-            if (candidateGeometry.segments != 0ul)
+            if (candidateGeometry.splats != 0ul)
+            {
+                // A Gaussian splat occludes with the same probability it covers
+                // a camera ray, drawn from the same hash of the same particle.
+                // Over many samples that delivers the product of (1 - alpha)
+                // along the ray, which is the transmittance the compositing
+                // model implies -- and it comes out of independent coin flips
+                // rather than an ordered walk, so nothing here sorts either.
+                int candidateSplat =
+                    rayQueryGetIntersectionPrimitiveIndexEXT(query, false);
+                Splat splat =
+                    hdclaude_splat(candidateGeometry.splats, candidateSplat);
+
+                vec3 candidateOrigin =
+                    rayQueryGetIntersectionObjectRayOriginEXT(query, false);
+                vec3 candidateDirection =
+                    rayQueryGetIntersectionObjectRayDirectionEXT(query, false);
+
+                // The search is bounded by the light here, and by nothing in
+                // `extend`, and the difference is deliberate. A shadow ray
+                // genuinely *ends* at the light, so a particle whose centre lies
+                // beyond it is met only over the part of its support that is in
+                // front, and the largest response the ray actually reaches is
+                // the honest measure of that. A camera ray does not end at the
+                // nearest hit found so far -- that hit can still be replaced --
+                // so bounding its search the same way evaluates a particle's
+                // falloff at another particle's depth, which is the defect the
+                // two-particle composite caught.
+                float hit;
+                float response;
+                if (hdclaude_splat_peak(splat, candidateGeometry.splatKernel,
+                                        candidateOrigin, candidateDirection,
+                                        rayQueryGetRayTMinEXT(query),
+                                        ray.maxDistance, hit, response) &&
+                    hdclaude_linked(candidateInstance, ray.shadowLink))
+                {
+                    float alpha = clamp(splat.opacity * response, 0.0, 1.0);
+                    // A different stream from the camera ray's, because the two
+                    // decide different questions about the same particle and
+                    // sharing one would correlate a surface's shadow with what
+                    // the camera sees through the cloud above it.
+                    float coin = hdclaude_splat_coin(
+                        ray.path + 0x9e3779b9u, frame.sampleIndex,
+                        candidateInstance, candidateSplat);
+                    if (coin < alpha)
+                    {
+                        rayQueryGenerateIntersectionEXT(query, hit);
+                    }
+                }
+            }
+            else if (candidateGeometry.segments != 0ul)
             {
                 int candidateSegment =
                     rayQueryGetIntersectionPrimitiveIndexEXT(query, false);

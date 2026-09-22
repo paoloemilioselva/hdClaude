@@ -62,6 +62,50 @@ void main()
     vec3 direction = pathDirection.values[path];
     vec4 lambda = pathWavelengths.values[path];
 
+    // --- A ray a Gaussian splat stopped --------------------------------------
+    //
+    // Retired here rather than shaded, because a splat has no material: its
+    // radiance is spherical harmonics carried as geometry, and the schema has no
+    // reflectance in it for a surface shader to consume. Coverage has already
+    // been decided in traversal, so a particle that accepted the ray is opaque
+    // by construction and there is nothing behind it to gather.
+    //
+    // No multiple importance sampling. Nothing samples a splat cloud by
+    // next-event estimation, so there is no second strategy to share with and
+    // the radiance arrives in full -- the same trade the medium walk records,
+    // and the reason a glossy surface lit only by splats is noisier than one lit
+    // by an analytic light.
+    if (record == HDCLAUDE_HIT_SPLAT)
+    {
+        ivec4 hit = hits.values[path];
+        InstanceGeometry geometry = instances.values[hit.y];
+
+        // Toward the viewer, which is the direction hdClaude evaluates the
+        // harmonics in and the one thing about them the schema does not state
+        // (docs/gaussian-splats.md 2.3). In the cloud's own space, because that
+        // is the space the coefficients were fitted in; a rotated instance whose
+        // radiance did not rotate with it would light its own reflection wrongly.
+        vec3 outgoing =
+            normalize(hdclaude_linear(geometry.worldToObject) * -direction);
+
+        vec3 radiance = hdclaude_splat_radiance(
+            geometry.harmonics, geometry.harmonicsDegree, hit.z, outgoing);
+
+        // Clamped at zero because a radiance is not negative. Spherical
+        // harmonics ring, so a truncated series legitimately dips below zero in
+        // some directions, and that is a property of the fit rather than of the
+        // asset -- unlike a negative *DC* term, which is reported by name on the
+        // way in because it is the mean over the sphere and cannot be negative
+        // at all.
+        radiance = max(radiance, vec3(0.0));
+
+        pathRadiance.values[path] +=
+            pathThroughput.values[path] *
+            hdclaude_upsample_emission(radiance, lambda);
+        pathThroughput.values[path] = vec4(0.0);
+        return;
+    }
+
     // The surface this ray left, and the density of the scattering there. Both
     // decide what a light the ray reaches may contribute (see `delivers`).
     int lastInstance = pathLastInstance.values[path];

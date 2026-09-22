@@ -42,6 +42,15 @@ class BottomLevelStructure {
     /// evidence that this geometry deforms.
     BottomLevelStructure(const VulkanContext& context, VulkanAllocator& allocator,
                          const MeshPrototype& prototype, bool allowUpdate = false);
+    /// Build over a Gaussian splat cloud.
+    ///
+    /// Boxes again, as a curve set is, and for the same reason: the kernel is
+    /// intersected in the traversal shader, so what the structure partitions is
+    /// each particle's support rather than any surface. The particles and their
+    /// radiance are held here beside the structure because it hands their
+    /// addresses to the kernels, exactly as it does a mesh's normals.
+    BottomLevelStructure(const VulkanContext& context, VulkanAllocator& allocator,
+                         const SplatPrototype& prototype);
     ~BottomLevelStructure();
 
     BottomLevelStructure(BottomLevelStructure&&) noexcept;
@@ -85,7 +94,16 @@ class BottomLevelStructure {
     /// Curve segments, eight floats each. Empty for a triangle prototype.
     const VulkanBuffer& Segments() const { return _segments; }
     const VulkanBuffer& SegmentMaterials() const { return _segmentMaterials; }
+    /// Particles, thirteen floats each. Empty for anything but a splat cloud.
+    const VulkanBuffer& Splats() const { return _splats; }
+    /// Spherical-harmonics coefficients, particle-major.
+    const VulkanBuffer& Harmonics() const { return _harmonics; }
     bool IsCurve() const { return _curve; }
+    bool IsSplat() const { return _splat; }
+    /// The degree every particle of this cloud shares.
+    std::uint32_t HarmonicsDegree() const { return _harmonicsDegree; }
+    /// Which spatial basis function the particles instantiate.
+    SplatKernel Kernel() const { return _kernel; }
     /// How many primitives the structure holds: triangles, or segments.
     std::uint32_t TriangleCount() const { return _triangleCount; }
 
@@ -105,7 +123,12 @@ class BottomLevelStructure {
     /// The boxes the structure is partitioned over. Held because the structure
     /// references them and a refit rewrites them.
     VulkanBuffer _aabbs;
+    VulkanBuffer _splats;
+    VulkanBuffer _harmonics;
     bool _curve = false;
+    bool _splat = false;
+    std::uint32_t _harmonicsDegree = 0;
+    SplatKernel _kernel = SplatKernel::GaussianEllipsoid;
     std::uint32_t _triangleCount = 0;
     std::uint32_t _vertexCount = 0;
     std::uint64_t _fingerprint = 0;
@@ -163,6 +186,12 @@ class SceneAccelerator {
 
     const TopLevelStructure& Tlas() const { return _tlas; }
     const BottomLevelStructure* Blas(std::uint32_t prototype) const;
+    /// The structure built over splat prototype `prototype`, or null.
+    ///
+    /// A separate lookup rather than a shared one, because the two prototype
+    /// lists are numbered independently: splat prototype 0 and mesh prototype 0
+    /// both exist and are different bodies.
+    const BottomLevelStructure* SplatBlas(std::uint32_t prototype) const;
 
     /// How many prototypes were rebuilt by the last Update, and how many were
     /// reused. Asserted by the tests: reuse that silently does not happen is a
@@ -180,6 +209,8 @@ class SceneAccelerator {
     /// the prototype list.
     std::unordered_map<std::uint64_t, BottomLevelStructure> _byFingerprint;
     std::vector<std::uint64_t> _prototypeFingerprints;
+    std::unordered_map<std::uint64_t, BottomLevelStructure> _bySplatFingerprint;
+    std::vector<std::uint64_t> _splatPrototypeFingerprints;
     std::uint32_t _lastBuilt = 0;
     std::uint32_t _lastReused = 0;
     std::uint32_t _lastRefit = 0;
