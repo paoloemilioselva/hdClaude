@@ -585,4 +585,276 @@ SplatCloud BuildSplatCloud(const SplatCloudSource& source)
     return cloud;
 }
 
+
+// ---------------------------------------------------------------------------
+// The volumetric reading
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// The three scale factors a particle was built from, recovered exactly.
+///
+/// Column `j` of the forward transform is `scale[j]` times column `j` of a
+/// rotation, and a rotation's columns are unit, so a column's length *is* the
+/// scale. Nothing is estimated and no decomposition is solved for.
+bool SplatScales(const Splat& splat, double scale[3])
+{
+    double forward[9];
+    if (!Invert3x3(splat.inverseTransform, forward)) {
+        return false;
+    }
+    for (int column = 0; column < 3; ++column) {
+        const double x = forward[0 * 3 + column];
+        const double y = forward[1 * 3 + column];
+        const double z = forward[2 * 3 + column];
+        scale[column] = std::sqrt(x * x + y * y + z * z);
+    }
+    return scale[0] > 0.0 && scale[1] > 0.0 && scale[2] > 0.0;
+}
+
+/// Squared distance from a point to an axis-aligned box, zero inside it.
+double SquaredDistanceToBox(const double point[3], const double minimum[3],
+                            const double maximum[3])
+{
+    double total = 0.0;
+    for (int axis = 0; axis < 3; ++axis) {
+        const double below = minimum[axis] - point[axis];
+        const double above = point[axis] - maximum[axis];
+        const double outside = std::max(0.0, std::max(below, above));
+        total += outside * outside;
+    }
+    return total;
+}
+
+}  // namespace
+
+float SplatExtinction(const Splat& splat, float maximumOpticalDepth)
+{
+    double scale[3];
+    if (!SplatScales(splat, scale)) {
+        return 0.0f;
+    }
+    // The radius of the sphere of the same volume, which is what makes this
+    // exact for an isotropic particle and symmetric about the authored value
+    // for any other.
+    const double mean = std::cbrt(scale[0] * scale[1] * scale[2]);
+    if (!(mean > 0.0)) {
+        return 0.0f;
+    }
+
+    const double opacity = std::min(std::max(double(splat.opacity), 0.0), 1.0);
+    // -ln(1 - o), bounded where it diverges. An opacity of one really is an
+    // infinite optical depth; the bound is on the representation, not on the
+    // data, and at the default of 20 it leaves a transmittance of 2e-9.
+    double depth = opacity >= 1.0 ? double(maximumOpticalDepth)
+                                  : -std::log(1.0 - opacity);
+    depth = std::min(depth, double(maximumOpticalDepth));
+
+    // A ray through the centre of an isotropic particle integrates
+    // exp(-0.5 (t/s)^2) over the whole line, which is s sqrt(2 pi).
+    constexpr double kRootTwoPi = 2.5066282746310002;
+    return static_cast<float>(depth / (kRootTwoPi * mean));
+}
+
+std::size_t SplatMajorantGrid::CellCount() const
+{
+    return static_cast<std::size_t>(resolution[0]) *
+           static_cast<std::size_t>(resolution[1]) *
+           static_cast<std::size_t>(resolution[2]);
+}
+
+int SplatMajorantGrid::CellAt(const float point[3]) const
+{
+    int coordinate[3];
+    for (int axis = 0; axis < 3; ++axis) {
+        const float offset = point[axis] - origin[axis];
+        const int index = static_cast<int>(std::floor(offset / cellSize[axis]));
+        if (index < 0 || index >= resolution[axis]) {
+            return -1;
+        }
+        coordinate[axis] = index;
+    }
+    return (coordinate[2] * resolution[1] + coordinate[1]) * resolution[0] +
+           coordinate[0];
+}
+
+float SplatMajorantGrid::MajorantAt(const float point[3]) const
+{
+    const int cell = CellAt(point);
+    if (cell < 0 || static_cast<std::size_t>(cell) >= majorant.size()) {
+        return 0.0f;
+    }
+    return majorant[static_cast<std::size_t>(cell)];
+}
+
+SplatMajorantGrid BuildSplatMajorantGrid(const SplatCloud& cloud,
+                                         std::size_t targetCells,
+                                         float maximumOpticalDepth)
+{
+    SplatMajorantGrid grid;
+    if (cloud.splats.empty()) {
+        grid.offsets.assign(2, 0);
+        grid.majorant.assign(1, 0.0f);
+        return grid;
+    }
+
+    double extent[3];
+    for (int axis = 0; axis < 3; ++axis) {
+        grid.origin[axis] = cloud.boundsMin[axis];
+        extent[axis] = double(cloud.boundsMax[axis]) - double(cloud.boundsMin[axis]);
+        // A cloud that is flat on an axis -- one particle, or a plane of them --
+        // still needs a width to divide by.
+        if (!(extent[axis] > 0.0)) {
+            extent[axis] = 1.0e-4;
+        }
+    }
+
+    // Roughly cubical cells, about `targetCells` of them. A cell much longer on
+    // one axis bounds badly along it and wastes steps across it.
+    const double volume = extent[0] * extent[1] * extent[2];
+    const double side =
+        std::cbrt(volume / static_cast<double>(std::max<std::size_t>(1, targetCells)));
+    for (int axis = 0; axis < 3; ++axis) {
+        const int count = static_cast<int>(std::ceil(extent[axis] / std::max(side, 1.0e-6)));
+        grid.resolution[axis] = std::min(std::max(count, 1), 1024);
+        grid.cellSize[axis] =
+            static_cast<float>(extent[axis] / grid.resolution[axis]);
+    }
+
+    const std::size_t cells = grid.CellCount();
+    grid.majorant.assign(cells, 0.0f);
+
+    // Two passes over the particles: count what each cell holds, then fill.
+    // Counting first is what keeps this one allocation rather than one per cell.
+    std::vector<std::uint32_t> counts(cells, 0);
+    const float radius = SplatSupportRadius(cloud.kernel);
+
+    struct Reach {
+        int lo[3];
+        int hi[3];
+        double centre[3];
+        double density;
+        double maxScale;
+    };
+    std::vector<Reach> reach(cloud.splats.size());
+
+    for (std::size_t i = 0; i < cloud.splats.size(); ++i) {
+        const Splat& splat = cloud.splats[i];
+        Reach& entry = reach[i];
+
+        float minimum[3];
+        float maximum[3];
+        SplatBounds(splat, cloud.kernel, minimum, maximum);
+
+        double scale[3];
+        entry.maxScale = SplatScales(splat, scale)
+                             ? std::max(scale[0], std::max(scale[1], scale[2]))
+                             : 0.0;
+        entry.density = SplatExtinction(splat, maximumOpticalDepth);
+        for (int axis = 0; axis < 3; ++axis) {
+            entry.centre[axis] = splat.center[axis];
+            const double low = (double(minimum[axis]) - grid.origin[axis]) /
+                               grid.cellSize[axis];
+            const double high = (double(maximum[axis]) - grid.origin[axis]) /
+                                grid.cellSize[axis];
+            entry.lo[axis] = std::min(std::max(int(std::floor(low)), 0),
+                                      grid.resolution[axis] - 1);
+            entry.hi[axis] = std::min(std::max(int(std::floor(high)), 0),
+                                      grid.resolution[axis] - 1);
+        }
+        for (int z = entry.lo[2]; z <= entry.hi[2]; ++z) {
+            for (int y = entry.lo[1]; y <= entry.hi[1]; ++y) {
+                for (int x = entry.lo[0]; x <= entry.hi[0]; ++x) {
+                    const std::size_t cell = static_cast<std::size_t>(
+                        (z * grid.resolution[1] + y) * grid.resolution[0] + x);
+                    ++counts[cell];
+                }
+            }
+        }
+    }
+
+    grid.offsets.assign(cells + 1, 0);
+    for (std::size_t cell = 0; cell < cells; ++cell) {
+        grid.offsets[cell + 1] = grid.offsets[cell] + counts[cell];
+    }
+    grid.indices.assign(grid.offsets[cells], 0);
+
+    std::vector<std::uint32_t> cursor(grid.offsets.begin(),
+                                      grid.offsets.begin() +
+                                          static_cast<std::ptrdiff_t>(cells));
+
+    for (std::size_t i = 0; i < cloud.splats.size(); ++i) {
+        const Reach& entry = reach[i];
+        if (!(entry.maxScale > 0.0) || !(entry.density > 0.0)) {
+            continue;
+        }
+        for (int z = entry.lo[2]; z <= entry.hi[2]; ++z) {
+            for (int y = entry.lo[1]; y <= entry.hi[1]; ++y) {
+                for (int x = entry.lo[0]; x <= entry.hi[0]; ++x) {
+                    const std::size_t cell = static_cast<std::size_t>(
+                        (z * grid.resolution[1] + y) * grid.resolution[0] + x);
+                    grid.indices[cursor[cell]++] =
+                        static_cast<std::uint32_t>(i);
+
+                    // The bound. Every point of the cell is at least
+                    // `distance` from the centre in world space, and the
+                    // particle's metric stretches by at most its largest
+                    // scale, so the Mahalanobis distance is at least
+                    // distance / maxScale and the response at most the
+                    // Gaussian of that. Using the world distance directly
+                    // would not be a bound -- the nearest point in world
+                    // space is not the nearest in the particle's own metric,
+                    // and a majorant that is too small biases delta tracking
+                    // in a way no image shows.
+                    double minimum[3];
+                    double maximum[3];
+                    for (int axis = 0; axis < 3; ++axis) {
+                        const int coordinate = axis == 0 ? x : (axis == 1 ? y : z);
+                        minimum[axis] = grid.origin[axis] +
+                                        double(coordinate) * grid.cellSize[axis];
+                        maximum[axis] = minimum[axis] + grid.cellSize[axis];
+                    }
+                    const double squared =
+                        SquaredDistanceToBox(entry.centre, minimum, maximum);
+                    const double mahalanobis =
+                        std::sqrt(squared) / entry.maxScale;
+                    const double response =
+                        mahalanobis >= radius
+                            ? 0.0
+                            : std::exp(-0.5 * mahalanobis * mahalanobis);
+                    grid.majorant[cell] +=
+                        static_cast<float>(entry.density * response);
+                }
+            }
+        }
+    }
+
+    return grid;
+}
+
+float EvaluateSplatDensity(const SplatCloud& cloud,
+                           const SplatMajorantGrid& grid, const float point[3],
+                           float maximumOpticalDepth)
+{
+    const int cell = grid.CellAt(point);
+    if (cell < 0 || static_cast<std::size_t>(cell) + 1 >= grid.offsets.size()) {
+        return 0.0f;
+    }
+    double total = 0.0;
+    for (std::uint32_t at = grid.offsets[static_cast<std::size_t>(cell)];
+         at < grid.offsets[static_cast<std::size_t>(cell) + 1]; ++at) {
+        const std::uint32_t index = grid.indices[at];
+        if (index >= cloud.splats.size()) {
+            continue;
+        }
+        const Splat& splat = cloud.splats[index];
+        const double response =
+            SplatKernelResponse(splat, cloud.kernel, point);
+        if (response > 0.0) {
+            total += double(SplatExtinction(splat, maximumOpticalDepth)) * response;
+        }
+    }
+    return static_cast<float>(total);
+}
+
 }  // namespace hdclaude

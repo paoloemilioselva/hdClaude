@@ -2643,6 +2643,241 @@ void TestSurfletSupportIsADisk()
     CHECK_NEAR(maximum[2] - minimum[2], 0.0, 1.0e-5);
 }
 
+/// A cloud of pseudo-random particles, for the volumetric tests.
+SplatCloud RandomCloud(int count, std::uint32_t seed, bool isotropic = false)
+{
+    std::uint32_t state = seed;
+    const auto next = [&state]() {
+        state = state * 1664525u + 1013904223u;
+        return static_cast<double>(state >> 8) / static_cast<double>(1u << 24);
+    };
+
+    SplatCloudSource source;
+    source.sphericalHarmonicsDegree = 0;
+    for (int i = 0; i < count; ++i) {
+        source.positions.push_back(static_cast<float>(next() * 4.0 - 2.0));
+        source.positions.push_back(static_cast<float>(next() * 4.0 - 2.0));
+        source.positions.push_back(static_cast<float>(next() * 4.0 - 2.0));
+
+        double raw[4] = {next() * 2.0 - 1.0, next() * 2.0 - 1.0,
+                         next() * 2.0 - 1.0, next() * 2.0 - 1.0};
+        double norm = std::sqrt(raw[0] * raw[0] + raw[1] * raw[1] +
+                                raw[2] * raw[2] + raw[3] * raw[3]);
+        if (!(norm > 0.0)) {
+            norm = 1.0;
+            raw[0] = 1.0;
+        }
+        for (int k = 0; k < 4; ++k) {
+            source.orientations.push_back(static_cast<float>(raw[k] / norm));
+        }
+
+        const double base = 0.08 + next() * 0.35;
+        source.scales.push_back(static_cast<float>(base));
+        source.scales.push_back(
+            static_cast<float>(isotropic ? base : 0.05 + next() * 0.45));
+        source.scales.push_back(
+            static_cast<float>(isotropic ? base : 0.05 + next() * 0.45));
+
+        source.opacities.push_back(static_cast<float>(0.05 + next() * 0.9));
+        source.sphericalHarmonics.push_back(1.0f);
+        source.sphericalHarmonics.push_back(1.0f);
+        source.sphericalHarmonics.push_back(1.0f);
+    }
+    return BuildSplatCloud(source);
+}
+
+void TestSplatExtinctionReproducesAnIsotropicAlpha()
+{
+    // The one property the density conversion is chosen to have, asserted as
+    // the definition rather than described in a comment: a ray through the
+    // centre of an isotropic particle accumulates -ln(1 - o) of optical depth,
+    // so the transmittance is exactly 1 - o and the volumetric reading agrees
+    // with the coverage one for that particle from every direction.
+    //
+    // The integral is taken numerically along the ray, which is what makes this
+    // a test of the field rather than of the algebra that produced it.
+    for (const float opacity : {0.1f, 0.35f, 0.6f, 0.9f, 0.99f}) {
+        for (const float scale : {0.05f, 0.3f, 1.7f}) {
+            const float center[3] = {0.0f, 0.0f, 0.0f};
+            const float quaternion[4] = {0.3826834f, 0.0f, 0.9238795f, 0.0f};
+            const float scales[3] = {scale, scale, scale};
+            const Splat splat = OneSplat(center, quaternion, scales, opacity);
+            const float sigma = SplatExtinction(splat);
+
+            // Three directions, one of them off-axis, because an isotropic
+            // particle must give the same answer to all of them.
+            const double directions[3][3] = {
+                {1.0, 0.0, 0.0},
+                {0.0, 0.0, 1.0},
+                {0.5773502692, 0.5773502692, 0.5773502692}};
+            for (const auto& direction : directions) {
+                const double span = SplatSupportRadius(
+                                        SplatKernel::GaussianEllipsoid) *
+                                    scale;
+                const int steps = 20000;
+                const double step = 2.0 * span / steps;
+                double depth = 0.0;
+                for (int i = 0; i < steps; ++i) {
+                    const double t = -span + (i + 0.5) * step;
+                    const float point[3] = {
+                        static_cast<float>(t * direction[0]),
+                        static_cast<float>(t * direction[1]),
+                        static_cast<float>(t * direction[2])};
+                    depth += sigma *
+                             SplatKernelResponse(
+                                 splat, SplatKernel::GaussianEllipsoid, point) *
+                             step;
+                }
+                const double alpha = 1.0 - std::exp(-depth);
+                // The support is truncated at three sigma, which is the
+                // specification's own bound and removes 0.27% of the integral.
+                CHECK_NEAR(alpha, opacity, 0.004 + 0.01 * opacity);
+            }
+        }
+    }
+}
+
+void TestSplatMajorantBoundsTheDensityEverywhere()
+{
+    // The assertion delta tracking is unbiased *because of*. A majorant that is
+    // too small anywhere makes the estimator quietly wrong -- it loses the
+    // collisions it should have rejected -- and no image shows it, which is why
+    // this is sampled densely rather than reasoned about.
+    for (const bool isotropic : {false, true}) {
+        const SplatCloud cloud = RandomCloud(400, isotropic ? 0x51ed2701u
+                                                            : 0xa5a5f00du,
+                                             isotropic);
+        CHECK(cloud.Valid());
+        const SplatMajorantGrid grid = BuildSplatMajorantGrid(cloud, 4096);
+        CHECK(grid.CellCount() > 1);
+
+        std::uint32_t state = 0x1234567u;
+        const auto next = [&state]() {
+            state = state * 1664525u + 1013904223u;
+            return static_cast<double>(state >> 8) / static_cast<double>(1u << 24);
+        };
+
+        int inside = 0;
+        double worstRatio = 0.0;
+        for (int i = 0; i < 120000; ++i) {
+            float point[3];
+            for (int axis = 0; axis < 3; ++axis) {
+                point[axis] = static_cast<float>(
+                    cloud.boundsMin[axis] +
+                    next() * (double(cloud.boundsMax[axis]) -
+                              double(cloud.boundsMin[axis])));
+            }
+            const float density = EvaluateSplatDensity(cloud, grid, point);
+            const float bound = grid.MajorantAt(point);
+            // Strictly: the bound must not be exceeded. A tolerance here would
+            // be a tolerance on bias.
+            CHECK(density <= bound + 1.0e-4f);
+            if (density > 0.0f) {
+                ++inside;
+                worstRatio = std::max(worstRatio, double(density) / bound);
+            }
+        }
+        // The sampling has to actually land in the cloud, or the check above
+        // is asserting that zero is below zero.
+        CHECK(inside > 5000);
+        // And the bound has to be worth having: one that is orders of
+        // magnitude loose is correct and useless, because delta tracking then
+        // rejects almost every collision it samples.
+        CHECK(worstRatio > 0.02);
+    }
+}
+
+void TestSplatDensityGridAgreesWithEveryParticle()
+{
+    // The grid holds a particle in every cell its support reaches, so a lookup
+    // through it must equal the sum over the whole cloud. If it does not, the
+    // grid is dropping particles at cell boundaries -- which reads as faint
+    // seams on a lattice and is very hard to see in a noisy volume.
+    const SplatCloud cloud = RandomCloud(250, 0x77aa33ccu);
+    const SplatMajorantGrid grid = BuildSplatMajorantGrid(cloud, 2048);
+
+    std::uint32_t state = 0xfeedbeefu;
+    const auto next = [&state]() {
+        state = state * 1664525u + 1013904223u;
+        return static_cast<double>(state >> 8) / static_cast<double>(1u << 24);
+    };
+
+    int compared = 0;
+    for (int i = 0; i < 20000; ++i) {
+        float point[3];
+        for (int axis = 0; axis < 3; ++axis) {
+            point[axis] = static_cast<float>(
+                cloud.boundsMin[axis] +
+                next() * (double(cloud.boundsMax[axis]) -
+                          double(cloud.boundsMin[axis])));
+        }
+        double brute = 0.0;
+        for (const Splat& splat : cloud.splats) {
+            const double response =
+                SplatKernelResponse(splat, cloud.kernel, point);
+            if (response > 0.0) {
+                brute += double(SplatExtinction(splat)) * response;
+            }
+        }
+        const double viaGrid = EvaluateSplatDensity(cloud, grid, point);
+        CHECK_NEAR(viaGrid, brute, 1.0e-4 * std::max(1.0, brute));
+        if (brute > 0.0) {
+            ++compared;
+        }
+    }
+    CHECK(compared > 1000);
+}
+
+void TestSplatMajorantGridSurvivesDegenerateClouds()
+{
+    // A single particle, and a cloud that is flat on one axis. Both give a
+    // bounding box with no width somewhere, and a grid that divided by it
+    // would produce cells of infinite size or none at all.
+    SplatCloudSource single;
+    single.positions = {1.0f, 2.0f, 3.0f};
+    single.scales = {0.25f, 0.25f, 0.25f};
+    single.opacities = {0.5f};
+    single.sphericalHarmonicsDegree = 0;
+    single.sphericalHarmonics = {1.0f, 1.0f, 1.0f};
+    const SplatCloud one = BuildSplatCloud(single);
+    const SplatMajorantGrid grid = BuildSplatMajorantGrid(one, 512);
+    CHECK(grid.CellCount() >= 1);
+    const float centre[3] = {1.0f, 2.0f, 3.0f};
+    CHECK(EvaluateSplatDensity(one, grid, centre) > 0.0f);
+    CHECK(EvaluateSplatDensity(one, grid, centre) <= grid.MajorantAt(centre) + 1.0e-4f);
+
+    // A plane of particles: zero extent on z before the kernel expands it.
+    SplatCloudSource flat;
+    for (int i = 0; i < 9; ++i) {
+        flat.positions.push_back(static_cast<float>(i % 3));
+        flat.positions.push_back(static_cast<float>(i / 3));
+        flat.positions.push_back(0.0f);
+        flat.scales.push_back(0.2f);
+        flat.scales.push_back(0.2f);
+        flat.scales.push_back(0.2f);
+        flat.opacities.push_back(0.7f);
+        flat.sphericalHarmonics.push_back(1.0f);
+        flat.sphericalHarmonics.push_back(1.0f);
+        flat.sphericalHarmonics.push_back(1.0f);
+    }
+    flat.sphericalHarmonicsDegree = 0;
+    const SplatCloud plane = BuildSplatCloud(flat);
+    const SplatMajorantGrid planeGrid = BuildSplatMajorantGrid(plane, 512);
+    CHECK(planeGrid.CellCount() >= 1);
+    const float onPlane[3] = {1.0f, 1.0f, 0.0f};
+    CHECK(EvaluateSplatDensity(plane, planeGrid, onPlane) > 0.0f);
+    CHECK(EvaluateSplatDensity(plane, planeGrid, onPlane) <=
+          planeGrid.MajorantAt(onPlane) + 1.0e-4f);
+
+    // And an empty cloud, which must produce a grid that answers rather than
+    // one that indexes out of its own arrays.
+    const SplatCloud empty;
+    const SplatMajorantGrid emptyGrid = BuildSplatMajorantGrid(empty, 512);
+    const float anywhere[3] = {0.0f, 0.0f, 0.0f};
+    CHECK_EQ(emptyGrid.MajorantAt(anywhere), 0.0f);
+    CHECK_EQ(EvaluateSplatDensity(empty, emptyGrid, anywhere), 0.0f);
+}
+
 int main()
 {
     TestEnvironmentFlagReadsOneWay();
@@ -2701,5 +2936,9 @@ int main()
     TestSplatBuildKeepsHarmonicsWithTheirParticles();
     TestSplatBuildReportsNegativeDcRadiance();
     TestSurfletSupportIsADisk();
+    TestSplatExtinctionReproducesAnIsotropicAlpha();
+    TestSplatMajorantBoundsTheDensityEverywhere();
+    TestSplatDensityGridAgreesWithEveryParticle();
+    TestSplatMajorantGridSurvivesDegenerateClouds();
     return hdclaude_test::Summarize("hdClaudeCoreTests");
 }

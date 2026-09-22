@@ -210,4 +210,94 @@ void SplatBounds(const Splat& splat, SplatKernel kernel, float minimum[3],
 /// nudged to something representable.
 SplatCloud BuildSplatCloud(const SplatCloudSource& source);
 
+
+// ---------------------------------------------------------------------------
+// The volumetric reading
+// ---------------------------------------------------------------------------
+//
+// Everything above treats a particle's opacity as coverage: a probability that
+// it stops a ray, which is exactly the schema's own alpha-compositing model
+// estimated without sorting. What follows is the other reading, in which the
+// kernel is a *density* and a path travels through the cloud rather than being
+// stopped by one particle of it. That is what makes a splat cloud a participant
+// in transport -- attenuating over distance, scattering if a material says it
+// does, and interacting with fog and glass on equal terms -- and it is the
+// reading a renderer needs in order to path trace splats fully rather than to
+// reproduce a rasterizer's picture of them.
+//
+// It costs the one thing the schema does not supply. Opacity is dimensionless
+// and extinction is a reciprocal length, and no density field reproduces alpha
+// compositing for all ray directions (docs/gaussian-splats.md 2.1). The
+// conversion below is therefore a stated choice with a stated domain of
+// exactness rather than a derivation, and it is the only place in this file
+// where that is true.
+
+/// The extinction coefficient at a particle's centre, per unit length.
+///
+/// Chosen so that a ray through the centre of an **isotropic** particle
+/// accumulates an optical depth of exactly `-ln(1 - opacity)`, and therefore
+/// arrives at exactly the authored alpha: the two readings agree exactly for
+/// such a particle, whichever direction the ray came from. For an anisotropic
+/// one they cannot agree in every direction at once, and this matches the
+/// geometric mean of its three axes -- the radius of the sphere of the same
+/// volume -- so the disagreement is bounded by the particle's axis ratio and
+/// falls either side of the authored value rather than always one way.
+///
+/// An opacity of one is an infinite optical depth, which is the right answer
+/// and not a representable one. It is bounded at `maximumOpticalDepth`, whose
+/// default of 20 leaves a transmittance of 2e-9 -- opaque to any measurement an
+/// image can make. That is a numerical bound on a quantity that is genuinely
+/// infinite, not an approximation of the authored data.
+float SplatExtinction(const Splat& splat, float maximumOpticalDepth = 20.0f);
+
+/// A macrocell grid over a splat cloud, holding an upper bound on the density
+/// in each cell and the particles that reach it.
+///
+/// This is what makes unbiased transport through the cloud possible at bounded
+/// cost. Delta tracking samples a collision from a *majorant* and then rejects
+/// in proportion to the true density, and it is unbiased only if the majorant
+/// really does bound the density everywhere in the cell -- a majorant that is
+/// too small produces an image that is wrong by an amount nothing in the
+/// picture reveals. So the bound here is conservative by construction and
+/// asserted by sampling, rather than estimated.
+struct SplatMajorantGrid {
+    float origin[3] = {0.0f, 0.0f, 0.0f};
+    /// Width of one cell on each axis. Never zero.
+    float cellSize[3] = {1.0f, 1.0f, 1.0f};
+    int resolution[3] = {1, 1, 1};
+
+    /// Upper bound on the summed density anywhere in each cell.
+    std::vector<float> majorant;
+    /// Start of each cell's run in `indices`, with one extra entry at the end.
+    std::vector<std::uint32_t> offsets;
+    /// Particles whose support reaches each cell, cell-major.
+    std::vector<std::uint32_t> indices;
+
+    std::size_t CellCount() const;
+    /// The cell a point falls in, or -1 when it is outside the grid.
+    int CellAt(const float point[3]) const;
+    /// The bound for a point, which is zero outside the grid because no
+    /// particle's support reaches there.
+    float MajorantAt(const float point[3]) const;
+};
+
+/// Build the grid, aiming for about `targetCells` cells over the cloud.
+///
+/// The count is a target rather than a rule: the grid is sized so its cells are
+/// roughly cubical, because a cell far longer on one axis than another bounds
+/// badly in the long direction and costs a delta-tracking step in the short
+/// one.
+SplatMajorantGrid BuildSplatMajorantGrid(const SplatCloud& cloud,
+                                         std::size_t targetCells = 32768,
+                                         float maximumOpticalDepth = 20.0f);
+
+/// The summed extinction at a point, from the particles the grid says reach it.
+///
+/// Equal to the sum over every particle in the cloud, because the grid holds
+/// every particle whose support reaches the cell -- which the tests assert
+/// against a brute-force sum rather than assuming.
+float EvaluateSplatDensity(const SplatCloud& cloud,
+                           const SplatMajorantGrid& grid, const float point[3],
+                           float maximumOpticalDepth = 20.0f);
+
 }  // namespace hdclaude

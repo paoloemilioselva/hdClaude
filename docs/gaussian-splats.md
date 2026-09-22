@@ -371,3 +371,94 @@ kernel there -- and at the stage's first spacing it reached into `/reversed` and
 laid a uniform 0.008 of grey over it. That made the two halves of the
 order-independence check differ by 3.4% for a reason that had nothing to do with
 ordering, which is exactly how a gate stops measuring what it claims to.
+
+## 7. What full path tracing needs
+
+Section 3 estimates the schema's own definition, and does it well: splats emit,
+occlude, appear in reflections and interleave with geometry on `t` alone. What it
+is not is *transport*. A particle that accepts a ray stops it, so a path never
+travels **through** a cloud, never scatters inside one, and never receives
+anything. This section states what the rest costs.
+
+### 7.1 The one thing that is not machinery
+
+**The schema contains no albedo.** Everything else below is work; this is a
+missing quantity. A particle's spherical harmonics say what light *leaves* it,
+and nothing anywhere says what it would do to light arriving. So there are two
+honest ways to get scattering and exactly two:
+
+- **Bind a MaterialX `volumeshader`.** The kernel supplies where the particle is
+  (density); the material supplies what it does to light (absorption, scattering
+  albedo, phase anisotropy, its own emission). Nothing is inferred, because the
+  material is authored. This needs a third terminal in the material compiler,
+  beside `surfaceshader` and `displacementshader`; `anisotropic_vdf` and
+  `uniform_edf` already exist as `genglsl_pt` closures.
+- **Invent one.** Declare the baked radiance to be reflected rather than emitted
+  and scale it by the visibility of the new scene's lights. This is what many
+  3DGS integrations do and it is rejected here: the baked radiance already
+  contains the capture's own shadows, so scaling it by a second visibility
+  multiplies shadows rather than replacing them, and the decomposition into
+  albedo and irradiance is asserted rather than known.
+
+### 7.2 The density, and its domain of exactness
+
+Transport needs extinction per unit length; the schema gives dimensionless
+opacity, and 2.1 says no conversion is exact for all directions. `SplatExtinction`
+makes the choice explicit: the extinction that gives a ray through the centre of
+an **isotropic** particle an optical depth of exactly `-ln(1 - opacity)`, matched
+on the geometric mean of the three scales -- the radius of the sphere of the same
+volume -- so an anisotropic particle errs either side of the authored alpha by
+its axis ratio rather than always one way.
+
+An opacity of one is an infinite optical depth. That is the correct answer and
+not a representable one, so it is bounded at 20, leaving a transmittance of 2e-9.
+The bound is on the representation of a quantity that is genuinely infinite, not
+on the authored data.
+
+### 7.3 The medium a splat cloud is not
+
+hdClaude already transports through media, and a splat cloud fits none of it.
+The existing medium is **entered at a surface** -- a shading event publishes an
+interior when a path refracts into it -- and it is **homogeneous**, a single
+extinction carried on the path. A splat cloud has no boundary surface to cross
+and no constant density. So this is a second mechanism beside the first, not a
+reuse of it:
+
+- Entry and exit are the cloud's own acceleration structure, not a shading event.
+- The density varies per point, so the distance to a collision cannot be sampled
+  in closed form from one coefficient.
+
+The standard answer is delta tracking against a **majorant**: sample a collision
+from a bound on the density, then keep it in proportion to the true density
+there. It is unbiased only if the bound really does bound, everywhere -- a
+majorant that is too small loses the collisions it should have rejected, and
+nothing in the image says so. `SplatMajorantGrid` is therefore conservative by
+construction (each cell's bound sums, over the particles reaching it, the largest
+response each could have anywhere in that cell, with the Mahalanobis distance
+bounded below by the world distance over the particle's largest scale) and the
+bound is asserted by sampling rather than reasoned about.
+
+### 7.4 What is left, in the order it pays
+
+1. **Transport through the cloud.** The majorant grid on the device, a
+   heterogeneous walk in `extend` entered from the cloud's instance rather than
+   from a surface, and emission accumulated along it. Splats become a medium:
+   paths pass through, transmittance is Beer-Lambert, and a cloud behind glass
+   or inside fog is correct. Still emission-only, because 7.1.
+2. **The `volumeshader` terminal.** Splats scatter, receive light, cast coloured
+   shadows. This is the step that answers "why do they not react to light".
+3. **Next-event estimation.** Toward lights from inside the medium, and toward
+   the cloud as an emitter. Today a surface lit only by splats finds them by
+   BSDF sampling alone: a wall lit by a compact cloud measured a mean of 0.39
+   with per-pixel values from 0 to 1.28 at 512 samples, which is correct in
+   expectation and unusable. This is what makes splat lighting practical rather
+   than merely unbiased.
+4. **Reconstruction guides.** A splat-covered pixel currently reports background
+   depth, no normal and no motion, so DLSS would reproject a cloud as sky. The
+   depth is the collision distance; the normal is the normalised gradient of the
+   density, which a Gaussian mixture has in closed form.
+
+Stochastic coverage stays, and is not superseded. It reproduces the appearance
+the asset was trained for; the volumetric model is physically meaningful and
+looks different. Which one a frame uses is a setting, and the difference between
+them on a real capture is to be measured and recorded rather than asserted.
