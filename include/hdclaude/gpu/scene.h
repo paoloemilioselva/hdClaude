@@ -203,6 +203,19 @@ struct SplatPrototype {
     std::uint64_t Fingerprint() const;
 };
 
+/// The shape of a splat cloud's majorant grid, without its contents.
+///
+/// Carried beside the device buffers so a kernel can find the cell a point
+/// falls in. The contents -- the bounds and the particle lists -- live on the
+/// device; this is the handful of numbers needed to index them, and it is
+/// separate so that nothing holds a second host copy of a grid that can run to
+/// tens of megabytes.
+struct SplatGridShape {
+    float origin[3] = {0.0f, 0.0f, 0.0f};
+    float cellSize[3] = {1.0f, 1.0f, 1.0f};
+    std::int32_t resolution[3] = {1, 1, 1};
+};
+
 /// One placement of a splat cloud.
 struct SplatInstance {
     std::uint32_t prototype = 0;

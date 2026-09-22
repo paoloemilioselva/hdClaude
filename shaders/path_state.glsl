@@ -355,6 +355,9 @@ layout(buffer_reference, scalar) readonly buffer NormalBuffer   { vec3 values[];
 layout(buffer_reference, scalar) readonly buffer UvBuffer       { vec2 values[]; };
 layout(buffer_reference, scalar) readonly buffer TriMaterialBuffer { uint values[]; };
 layout(buffer_reference, scalar) readonly buffer SplatBuffer    { float values[]; };
+layout(buffer_reference, scalar) readonly buffer MajorantBuffer { float values[]; };
+layout(buffer_reference, scalar) readonly buffer GridOffsetBuffer { uint values[]; };
+layout(buffer_reference, scalar) readonly buffer GridIndexBuffer { uint values[]; };
 layout(buffer_reference, scalar) readonly buffer HarmonicBuffer { float values[]; };
 
 /// Per-instance geometry, reached by device address so that adding a prototype
@@ -380,6 +383,9 @@ struct InstanceGeometry {
     /// Spherical-harmonics coefficients, particle-major: three floats a
     /// coefficient, (degree+1)^2 coefficients a particle.
     uint64_t harmonics;
+    /// This cloud's majorant grid, a `SplatVolume`, or zero. Per cloud rather
+    /// than per instance, so a mesh does not carry a splat cloud's grid.
+    uint64_t splatVolume;
     mat3x4 objectToWorld;
     mat3x4 worldToObject;
     // The previous frame's placement. With worldToObject it takes a hit point
@@ -403,7 +409,7 @@ struct InstanceGeometry {
     /// surflet.
     uint splatKernel;
     /// Explicit padding, so neither this struct nor its C++ mirror has any
-    /// *implicit* padding: eight addresses, three matrices, six words, 232
+    /// *implicit* padding: nine addresses, three matrices, six words, 240
     /// bytes. See the mirror in path_tracer.cpp for why that matters.
     uint pad1;
 };
@@ -1319,6 +1325,128 @@ float hdclaude_splat_coin(uint path, uint sampleIndex, int instance,
     // result and neighbouring particles are exactly what must not correlate.
     seed = hdclaude_pcg(seed);
     return float(hdclaude_pcg(seed) >> 8) * (1.0 / 16777216.0);
+}
+
+// --- The volumetric reading -------------------------------------------------
+//
+// Coverage above stops a ray at one particle. This is the other reading, in
+// which the cloud is a density a path travels *through*. The device half of the
+// same functions in include/hdclaude/core/gaussian_splats.h, and the same
+// numbers: the extinction that makes an isotropic particle's authored alpha come
+// out exactly, and a majorant that bounds the summed density everywhere in a
+// cell. See docs/gaussian-splats.md 7.
+
+/// A splat cloud's majorant grid. Mirrors SplatVolume in path_tracer.cpp.
+struct SplatVolume {
+    vec3 origin;
+    vec3 cellSize;
+    ivec3 resolution;
+    uint pad;
+    uint64_t majorant;
+    uint64_t offsets;
+    uint64_t indices;
+};
+
+layout(buffer_reference, scalar) readonly buffer SplatVolumeBuffer {
+    SplatVolume value;
+};
+
+/// The cell an object-space point falls in, or -1 outside the grid.
+int hdclaude_splat_cell(SplatVolume volume, vec3 point)
+{
+    vec3 offset = (point - volume.origin) / volume.cellSize;
+    ivec3 cell = ivec3(floor(offset));
+    if (any(lessThan(cell, ivec3(0))) ||
+        any(greaterThanEqual(cell, volume.resolution)))
+    {
+        return -1;
+    }
+    return (cell.z * volume.resolution.y + cell.y) * volume.resolution.x + cell.x;
+}
+
+/// The bound on the summed extinction anywhere in the cell holding `point`.
+///
+/// Zero outside the grid, because no particle's support reaches there. Delta
+/// tracking is unbiased only while this really bounds the density, which is what
+/// the host asserts at a quarter of a million sampled points -- the failure is
+/// silent otherwise, and the image simply loses the collisions it should have
+/// rejected.
+float hdclaude_splat_majorant(SplatVolume volume, vec3 point)
+{
+    int cell = hdclaude_splat_cell(volume, point);
+    if (cell < 0 || volume.majorant == 0ul)
+    {
+        return 0.0;
+    }
+    return MajorantBuffer(volume.majorant).values[cell];
+}
+
+/// The extinction a particle contributes at its own centre, per unit length.
+///
+/// The choice recorded in docs/gaussian-splats.md 7.2: exact for an isotropic
+/// particle from every direction, matched on the geometric mean of the three
+/// scales otherwise. The scales are the lengths of the forward transform's
+/// columns, and the forward transform's determinant is the reciprocal of the
+/// inverse's -- so the product of the three scales, which is all this needs,
+/// comes straight off the determinant with no inversion at all.
+float hdclaude_splat_extinction(Splat splat, float maximumOpticalDepth)
+{
+    float scaled = determinant(splat.inverseTransform);
+    if (!(abs(scaled) > 0.0))
+    {
+        return 0.0;
+    }
+    // (sx sy sz) = 1 / det(inv(S) transpose(R)), and the mean is its cube root.
+    float mean = pow(1.0 / abs(scaled), 1.0 / 3.0);
+    if (!(mean > 0.0))
+    {
+        return 0.0;
+    }
+    float opacity = clamp(splat.opacity, 0.0, 1.0);
+    float depth = opacity >= 1.0 ? maximumOpticalDepth : -log(1.0 - opacity);
+    depth = min(depth, maximumOpticalDepth);
+    // A ray through the centre of an isotropic particle integrates
+    // exp(-0.5 (t/s)^2) over the whole line, which is s sqrt(2 pi).
+    return depth / (2.5066282746310002 * mean);
+}
+
+/// The summed extinction at an object-space point.
+///
+/// Reads only the particles the grid says reach this cell, which the host
+/// asserts equals the sum over the whole cloud -- a grid that dropped particles
+/// at cell boundaries would show as faint seams on a lattice, invisible in a
+/// noisy volume.
+///
+/// The ellipsoid kernel only. A surflet is a disk with no thickness, so it
+/// encloses no volume and has no density to speak of -- and the 3DGS prim
+/// applies the ellipsoid kernel, which is the only one that reaches here.
+float hdclaude_splat_density(InstanceGeometry geometry, SplatVolume volume,
+                             vec3 point, float maximumOpticalDepth)
+{
+    int cell = hdclaude_splat_cell(volume, point);
+    if (cell < 0 || volume.offsets == 0ul || volume.indices == 0ul)
+    {
+        return 0.0;
+    }
+    GridOffsetBuffer offsets = GridOffsetBuffer(volume.offsets);
+    GridIndexBuffer members = GridIndexBuffer(volume.indices);
+
+    float radius = hdclaude_splat_support(geometry.splatKernel);
+    float total = 0.0;
+    for (uint at = offsets.values[cell]; at < offsets.values[cell + 1]; ++at)
+    {
+        uint index = members.values[at];
+        Splat splat = hdclaude_splat(geometry.splats, int(index));
+        vec3 local = splat.inverseTransform * (point - splat.center);
+        float squared = dot(local, local);
+        if (squared > radius * radius)
+        {
+            continue;
+        }
+        total += hdclaude_splat_extinction(splat, maximumOpticalDepth) *
+                 exp(-0.5 * squared);
+    }
+    return total;
 }
 
 // --- Geometry helpers -------------------------------------------------------

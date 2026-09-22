@@ -16,6 +16,10 @@ if(HDCLAUDE_ENABLE_VULKAN)
   add_executable(hdClaudeGlslCompilerTests glsl_compiler_tests.cpp)
   target_link_libraries(hdClaudeGlslCompilerTests PRIVATE hdClaude::Gpu)
   target_include_directories(hdClaudeGlslCompilerTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  # The kernels are compiled from the source tree, not the install, so a kernel
+  # that does not compile fails here rather than at the first render.
+  target_compile_definitions(hdClaudeGlslCompilerTests PRIVATE
+      HDCLAUDE_SHADER_DIRECTORY="${CMAKE_SOURCE_DIR}/shaders")
   add_test(NAME glsl_compiler COMMAND hdClaudeGlslCompilerTests)
 
   # Geometry and traversal. Scenes are built programmatically, never read from

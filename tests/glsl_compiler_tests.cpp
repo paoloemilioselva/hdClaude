@@ -5,6 +5,11 @@
 
 #include "test_support.h"
 
+#include "hdclaude/gpu/path_tracer.h"
+
+#include <filesystem>
+#include <iterator>
+
 #include "hdclaude/gpu/glsl_compiler.h"
 
 #include <cstdio>
@@ -152,6 +157,82 @@ void TestCacheServesTheSecondCompile(const GlslCompiler& compiler)
 
 }  // namespace
 
+/// Every shipped kernel compiles.
+///
+/// This needs glslang and a directory of text, and no device at all, which is
+/// the point: a kernel that does not compile is a renderer that does not start,
+/// and until this existed the only thing that discovered one was a render.
+/// Two GLSL reserved words -- `buffer` and `sample`, both perfectly reasonable
+/// names for a local -- got as far as a gallery render before anything
+/// objected, and each cost a build and a launch to find.
+///
+/// `shade.comp.glsl` and `displace.comp.glsl` are deliberately absent. They are
+/// *appended to a generated MaterialX module* and have no `#version` of their
+/// own, because GLSL requires that directive before any code and the material's
+/// code comes first. Compiling them alone would assert that a fragment is a
+/// program. The materialx tests compile them as what they are, joined to a real
+/// generated material.
+void TestEveryKernelCompiles(const GlslCompiler& compiler)
+{
+    const std::filesystem::path directory(HDCLAUDE_SHADER_DIRECTORY);
+    CHECK(std::filesystem::is_directory(directory));
+
+    // Named rather than globbed. A glob would silently stop covering a kernel
+    // that was renamed, and pass while covering nothing at all if the directory
+    // moved -- which is the failure this test exists to prevent, in its own
+    // image.
+    const char* kernels[] = {
+        "raygen.comp.glsl",
+        "extend.comp.glsl",
+        "shadow.comp.glsl",
+        "environment.comp.glsl",
+        "material_sort.comp.glsl",
+        "prepare_dispatch.comp.glsl",
+        "film.comp.glsl",
+        "guides.comp.glsl",
+        "specular_hit.comp.glsl",
+        "reconstruct_inputs.comp.glsl",
+        "reconstruct_exposure.comp.glsl",
+    };
+
+    int compiled = 0;
+    for (const char* name : kernels) {
+        const std::string source = LoadKernel(directory, name);
+        // An empty source is a missing file or an unreadable one, and it would
+        // otherwise "compile" to nothing and pass.
+        CHECK(source.size() > 200);
+
+        GlslCompileOptions options;
+        options.stage = ShaderStage::Compute;
+        options.moduleName = name;
+        const GlslCompileResult result = compiler.Compile(source, options);
+        if (!result.ok) {
+            std::fprintf(stderr, "  %s did not compile:\n%s\n", name,
+                         result.log.c_str());
+        }
+        CHECK(result.ok);
+        CHECK(!result.spirv.empty());
+        if (result.ok) {
+            ++compiled;
+        }
+    }
+    std::printf("  %d of %d kernels compiled\n", compiled,
+                int(std::size(kernels)));
+
+    // And the two that cannot stand alone really cannot, so that the exclusion
+    // above is a fact about them rather than a habit. A day when
+    // `shade.comp.glsl` grows its own `#version` is a day this test should
+    // fail and be updated.
+    for (const char* fragment : {"shade.comp.glsl", "displace.comp.glsl"}) {
+        const std::string source = LoadKernel(directory, fragment);
+        CHECK(source.size() > 200);
+        GlslCompileOptions options;
+        options.stage = ShaderStage::Compute;
+        options.moduleName = fragment;
+        CHECK(!compiler.Compile(source, options).ok);
+    }
+}
+
 int main()
 {
     std::printf("hdClaudeGlslCompilerTests\n");
@@ -162,6 +243,7 @@ int main()
     TestInvalidShaderReportsRatherThanThrows(compiler);
     TestTargetFeaturesAreAvailable(compiler);
     TestCacheServesTheSecondCompile(compiler);
+    TestEveryKernelCompiles(compiler);
 
     return hdclaude_test::Summarize("hdClaudeGlslCompilerTests");
 }

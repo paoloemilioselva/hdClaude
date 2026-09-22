@@ -98,6 +98,14 @@ class BottomLevelStructure {
     const VulkanBuffer& Splats() const { return _splats; }
     /// Spherical-harmonics coefficients, particle-major.
     const VulkanBuffer& Harmonics() const { return _harmonics; }
+    /// The majorant grid, for transport *through* the cloud rather than
+    /// coverage of it. Built with the structure because it is derived from the
+    /// same particles and invalidated by exactly the same changes, so the
+    /// fingerprint that decides whether to rebuild one decides both.
+    const VulkanBuffer& Majorant() const { return _majorant; }
+    const VulkanBuffer& GridOffsets() const { return _gridOffsets; }
+    const VulkanBuffer& GridIndices() const { return _gridIndices; }
+    const SplatGridShape& GridShape() const { return _gridShape; }
     bool IsCurve() const { return _curve; }
     bool IsSplat() const { return _splat; }
     /// The degree every particle of this cloud shares.
@@ -125,6 +133,10 @@ class BottomLevelStructure {
     VulkanBuffer _aabbs;
     VulkanBuffer _splats;
     VulkanBuffer _harmonics;
+    VulkanBuffer _majorant;
+    VulkanBuffer _gridOffsets;
+    VulkanBuffer _gridIndices;
+    SplatGridShape _gridShape;
     bool _curve = false;
     bool _splat = false;
     std::uint32_t _harmonicsDegree = 0;

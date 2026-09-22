@@ -539,6 +539,30 @@ BottomLevelStructure::BottomLevelStructure(const VulkanContext& context,
     _aabbs = UploadDeviceLocal(context, allocator, SplatBoxes(prototype),
                                kBuildInputUsage, (name + ".aabbs").c_str());
 
+    // The majorant grid, for the volumetric reading. Built here rather than on
+    // demand because it is derived from exactly the particles this structure
+    // was built over, so the fingerprint that decides whether to rebuild one
+    // decides both -- and because building it when a render setting asked for
+    // it would make that setting invalidate acceleration structures, which is a
+    // rebuild of the whole scene for a change of transport model.
+    {
+        const SplatMajorantGrid grid = BuildSplatMajorantGrid(prototype.cloud);
+        for (int axis = 0; axis < 3; ++axis) {
+            _gridShape.origin[axis] = grid.origin[axis];
+            _gridShape.cellSize[axis] = grid.cellSize[axis];
+            _gridShape.resolution[axis] = grid.resolution[axis];
+        }
+        _majorant = UploadDeviceLocal(context, allocator, grid.majorant,
+                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                      (name + ".majorant").c_str());
+        _gridOffsets = UploadDeviceLocal(context, allocator, grid.offsets,
+                                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                         (name + ".gridOffsets").c_str());
+        _gridIndices = UploadDeviceLocal(context, allocator, grid.indices,
+                                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                         (name + ".gridIndices").c_str());
+    }
+
     VkAccelerationStructureGeometryKHR geometry{
         VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
     // Not marked opaque, and that is the whole design rather than an oversight.
@@ -619,6 +643,10 @@ void BottomLevelStructure::Reset()
     _aabbs.Reset();
     _splats.Reset();
     _harmonics.Reset();
+    _majorant.Reset();
+    _gridOffsets.Reset();
+    _gridIndices.Reset();
+    _gridShape = SplatGridShape{};
     _curve = false;
     _splat = false;
     _harmonicsDegree = 0;
@@ -734,6 +762,10 @@ BottomLevelStructure::BottomLevelStructure(BottomLevelStructure&& other) noexcep
       _aabbs(std::move(other._aabbs)),
       _splats(std::move(other._splats)),
       _harmonics(std::move(other._harmonics)),
+      _majorant(std::move(other._majorant)),
+      _gridOffsets(std::move(other._gridOffsets)),
+      _gridIndices(std::move(other._gridIndices)),
+      _gridShape(other._gridShape),
       _curve(std::exchange(other._curve, false)),
       _splat(std::exchange(other._splat, false)),
       _harmonicsDegree(std::exchange(other._harmonicsDegree, 0)),
@@ -765,6 +797,10 @@ BottomLevelStructure& BottomLevelStructure::operator=(
         _aabbs = std::move(other._aabbs);
         _splats = std::move(other._splats);
         _harmonics = std::move(other._harmonics);
+        _majorant = std::move(other._majorant);
+        _gridOffsets = std::move(other._gridOffsets);
+        _gridIndices = std::move(other._gridIndices);
+        _gridShape = other._gridShape;
         _curve = std::exchange(other._curve, false);
         _splat = std::exchange(other._splat, false);
         _harmonicsDegree = std::exchange(other._harmonicsDegree, 0);

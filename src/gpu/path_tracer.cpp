@@ -209,6 +209,26 @@ constexpr std::uint32_t kPrepareShadow = 2;
 constexpr std::uint32_t kSortCount = 0;
 constexpr std::uint32_t kSortScatter = 1;
 
+/// Mirrors SplatVolume in path_state.glsl.
+///
+/// Per *cloud*, not per instance, and reached from the instance by one address.
+/// The alternative -- eleven more words on every InstanceGeometry -- would make
+/// every mesh in every scene carry a splat cloud's grid parameters.
+struct SplatVolume {
+    float origin[3];
+    float cellSize[3];
+    std::int32_t resolution[3];
+    /// Explicit, so the three addresses below start eight-byte aligned and
+    /// neither this struct nor its GLSL mirror has any implicit padding.
+    std::uint32_t pad;
+    std::uint64_t majorant;
+    std::uint64_t offsets;
+    std::uint64_t indices;
+};
+static_assert(sizeof(SplatVolume) == 64,
+              "SplatVolume must be 64 bytes with no implicit padding; "
+              "path_state.glsl mirrors this layout member for member");
+
 /// Mirrors InstanceGeometry in path_state.glsl.
 struct InstanceGeometry {
     std::uint64_t positions;
@@ -225,6 +245,8 @@ struct InstanceGeometry {
     std::uint64_t splats;
     /// Spherical-harmonics coefficients, particle-major.
     std::uint64_t harmonics;
+    /// This cloud's majorant grid, or zero. Non-zero only alongside `splats`.
+    std::uint64_t splatVolume;
     float objectToWorld[12];
     float worldToObject[12];
     /// The previous frame's placement, for motion vectors. Composed with
@@ -243,8 +265,8 @@ struct InstanceGeometry {
     std::uint32_t splatKernel;
     /// Explicit, so this struct has no *implicit* padding anywhere.
     ///
-    /// The eight addresses come first and the six words last precisely so that
-    /// nothing has to be inserted between them: 64 + 144 + 24 = 232, a multiple
+    /// The nine addresses come first and the six words last precisely so that
+    /// nothing has to be inserted between them: 72 + 144 + 24 = 240, a multiple
     /// of the eight bytes a 64-bit member is aligned to, under C++ and under
     /// GLSL's scalar block layout alike. Relying on two compilers to insert the
     /// same invisible bytes in the same places is the kind of agreement that
@@ -252,7 +274,7 @@ struct InstanceGeometry {
     /// address off by a word.
     std::uint32_t pad1;
 };
-static_assert(sizeof(InstanceGeometry) == 232,
+static_assert(sizeof(InstanceGeometry) == 240,
               "InstanceGeometry must be 232 bytes with no implicit padding; "
               "path_state.glsl mirrors this layout member for member");
 
@@ -1021,6 +1043,53 @@ void PathTracer::SetScene(const Scene& publishedScene,
     // Every entry is written, and one whose prototype has no structure stays
     // zeroed: nothing references it, because the accelerator emits no top-level
     // instance for it either.
+    // One volume record per splat prototype, uploaded once and pointed at by
+    // every placement of that cloud.
+    std::vector<SplatVolume> volumes(scene.splatPrototypes.size());
+    for (std::size_t i = 0; i < scene.splatPrototypes.size(); ++i) {
+        const BottomLevelStructure* blas =
+            _accelerator->SplatBlas(static_cast<std::uint32_t>(i));
+        SplatVolume& volume = volumes[i];
+        volume = SplatVolume{};
+        if (blas == nullptr) {
+            continue;
+        }
+        const SplatGridShape& shape = blas->GridShape();
+        for (int axis = 0; axis < 3; ++axis) {
+            volume.origin[axis] = shape.origin[axis];
+            volume.cellSize[axis] = shape.cellSize[axis];
+            volume.resolution[axis] = shape.resolution[axis];
+        }
+        volume.majorant =
+            blas->Majorant().Valid() ? blas->Majorant().DeviceAddress() : 0;
+        volume.offsets = blas->GridOffsets().Valid()
+                             ? blas->GridOffsets().DeviceAddress()
+                             : 0;
+        volume.indices = blas->GridIndices().Valid()
+                             ? blas->GridIndices().DeviceAddress()
+                             : 0;
+    }
+
+    _splatVolumes = VulkanBuffer();
+    if (!volumes.empty()) {
+        const VkDeviceSize size = volumes.size() * sizeof(SplatVolume);
+        BufferDescription staging;
+        staging.size = size;
+        staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        staging.domain = BufferDomain::HostUpload;
+        staging.debugName = "splatVolumes.staging";
+        VulkanBuffer upload(_allocator, staging);
+        upload.Write(volumes.data(), size);
+
+        _splatVolumes = MakeStorage(_allocator, size, "splatVolumes");
+        _context.SubmitImmediate([&](VkCommandBuffer command) {
+            VkBufferCopy region{};
+            region.size = size;
+            vkCmdCopyBuffer(command, upload.Handle(), _splatVolumes.Handle(), 1,
+                            &region);
+        });
+    }
+
     std::vector<InstanceGeometry> table(scene.instances.size() +
                                         scene.splatInstances.size());
 
@@ -1077,6 +1146,11 @@ void PathTracer::SetScene(const Scene& publishedScene,
             blas->Harmonics().Valid() ? blas->Harmonics().DeviceAddress() : 0;
         entry.harmonicsDegree = blas->HarmonicsDegree();
         entry.splatKernel = static_cast<std::uint32_t>(blas->Kernel());
+        if (_splatVolumes.Valid() &&
+            instance.prototype < scene.splatPrototypes.size()) {
+            entry.splatVolume = _splatVolumes.DeviceAddress() +
+                                instance.prototype * sizeof(SplatVolume);
+        }
         std::memcpy(entry.objectToWorld, instance.transform.m,
                     sizeof(entry.objectToWorld));
         InvertTransform3x4(instance.transform.m, entry.worldToObject);

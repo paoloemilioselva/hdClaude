@@ -740,6 +740,9 @@ class PathTracer {
     VulkanBuffer _instanceTable;
     std::uint32_t _instanceCount = 0;
     VulkanBuffer _triangleMaterials;
+    /// One majorant-grid record per splat prototype, pointed at by every
+    /// placement of that cloud.
+    VulkanBuffer _splatVolumes;
     VulkanBuffer _lightTable;
     std::uint32_t _lightCount = 0;
 
