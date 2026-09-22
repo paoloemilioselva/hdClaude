@@ -50,6 +50,18 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (lightGeometry)
                          (curveGeometry)
                          (splatTransport)
+                         (device)
+                         (shaderDirectory)
+                         (statsReport)
+                         (vulkanValidation)
+                         (trace)
+                         (profileKernels)
+                         (poisonPathState)
+                         (dumpShaders)
+                         (frameLog)
+                         (repeatRenders)
+                         (republishAt)
+                         (dlssRuntimeDirectory)
                          (curveSides)
                          (curveSegmentSamples)
                          (subdivisionLevel)
@@ -68,6 +80,62 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (roughness));
 
 namespace {
+
+/// Which render setting stands for which environment variable.
+///
+/// One list rather than a convention, because the two names differ in spelling
+/// and a convention that has to be remembered is a convention that drifts: an
+/// audit found twelve variables with no setting beside them, every one of them
+/// something worth flipping from a viewport rather than by restarting a process.
+/// Adding a variable means adding a row here.
+const std::vector<std::pair<TfToken, std::string>>& HdClaudeEnvironmentSettings()
+{
+    static const std::vector<std::pair<TfToken, std::string>> pairs = {
+        {_tokens->samplesPerPixel, "HDCLAUDE_SAMPLES_PER_PIXEL"},
+        {_tokens->samplesPerFrame, "HDCLAUDE_SAMPLES_PER_FRAME"},
+        {_tokens->maxBounces, "HDCLAUDE_MAX_BOUNCES"},
+        {_tokens->exposure, "HDCLAUDE_EXPOSURE"},
+        {_tokens->environmentIntensity, "HDCLAUDE_ENVIRONMENT_INTENSITY"},
+        {_tokens->sunIntensity, "HDCLAUDE_SUN_INTENSITY"},
+        {_tokens->lightGeometry, "HDCLAUDE_LIGHT_GEOMETRY"},
+        {_tokens->textureQuality, "HDCLAUDE_TEXTURE_QUALITY"},
+        {_tokens->curveGeometry, "HDCLAUDE_CURVE_GEOMETRY"},
+        {_tokens->curveSides, "HDCLAUDE_CURVE_SIDES"},
+        {_tokens->curveSegmentSamples, "HDCLAUDE_CURVE_SEGMENT_SAMPLES"},
+        {_tokens->subdivisionLevel, "HDCLAUDE_SUBDIVISION_LEVEL"},
+        {_tokens->adaptiveSubdivision, "HDCLAUDE_ADAPTIVE_SUBDIVISION"},
+        {_tokens->perFaceSubdivision, "HDCLAUDE_PER_FACE_SUBDIVISION"},
+        {_tokens->subdivisionEdgePixels, "HDCLAUDE_SUBDIVISION_EDGE_PIXELS"},
+        {_tokens->subdivisionOffScreenLevel,
+         "HDCLAUDE_SUBDIVISION_OFFSCREEN_LEVEL"},
+        {_tokens->subdivisionFaceBudget, "HDCLAUDE_SUBDIVISION_FACE_BUDGET"},
+        {_tokens->subdivisionFollowsCamera,
+         "HDCLAUDE_SUBDIVISION_FOLLOWS_CAMERA"},
+        {_tokens->retessellate, "HDCLAUDE_RETESSELLATE"},
+        {_tokens->sphereRadial, "HDCLAUDE_SPHERE_RADIAL"},
+        {_tokens->sphereAxial, "HDCLAUDE_SPHERE_AXIAL"},
+        {_tokens->splatTransport, "HDCLAUDE_SPLAT_TRANSPORT"},
+        {_tokens->reconstruction, "HDCLAUDE_RECONSTRUCTION"},
+        {_tokens->reconstructionPreset, "HDCLAUDE_RECONSTRUCTION_PRESET"},
+        {_tokens->reconstructionModel, "HDCLAUDE_RECONSTRUCTION_MODEL"},
+        {_tokens->reconstructionAutoExposure, "HDCLAUDE_DLSS_AUTO_EXPOSURE"},
+        {_tokens->upAxis, "HDCLAUDE_UP_AXIS"},
+        // The twelve the audit found.
+        {_tokens->device, "HDCLAUDE_DEVICE"},
+        {_tokens->shaderDirectory, "HDCLAUDE_SHADER_DIR"},
+        {_tokens->statsReport, "HDCLAUDE_STATS_REPORT"},
+        {_tokens->vulkanValidation, "HDCLAUDE_ENABLE_VULKAN_VALIDATION"},
+        {_tokens->trace, "HDCLAUDE_TRACE"},
+        {_tokens->profileKernels, "HDCLAUDE_PROFILE_KERNELS"},
+        {_tokens->poisonPathState, "HDCLAUDE_POISON_PATH_STATE"},
+        {_tokens->dumpShaders, "HDCLAUDE_DUMP_SHADERS"},
+        {_tokens->frameLog, "HDCLAUDE_FRAME_LOG"},
+        {_tokens->repeatRenders, "HDCLAUDE_REPEAT_RENDERS"},
+        {_tokens->republishAt, "HDCLAUDE_REPUBLISH_AT"},
+        {_tokens->dlssRuntimeDirectory, "HDCLAUDE_DLSS_RUNTIME_DIR"},
+    };
+    return pairs;
+}
 
 const TfTokenVector kSupportedRprimTypes = {
     HdPrimTypeTokens->mesh,
@@ -124,7 +192,8 @@ const TfTokenVector kSupportedBprimTypes = {
 /// build gets without configuring anything.
 std::filesystem::path ResolveShaderDirectory()
 {
-    const std::string overridePath = TfGetenv("HDCLAUDE_SHADER_DIR");
+    const std::string overridePath =
+        hdclaude::EnvironmentValue("HDCLAUDE_SHADER_DIR");
     if (!overridePath.empty()) {
         return std::filesystem::path(overridePath);
     }
@@ -175,7 +244,8 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
     // is a number that breaks the first time anything else prints. Absent the
     // environment variable this costs nothing and says nothing, which is what
     // an ordinary render should get.
-    if (const std::string path = TfGetenv("HDCLAUDE_STATS_REPORT");
+    if (const std::string path =
+            hdclaude::EnvironmentValue("HDCLAUDE_STATS_REPORT");
         !path.empty()) {
         const std::uint64_t peak =
             _peakDeviceBytes.load(std::memory_order_relaxed);
@@ -320,6 +390,31 @@ void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
         }
     }
 
+    // Every `HDCLAUDE_*` variable is also a render setting, and this is where
+    // the two are reconciled for the layers that cannot ask Hydra anything.
+    //
+    // `src/gpu` and `src/core` read the environment directly, by design: they
+    // know nothing about OpenUSD and must not. So the delegate resolves each
+    // setting here -- host value first, environment second -- and pushes the
+    // answer into the override those layers consult, before the Vulkan context
+    // is built and before anything below caches a flag. A viewport session and
+    // a batch render are then configured identically, which is the whole point
+    // of the pairing.
+    for (const auto& [setting, variable] : HdClaudeEnvironmentSettings()) {
+        const VtValue value = _settingsMap.count(setting) != 0
+                                  ? _settingsMap[setting]
+                                  : VtValue();
+        std::string text;
+        if (value.IsHolding<std::string>()) {
+            text = value.UncheckedGet<std::string>();
+        } else if (value.IsHolding<bool>()) {
+            text = value.UncheckedGet<bool>() ? "1" : "0";
+        } else if (value.IsHolding<int>()) {
+            text = std::to_string(value.UncheckedGet<int>());
+        }
+        hdclaude::SetEnvironmentOverride(variable, text);
+    }
+
     try {
         hdclaude::VulkanContextOptions options;
         // Through `EnvironmentFlag`, which every layer shares, so that this
@@ -327,7 +422,7 @@ void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
         // trailing space cmd leaves on `set VAR=1 && program`.
         options.enableValidation =
             hdclaude::EnvironmentFlag("HDCLAUDE_ENABLE_VULKAN_VALIDATION");
-        options.preferredDeviceName = TfGetenv("HDCLAUDE_DEVICE");
+        options.preferredDeviceName = hdclaude::EnvironmentValue("HDCLAUDE_DEVICE");
 
         // NGX will not initialise without instance and device extensions of its
         // own, and they can only be enabled while the instance and the device
@@ -841,6 +936,35 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         //
         // Accepted: coverage, volume. Coverage is the default, because it is the
         // format's own answer to the question.
+        // Diagnostics and bootstrap. None of these changes an image except by
+        // changing which device draws it, and every one of them is a thing
+        // worth flipping in a viewport rather than by restarting a process with
+        // a different environment -- which is the only reason they were ever
+        // environment variables alone.
+        {"Device", _tokens->device,
+         VtValue(std::string(TfGetenv("HDCLAUDE_DEVICE", "")))},
+        {"Shader directory", _tokens->shaderDirectory,
+         VtValue(std::string(TfGetenv("HDCLAUDE_SHADER_DIR", "")))},
+        {"Stats report", _tokens->statsReport,
+         VtValue(std::string(TfGetenv("HDCLAUDE_STATS_REPORT", "")))},
+        {"Vulkan validation", _tokens->vulkanValidation,
+         VtValue(hdclaude::EnvironmentFlag("HDCLAUDE_ENABLE_VULKAN_VALIDATION"))},
+        {"Trace", _tokens->trace,
+         VtValue(hdclaude::EnvironmentFlag("HDCLAUDE_TRACE"))},
+        {"Profile kernels", _tokens->profileKernels,
+         VtValue(hdclaude::EnvironmentFlag("HDCLAUDE_PROFILE_KERNELS"))},
+        {"Poison path state", _tokens->poisonPathState,
+         VtValue(hdclaude::EnvironmentFlag("HDCLAUDE_POISON_PATH_STATE"))},
+        {"Dump shaders", _tokens->dumpShaders,
+         VtValue(std::string(TfGetenv("HDCLAUDE_DUMP_SHADERS", "")))},
+        {"Frame log", _tokens->frameLog,
+         VtValue(std::string(TfGetenv("HDCLAUDE_FRAME_LOG", "")))},
+        {"Repeat renders", _tokens->repeatRenders,
+         VtValue(TfGetenvInt("HDCLAUDE_REPEAT_RENDERS", 0))},
+        {"Republish at", _tokens->republishAt,
+         VtValue(TfGetenvInt("HDCLAUDE_REPUBLISH_AT", 0))},
+        {"DLSS runtime directory", _tokens->dlssRuntimeDirectory,
+         VtValue(std::string(TfGetenv("HDCLAUDE_DLSS_RUNTIME_DIR", "")))},
         {"Splat transport", _tokens->splatTransport,
          VtValue(std::string(TfGetenv("HDCLAUDE_SPLAT_TRANSPORT", "coverage")))},
         {"Light geometry", _tokens->lightGeometry,

@@ -22,14 +22,64 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <map>
+#include <mutex>
 #include <string>
 
 namespace hdclaude {
+
+/// Values a host has supplied that stand in front of the process environment.
+///
+/// Every `HDCLAUDE_*` variable is also a Hydra render setting, because Paolo
+/// drives this renderer from a viewport as much as from a shell and a knob that
+/// exists in only one of the two is a knob he has to restart a process to turn.
+/// The settings are read by the Hydra layer, which is above this one and cannot
+/// be called from it -- so the delegate pushes what it resolved down here, and
+/// the layers that read the environment see the host's answer instead.
+///
+/// Guarded because the delegate writes these once during `Initialize` while
+/// materials and geometry are synced in parallel afterwards. Reads are rare in
+/// practice: every caller caches.
+inline std::mutex& EnvironmentOverrideMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
+inline std::map<std::string, std::string>& EnvironmentOverrides()
+{
+    static std::map<std::string, std::string> overrides;
+    return overrides;
+}
+
+/// Make `name` read as `value` everywhere below the Hydra layer.
+///
+/// An empty value *removes* the override rather than setting the variable to
+/// nothing, so a host that leaves a setting at its default gets the process
+/// environment back rather than a forced blank.
+inline void SetEnvironmentOverride(const std::string& name,
+                                   const std::string& value)
+{
+    std::lock_guard<std::mutex> lock(EnvironmentOverrideMutex());
+    if (value.empty()) {
+        EnvironmentOverrides().erase(name);
+    } else {
+        EnvironmentOverrides()[name] = value;
+    }
+}
 
 /// An environment variable's value with surrounding whitespace removed, or
 /// empty when it is unset.
 inline std::string EnvironmentValue(const char* name)
 {
+    {
+        std::lock_guard<std::mutex> lock(EnvironmentOverrideMutex());
+        const auto found = EnvironmentOverrides().find(name);
+        if (found != EnvironmentOverrides().end()) {
+            return found->second;
+        }
+    }
+
     std::string text;
 #if defined(_MSC_VER)
     char* value = nullptr;

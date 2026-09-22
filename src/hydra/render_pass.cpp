@@ -1,5 +1,9 @@
 #include "render_pass.h"
 
+#include "hdclaude/core/environment.h"
+
+#include <cstdlib>
+
 #include "camera.h"
 #include "retessellation_scene_index_plugin.h"
 #include "sphere_scene_index.h"
@@ -603,7 +607,8 @@ void HdClaudeRenderPass::_Execute(
     // reaches a state tens of times faster than a batch render ever does.
     // Reproducing that offline is the only way to find out what the fast
     // state *is*, so this forces the republish a viewer would have caused.
-    const int republishAt = TfGetenvInt("HDCLAUDE_REPUBLISH_AT", 0);
+    const int republishAt =
+        std::atoi(hdclaude::EnvironmentValue("HDCLAUDE_REPUBLISH_AT").c_str());
     if (republishAt > 0 &&
         _frameLogIndex == static_cast<std::uint64_t>(republishAt)) {
         _hasUploaded = false;
@@ -1019,7 +1024,8 @@ void HdClaudeRenderPass::_Execute(
     // Opened and closed per line rather than held: an interactive session ends
     // when someone closes a window, and a buffered stream loses the last and
     // most interesting frames when it does.
-    if (const std::string path = TfGetenv("HDCLAUDE_FRAME_LOG");
+    if (const std::string path =
+            hdclaude::EnvironmentValue("HDCLAUDE_FRAME_LOG");
         !path.empty()) {
         const std::uint64_t traced = tracer->TracedRays();
         const std::uint64_t peak = _renderDelegate->PeakDeviceBytes();
@@ -1100,7 +1106,8 @@ void HdClaudeRenderPass::_Execute(
     if (finished) {
         if (!_repeatsStarted) {
             _repeatsStarted = true;
-            const int repeats = TfGetenvInt("HDCLAUDE_REPEAT_RENDERS", 0);
+            const int repeats = std::atoi(
+                hdclaude::EnvironmentValue("HDCLAUDE_REPEAT_RENDERS").c_str());
             _repeatsAsked = repeats > 0;
             _repeatsRemaining =
                 _repeatsAsked ? static_cast<std::uint32_t>(repeats) : 0u;

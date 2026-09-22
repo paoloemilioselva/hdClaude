@@ -107,6 +107,18 @@ IF "%~1"=="" (
   ECHO                                  interactive session, where the stats
   ECHO                                  report is only written at exit
   ECHO   HDCLAUDE_PROFILE_KERNELS       time each kernel of one sample
+  ECHO   HDCLAUDE_DUMP_SHADERS          write every generated material to this
+  ECHO                                  directory as it is compiled
+  ECHO   HDCLAUDE_REPUBLISH_AT          republish the scene once, at this frame
+  ECHO   HDCLAUDE_TRACE                 announce each stage of a sync and a
+  ECHO                                  render pass on stderr, unbuffered
+  ECHO   HDCLAUDE_ENABLE_VULKAN_VALIDATION  turn the validation layer on
+  ECHO   HDCLAUDE_SHADER_DIR            where the compute kernels are read from
+  ECHO.
+  ECHO Every one of the variables above is also a Hydra render setting of the
+  ECHO same meaning, so a viewport session and a batch render are configured
+  ECHO identically and either can be driven without the other. Where a host sets
+  ECHO both, the render setting wins.
   EXIT /B 2
 )
 

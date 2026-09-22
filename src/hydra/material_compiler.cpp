@@ -1,5 +1,7 @@
 #include "material_compiler.h"
 
+#include "hdclaude/core/environment.h"
+
 #include "trace.h"
 
 #include "hdclaude/materialx/pathtracer_generator.h"
@@ -639,7 +641,7 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
         // that fails to generate is exactly the one worth reading, and until
         // this moved the dump only ever contained documents that had already
         // succeeded.
-        if (const std::string dumpDir = TfGetenv("HDCLAUDE_DUMP_SHADERS");
+        if (const std::string dumpDir = hdclaude::EnvironmentValue("HDCLAUDE_DUMP_SHADERS");
             !dumpDir.empty()) {
             std::error_code code;
             std::filesystem::create_directories(dumpDir, code);
@@ -661,7 +663,7 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
         // be read. Generated code is the one artefact in this pipeline nobody
         // ever sees unless it fails to compile, and by then the compiler
         // message is about a symbol rather than about what was generated.
-        if (const std::string dumpDir = TfGetenv("HDCLAUDE_DUMP_SHADERS");
+        if (const std::string dumpDir = hdclaude::EnvironmentValue("HDCLAUDE_DUMP_SHADERS");
             !dumpDir.empty()) {
             std::error_code code;
             std::filesystem::create_directories(dumpDir, code);
@@ -761,7 +763,7 @@ bool HdClaudeMaterialCompiler::CompileDisplacement(
         }
 
         const std::string generated = shader->getSourceCode(mx::Stage::PIXEL);
-        if (const std::string dumpDir = TfGetenv("HDCLAUDE_DUMP_SHADERS");
+        if (const std::string dumpDir = hdclaude::EnvironmentValue("HDCLAUDE_DUMP_SHADERS");
             !dumpDir.empty()) {
             std::error_code code;
             std::filesystem::create_directories(dumpDir, code);
