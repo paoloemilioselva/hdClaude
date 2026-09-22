@@ -214,6 +214,23 @@ struct RenderSettings {
     /// way to find one. That is the correct consequence of the shape not being
     /// there, and it is the reason this is a setting rather than a fix.
     bool lightGeometry = false;
+
+    /// How a Gaussian splat cloud is transported.
+    ///
+    /// The two readings of the schema are genuinely different pictures, not a
+    /// quality setting (docs/gaussian-splats.md 3 and 7). Coverage estimates the
+    /// alpha compositing the format defines and reproduces the appearance an
+    /// asset was trained for. Volume reads the kernel as a density and lets a
+    /// path travel through the cloud, which is what makes it a participant in
+    /// transport -- and which needs a length scale the schema does not supply,
+    /// so it looks different and says so.
+    ///
+    /// Coverage is the default because it is the schema's own answer.
+    enum class SplatTransport : std::uint32_t {
+        Coverage = 0,
+        Volume = 1,
+    };
+    SplatTransport splatTransport = SplatTransport::Coverage;
 };
 
 /// A material ready to shade with: the SPIR-V of its generated MaterialX
@@ -743,6 +760,10 @@ class PathTracer {
     /// One majorant-grid record per splat prototype, pointed at by every
     /// placement of that cloud.
     VulkanBuffer _splatVolumes;
+    /// Where the splat placements begin in the instance table, and how many
+    /// there are. Contiguous by construction, so the walk takes a range.
+    std::uint32_t _splatInstanceBegin = 0;
+    std::uint32_t _splatInstanceCount = 0;
     VulkanBuffer _lightTable;
     std::uint32_t _lightCount = 0;
 

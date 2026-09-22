@@ -1,0 +1,89 @@
+#usda 1.0
+(
+    doc = """Transmittance through a splat cloud, where both readings must agree.
+
+    hdClaude reads the schema two ways (docs/gaussian-splats.md 3 and 7).
+    Coverage stops a ray at one particle with probability equal to its alpha.
+    Volume reads the kernel as a density and lets the ray travel through it,
+    attenuating by Beer-Lambert. The two are *different pictures* in general --
+    no density field reproduces alpha compositing for every direction -- but
+    there is one place they are defined to coincide, and it is the place worth
+    asserting:
+
+        along a ray through the centre of an ISOTROPIC particle.
+
+    `SplatExtinction` is chosen to make that true. The optical depth through the
+    centre is exactly `-ln(1 - opacity)`, so the transmittance is exactly
+    `1 - opacity`, which is also what one alpha-composited particle leaves
+    behind. A test that held only for one of the two models would be testing an
+    implementation; this holds for both and ties them to arithmetic.
+
+    Every particle here emits **nothing** -- all coefficients zero -- so what
+    reaches the camera through one is the dome behind it and nothing else. The
+    dome has radiance 1, so the pixel through a particle's centre *is* its
+    transmittance, read directly off the image with no exposure or albedo in the
+    way.
+
+    Three particles, isotropic, of known opacity:
+
+        /absorber25   opacity 0.25  ->  centre pixel 0.75
+        /absorber50   opacity 0.50  ->  centre pixel 0.50
+        /absorber75   opacity 0.75  ->  centre pixel 0.25
+
+    Off the centre line the two readings genuinely diverge, and that is not a
+    defect to be tuned away: at one sigma from the centre of a particle of
+    opacity 0.5, coverage leaves 0.697 and volume leaves 0.657. The difference
+    is the schema's own gap, measured rather than argued about.
+
+    Render it both ways with:
+      HDCLAUDE_SPLAT_TRANSPORT=coverage
+      HDCLAUDE_SPLAT_TRANSPORT=volume
+    """
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Camera "camera"
+{
+    float focalLength = 50
+    float horizontalAperture = 36
+    double3 xformOp:translate = (0, 0, 20)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}
+
+def DomeLight "dome"
+{
+    # Radiance one in every direction, so a pixel reads as a transmittance.
+    float inputs:intensity = 1
+    color3f inputs:color = (1, 1, 1)
+}
+
+def ParticleField3DGaussianSplat "absorber25"
+{
+    point3f[] positions = [(-4, 0, 0)]
+    float3[] scales = [(0.7, 0.7, 0.7)]
+    quatf[] orientations = [(1, 0, 0, 0)]
+    float[] opacities = [0.25]
+    uniform int radiance:sphericalHarmonicsDegree = 0
+    float3[] radiance:sphericalHarmonicsCoefficients = [(0, 0, 0)]
+}
+
+def ParticleField3DGaussianSplat "absorber50"
+{
+    point3f[] positions = [(0, 0, 0)]
+    float3[] scales = [(0.7, 0.7, 0.7)]
+    quatf[] orientations = [(1, 0, 0, 0)]
+    float[] opacities = [0.5]
+    uniform int radiance:sphericalHarmonicsDegree = 0
+    float3[] radiance:sphericalHarmonicsCoefficients = [(0, 0, 0)]
+}
+
+def ParticleField3DGaussianSplat "absorber75"
+{
+    point3f[] positions = [(4, 0, 0)]
+    float3[] scales = [(0.7, 0.7, 0.7)]
+    quatf[] orientations = [(1, 0, 0, 0)]
+    float[] opacities = [0.75]
+    uniform int radiance:sphericalHarmonicsDegree = 0
+    float3[] radiance:sphericalHarmonicsCoefficients = [(0, 0, 0)]
+}

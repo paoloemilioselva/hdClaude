@@ -49,6 +49,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (reconstructionAutoExposure)
                          (lightGeometry)
                          (curveGeometry)
+                         (splatTransport)
                          (curveSides)
                          (curveSegmentSamples)
                          (subdivisionLevel)
@@ -828,6 +829,20 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         // overrides whatever the asset authored per light rather than combining
         // with it, so a scene cannot put geometry into a render that asked for
         // none; on hands the choice back to each light.
+        // How a Gaussian splat cloud is transported, and this is not a quality
+        // dial: the two readings of the schema are different pictures.
+        //
+        // `coverage` estimates the alpha compositing `UsdVolParticleField`
+        // defines, which is the appearance the asset was trained for and needs
+        // no constant the schema does not supply. `volume` reads the kernel as a
+        // density and lets a path travel through the cloud, which is what makes
+        // splats participate in transport -- and needs a length scale the schema
+        // does not give, so it looks different (docs/gaussian-splats.md 7).
+        //
+        // Accepted: coverage, volume. Coverage is the default, because it is the
+        // format's own answer to the question.
+        {"Splat transport", _tokens->splatTransport,
+         VtValue(std::string(TfGetenv("HDCLAUDE_SPLAT_TRANSPORT", "coverage")))},
         {"Light geometry", _tokens->lightGeometry,
          VtValue(TfGetenvBool("HDCLAUDE_LIGHT_GEOMETRY", false))},
 

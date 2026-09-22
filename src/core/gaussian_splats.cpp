@@ -612,20 +612,6 @@ bool SplatScales(const Splat& splat, double scale[3])
     return scale[0] > 0.0 && scale[1] > 0.0 && scale[2] > 0.0;
 }
 
-/// Squared distance from a point to an axis-aligned box, zero inside it.
-double SquaredDistanceToBox(const double point[3], const double minimum[3],
-                            const double maximum[3])
-{
-    double total = 0.0;
-    for (int axis = 0; axis < 3; ++axis) {
-        const double below = minimum[axis] - point[axis];
-        const double above = point[axis] - maximum[axis];
-        const double outside = std::max(0.0, std::max(below, above));
-        total += outside * outside;
-    }
-    return total;
-}
-
 }  // namespace
 
 float SplatExtinction(const Splat& splat, float maximumOpticalDepth)
@@ -709,6 +695,15 @@ SplatMajorantGrid BuildSplatMajorantGrid(const SplatCloud& cloud,
         }
     }
 
+    // About one cell per particle unless the caller says otherwise. See the
+    // header: a cell that holds eight particles bounds eight times the density
+    // any point in it has, and every one of those is a rejected collision.
+    if (targetCells == 0) {
+        targetCells = std::min<std::size_t>(
+            std::max<std::size_t>(cloud.splats.size(), 4096),
+            std::size_t(1) << 21);
+    }
+
     // Roughly cubical cells, about `targetCells` of them. A cell much longer on
     // one axis bounds badly along it and wastes steps across it.
     const double volume = extent[0] * extent[1] * extent[2];
@@ -734,7 +729,17 @@ SplatMajorantGrid BuildSplatMajorantGrid(const SplatCloud& cloud,
         int hi[3];
         double centre[3];
         double density;
-        double maxScale;
+        /// The particle's unit principal axes, and the scale along each.
+        ///
+        /// Both, because the bound below is per axis. Dividing a world distance
+        /// by the *largest* scale is also a valid bound and is what this did
+        /// first; on a real capture, whose scales run from 0.0009 to 0.067, it
+        /// let one flat particle claim its full peak in seventeen thousand cells
+        /// at once. The majorant was then thousands of times the density
+        /// anywhere in those cells, which is correct, useless, and -- through a
+        /// trial cap -- how a cloud came to render as black cubes.
+        double axis[3][3];
+        double scale[3];
     };
     std::vector<Reach> reach(cloud.splats.size());
 
@@ -746,10 +751,25 @@ SplatMajorantGrid BuildSplatMajorantGrid(const SplatCloud& cloud,
         float maximum[3];
         SplatBounds(splat, cloud.kernel, minimum, maximum);
 
-        double scale[3];
-        entry.maxScale = SplatScales(splat, scale)
-                             ? std::max(scale[0], std::max(scale[1], scale[2]))
-                             : 0.0;
+        double forward[9];
+        const bool invertible = Invert3x3(splat.inverseTransform, forward);
+        for (int column = 0; column < 3; ++column) {
+            double length = 0.0;
+            for (int row = 0; row < 3; ++row) {
+                const double element = invertible ? forward[row * 3 + column] : 0.0;
+                entry.axis[column][row] = element;
+                length += element * element;
+            }
+            length = std::sqrt(length);
+            entry.scale[column] = length;
+            // A column of the forward transform is its scale times a *unit*
+            // column of the rotation, so dividing by the length recovers the
+            // axis exactly.
+            for (int row = 0; row < 3; ++row) {
+                entry.axis[column][row] =
+                    length > 0.0 ? entry.axis[column][row] / length : 0.0;
+            }
+        }
         entry.density = SplatExtinction(splat, maximumOpticalDepth);
         for (int axis = 0; axis < 3; ++axis) {
             entry.centre[axis] = splat.center[axis];
@@ -785,7 +805,8 @@ SplatMajorantGrid BuildSplatMajorantGrid(const SplatCloud& cloud,
 
     for (std::size_t i = 0; i < cloud.splats.size(); ++i) {
         const Reach& entry = reach[i];
-        if (!(entry.maxScale > 0.0) || !(entry.density > 0.0)) {
+        if (!(entry.density > 0.0) || !(entry.scale[0] > 0.0) ||
+            !(entry.scale[1] > 0.0) || !(entry.scale[2] > 0.0)) {
             continue;
         }
         for (int z = entry.lo[2]; z <= entry.hi[2]; ++z) {
@@ -796,32 +817,49 @@ SplatMajorantGrid BuildSplatMajorantGrid(const SplatCloud& cloud,
                     grid.indices[cursor[cell]++] =
                         static_cast<std::uint32_t>(i);
 
-                    // The bound. Every point of the cell is at least
-                    // `distance` from the centre in world space, and the
-                    // particle's metric stretches by at most its largest
-                    // scale, so the Mahalanobis distance is at least
-                    // distance / maxScale and the response at most the
-                    // Gaussian of that. Using the world distance directly
-                    // would not be a bound -- the nearest point in world
-                    // space is not the nearest in the particle's own metric,
-                    // and a majorant that is too small biases delta tracking
-                    // in a way no image shows.
-                    double minimum[3];
-                    double maximum[3];
+                    // The bound, per principal axis.
+                    //
+                    // The Mahalanobis distance is the sum over the particle's
+                    // three axes of the squared offset along each, divided by
+                    // that axis's scale. Each term can be minimised over the
+                    // cell independently, and the sum of those minima is a
+                    // lower bound on the distance -- and therefore an upper
+                    // bound on the response, which is what a majorant must be.
+                    // Doing it per axis rather than with one worst-case scale
+                    // is what stops a long thin particle claiming its peak
+                    // everywhere its longest axis can reach.
+                    //
+                    // The minimum of |(p - c) . u| over an axis-aligned box is
+                    // the box's support function along u: the centre offset,
+                    // less what the half extents can give back along that
+                    // direction, floored at zero for a box the centre is inside.
+                    double offset[3];
+                    double half[3];
                     for (int axis = 0; axis < 3; ++axis) {
                         const int coordinate = axis == 0 ? x : (axis == 1 ? y : z);
-                        minimum[axis] = grid.origin[axis] +
-                                        double(coordinate) * grid.cellSize[axis];
-                        maximum[axis] = minimum[axis] + grid.cellSize[axis];
+                        const double low = grid.origin[axis] +
+                                           double(coordinate) * grid.cellSize[axis];
+                        half[axis] = 0.5 * grid.cellSize[axis];
+                        offset[axis] = low + half[axis] - entry.centre[axis];
                     }
-                    const double squared =
-                        SquaredDistanceToBox(entry.centre, minimum, maximum);
-                    const double mahalanobis =
-                        std::sqrt(squared) / entry.maxScale;
+                    double squared = 0.0;
+                    for (int principal = 0; principal < 3; ++principal) {
+                        const double* direction = entry.axis[principal];
+                        double along = 0.0;
+                        double reach = 0.0;
+                        for (int axis = 0; axis < 3; ++axis) {
+                            along += offset[axis] * direction[axis];
+                            reach += half[axis] * std::fabs(direction[axis]);
+                        }
+                        const double nearest =
+                            std::max(0.0, std::fabs(along) - reach);
+                        const double scaled = nearest / entry.scale[principal];
+                        squared += scaled * scaled;
+                    }
                     const double response =
-                        mahalanobis >= radius
+                        squared >= radius * radius
                             ? 0.0
-                            : std::exp(-0.5 * mahalanobis * mahalanobis);
+                            : std::exp(-0.5 * squared);
                     grid.majorant[cell] +=
                         static_cast<float>(entry.density * response);
                 }

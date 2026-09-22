@@ -46,6 +46,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (reconstructionModel)
                          (reconstructionAutoExposure)
                          (lightGeometry)
+                         (splatTransport)
                          (curveGeometry)
                          (curveSides)
                          (curveSegmentSamples)
@@ -744,6 +745,14 @@ void HdClaudeRenderPass::_Execute(
     settings.reconstructionModel = model;
     settings.lightGeometry = _renderDelegate->GetRenderSetting<bool>(
         _tokens->lightGeometry, false);
+    // Named rather than numbered, and matched exactly: anything that is not
+    // "volume" is coverage, so a typo renders the schema's own model rather
+    // than silently selecting the one that needs an invented length scale.
+    settings.splatTransport =
+        _renderDelegate->GetRenderSetting<std::string>(
+            _tokens->splatTransport, "coverage") == "volume"
+            ? hdclaude::RenderSettings::SplatTransport::Volume
+            : hdclaude::RenderSettings::SplatTransport::Coverage;
     settings.reconstructionAutoExposure =
         _renderDelegate->GetRenderSetting<bool>(
             _tokens->reconstructionAutoExposure, false);

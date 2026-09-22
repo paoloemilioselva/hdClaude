@@ -59,7 +59,8 @@ void main()
                 rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
             InstanceGeometry candidateGeometry =
                 instances.values[candidateInstance];
-            if (candidateGeometry.splats != 0ul)
+            if (candidateGeometry.splats != 0ul &&
+                frame.splatTransport == HDCLAUDE_SPLAT_COVERAGE)
             {
                 // A Gaussian splat occludes with the same probability it covers
                 // a camera ray, drawn from the same hash of the same particle.
@@ -161,7 +162,37 @@ void main()
         }
     }
 
-    if (rayQueryGetIntersectionTypeEXT(query, true) ==
+    // A splat cloud read as a medium occludes by the same walk that stops a
+    // camera ray. A real collision anywhere along the shadow ray blocks it, and
+    // over many samples that delivers the cloud's transmittance -- the same
+    // quantity the coverage model's independent coin flips deliver, arrived at
+    // by the reading that is in force.
+    bool blockedByVolume = false;
+    if (frame.splatTransport == HDCLAUDE_SPLAT_VOLUME &&
+        frame.splatInstanceCount > 0u)
+    {
+        uint rng = pathRng.values[ray.path] ^ 0x5bf03635u;
+        for (uint i = 0u; i < frame.splatInstanceCount && !blockedByVolume; ++i)
+        {
+            InstanceGeometry cloud =
+                instances.values[frame.splatInstanceBegin + i];
+            if (cloud.splats == 0ul || cloud.splatVolume == 0ul ||
+                !hdclaude_linked(int(frame.splatInstanceBegin + i),
+                                 ray.shadowLink))
+            {
+                continue;
+            }
+            SplatVolume volume = SplatVolumeBuffer(cloud.splatVolume).value;
+            float collision;
+            vec3 emitted;
+            blockedByVolume = hdclaude_splat_volume_collision(
+                cloud, volume, ray.origin, ray.direction, 0.0, ray.maxDistance,
+                rng, collision, emitted);
+        }
+    }
+
+    if (!blockedByVolume &&
+        rayQueryGetIntersectionTypeEXT(query, true) ==
         gl_RayQueryCommittedIntersectionNoneEXT)
     {
         // No atomic: a path emits at most one shadow ray per bounce, so no two

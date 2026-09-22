@@ -88,7 +88,19 @@ layout(set = 0, binding = 0, scalar) uniform FrameBlock {
     uint  linkWords;
     int   domeLightLink;
     int   domeShadowLink;
+    // How a splat cloud is transported: 0 coverage, 1 volume. Two readings of
+    // the schema, not two qualities of one (docs/gaussian-splats.md 3 and 7).
+    uint  splatTransport;
+    // Where the splat placements start in the instance table and how many there
+    // are. They are contiguous and follow every mesh placement, so the walk
+    // takes a range rather than a list of its own.
+    uint  splatInstanceBegin;
+    uint  splatInstanceCount;
+    uint  padTail;
 } frame;
+
+const uint HDCLAUDE_SPLAT_COVERAGE = 0u;
+const uint HDCLAUDE_SPLAT_VOLUME = 1u;
 
 // --- Path state -------------------------------------------------------------
 
@@ -1341,7 +1353,9 @@ struct SplatVolume {
     vec3 origin;
     vec3 cellSize;
     ivec3 resolution;
-    uint pad;
+    /// The largest density anywhere in the cloud, which delta tracking samples
+    /// against.
+    float majorantBound;
     uint64_t majorant;
     uint64_t offsets;
     uint64_t indices;
@@ -1447,6 +1461,246 @@ float hdclaude_splat_density(InstanceGeometry geometry, SplatVolume volume,
                  exp(-0.5 * squared);
     }
     return total;
+}
+
+
+/// Where a ray enters and leaves a cloud's grid, in the ray's own parameter.
+///
+/// The slab test, in the cloud's object space. Returns false when the ray misses
+/// the grid entirely, which for most rays in most frames is the answer and is
+/// why this is the first thing the walk asks.
+bool hdclaude_splat_grid_span(SplatVolume volume, vec3 origin, vec3 direction,
+                              float tMin, float tMax, out float enter,
+                              out float leave)
+{
+    vec3 lo = volume.origin;
+    vec3 hi = volume.origin + vec3(volume.resolution) * volume.cellSize;
+    float near = tMin;
+    float far = tMax;
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        if (abs(direction[axis]) < 1.0e-20)
+        {
+            if (origin[axis] < lo[axis] || origin[axis] > hi[axis])
+            {
+                return false;
+            }
+            continue;
+        }
+        float inverse = 1.0 / direction[axis];
+        float first = (lo[axis] - origin[axis]) * inverse;
+        float second = (hi[axis] - origin[axis]) * inverse;
+        near = max(near, min(first, second));
+        far = min(far, max(first, second));
+    }
+    if (far < near)
+    {
+        return false;
+    }
+    enter = near;
+    leave = far;
+    return true;
+}
+
+/// The radiance a collision at `point` emits toward `outgoing`.
+///
+/// Weighted by each particle's share of the density there, which is what makes
+/// it the radiance of the medium rather than of whichever particle happened to
+/// be looked up first. A collision happens *because of* the summed density, so
+/// the emission it carries is that sum's weighted mean.
+vec3 hdclaude_splat_volume_emission(InstanceGeometry geometry,
+                                    SplatVolume volume, vec3 point,
+                                    vec3 outgoing, float maximumOpticalDepth)
+{
+    int cell = hdclaude_splat_cell(volume, point);
+    if (cell < 0 || volume.offsets == 0ul || volume.indices == 0ul)
+    {
+        return vec3(0.0);
+    }
+    GridOffsetBuffer offsets = GridOffsetBuffer(volume.offsets);
+    GridIndexBuffer members = GridIndexBuffer(volume.indices);
+
+    float radius = hdclaude_splat_support(geometry.splatKernel);
+    vec3 weighted = vec3(0.0);
+    float total = 0.0;
+    for (uint at = offsets.values[cell]; at < offsets.values[cell + 1]; ++at)
+    {
+        uint index = members.values[at];
+        Splat splat = hdclaude_splat(geometry.splats, int(index));
+        vec3 local = splat.inverseTransform * (point - splat.center);
+        float squared = dot(local, local);
+        if (squared > radius * radius)
+        {
+            continue;
+        }
+        float density = hdclaude_splat_extinction(splat, maximumOpticalDepth) *
+                        exp(-0.5 * squared);
+        if (density <= 0.0)
+        {
+            continue;
+        }
+        total += density;
+        weighted += density * hdclaude_splat_radiance(geometry.harmonics,
+                                                      geometry.harmonicsDegree,
+                                                      int(index), outgoing);
+    }
+    return total > 0.0 ? weighted / total : vec3(0.0);
+}
+
+/// Delta tracking through one splat cloud, between `tMin` and `tMax`.
+///
+/// Samples a flight from the cloud's own majorant and keeps the collision in
+/// proportion to the density actually there, which is unbiased for any bound
+/// that really bounds -- the host asserts that one does at a quarter of a
+/// million points, because the failure is silent and costs exactly the
+/// collisions it should have rejected.
+///
+/// Emission-only, and that is the schema rather than a simplification: a
+/// particle carries radiance and no reflectance, so every real collision
+/// absorbs and emits and none of them scatters. A bound MaterialX
+/// `volumeshader` is what would add scattering, and it is a phase of its own
+/// (docs/gaussian-splats.md 7.1).
+///
+/// The whole walk is done in the cloud's object space with an *unnormalised*
+/// direction, so the ray parameter means the same thing in both spaces and no
+/// distance has to be converted back. What that costs is one factor: a density
+/// per unit object length becomes a density per unit `t` by multiplying by the
+/// object-space direction's length.
+bool hdclaude_splat_volume_collision(InstanceGeometry geometry,
+                                     SplatVolume volume, vec3 worldOrigin,
+                                     vec3 worldDirection, float tMin,
+                                     float tMax, inout uint rng,
+                                     out float hitT, out vec3 emission)
+{
+    if (volume.majorant == 0ul)
+    {
+        return false;
+    }
+    // A row vector times the 3x4, which is how every other kernel takes a point
+    // into object space -- and the same form with w = 0 for a direction, which
+    // drops the translation.
+    vec3 origin = vec4(worldOrigin, 1.0) * geometry.worldToObject;
+    vec3 direction = vec4(worldDirection, 0.0) * geometry.worldToObject;
+
+    float scale = length(direction);
+    if (!(scale > 0.0))
+    {
+        return false;
+    }
+
+    float enter;
+    float leave;
+    if (!hdclaude_splat_grid_span(volume, origin, direction, tMin, tMax, enter,
+                                  leave))
+    {
+        return false;
+    }
+
+    MajorantBuffer bounds = MajorantBuffer(volume.majorant);
+
+    // Amanatides and Woo, through the grid the bounds are held in. Stepping
+    // cell by cell rather than sampling against one bound for the whole cloud
+    // is not an optimisation, it is what makes the walk *work*: a real capture
+    // has a global majorant thousands of times its typical density, and a walk
+    // that samples against it spends every trial it has crossing the first
+    // millimetre.
+    ivec3 resolution = volume.resolution;
+    vec3 atEnter = (origin + direction * enter - volume.origin) / volume.cellSize;
+    ivec3 cell = clamp(ivec3(floor(atEnter)), ivec3(0), resolution - 1);
+
+    ivec3 stepping = ivec3(0);
+    vec3 tDelta = vec3(1.0e30);
+    vec3 tNext = vec3(1.0e30);
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        if (abs(direction[axis]) < 1.0e-20)
+        {
+            continue;
+        }
+        stepping[axis] = direction[axis] > 0.0 ? 1 : -1;
+        tDelta[axis] = abs(volume.cellSize[axis] / direction[axis]);
+        float boundary = volume.origin[axis] +
+                         float(cell[axis] + (stepping[axis] > 0 ? 1 : 0)) *
+                             volume.cellSize[axis];
+        tNext[axis] = (boundary - origin[axis]) / direction[axis];
+    }
+
+    // The walk cannot visit more cells than the grid has along a diagonal, so
+    // this bound is the grid's own size rather than a number chosen to feel
+    // safe. Running out of it means the ray left the grid, which the tests
+    // below already return for.
+    int cells = resolution.x + resolution.y + resolution.z + 3;
+    float t = enter;
+    for (int visited = 0; visited < cells; ++visited)
+    {
+        float exit = min(min(tNext.x, min(tNext.y, tNext.z)), leave);
+
+        int index = (cell.z * resolution.y + cell.y) * resolution.x + cell.x;
+        float majorant = bounds.values[index] * scale;
+        if (majorant > 0.0)
+        {
+            // Within one cell, against that cell's own bound.
+            //
+            // The cap does *not* force a collision, and an earlier version that
+            // did was wrong twice over. A cap is reached when the cell's
+            // majorant is far above the density actually in it, not when the
+            // cell is opaque -- so calling it a collision invented occlusion,
+            // and the point it invented one at had no density, so the emission
+            // there was black. It rendered a capture as black cubes one grid
+            // cell across. With the majorant bounded per principal axis the cap
+            // is not reached by any cloud measured here; if one ever reaches it,
+            // it under-occludes that cell rather than fabricating a surface.
+            const int kTrialsPerCell = 256;
+            float u = t;
+            for (int trial = 0; trial < kTrialsPerCell; ++trial)
+            {
+                u -= log(max(1.0e-8, 1.0 - hdclaude_random(rng))) / majorant;
+                if (u >= exit)
+                {
+                    break;
+                }
+                vec3 point = origin + direction * u;
+                float density =
+                    hdclaude_splat_density(geometry, volume, point, 20.0) * scale;
+                if (hdclaude_random(rng) * majorant < density)
+                {
+                    hitT = u;
+                    emission = hdclaude_splat_volume_emission(
+                        geometry, volume, point, normalize(-direction), 20.0);
+                    return true;
+                }
+            }
+        }
+
+        if (exit >= leave)
+        {
+            return false;
+        }
+        t = exit;
+
+        // Advance whichever boundary came first.
+        if (tNext.x <= tNext.y && tNext.x <= tNext.z)
+        {
+            cell.x += stepping.x;
+            tNext.x += tDelta.x;
+        }
+        else if (tNext.y <= tNext.z)
+        {
+            cell.y += stepping.y;
+            tNext.y += tDelta.y;
+        }
+        else
+        {
+            cell.z += stepping.z;
+            tNext.z += tDelta.z;
+        }
+        if (any(lessThan(cell, ivec3(0))) ||
+            any(greaterThanEqual(cell, resolution)))
+        {
+            return false;
+        }
+    }
+    return false;
 }
 
 // --- Geometry helpers -------------------------------------------------------

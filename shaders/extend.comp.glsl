@@ -230,7 +230,8 @@ void main()
                     rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
                 InstanceGeometry candidateGeometry =
                     instances.values[candidateInstance];
-                if (candidateGeometry.splats != 0ul)
+                if (candidateGeometry.splats != 0ul &&
+                    frame.splatTransport == HDCLAUDE_SPLAT_COVERAGE)
                 {
                     // A Gaussian splat. The box says a particle's support is
                     // somewhere ahead; what decides whether the ray stops is the
@@ -465,6 +466,57 @@ void main()
             break;
         }
         rouletteWeight /= survival;
+    }
+
+    // --- Splat clouds as a medium -------------------------------------------
+    //
+    // The other reading of the schema, and a different mechanism from the one
+    // above: a path travels *through* the cloud rather than being stopped by one
+    // particle of it. Done here, after the nearest surface is known, because the
+    // walk needs an interval to end at -- a collision beyond the surface is a
+    // collision the surface already occluded.
+    //
+    // Not inside the candidate loop, because the volume's acceleration structure
+    // is the majorant grid rather than the per-particle boxes: traversal would
+    // report every particle along the ray and the walk needs the cloud as a
+    // whole. Splat placements are contiguous in the instance table, so this is a
+    // range rather than a list, and a scene with no clouds skips it on a counter.
+    if (frame.splatTransport == HDCLAUDE_SPLAT_VOLUME &&
+        frame.splatInstanceCount > 0u)
+    {
+        float bound = min(tGeometry, tLight);
+        for (uint i = 0u; i < frame.splatInstanceCount; ++i)
+        {
+            uint index = frame.splatInstanceBegin + i;
+            InstanceGeometry cloud = instances.values[index];
+            if (cloud.splats == 0ul || cloud.splatVolume == 0ul)
+            {
+                continue;
+            }
+            SplatVolume volume = SplatVolumeBuffer(cloud.splatVolume).value;
+
+            float collision;
+            vec3 emitted;
+            if (hdclaude_splat_volume_collision(cloud, volume, origin, direction,
+                                                0.0, bound, rng, collision,
+                                                emitted))
+            {
+                // A pure absorber emits and stops. The radiance is added here
+                // rather than carried in a hit record because there is nowhere
+                // in an ivec4 to put three floats, and because the shadow kernel
+                // already writes the film directly for the same reason -- one
+                // invocation owns this path, so no atomic is involved.
+                pathRadiance.values[path] +=
+                    throughput * hdclaude_upsample_emission(max(emitted, vec3(0.0)),
+                                                            lambda);
+                throughput = vec4(0.0);
+                hitGeometry = false;
+                light = -1;
+                // The nearest collision wins over any cloud considered later,
+                // and over the surface behind it.
+                bound = collision;
+            }
+        }
     }
 
     pathThroughput.values[path] = throughput;

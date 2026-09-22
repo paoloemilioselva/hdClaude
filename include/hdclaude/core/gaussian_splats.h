@@ -285,10 +285,18 @@ struct SplatMajorantGrid {
 ///
 /// The count is a target rather than a rule: the grid is sized so its cells are
 /// roughly cubical, because a cell far longer on one axis than another bounds
-/// badly in the long direction and costs a delta-tracking step in the short
-/// one.
+/// badly in the long direction and costs a delta-tracking step in the short one.
+///
+/// Zero, the default, derives the target from the cloud: about one cell per
+/// particle. That is not a tuning preference, it is what keeps the bound useful.
+/// A cell's majorant sums the peak of every particle reaching it, so a cell
+/// holding eight particles bounds eight times the density any single point in it
+/// actually has, and delta tracking then rejects seven collisions out of eight.
+/// A 262,144-particle capture at a fixed 32,768 cells held eight particles a
+/// cell and a majorant of 3,200 per unit length -- a mean free path of 0.0003
+/// across a cloud one unit wide, which is 3,200 trials to cross.
 SplatMajorantGrid BuildSplatMajorantGrid(const SplatCloud& cloud,
-                                         std::size_t targetCells = 32768,
+                                         std::size_t targetCells = 0,
                                          float maximumOpticalDepth = 20.0f);
 
 /// The summed extinction at a point, from the particles the grid says reach it.

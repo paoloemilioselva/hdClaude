@@ -552,6 +552,10 @@ BottomLevelStructure::BottomLevelStructure(const VulkanContext& context,
             _gridShape.cellSize[axis] = grid.cellSize[axis];
             _gridShape.resolution[axis] = grid.resolution[axis];
         }
+        _gridShape.majorantBound = 0.0f;
+        for (const float bound : grid.majorant) {
+            _gridShape.majorantBound = std::max(_gridShape.majorantBound, bound);
+        }
         _majorant = UploadDeviceLocal(context, allocator, grid.majorant,
                                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                                       (name + ".majorant").c_str());

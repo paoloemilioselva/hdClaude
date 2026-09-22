@@ -169,6 +169,15 @@ struct FrameBlock {
     /// The dome light's link categories, or -1.
     std::int32_t domeLightLink;
     std::int32_t domeShadowLink;
+    /// How a splat cloud is transported: 0 coverage, 1 volume. See
+    /// RenderSettings::splatTransport.
+    std::uint32_t splatTransport;
+    /// Where the splat placements start in the instance table, and how many
+    /// there are. They are contiguous and after every mesh placement, so the
+    /// walk needs a range rather than a list of its own.
+    std::uint32_t splatInstanceBegin;
+    std::uint32_t splatInstanceCount;
+    std::uint32_t padTail;
 };
 
 /// The radical inverse of `index` in `base`, one coordinate of a Halton
@@ -218,9 +227,10 @@ struct SplatVolume {
     float origin[3];
     float cellSize[3];
     std::int32_t resolution[3];
-    /// Explicit, so the three addresses below start eight-byte aligned and
+    /// The largest density anywhere in the cloud, which delta tracking samples
+    /// against. It also keeps the three addresses below eight-byte aligned, so
     /// neither this struct nor its GLSL mirror has any implicit padding.
-    std::uint32_t pad;
+    float majorantBound;
     std::uint64_t majorant;
     std::uint64_t offsets;
     std::uint64_t indices;
@@ -1060,6 +1070,7 @@ void PathTracer::SetScene(const Scene& publishedScene,
             volume.cellSize[axis] = shape.cellSize[axis];
             volume.resolution[axis] = shape.resolution[axis];
         }
+        volume.majorantBound = shape.majorantBound;
         volume.majorant =
             blas->Majorant().Valid() ? blas->Majorant().DeviceAddress() : 0;
         volume.offsets = blas->GridOffsets().Valid()
@@ -1163,6 +1174,9 @@ void PathTracer::SetScene(const Scene& publishedScene,
         // one applied.
         entry.material = 0;
     }
+    _splatInstanceBegin = static_cast<std::uint32_t>(scene.instances.size());
+    _splatInstanceCount =
+        static_cast<std::uint32_t>(scene.splatInstances.size());
     _instanceCount = static_cast<std::uint32_t>(table.size());
 
     if (!table.empty()) {
@@ -2471,6 +2485,10 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     block.jitter[1] = settings.jitter[1];
     block.useFixedJitter = settings.fixedJitter ? 1u : 0u;
     block.lightGeometry = settings.lightGeometry ? 1u : 0u;
+    block.splatTransport = static_cast<std::uint32_t>(settings.splatTransport);
+    block.splatInstanceBegin = _splatInstanceBegin;
+    block.splatInstanceCount = _splatInstanceCount;
+    block.padTail = 0;
     block.linkWords = _linkWords;
     block.domeLightLink = _domeLightLink;
     block.domeShadowLink = _domeShadowLink;

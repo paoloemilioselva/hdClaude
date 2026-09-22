@@ -438,22 +438,69 @@ response each could have anywhere in that cell, with the Mahalanobis distance
 bounded below by the world distance over the particle's largest scale) and the
 bound is asserted by sampling rather than reasoned about.
 
-### 7.4 What is left, in the order it pays
+### 7.4 The walk, and what it took to make it work
 
-1. **Transport through the cloud.** The majorant grid on the device, a
-   heterogeneous walk in `extend` entered from the cloud's instance rather than
-   from a surface, and emission accumulated along it. Splats become a medium:
-   paths pass through, transmittance is Beer-Lambert, and a cloud behind glass
-   or inside fog is correct. Still emission-only, because 7.1.
-2. **The `volumeshader` terminal.** Splats scatter, receive light, cast coloured
+Transport through the cloud is **implemented**, selected by the `Splat transport`
+render setting (`HDCLAUDE_SPLAT_TRANSPORT`, `coverage` or `volume`). The walk
+enters from the cloud's own instance rather than from a surface, steps the
+majorant grid cell by cell, and delta-tracks within each cell against that cell's
+bound. A collision absorbs and emits, because 7.1.
+
+Both readings are asserted against one closed form, on
+`tests/usd/splat_volume.usda`: an isotropic particle of opacity `o` in front of a
+dome of radiance 1 leaves exactly `1 - o` through its centre, under coverage
+because that is one composited alpha and under volume because the extinction in
+7.2 is chosen to make it so. Measured at 2048 samples, both within 1%:
+
+| opacity | expected | coverage | volume |
+| --- | --- | --- | --- |
+| 0.25 | 0.75 | 0.745-0.758 | 0.746-0.761 |
+| 0.50 | 0.50 | 0.495-0.501 | 0.490-0.499 |
+| 0.75 | 0.25 | 0.254-0.258 | 0.246-0.250 |
+
+Off that line they diverge, by the amount 2.1 says they must. One sigma from the
+centre of the half-opaque particle, coverage leaves `1 - 0.5 e^-0.5` = 0.697 and
+volume leaves `e^(-ln2 · e^-0.5)` = 0.657; measured, 0.695-0.708 and 0.667-0.676.
+That divergence is the schema's gap, measured rather than argued about.
+
+**Two defects on the way, both invisible in the way that matters.** The first
+walk sampled against a single majorant for the whole cloud and capped its trials
+at 512. A real 262,144-particle capture has particles of extinction 400 per unit
+length and eight to a cell, so its global bound was 3,200 and its mean free path
+0.0003 across a cloud one unit wide: 3,200 trials to cross, against a cap of 512.
+Every ray reached the cap, the cap returned "no collision", and the cloud
+rendered as *nothing at all*. The comment justifying the cap said reaching it was
+"the same answer it would have given by running out of interval", which is not
+true -- running out of interval means the ray left, and reaching a cap means the
+walk gave up, which always biases toward transmission.
+
+The second appeared once the walk stepped cells. The majorant bounded a
+particle's response by dividing the world distance to the cell by the particle's
+*largest* scale, which is valid and hopeless for anything anisotropic: a capture
+whose scales run from 0.0009 to 0.067 has particles reaching 26 cells on a side,
+claiming their full peak in seventeen thousand cells each. The per-cell cap then
+fired -- and because it *forced a collision*, it invented occlusion at a point
+with no density, whose emission was therefore black. The capture rendered as
+black cubes one grid cell across.
+
+Both are fixed at the cause. The bound is now taken per principal axis: the
+Mahalanobis distance is a sum over the particle's three axes, each term can be
+minimised over the cell independently, and the sum of those minima is a valid
+lower bound that respects the anisotropy. The grid is sized at about one cell per
+particle rather than a fixed 32,768. And the cap no longer forces anything -- a
+cap is reached when the bound is loose, not when the cell is opaque.
+
+### 7.5 What is left, in the order it pays
+
+1. **The `volumeshader` terminal.** Splats scatter, receive light, cast coloured
    shadows. This is the step that answers "why do they not react to light".
-3. **Next-event estimation.** Toward lights from inside the medium, and toward
+2. **Next-event estimation.** Toward lights from inside the medium, and toward
    the cloud as an emitter. Today a surface lit only by splats finds them by
    BSDF sampling alone: a wall lit by a compact cloud measured a mean of 0.39
    with per-pixel values from 0 to 1.28 at 512 samples, which is correct in
    expectation and unusable. This is what makes splat lighting practical rather
    than merely unbiased.
-4. **Reconstruction guides.** A splat-covered pixel currently reports background
+3. **Reconstruction guides.** A splat-covered pixel currently reports background
    depth, no normal and no motion, so DLSS would reproject a cloud as sky. The
    depth is the collision distance; the normal is the normalised gradient of the
    density, which a Gaussian mixture has in closed form.

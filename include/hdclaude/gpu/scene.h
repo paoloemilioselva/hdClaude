@@ -214,6 +214,14 @@ struct SplatGridShape {
     float origin[3] = {0.0f, 0.0f, 0.0f};
     float cellSize[3] = {1.0f, 1.0f, 1.0f};
     std::int32_t resolution[3] = {1, 1, 1};
+    /// The largest of every cell's bound, which bounds the whole cloud.
+    ///
+    /// Delta tracking needs *a* majorant; the per-cell ones make it efficient
+    /// and this one makes it possible without marching the grid. The first
+    /// implementation of the walk uses this, which is unbiased and wasteful in
+    /// a sparse cloud, and the per-cell bounds are what a later one steps
+    /// through to stop being wasteful.
+    float majorantBound = 0.0f;
 };
 
 /// One placement of a splat cloud.
