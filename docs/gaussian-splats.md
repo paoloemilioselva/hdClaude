@@ -152,7 +152,17 @@ Two consequences:
 - The coefficients multiply the **normalised real SH basis**, and there is **no
   `+0.5` offset** — unlike the reference 3DGS implementation, whose colour is
   `0.5 + Y(0,0) * f_dc`. A converter must fold the offset into the DC
-  coefficient.
+  coefficient. **Assets in the wild do not.** The first one downloaded, a
+  262,144-particle capture, has 82.99% of its DC radiance channels negative when
+  read as USD specifies and 96.92% inside [0, 1] when read with the 3DGS offset:
+  its converter wrote `f_dc` straight through. So hdClaude counts negative DC
+  channels and reports them by name, because the DC coefficient is the mean
+  radiance over the sphere and a negative one is impossible rather than merely
+  odd — it is not the ringing a truncated series legitimately shows at some
+  directions. It is reported and not corrected: adding the offset here would
+  render a plausible picture out of data that says something else, and would do
+  it to correctly authored assets as well. The fix is `c += sqrt(pi)` per channel
+  on the DC coefficients, in the scene.
 - Coefficient *ordering* is not stated, but `elementSize = (degree+1)^2` is, and
   `elementSize` in USD means contiguous per-element blocks. hdClaude reads the
   array as **particle-major**: all of a particle's coefficients together, in the

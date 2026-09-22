@@ -2533,6 +2533,63 @@ void TestSplatBuildKeepsHarmonicsWithTheirParticles()
     CHECK(saidDropped);
 }
 
+void TestSplatBuildReportsNegativeDcRadiance()
+{
+    // A real downloaded asset raised this. Its DC coefficients were the
+    // reference 3DGS implementation's `f_dc`, written into USD unchanged, so
+    // 83% of its radiance channels read negative under USD's own convention
+    // (colour = Y(0,0) c) and the same data reads 96.9% inside [0, 1] under the
+    // 3DGS one (colour = 0.5 + Y(0,0) f_dc). The DC term is the mean radiance
+    // over the sphere, so a negative one is not the ringing a truncated series
+    // legitimately shows at some directions -- it is impossible, and it is worth
+    // a report of its own naming the offset.
+    const float dc = SphericalHarmonicsFallbackCoefficient();
+
+    SplatCloudSource authored;
+    authored.positions = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
+    authored.sphericalHarmonicsDegree = 0;
+    // What the asset had: f_dc, needing the 0.5 folded in. Two particles, one
+    // negative channel in the first and three in the second.
+    authored.sphericalHarmonics = {0.5f, 0.5f, -dc, -dc, -dc, -dc};
+
+    const SplatCloud raw = BuildSplatCloud(authored);
+    CHECK_EQ(raw.Count(), std::size_t(2));
+    bool reported = false;
+    for (const std::string& report : raw.reports) {
+        if (report.find("DC radiance channels are negative") != std::string::npos &&
+            report.find("sqrt(pi)") != std::string::npos) {
+            reported = true;
+            // The count, not a vague complaint: four of six channels.
+            CHECK(report.find("4 of 6") != std::string::npos);
+        }
+    }
+    CHECK(reported);
+
+    // The same data with the offset folded in, which is what the fix in the
+    // scene looks like, reports nothing.
+    SplatCloudSource fixed = authored;
+    for (float& coefficient : fixed.sphericalHarmonics) {
+        coefficient += dc;
+    }
+    const SplatCloud corrected = BuildSplatCloud(fixed);
+    for (const std::string& report : corrected.reports) {
+        CHECK(report.find("DC radiance") == std::string::npos);
+    }
+
+    // And the radiance really is non-negative afterwards, so the report is
+    // about the thing it says it is rather than about a coefficient's sign.
+    const float direction[3] = {0.0f, 0.0f, 1.0f};
+    for (std::size_t particle = 0; particle < corrected.Count(); ++particle) {
+        float rgb[3];
+        EvaluateSphericalHarmonics(
+            corrected.sphericalHarmonics.data() + particle * 3, 0, direction,
+            rgb);
+        for (int channel = 0; channel < 3; ++channel) {
+            CHECK(rgb[channel] >= 0.0f);
+        }
+    }
+}
+
 void TestSurfletSupportIsADisk()
 {
     // The two surflet kernels are flat: opacity on the local XY plane and
@@ -2642,6 +2699,7 @@ int main()
     TestSplatBuildAppliesTheSchemasLengthRules();
     TestSplatBuildFallsBackToTheSchemasRadiance();
     TestSplatBuildKeepsHarmonicsWithTheirParticles();
+    TestSplatBuildReportsNegativeDcRadiance();
     TestSurfletSupportIsADisk();
     return hdclaude_test::Summarize("hdClaudeCoreTests");
 }

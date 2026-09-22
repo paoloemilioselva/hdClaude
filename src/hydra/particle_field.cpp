@@ -394,6 +394,19 @@ void HdClaudeParticleField::Sync(HdSceneDelegate* sceneDelegate,
     entry.instanceCategories = HdClaudeRprimCategories(
         sceneDelegate, id, GetInstancerId(), entry.transforms.size());
 
+    // Said out loud, once per distinct set of reports. Render stats carry these
+    // as well, and that is not enough on its own: `usdrecord` prints no stats,
+    // so a splat cloud whose radiance is authored in another renderer's
+    // convention would render as authored and say nothing where anyone could
+    // see it.
+    if (entry.reports != _lastReports) {
+        for (const std::string& report : entry.reports) {
+            TF_WARN("hdClaude: particleField <%s>: %s", id.GetText(),
+                    report.c_str());
+        }
+        _lastReports = entry.reports;
+    }
+
     const hdclaude::SplatCloud& cloud = entry.prototype.cloud;
     HdClaudeTrace(
         "particleField <%s>: %zu particles, SH degree %d (%zu coefficients "

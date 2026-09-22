@@ -2,6 +2,9 @@
 
 #include "pxr/imaging/hd/rprim.h"
 
+#include <string>
+#include <vector>
+
 PXR_NAMESPACE_OPEN_SCOPE
 
 /// Publishes a Hydra `particleField` rprim as a Gaussian splat cloud.
@@ -40,6 +43,14 @@ class HdClaudeParticleField final : public HdRprim {
     /// trace. Said once: a cloud that republishes every frame would otherwise
     /// bury the description in repetitions of itself.
     bool _described = false;
+
+    /// What was last reported as not honoured as authored.
+    ///
+    /// Held so that the warnings are issued when they *change* rather than on
+    /// every publication. Render stats carry these too, but a stats entry is
+    /// invisible to `usdrecord`, and a report nobody reads is not a report --
+    /// the negative-radiance case was diagnosed by hand before this existed.
+    std::vector<std::string> _lastReports;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

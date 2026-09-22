@@ -532,6 +532,56 @@ SplatCloud BuildSplatCloud(const SplatCloudSource& source)
             "the scene rather than here");
     }
 
+    // A negative DC radiance, which is the one radiance error worth testing for
+    // by itself.
+    //
+    // The DC coefficient is proportional to the mean radiance over the sphere,
+    // so a negative one is not the ringing a truncated series legitimately
+    // produces at some directions -- it is a mean emission below zero, which no
+    // emitter has. It has exactly one common cause: the reference 3D Gaussian
+    // splatting implementation computes colour as `0.5 + Y(0,0) f_dc`, while USD
+    // specifies `colour = Y(0,0) c`, so a converter that wrote `f_dc` straight
+    // through leaves every coefficient short by `0.5 / Y(0,0)` -- which is
+    // `sqrt(pi)`, the same number the schema's own fallback implies.
+    //
+    // Reported, not corrected. Adding the offset here would render a plausible
+    // picture from data that says something else, and would do it to assets that
+    // are authored correctly too.
+    if (!cloud.splats.empty() && !cloud.sphericalHarmonics.empty()) {
+        const double y00 = HarmonicNormalisation(0, 0);
+        std::size_t negative = 0;
+        double lowest = 0.0;
+        for (std::size_t particle = 0; particle < cloud.splats.size();
+             ++particle) {
+            const float* dc =
+                cloud.sphericalHarmonics.data() + particle * stride;
+            for (int channel = 0; channel < 3; ++channel) {
+                const double radiance = dc[channel] * y00;
+                if (radiance < 0.0) {
+                    ++negative;
+                    lowest = std::min(lowest, radiance);
+                }
+            }
+        }
+        if (negative > 0) {
+            const std::size_t channels = cloud.splats.size() * 3;
+            const double percent =
+                100.0 * static_cast<double>(negative) / static_cast<double>(channels);
+            cloud.reports.push_back(
+                std::to_string(negative) + " of " + std::to_string(channels) +
+                " DC radiance channels are negative (" +
+                std::to_string(percent) + "%, lowest " +
+                std::to_string(lowest) +
+                "). The DC coefficient is the mean radiance over the sphere and "
+                "cannot be negative. The usual cause is the reference 3D "
+                "Gaussian splatting convention, colour = 0.5 + Y(0,0) f_dc, "
+                "written through unchanged: USD specifies colour = Y(0,0) c, so "
+                "the DC coefficients are short by sqrt(pi) = 1.7724539 per "
+                "channel. Fix it in the scene; hdClaude renders the radiance as "
+                "authored");
+        }
+    }
+
     return cloud;
 }
 
