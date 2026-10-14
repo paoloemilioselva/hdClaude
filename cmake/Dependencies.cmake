@@ -80,6 +80,13 @@ FetchContent_Declare(glslang
 
 FetchContent_MakeAvailable(vulkan_headers volk vma glslang)
 
+# volk is a static library that ends up inside the hdClaude shared module, and
+# its own CMake does not ask for position-independent code. MSVC does not care;
+# on Linux the module fails to link with "relocation R_X86_64_PC32 ... recompile
+# with -fPIC". hdClaude's own static libraries set this for the same reason, and
+# glslang sets it for its own targets.
+set_target_properties(volk PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 # ---------------------------------------------------------------------------
 # VMA ships headers plus an implementation macro; give it a real target.
 # ---------------------------------------------------------------------------
