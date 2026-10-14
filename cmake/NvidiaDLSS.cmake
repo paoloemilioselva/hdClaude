@@ -14,6 +14,17 @@
 include_guard(GLOBAL)
 include(FetchContent)
 
+# Windows only, for now. The SDK ships lib/Linux_x86_64 as well, but everything
+# below links the Windows import library, and ngx_support.cpp names and
+# versions the Windows runtime, nvngx_dlss.dll. Asking for DLSS elsewhere is an error rather than a
+# quiet downgrade, because the build was asked for something it cannot do.
+if(NOT WIN32)
+  message(FATAL_ERROR
+      "hdClaude: HDCLAUDE_ENABLE_DLSS is only implemented on Windows. The "
+      "Linux SDK libraries exist but cmake/NvidiaDLSS.cmake does not link "
+      "them yet. Configure without it (the \"dev\" preset).")
+endif()
+
 # A plain variable, not a cache entry. As a cache default the pin was read once,
 # into the first configure, and a build tree kept that tag however the line
 # here changed: moving from 310.3.0 to 310.9.1 edited this file and went on
