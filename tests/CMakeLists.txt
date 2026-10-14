@@ -113,28 +113,28 @@ if(HDCLAUDE_ENABLE_MATERIALX)
   # Phase 3 and 8: instanced geometry renders where USD places it. The only
   # test that reaches the Hydra adapters, so it runs a script in the OpenUSD
   # environment and renders through the installed plugin -- build and install
-  # (compile.bat) before trusting it.
+  # (compile.py) before trusting it. Each script runs through the platform's
+  # wrapper, which sources setup_usd_env first.
   if(TARGET hdClaudeImageDiff)
-    add_test(NAME usd_instancing
-        COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/usd/run_instancing_equivalence.bat"
-                "${CMAKE_CURRENT_BINARY_DIR}/usd_instancing")
-    set_tests_properties(usd_instancing PROPERTIES
-        ENVIRONMENT "HDCLAUDE_IMAGE_DIFF=$<TARGET_FILE:hdClaudeImageDiff>")
-    add_test(NAME usd_lights
-        COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/usd/run_light_linking_equivalence.bat"
-                "${CMAKE_CURRENT_BINARY_DIR}/usd_lights")
-    set_tests_properties(usd_lights PROPERTIES
-        ENVIRONMENT "HDCLAUDE_IMAGE_DIFF=$<TARGET_FILE:hdClaudeImageDiff>")
-    add_test(NAME usd_implicit_surfaces
-        COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/usd/run_implicit_surfaces.bat"
-                "${CMAKE_CURRENT_BINARY_DIR}/usd_implicit_surfaces")
-    set_tests_properties(usd_implicit_surfaces PROPERTIES
-        ENVIRONMENT "HDCLAUDE_IMAGE_DIFF=$<TARGET_FILE:hdClaudeImageDiff>")
-    add_test(NAME usd_texture_quality
-        COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/usd/run_texture_quality.bat"
-                "${CMAKE_CURRENT_BINARY_DIR}/usd_texture_quality")
-    set_tests_properties(usd_texture_quality PROPERTIES
-        ENVIRONMENT "HDCLAUDE_IMAGE_DIFF=$<TARGET_FILE:hdClaudeImageDiff>")
+    foreach(_usd_test
+            "usd_instancing|instancing_equivalence"
+            "usd_lights|light_linking_equivalence"
+            "usd_implicit_surfaces|implicit_surfaces"
+            "usd_texture_quality|texture_quality")
+      string(REPLACE "|" ";" _usd_test "${_usd_test}")
+      list(GET _usd_test 0 _name)
+      list(GET _usd_test 1 _script)
+      if(WIN32)
+        set(_command "${CMAKE_CURRENT_SOURCE_DIR}/usd/run_${_script}.bat")
+      else()
+        set(_command bash "${CMAKE_CURRENT_SOURCE_DIR}/usd/run_in_usd_env.sh"
+                          "${_script}.py")
+      endif()
+      add_test(NAME ${_name}
+          COMMAND ${_command} "${CMAKE_CURRENT_BINARY_DIR}/${_name}")
+      set_tests_properties(${_name} PROPERTIES
+          ENVIRONMENT "HDCLAUDE_IMAGE_DIFF=$<TARGET_FILE:hdClaudeImageDiff>")
+    endforeach()
   endif()
 
   set_tests_properties(closure_validation PROPERTIES

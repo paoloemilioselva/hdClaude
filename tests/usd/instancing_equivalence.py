@@ -24,9 +24,9 @@ shows the comparison is able to see the defect it exists for.
 
 Usage: python instancing_equivalence.py <output directory>
 Runs in the OpenUSD environment, with the hdClaude plugin installed and
-render_claude.bat reachable, and hdClaudeImageDiff on PATH or named by
+render_claude.bat (or .sh) reachable, and hdClaudeImageDiff on PATH or named by
 HDCLAUDE_IMAGE_DIFF. It renders through the *installed* plugin, so it tests
-what compile.bat last installed.
+what compile.py last installed.
 """
 
 import os
@@ -37,7 +37,11 @@ from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
-RENDER = os.path.join(ROOT, "render_claude.bat")
+# The render script for this platform; both fix the same usdrecord flags.
+if os.name == "nt":
+    RENDER = ["cmd", "/c", os.path.join(ROOT, "render_claude.bat")]
+else:
+    RENDER = ["bash", os.path.join(ROOT, "render_claude.sh")]
 
 # One box, unit size, centred on its own origin.
 BOX_POINTS = [(-0.5, -0.5, -0.5), (0.5, -0.5, -0.5), (0.5, 0.5, -0.5), (-0.5, 0.5, -0.5),
@@ -243,7 +247,7 @@ def render(stage_path, output):
     environment["HDCLAUDE_SAMPLES_PER_PIXEL"] = "64"
     environment["HDCLAUDE_RECONSTRUCTION"] = "off"
     result = subprocess.run(
-        ["cmd", "/c", RENDER, "--camera", "/camera", "--frames", "1",
+        [*RENDER, "--camera", "/camera", "--frames", "1",
          "--imageWidth", "320", stage_path, output.replace("0001", "####")],
         capture_output=True, text=True, env=environment)
     if result.returncode != 0 or not os.path.exists(output):

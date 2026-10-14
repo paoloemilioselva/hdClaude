@@ -26,7 +26,11 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdShade
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
-RENDER = os.path.join(ROOT, "render_claude.bat")
+# The render script for this platform; both fix the same usdrecord flags.
+if os.name == "nt":
+    RENDER = ["cmd", "/c", os.path.join(ROOT, "render_claude.bat")]
+else:
+    RENDER = ["bash", os.path.join(ROOT, "render_claude.sh")]
 
 EDGE = 1024
 #: Cell size in texels. Small enough that two halvings genuinely lose it.
@@ -110,7 +114,7 @@ def render(stage_path, output, quality, stats):
     environment["HDCLAUDE_TEXTURE_QUALITY"] = quality
     environment["HDCLAUDE_STATS_REPORT"] = stats
     result = subprocess.run(
-        ["cmd", "/c", RENDER, "--camera", "/camera", "--frames", "1",
+        [*RENDER, "--camera", "/camera", "--frames", "1",
          "--imageWidth", "320", stage_path, output.replace("0001", "####")],
         capture_output=True, text=True, env=environment)
     if result.returncode != 0 or not os.path.exists(output):

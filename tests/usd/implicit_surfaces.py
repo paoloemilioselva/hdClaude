@@ -18,7 +18,7 @@ dome alone: every centre patch then reads the background and every one of these
 fails.
 
 Usage: python implicit_surfaces.py <output directory>
-Runs in the OpenUSD environment against what compile.bat last installed.
+Runs in the OpenUSD environment against what compile.py last installed.
 """
 
 import os
@@ -27,7 +27,11 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
-RENDER = os.path.join(ROOT, "render_claude.bat")
+# The render script for this platform; both fix the same usdrecord flags.
+if os.name == "nt":
+    RENDER = ["cmd", "/c", os.path.join(ROOT, "render_claude.bat")]
+else:
+    RENDER = ["bash", os.path.join(ROOT, "render_claude.sh")]
 STAGE = os.path.join(HERE, "implicit_surfaces.usda")
 
 WIDTH = 320
@@ -82,7 +86,7 @@ def render(stage_path, output):
     environment["HDCLAUDE_SAMPLES_PER_PIXEL"] = "64"
     environment["HDCLAUDE_RECONSTRUCTION"] = "off"
     result = subprocess.run(
-        ["cmd", "/c", RENDER, "--camera", "/camera", "--frames", "1",
+        [*RENDER, "--camera", "/camera", "--frames", "1",
          "--imageWidth", str(WIDTH), stage_path,
          output.replace("0001", "####")],
         capture_output=True, text=True, env=environment)

@@ -27,7 +27,7 @@ same, rendered through the installed plugin, plus a stage that must *not* match
 
 Usage: python light_linking_equivalence.py <output directory>
 Runs in the OpenUSD environment with the hdClaude plugin installed, like
-instancing_equivalence.py, and tests what compile.bat last installed.
+instancing_equivalence.py, and tests what compile.py last installed.
 """
 
 import os
@@ -38,7 +38,11 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
-RENDER = os.path.join(ROOT, "render_claude.bat")
+# The render script for this platform; both fix the same usdrecord flags.
+if os.name == "nt":
+    RENDER = ["cmd", "/c", os.path.join(ROOT, "render_claude.bat")]
+else:
+    RENDER = ["bash", os.path.join(ROOT, "render_claude.sh")]
 
 
 def write_dome_map(path, width=256, height=128):
@@ -184,7 +188,7 @@ def render(stage_path, output):
     environment["HDCLAUDE_SAMPLES_PER_PIXEL"] = "128"
     environment["HDCLAUDE_RECONSTRUCTION"] = "off"
     result = subprocess.run(
-        ["cmd", "/c", RENDER, "--camera", "/camera", "--frames", "1",
+        [*RENDER, "--camera", "/camera", "--frames", "1",
          "--imageWidth", "320", stage_path, output.replace("0001", "####")],
         capture_output=True, text=True, env=environment)
     if result.returncode != 0 or not os.path.exists(output):
