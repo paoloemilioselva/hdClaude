@@ -94,7 +94,7 @@ endforeach()
 # the directory *above* the plugin's own. So the library sits beside the
 # resource directory, not inside it, exactly as hdEmbree and hdStorm do:
 #
-#   plugin/usd/hdClaude.dll
+#   plugin/usd/hdClaude.dll  (hdClaude.so on Linux)
 #   plugin/usd/hdClaude/resources/plugInfo.json
 #   plugin/usd/hdClaude/resources/shaders/*.glsl
 #   plugin/usd/hdClaude/resources/mtlx/...
@@ -104,10 +104,15 @@ endforeach()
 # ---------------------------------------------------------------------------
 set(HDCLAUDE_PLUGIN_RESOURCES "${CMAKE_BINARY_DIR}/plugin/usd/hdClaude/resources")
 
+# LibraryPath must name the module exactly as the linker wrote it -- hdClaude.dll
+# on Windows, hdClaude.so on Linux -- so it is generated from the target rather
+# than written by hand. A hard-coded name loads on one platform and is silently
+# not found on the other.
+file(GENERATE
+    OUTPUT "${HDCLAUDE_PLUGIN_RESOURCES}/plugInfo.json"
+    INPUT  "${CMAKE_SOURCE_DIR}/resources/plugInfo.json.in")
+
 add_custom_command(TARGET hdClaude POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/resources/plugInfo.json"
-            "${HDCLAUDE_PLUGIN_RESOURCES}/plugInfo.json"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_SOURCE_DIR}/shaders"
             "${HDCLAUDE_PLUGIN_RESOURCES}/shaders"
@@ -122,7 +127,7 @@ install(TARGETS hdClaude
     LIBRARY DESTINATION "plugin/usd"
     RUNTIME DESTINATION "plugin/usd"
 )
-install(FILES "${CMAKE_SOURCE_DIR}/resources/plugInfo.json"
+install(FILES "${HDCLAUDE_PLUGIN_RESOURCES}/plugInfo.json"
     DESTINATION "plugin/usd/hdClaude/resources")
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/shaders/"
     DESTINATION "plugin/usd/hdClaude/resources/shaders")

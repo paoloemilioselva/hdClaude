@@ -34,7 +34,7 @@
           }
         }
       },
-      "LibraryPath": "../hdClaude.dll",
+      "LibraryPath": "../$<TARGET_FILE_NAME:hdClaude>",
       "Name": "hdClaude",
       "ResourcePath": "resources",
       "Root": "..",
