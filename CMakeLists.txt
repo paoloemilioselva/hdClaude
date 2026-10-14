@@ -24,8 +24,8 @@ option(HDCLAUDE_BUILD_VALIDATION_LAYERS
 option(HDCLAUDE_WARNINGS_AS_ERRORS "Treat hdClaude compiler warnings as errors" OFF)
 
 set(HDCLAUDE_OPENUSD_ROOT "$ENV{USDROOT}" CACHE PATH
-    "OpenUSD install root. Defaults to the USDROOT set by setup_usd_env.bat.")
-if(NOT HDCLAUDE_OPENUSD_ROOT)
+    "OpenUSD install root. Defaults to the USDROOT set by setup_usd_env.bat/.sh.")
+if(NOT HDCLAUDE_OPENUSD_ROOT AND WIN32)
   set(HDCLAUDE_OPENUSD_ROOT "C:/dev/usd-26.03" CACHE PATH "OpenUSD install root" FORCE)
 endif()
 
@@ -92,19 +92,44 @@ if(HDCLAUDE_ENABLE_VULKAN)
   set(HDCLAUDE_VALIDATION_LAYER_DIR "" CACHE PATH
       "Directory containing VkLayer_khronos_validation.json")
 
+  # The manifest sits beside the DLL on Windows. Elsewhere it lives in
+  # share/vulkan/explicit_layer.d, and names a bare libVkLayer_khronos_validation.so
+  # that the loader finds on the library search path -- so pointing
+  # VK_LAYER_PATH at the manifest is not enough, and the tests also need
+  # HDCLAUDE_VALIDATION_LAYER_LIBRARY_DIR on LD_LIBRARY_PATH.
+  if(WIN32)
+    set(_layer_candidates
+        "$ENV{HDCLAUDE_VULKAN_SDK}/Bin"
+        "$ENV{VULKAN_SDK}/Bin"
+        "$ENV{VULKAN_SDK}/bin"
+        "${HDCLAUDE_DEPS_DIR}/validation-layers/install/bin")
+  else()
+    set(_layer_candidates
+        "$ENV{HDCLAUDE_VULKAN_SDK}/share/vulkan/explicit_layer.d"
+        "$ENV{VULKAN_SDK}/share/vulkan/explicit_layer.d"
+        "${HDCLAUDE_DEPS_DIR}/validation-layers/install/share/vulkan/explicit_layer.d"
+        "/usr/local/share/vulkan/explicit_layer.d"
+        "/usr/share/vulkan/explicit_layer.d")
+  endif()
+
   if(HDCLAUDE_BUILD_VALIDATION_LAYERS)
     include(ValidationLayers)
   elseif(NOT HDCLAUDE_VALIDATION_LAYER_DIR)
-    foreach(_candidate
-            "$ENV{HDCLAUDE_VULKAN_SDK}/Bin"
-            "$ENV{VULKAN_SDK}/Bin"
-            "$ENV{VULKAN_SDK}/bin"
-            "${HDCLAUDE_DEPS_DIR}/validation-layers/install/bin")
+    foreach(_candidate ${_layer_candidates})
       if(NOT HDCLAUDE_VALIDATION_LAYER_DIR AND
          EXISTS "${_candidate}/VkLayer_khronos_validation.json")
         set(HDCLAUDE_VALIDATION_LAYER_DIR "${_candidate}" CACHE PATH "" FORCE)
       endif()
     endforeach()
+  endif()
+
+  # <root>/share/vulkan/explicit_layer.d -> <root>/lib. Unused on Windows,
+  # where the loader resolves the manifest's library path relative to it.
+  if(HDCLAUDE_VALIDATION_LAYER_DIR AND NOT WIN32)
+    cmake_path(GET HDCLAUDE_VALIDATION_LAYER_DIR PARENT_PATH _layer_share)
+    cmake_path(GET _layer_share PARENT_PATH _layer_share)
+    cmake_path(GET _layer_share PARENT_PATH _layer_root)
+    set(HDCLAUDE_VALIDATION_LAYER_LIBRARY_DIR "${_layer_root}/lib")
   endif()
 
   if(HDCLAUDE_VALIDATION_LAYER_DIR AND NOT HDCLAUDE_BUILD_VALIDATION_LAYERS)

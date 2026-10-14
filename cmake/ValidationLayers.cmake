@@ -42,14 +42,14 @@ else()
 endif()
 
 # Python is required by the validation layers' own dependency bootstrap
-# (scripts/update_deps.py). setup_usd_env.bat already guarantees an interpreter
+# (scripts/update_deps.py). setup_usd_env.bat/.sh already guarantees an interpreter
 # matching the OpenUSD build, so this reuses it rather than provisioning one.
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(NOT Python3_FOUND)
   message(FATAL_ERROR
       "HDCLAUDE_BUILD_VALIDATION_LAYERS requires a Python interpreter for the "
       "validation layers' dependency bootstrap, and none was found. Run "
-      "setup_usd_env.bat first, or turn the option off and install the Vulkan "
+      "setup_usd_env.bat (setup_usd_env.sh on Linux) first, or turn the option off and install the Vulkan "
       "SDK instead. See docs/building.md.")
 endif()
 
@@ -63,6 +63,9 @@ ExternalProject_Add(hdClaudeValidationLayers
     CMAKE_ARGS
         -DCMAKE_BUILD_TYPE=Release
         -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
+        # GNUInstallDirs would pick lib64 on some distributions; the tests put
+        # <INSTALL_DIR>/lib on LD_LIBRARY_PATH, so the location is pinned.
+        -DCMAKE_INSTALL_LIBDIR=lib
         -DPYTHON_EXECUTABLE=${Python3_EXECUTABLE}
         # Fetches and builds the known-good SPIRV-Headers/SPIRV-Tools revisions
         # the layers were tested against, rather than making us pin a second

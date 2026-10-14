@@ -45,8 +45,16 @@ if(HDCLAUDE_ENABLE_VULKAN)
   if(HDCLAUDE_VALIDATION_LAYER_DIR)
     list(APPEND _gpu_test_env "VK_LAYER_PATH=${HDCLAUDE_VALIDATION_LAYER_DIR}")
   endif()
-  set_tests_properties(gpu PROPERTIES ENVIRONMENT "${_gpu_test_env}")
-  set_tests_properties(geometry PROPERTIES ENVIRONMENT "${_gpu_test_env}")
+  # Off Windows the manifest names a bare library the loader finds on the
+  # library search path, so the layer's lib directory travels with the tests.
+  set(_layer_path_modification "")
+  if(HDCLAUDE_VALIDATION_LAYER_LIBRARY_DIR)
+    set(_layer_path_modification
+        "LD_LIBRARY_PATH=path_list_prepend:${HDCLAUDE_VALIDATION_LAYER_LIBRARY_DIR}")
+  endif()
+  set_tests_properties(gpu geometry PROPERTIES
+      ENVIRONMENT "${_gpu_test_env}"
+      ENVIRONMENT_MODIFICATION "${_layer_path_modification}")
 
   # The layer must exist before the test runs, so the test binary depends on
   # the external build rather than relying on build order by accident.
@@ -65,9 +73,15 @@ if(HDCLAUDE_ENABLE_MATERIALX)
   # Runtime search path for OpenUSD's DLLs, and the validation environment.
   # Both are defined before any test uses them: a CMake variable read before it
   # is set expands to nothing and the test silently runs unconfigured.
-  set(_usd_path_modification
-      "PATH=path_list_prepend:${HDCLAUDE_OPENUSD_ROOT}/bin"
-      "PATH=path_list_prepend:${HDCLAUDE_OPENUSD_ROOT}/lib")
+  if(WIN32)
+    set(_usd_path_modification
+        "PATH=path_list_prepend:${HDCLAUDE_OPENUSD_ROOT}/bin"
+        "PATH=path_list_prepend:${HDCLAUDE_OPENUSD_ROOT}/lib")
+  else()
+    set(_usd_path_modification
+        "LD_LIBRARY_PATH=path_list_prepend:${HDCLAUDE_OPENUSD_ROOT}/lib")
+  endif()
+  list(APPEND _usd_path_modification ${_layer_path_modification})
 
   set(_validation_env "HDCLAUDE_ENABLE_VULKAN_VALIDATION=1")
   if(HDCLAUDE_VALIDATION_LAYER_DIR)
