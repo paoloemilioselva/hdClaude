@@ -101,7 +101,8 @@ struct VulkanCapabilities {
     bool descriptorIndexing = false;
     /// VK_NV_ray_tracing_invocation_reorder: Shader Execution Reordering.
     bool invocationReorder = false;
-    /// VK_KHR_external_memory_win32, for the later Hgi interop phase.
+    /// VK_KHR_external_memory_win32 on Windows, VK_KHR_external_memory_fd
+    /// elsewhere, for the later Hgi interop phase.
     bool externalMemory = false;
 
     std::uint32_t subgroupSize = 0;

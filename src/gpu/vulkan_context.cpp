@@ -30,6 +30,15 @@ std::string ToLower(std::string text)
     return text;
 }
 
+// The external-memory handle type is the platform's: a Win32 HANDLE on
+// Windows, a POSIX file descriptor elsewhere. Hgi interop on either side asks
+// for the one its own platform exports.
+#if defined(_WIN32)
+constexpr const char* kExternalMemoryExtension = "VK_KHR_external_memory_win32";
+#else
+constexpr const char* kExternalMemoryExtension = "VK_KHR_external_memory_fd";
+#endif
+
 bool HasExtension(const std::vector<VkExtensionProperties>& available,
                   const char* name)
 {
@@ -563,7 +572,7 @@ void VulkanContext::SelectPhysicalDevice(const VulkanContextOptions& options)
         capabilities.invocationReorder =
             HasExtension(extensions, "VK_NV_ray_tracing_invocation_reorder");
         capabilities.externalMemory =
-            HasExtension(extensions, "VK_KHR_external_memory_win32");
+            HasExtension(extensions, kExternalMemoryExtension);
 
         // Ray query and acceleration structures are hard requirements: they are
         // how the renderer traverses. Everything else in VulkanCapabilities is
@@ -702,7 +711,7 @@ void VulkanContext::CreateDevice(const VulkanContextOptions& options)
     // capability is still detected and reported so the decision stays visible.
     // See docs/architecture.md 2.1.
     if (_capabilities.externalMemory) {
-        deviceExtensions.push_back("VK_KHR_external_memory_win32");
+        deviceExtensions.push_back(kExternalMemoryExtension);
     }
 
     const auto available = DeviceExtensionProperties(_physicalDevice);
