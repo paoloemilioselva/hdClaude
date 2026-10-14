@@ -82,6 +82,11 @@ compile.bat                :: the full delegate
 compile.bat dev-dlss       :: with the optional NVIDIA DLSS backend
 ```
 
+`compile.bat` forwards to `compile.py`, the build driver on every platform; on
+Linux run `python3 compile.py` with the same arguments. The Linux build is
+scripted but has not yet been compiled -- see
+[docs/building.md](docs/building.md#linux).
+
 Third-party dependencies are **not committed**. They are referenced by pinned
 tag in [cmake/Dependencies.cmake](cmake/Dependencies.cmake) and fetched by CMake
 into the gitignored `_deps/` tree on the first configure, so a fresh clone
@@ -89,7 +94,8 @@ reproduces the same tree with one command and no manual setup. OpenUSD is the
 one exception: it is an external prebuilt distribution, discovered by
 `setup_usd_env.bat`, never vendored.
 
-Every USD-facing script calls `setup_usd_env.bat`, which locates OpenUSD,
+Every USD-facing script calls `setup_usd_env.bat` (`setup_usd_env.sh` on
+Linux), which locates OpenUSD,
 derives the required Python version from the distribution's own
 `pxrConfig.cmake` rather than hard-coding it, and discovers the optional Vulkan
 and DLSS SDKs. See [docs/building.md](docs/building.md).

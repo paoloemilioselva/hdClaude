@@ -1,6 +1,8 @@
 # Building hdClaude
 
-Last revised 2026-09-05. Platform of record: Windows 11, MSVC 2022, Ninja.
+Last revised 2026-10-15. Platform of record: Windows 11, MSVC 2022, Ninja.
+Linux (GCC or Clang, Ninja) is supported by the build scripts but **has never
+been compiled** — see [Linux](#linux).
 
 ## Dependency policy
 
@@ -19,7 +21,7 @@ of third-party or proprietary code.
 | glslang | CMake `FetchContent` | `HDCLAUDE_VULKAN_SDK_TAG` |
 | Vulkan-ValidationLayers | CMake `ExternalProject`, opt-in | `HDCLAUDE_VULKAN_SDK_TAG` |
 | NVIDIA DLSS SDK | CMake `FetchContent`, optional | `HDCLAUDE_DLSS_TAG` |
-| **OpenUSD** | **external prebuilt install** | discovered by `setup_usd_env.bat` |
+| **OpenUSD** | **external prebuilt install** | discovered by `setup_usd_env.bat` / `.sh` |
 | MaterialX | from inside the OpenUSD distribution | — |
 | OpenSubdiv | from inside the OpenUSD distribution | — |
 
@@ -77,8 +79,10 @@ cmake --preset dev -DFETCHCONTENT_FULLY_DISCONNECTED=ON
    builds and renders that do not use the Python bindings.
 
 3. **Visual Studio 2022** with the C++ workload, plus CMake and Ninja.
-   `compile.bat` enters the developer environment only when the tools are not
-   already on `PATH`.
+   `compile.py` enters the developer environment only when the tools are not
+   already on `PATH`. On Linux: GCC or Clang with C++20, CMake 3.25 or newer,
+   Ninja, and the OpenGL development package (`libgl-dev` or equivalent) that
+   OpenUSD's CMake config asks for.
 
 4. **A Vulkan 1.3 GPU** exposing `VK_KHR_ray_query`,
    `VK_KHR_acceleration_structure`, `VK_KHR_buffer_device_address`,
@@ -114,9 +118,16 @@ cmake --preset dev -DFETCHCONTENT_FULLY_DISCONNECTED=ON
 compile.bat core-only      :: dependency-free core and its tests; no GPU, no USD
 compile.bat                :: the full delegate ("dev" preset)
 compile.bat dev-validation :: the full delegate, building the validation layer
-compile.bat dev-dlss       :: with the optional NVIDIA DLSS backend
+compile.bat dev-dlss       :: with the optional NVIDIA DLSS backend (Windows only)
 compile.bat clean          :: remove the build tree, then build "dev"
 ```
+
+`compile.bat` forwards to `compile.py`, which is the build driver on every
+platform and takes the same arguments (`python3 compile.py core-only` on Linux).
+The build steps live there once. The environment does not: it comes from
+`setup_usd_env.bat` on Windows and `setup_usd_env.sh` elsewhere, and those stay
+shell scripts because they have to be sourced into an interactive shell for
+usdview and usdrecord, which a Python process cannot do for its parent.
 
 Or with CMake presets directly:
 
@@ -131,12 +142,44 @@ no OpenUSD dependency at all. It is the fastest way to check that a change to
 hashing, the shader cache, or the spectral pipeline is sound, and it runs on any
 machine with a compiler.
 
+## Linux
+
+Written from reading the code on Windows, not from a Linux build: no Linux
+toolchain has compiled hdClaude yet. What the port consists of:
+
+- **`setup_usd_env.sh`**, sourced (`. ./setup_usd_env.sh`), is the counterpart
+  of `setup_usd_env.bat` and does the same things in the same order. It probes
+  `~/dev/usd-*` and `/opt/usd-*` for OpenUSD, defaults `USDEXTRA` to
+  `~/usd-26.03-extra`, and puts OpenUSD's libraries on `LD_LIBRARY_PATH` where
+  Windows uses `PATH`. Keep the two in step.
+- **`render_claude.sh`** passes `usdrecord` the same fixed flags as
+  `render_claude.bat`; the reasons are written there once.
+- **`plugInfo.json`** is generated from `resources/plugInfo.json.in`, so its
+  `LibraryPath` names `hdClaude.so` on Linux and `hdClaude.dll` on Windows.
+- **volk** is built position-independent, since it links into the shared
+  module.
+- **The validation layer** is found under `share/vulkan/explicit_layer.d`, in
+  the source-built tree, `$VULKAN_SDK`, or `/usr`. Its manifest names a bare
+  `libVkLayer_khronos_validation.so`, so the layer's `lib` directory goes on
+  `LD_LIBRARY_PATH` as well as the manifest on `VK_LAYER_PATH`; the tests and
+  `setup_usd_env.sh` both do this.
+- **The USD tests** run through `tests/usd/run_in_usd_env.sh` instead of the
+  `.bat` wrappers.
+- **DLSS** is Windows-only: `dev-dlss` stops at configure on Linux, because
+  `cmake/NvidiaDLSS.cmake` links only the SDK's Windows library.
+
+Expect the first real build to find what reading could not: GCC's standard
+library includes fewer headers transitively than MSVC's, so a few missing
+`#include`s (`<cstdint>`, `<cstring>`, `<algorithm>`) are likely, and
+OpenUSD's headers are noisy under `-Wpedantic`.
+
 ## Install layout
 
 The delegate installs to `USDEXTRA` (default
-`%USERPROFILE%\Desktop\usd-26.03-extra`), placed beside the OpenUSD install
+`%USERPROFILE%\Desktop\usd-26.03-extra` on Windows, `~/usd-26.03-extra` on
+Linux), placed beside the OpenUSD install
 rather than inside it, so that a USD upgrade does not delete the plugin and a
-plugin rebuild cannot corrupt a USD distribution. `setup_usd_env.bat` puts both
+plugin rebuild cannot corrupt a USD distribution. `setup_usd_env.bat`/`.sh` puts both
 trees on `PXR_PLUGINPATH_NAME`.
 
 ## Verifying
@@ -162,7 +205,7 @@ check. A plugin that builds and installs but is not discovered is a
 
 ## Troubleshooting
 
-**"OpenUSD was not found."** `setup_usd_env.bat` probed its known roots and
+**"OpenUSD was not found."** `setup_usd_env.bat`/`.sh` probed its known roots and
 none contained `pxrConfig.cmake`. Set `USDROOT` explicitly.
 
 **"Python version mismatch."** The active interpreter's version differs from the

@@ -20,8 +20,9 @@ if(NOT EXISTS "${HDCLAUDE_OPENUSD_ROOT}/pxrConfig.cmake")
   message(FATAL_ERROR
       "OpenUSD was not found at '${HDCLAUDE_OPENUSD_ROOT}'.\n"
       "Expected '${HDCLAUDE_OPENUSD_ROOT}/pxrConfig.cmake'.\n"
-      "Set -DHDCLAUDE_OPENUSD_ROOT=<install root>, or run setup_usd_env.bat "
-      "which discovers one and exports USDROOT. See docs/building.md.")
+      "Set -DHDCLAUDE_OPENUSD_ROOT=<install root>, or build with compile.py, "
+      "whose setup_usd_env.bat/.sh discovers one and exports USDROOT. See "
+      "docs/building.md.")
 endif()
 
 list(PREPEND CMAKE_PREFIX_PATH "${HDCLAUDE_OPENUSD_ROOT}")
