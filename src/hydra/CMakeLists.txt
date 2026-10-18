@@ -89,11 +89,14 @@ endforeach()
 # ---------------------------------------------------------------------------
 # Plugin layout.
 #
-# Plug scans each PXR_PLUGINPATH_NAME entry for */resources/plugInfo.json, and
-# resolves LibraryPath relative to Root -- which plugInfo.json sets to "..",
+# Plug reads plugInfo.json from each PXR_PLUGINPATH_NAME entry and does not
+# scan below it, so plugin/usd carries one whose Includes reaches the plugin's
+# own, exactly as OpenUSD's plugin/usd does. Plug resolves LibraryPath relative
+# to Root -- which the plugin's plugInfo.json sets to "..",
 # the directory *above* the plugin's own. So the library sits beside the
 # resource directory, not inside it, exactly as hdEmbree and hdStorm do:
 #
+#   plugin/usd/plugInfo.json  {"Includes": ["*/resources/"]}
 #   plugin/usd/hdClaude.dll  (hdClaude.so on Linux)
 #   plugin/usd/hdClaude/resources/plugInfo.json
 #   plugin/usd/hdClaude/resources/shaders/*.glsl
@@ -111,6 +114,9 @@ set(HDCLAUDE_PLUGIN_RESOURCES "${CMAKE_BINARY_DIR}/plugin/usd/hdClaude/resources
 file(GENERATE
     OUTPUT "${HDCLAUDE_PLUGIN_RESOURCES}/plugInfo.json"
     INPUT  "${CMAKE_SOURCE_DIR}/resources/plugInfo.json.in")
+file(GENERATE
+    OUTPUT "${CMAKE_BINARY_DIR}/plugin/usd/plugInfo.json"
+    CONTENT "{\n    \"Includes\": [ \"*/resources/\" ]\n}\n")
 
 add_custom_command(TARGET hdClaude POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -129,6 +135,8 @@ install(TARGETS hdClaude
 )
 install(FILES "${HDCLAUDE_PLUGIN_RESOURCES}/plugInfo.json"
     DESTINATION "plugin/usd/hdClaude/resources")
+install(FILES "${CMAKE_BINARY_DIR}/plugin/usd/plugInfo.json"
+    DESTINATION "plugin/usd")
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/shaders/"
     DESTINATION "plugin/usd/hdClaude/resources/shaders")
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/mtlx/"

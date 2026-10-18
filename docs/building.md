@@ -242,7 +242,9 @@ fetch failure is not an error: the feature turns itself off and the build
 continues, because DLSS is never a requirement of the default build.
 
 **The delegate does not appear in usdview.** Confirm `USDEXTRA` is on
-`PXR_PLUGINPATH_NAME` (`setup_usd_env.bat` does this), that
-`plugin\usd\hdClaude\resources\plugInfo.json` exists under it, and that the
+`PXR_PLUGINPATH_NAME` (`setup_usd_env.bat` does this), that both
+`plugin\usd\plugInfo.json` and `plugin\usd\hdClaude\resources\plugInfo.json`
+exist under it -- Plug reads only the first from a search path entry, and its
+`Includes` leads to the second -- and that the
 plugin's dependent DLLs resolve — a missing dependency makes a plugin silently
 undiscoverable rather than producing an error.
