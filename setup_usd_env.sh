@@ -53,10 +53,12 @@ _hdclaude_env() {
   fi
   export USDROOT
 
-  # Install prefix for the hdClaude plugin itself. Kept beside the USD install
-  # rather than inside it so a USD upgrade does not delete the plugin, and a
-  # plugin rebuild cannot corrupt a USD distribution.
-  export USDEXTRA="${USDEXTRA:-$HOME/usd-26.03-extra}"
+  # Install prefix for the hdClaude plugin itself. Never inside the USD
+  # install, so a USD upgrade does not delete the plugin and a plugin rebuild
+  # cannot corrupt a USD distribution -- which off Windows is often a read-only
+  # package. The repository's own gitignored install/ keeps the plugin beside
+  # the source that built it.
+  export USDEXTRA="${USDEXTRA:-$HDCLAUDE_ROOT/install}"
 
   # -------------------------------------------------------------------------
   # 2. Python conformance.

@@ -166,8 +166,8 @@ toolchain has compiled hdClaude yet. What the port consists of:
 
 - **`setup_usd_env.sh`**, sourced (`. ./setup_usd_env.sh`), is the counterpart
   of `setup_usd_env.bat` and does the same things in the same order. It probes
-  `~/dev/usd-*` and `/opt/usd-*` for OpenUSD, defaults `USDEXTRA` to
-  `~/usd-26.03-extra`, and puts OpenUSD's libraries on `LD_LIBRARY_PATH` where
+  `~/dev/usd-*` and `/opt/usd-*` for OpenUSD, defaults `USDEXTRA` to the
+  repository's `install/`, and puts OpenUSD's libraries on `LD_LIBRARY_PATH` where
   Windows uses `PATH`. Keep the two in step.
 - **`render_claude.sh`** passes `usdrecord` the same fixed flags as
   `render_claude.bat`; the reasons are written there once.
@@ -193,11 +193,19 @@ OpenUSD's headers are noisy under `-Wpedantic`.
 ## Install layout
 
 The delegate installs to `USDEXTRA` (default
-`%USERPROFILE%\Desktop\usd-26.03-extra` on Windows, `~/usd-26.03-extra` on
-Linux), placed beside the OpenUSD install
-rather than inside it, so that a USD upgrade does not delete the plugin and a
+`%USERPROFILE%\Desktop\usd-26.03-extra` on Windows, the repository's
+gitignored `install/` on Linux), placed outside the OpenUSD install, so that a USD upgrade does not delete the plugin and a
 plugin rebuild cannot corrupt a USD distribution. `setup_usd_env.bat`/`.sh` puts both
-trees on `PXR_PLUGINPATH_NAME`.
+trees on `PXR_PLUGINPATH_NAME`. To launch usdview against it on Linux:
+
+```sh
+. ./setup_usd_env.sh
+usdview scene.usda
+```
+
+To install elsewhere, export `USDEXTRA` before sourcing. An assignment written
+in front of `.` (`USDEXTRA=... . ./setup_usd_env.sh`) is undone by bash when
+the script returns.
 
 ## Verifying
 
