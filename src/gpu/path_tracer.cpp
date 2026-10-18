@@ -7,6 +7,7 @@
 #include "hdclaude/core/environment.h"
 #include "hdclaude/core/spectrum.h"
 
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <sstream>
