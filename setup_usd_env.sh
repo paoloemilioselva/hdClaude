@@ -12,6 +12,7 @@
 #
 # Overrides, all optional, all honoured if already set:
 #   USDROOT                 OpenUSD install root
+#   MATERIALX_ROOT          MaterialX install root, when it is not inside OpenUSD
 #   USDEXTRA                install prefix for hdClaude's own plugin
 #   HDCLAUDE_VALIDATION_LAYER_DIR  directory holding VkLayer_khronos_validation.json
 #   HDCLAUDE_SKIP_PYTHON    set to 1 to skip the Python conformance check
@@ -24,12 +25,13 @@ _hdclaude_env() {
 
   # -------------------------------------------------------------------------
   # 1. Locate OpenUSD.
-  #     An explicit USDROOT always wins. Otherwise probe known-good roots,
-  #     newest first, and validate by the presence of pxrConfig.cmake.
+  #     An explicit USDROOT always wins. Otherwise probe the usd package of a
+  #     rez environment, then known-good roots, newest first, and validate by
+  #     the presence of pxrConfig.cmake.
   # -------------------------------------------------------------------------
   if [ -z "${USDROOT:-}" ]; then
     local candidate
-    for candidate in \
+    for candidate in "${REZ_USD_ROOT:-}" \
         "$HOME/dev/usd-26.03" "$HOME/dev/usd-26.05" "$HOME/dev/usd-25.08" \
         "/opt/usd-26.03" "/opt/usd-26.05" "/opt/usd-25.08"; do
       if [ -f "$candidate/pxrConfig.cmake" ]; then
@@ -153,9 +155,28 @@ _hdclaude_env() {
   # 7. hdClaude runtime defaults. Only set what is not already set, so a
   #     caller's explicit choice always wins. MaterialX separates search paths
   #     with ':' off Windows.
+  #
+  #     The MaterialX standard libraries are found the way cmake/OpenUSD.cmake
+  #     finds MaterialX: MATERIALX_ROOT, else inside OpenUSD, else the
+  #     MaterialX_DIR that OpenUSD recorded in pxrConfig.cmake.
   # -------------------------------------------------------------------------
   export HDCLAUDE_SHADER_CACHE="${HDCLAUDE_SHADER_CACHE:-$HDCLAUDE_ROOT/shader-cache}"
-  export MATERIALX_SEARCH_PATH="${MATERIALX_SEARCH_PATH:-$HDCLAUDE_ROOT/mtlx:$USDROOT/libraries}"
+  local materialx="${MATERIALX_ROOT:-}"
+  if [ -z "$materialx" ] && [ -d "$USDROOT/libraries" ]; then
+    materialx="$USDROOT"
+  elif [ -z "$materialx" ]; then
+    # <root>/lib/cmake/MaterialX -> <root>
+    materialx="$(sed -n 's/.*set(MaterialX_DIR \[\[\([^]]*\)\]\].*/\1/p' \
+                 "$USDROOT/pxrConfig.cmake" | head -n 1)"
+    materialx="${materialx%/lib/cmake/MaterialX}"
+  fi
+  if [ ! -d "$materialx/libraries" ]; then
+    echo "[hdClaude] The MaterialX standard libraries were not found."
+    echo "           Looked in \"$materialx/libraries\"."
+    echo "           Set MATERIALX_ROOT to the MaterialX this OpenUSD was built against."
+    return 1
+  fi
+  export MATERIALX_SEARCH_PATH="${MATERIALX_SEARCH_PATH:-$HDCLAUDE_ROOT/mtlx:$materialx/libraries}"
   return 0
 }
 

@@ -141,8 +141,10 @@ def main(arguments):
     environment = toolchain_environment(environment)
 
     log(f'Configuring preset "{preset}"...')
+    # Passed even when empty, so unsetting MATERIALX_ROOT reaches the cache too.
     run(["cmake", "--preset", preset,
          f"-DHDCLAUDE_OPENUSD_ROOT={environment['USDROOT']}",
+         f"-DHDCLAUDE_MATERIALX_ROOT={environment.get('MATERIALX_ROOT', '')}",
          f"-DCMAKE_INSTALL_PREFIX={environment['USDEXTRA']}"], environment)
 
     log("Building...")

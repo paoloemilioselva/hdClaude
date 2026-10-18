@@ -22,7 +22,7 @@ of third-party or proprietary code.
 | Vulkan-ValidationLayers | CMake `ExternalProject`, opt-in | `HDCLAUDE_VULKAN_SDK_TAG` |
 | NVIDIA DLSS SDK | CMake `FetchContent`, optional | `HDCLAUDE_DLSS_TAG` |
 | **OpenUSD** | **external prebuilt install** | discovered by `setup_usd_env.bat` / `.sh` |
-| MaterialX | from inside the OpenUSD distribution | — |
+| MaterialX | the one OpenUSD was built against | `MATERIALX_ROOT` |
 | OpenSubdiv | from inside the OpenUSD distribution | — |
 
 Vulkan-Headers, volk, glslang, and the validation layers are held at the same
@@ -38,10 +38,27 @@ separate configure, a separate build, and an install prefix that
 `VK_LAYER_PATH` can point at. Their known-good SPIRV-Tools revision is used
 rather than a second set of pins that could disagree with theirs.
 
-MaterialX and OpenSubdiv come from **inside** the OpenUSD distribution rather
-than being fetched separately. Two MaterialX copies in one process is an ODR
-violation waiting to happen, and Hydra hands us MaterialX objects created by its
-own copy.
+MaterialX and OpenSubdiv are never fetched. They are the ones OpenUSD was built
+against, so Hydra and hdClaude agree on their ABI: Hydra hands us MaterialX
+objects created by its own copy.
+
+MaterialX can be laid out two ways, and both are found without configuration:
+
+- **Bundled.** `build_usd.py` installs MaterialX inside the OpenUSD root, with
+  `lib/cmake/MaterialX` and `libraries/` beside `pxrConfig.cmake`. This is the
+  Windows workstation's layout.
+- **Separate.** A package manager such as rez installs MaterialX as its own
+  package. OpenUSD's `pxrConfig.cmake` records the `MaterialX_DIR` it was built
+  against, and `cmake/OpenUSD.cmake` and `setup_usd_env.sh` read it from there.
+
+To use a different MaterialX root, set `MATERIALX_ROOT` before running
+`compile.py`, or pass `-DHDCLAUDE_MATERIALX_ROOT=<root>` to CMake. The standard
+data libraries (`libraries/`) come from the same root and are compiled in as
+the default search path.
+
+Under rez, resolve an environment that contains the `usd` package and the
+`materialx` package it requires. `setup_usd_env.sh` takes `USDROOT` from
+`REZ_USD_ROOT` when `USDROOT` is not set.
 
 ### Reusing an existing download
 

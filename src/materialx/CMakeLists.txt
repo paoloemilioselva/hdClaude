@@ -4,9 +4,9 @@
 # The C++ half of the genglsl_pt target: syntax, generator, and the surface
 # node's calling convention. The other half is the data library under mtlx/.
 #
-# Links MaterialX from inside the OpenUSD distribution rather than a separate
-# copy -- two MaterialX libraries in one process is an ODR violation waiting to
-# happen, and Hydra hands us objects created by its own copy.
+# Links the MaterialX OpenUSD was built against (cmake/OpenUSD.cmake), never a
+# different copy: two MaterialX versions in one process is an ODR violation
+# waiting to happen, and Hydra hands us objects created by its own copy.
 # ---------------------------------------------------------------------------
 
 add_library(hdClaudeMaterialX STATIC
