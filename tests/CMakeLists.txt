@@ -53,6 +53,7 @@ if(HDCLAUDE_ENABLE_VULKAN)
         "LD_LIBRARY_PATH=path_list_prepend:${HDCLAUDE_VALIDATION_LAYER_LIBRARY_DIR}")
   endif()
   set_tests_properties(gpu geometry PROPERTIES
+      SKIP_RETURN_CODE 77
       ENVIRONMENT "${_gpu_test_env}"
       ENVIRONMENT_MODIFICATION "${_layer_path_modification}")
 
@@ -107,6 +108,7 @@ if(HDCLAUDE_ENABLE_MATERIALX)
       HDCLAUDE_VALIDATION_KERNEL="${CMAKE_CURRENT_SOURCE_DIR}/closure_validation.comp.glsl"
       HDCLAUDE_CHI2_KERNEL="${CMAKE_CURRENT_SOURCE_DIR}/closure_chi2.comp.glsl")
   add_test(NAME closure_validation COMMAND hdClaudeClosureValidationTests)
+  set_tests_properties(closure_validation PROPERTIES SKIP_RETURN_CODE 77)
 
   # The first images: a MaterialX material shading real geometry through the
   # wavefront integrator. Asserts light transport -- lit brighter than unlit, a
@@ -118,6 +120,7 @@ if(HDCLAUDE_ENABLE_MATERIALX)
   target_include_directories(hdClaudeRenderTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   add_test(NAME render COMMAND hdClaudeRenderTests)
   set_tests_properties(render PROPERTIES
+      SKIP_RETURN_CODE 77
       ENVIRONMENT "${_validation_env}"
       ENVIRONMENT_MODIFICATION "${_usd_path_modification}")
   if(TARGET hdClaudeValidationLayers)

@@ -13,6 +13,12 @@
 
 namespace hdclaude_test {
 
+/// What a test returns when the machine cannot run it -- no Vulkan device, no
+/// ray queries. CTest is told so (SKIP_RETURN_CODE), and reports the test as
+/// skipped: a skip that returned zero read as a pass, which is how a machine
+/// whose every validated instance failed went unnoticed.
+inline constexpr int kSkipReturnCode = 77;
+
 inline int g_failures = 0;
 inline int g_checks = 0;
 

@@ -924,7 +924,7 @@ int main()
         context = std::make_unique<VulkanContext>(options);
     } catch (const VulkanError& error) {
         std::printf("SKIP: no usable Vulkan device (%s)\n", error.what());
-        return 0;
+        return hdclaude_test::kSkipReturnCode;
     }
     if (!context->ValidationEnabled()) {
         std::fprintf(stderr,
