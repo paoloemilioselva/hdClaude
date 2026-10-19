@@ -168,9 +168,24 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
     scene.linkCategoryCount = static_cast<std::uint32_t>(categoryIndex.size());
 
     std::map<SdfPath, std::uint32_t> materialIndex;
+    std::map<std::string, std::uint32_t> sharedIndex;
     for (const auto& [path, entry] : _materials) {
         if (entry.compiled.spirv.empty()) {
             continue;
+        }
+        // A material that compiled from the same network as one already in the
+        // table *is* that material, texture slots included -- the pool keys an
+        // image on its path -- so it takes the same index.
+        if (!entry.shareKey.empty()) {
+            const auto shared = sharedIndex.find(entry.shareKey);
+            if (shared != sharedIndex.end()) {
+                materialIndex[path] = shared->second;
+                HdClaudeTrace("material %u: <%s> (same network)", shared->second,
+                              path.GetText());
+                continue;
+            }
+            sharedIndex.emplace(entry.shareKey,
+                                static_cast<std::uint32_t>(materials.size()));
         }
         materialIndex[path] = static_cast<std::uint32_t>(materials.size());
         // The index a shading dispatch is keyed by, beside the prim it came

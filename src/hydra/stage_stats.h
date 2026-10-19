@@ -114,6 +114,9 @@ struct HdClaudeStageStats {
 
     std::atomic<double> materialMilliseconds{0.0};
     std::atomic<std::uint64_t> materialsCompiled{0};
+    /// Materials whose network matched one already compiled, and that were
+    /// given its program rather than compiled again.
+    std::atomic<std::uint64_t> materialsReused{0};
 
     // --- Textures ----------------------------------------------------------
     std::atomic<double> textureMilliseconds{0.0};
@@ -166,6 +169,7 @@ struct HdClaudeStageStats {
         traceMilliseconds.store(0.0, std::memory_order_relaxed);
         materialMilliseconds.store(0.0, std::memory_order_relaxed);
         materialsCompiled.store(0, std::memory_order_relaxed);
+        materialsReused.store(0, std::memory_order_relaxed);
         textureMilliseconds.store(0.0, std::memory_order_relaxed);
         texturesLoaded.store(0, std::memory_order_relaxed);
         textureBytes.store(0, std::memory_order_relaxed);

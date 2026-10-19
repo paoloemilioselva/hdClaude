@@ -328,6 +328,9 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
                 << "materialsCompiled "
                 << stages.materialsCompiled.load(std::memory_order_relaxed)
                 << '\n'
+                << "materialsReused "
+                << stages.materialsReused.load(std::memory_order_relaxed)
+                << '\n'
                 << "textureMs "
                 << stages.textureMilliseconds.load(std::memory_order_relaxed)
                 << '\n'
@@ -1128,6 +1131,8 @@ VtDictionary HdClaudeRenderDelegate::GetRenderStats() const
         VtValue(_stageStats.materialMilliseconds.load(std::memory_order_relaxed));
     stats["materialsCompiled"] = VtValue(
         double(_stageStats.materialsCompiled.load(std::memory_order_relaxed)));
+    stats["materialsReused"] = VtValue(
+        double(_stageStats.materialsReused.load(std::memory_order_relaxed)));
     stats["textureMs"] =
         VtValue(_stageStats.textureMilliseconds.load(std::memory_order_relaxed));
     stats["texturesLoaded"] =

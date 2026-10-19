@@ -110,6 +110,10 @@ struct HdClaudeMaterialEntry {
     /// Which publication this is, so a compilation finished after the
     /// material was published again is not mistaken for the current one.
     std::uint64_t generation = 0;
+    /// The compiled network's content key, or empty. Materials that share one
+    /// share a material index in the snapshot, so the GPU builds one pipeline
+    /// and runs one shading dispatch for all of them rather than one each.
+    std::string shareKey;
 };
 
 /// A pending material something visible binds, ready to be compiled.

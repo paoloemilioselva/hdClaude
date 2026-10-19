@@ -228,6 +228,13 @@ pipeline cache is one file that each session rewrites when it closes; the last
 to close wins, and its contents are specific to the GPU and driver that wrote
 them.
 
+Within a session, a material whose network matches one already compiled --
+the same nodes, connections and input values, wherever it sits in the stage --
+is not compiled again, and the scene shades both with one program. Copies of
+an asset that embed their material, and elements that share a look, cost one
+compile per distinct look. `materialsCompiled` and `materialsReused` in the
+stats report say how it went.
+
 ## Verifying
 
 ```bat

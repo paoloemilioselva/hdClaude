@@ -90,10 +90,16 @@ HdClaudeMaterialEntry CompileMaterial(HdClaudeRenderParam* param,
                                  .count();
     if (HdClaudeStageStats* stats = param->StageStats()) {
         HdClaudeAddMilliseconds(stats->materialMilliseconds, compileMs);
-        stats->materialsCompiled.fetch_add(1, std::memory_order_relaxed);
+        (compiled.reused ? stats->materialsReused : stats->materialsCompiled)
+            .fetch_add(1, std::memory_order_relaxed);
+    }
+    if (compiled.reused) {
+        HdClaudeTrace("material <%s>: same network as one already compiled",
+                      id.GetText());
     }
     entry.compiled = std::move(compiled.material);
     entry.fallbackReason = std::move(compiled.fallbackReason);
+    entry.shareKey = std::move(compiled.contentKey);
 
     // The generator numbered this material's samplers from zero; the pool
     // turns each asset path into a slot shared with every other material that

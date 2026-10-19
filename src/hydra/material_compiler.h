@@ -65,6 +65,14 @@ class HdClaudeMaterialCompiler {
         /// a reason to fall back on the whole material: the surface is still
         /// the surface, and the mesh is simply not displaced.
         std::string displacementReason;
+        /// What this material compiled from: its network, with node paths
+        /// relative to the material and every input value. Two materials with
+        /// the same key compile to the same program -- copies of an asset with
+        /// its material embedded, or elements sharing a look -- so the second
+        /// is not compiled at all, and the scene shades both with one.
+        std::string contentKey;
+        /// True when this result is an earlier compile of the same key.
+        bool reused = false;
     };
 
     /// Compile a Hydra material network.
@@ -127,7 +135,14 @@ class HdClaudeMaterialCompiler {
     /// object at once. Neither MaterialX code generation nor glslang is
     /// thread-safe, and compilation is not on the interactive path, so one
     /// lock is the right trade rather than per-object copies of the generator.
+    Result CompileUncached(const HdMaterialNetworkMap& network,
+                           const SdfPath& path, const GfVec3f& fallbackColor);
+
     mutable std::mutex _mutex;
+    /// Every network compiled so far, by content key. Held for the delegate's
+    /// lifetime: a key names exactly what was compiled, so an entry cannot go
+    /// stale, and a material switched away from and back to costs nothing.
+    std::map<std::string, Result> _compiled;
     std::string _shadeKernel;
     std::string _displaceKernel;
     hdclaude::GlslCompiler _compiler;

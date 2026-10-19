@@ -1,6 +1,7 @@
 #include "material_compiler.h"
 
 #include "hdclaude/core/environment.h"
+#include "hdclaude/core/hash.h"
 
 #include "trace.h"
 
@@ -17,6 +18,9 @@
 #include "pxr/usd/ar/resolver.h"
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/tf/getenv.h"
+#include "pxr/base/tf/stringUtils.h"
+#include "pxr/base/vt/array.h"
+#include "pxr/usd/sdf/assetPath.h"
 #include "pxr/imaging/hd/tokens.h"
 #include "pxr/imaging/hdMtlx/hdMtlx.h"
 
@@ -30,6 +34,86 @@ PXR_NAMESPACE_OPEN_SCOPE
 namespace mx = MaterialX;
 
 namespace {
+
+/// What a material network compiles from, as a hex digest.
+///
+/// Everything that reaches the generated program: every node's type and
+/// inputs, every connection, the primvars, the terminals and the network's
+/// config. Node paths are taken relative to the material, so the same network
+/// under `/elementA/mtl` and `/elementB/mtl` keys the same -- that is the whole
+/// point -- while anything that differs in content does not.
+///
+/// An asset path keys on where it *resolves*. Copies of an asset that name
+/// their textures relatively author identical paths that may resolve to
+/// different files, and those must not share a program's texture bindings.
+/// Other values key on both their text and their exact hash, so two floats
+/// that print alike but differ still key apart.
+std::string NetworkContentKey(const HdMaterialNetworkMap& networkMap,
+                              const SdfPath& material,
+                              const GfVec3f& fallbackColor)
+{
+    hdclaude::Sha256Builder hash;
+    const auto relative = [&](const SdfPath& path) {
+        return path.MakeRelativePath(material).GetString();
+    };
+    const auto asset = [&](const SdfAssetPath& path) {
+        const std::string& resolved = path.GetResolvedPath();
+        hash.Field(resolved.empty() ? path.GetAssetPath() : resolved);
+    };
+    const auto value = [&](const VtValue& held) {
+        hash.Field(held.GetTypeName());
+        if (held.IsHolding<SdfAssetPath>()) {
+            asset(held.UncheckedGet<SdfAssetPath>());
+            return;
+        }
+        if (held.IsHolding<VtArray<SdfAssetPath>>()) {
+            for (const SdfAssetPath& path :
+                 held.UncheckedGet<VtArray<SdfAssetPath>>()) {
+                asset(path);
+            }
+            return;
+        }
+        hash.Field(TfStringify(held));
+        hash.Value(static_cast<std::uint64_t>(held.GetHash()));
+    };
+
+    for (const auto& [type, network] : networkMap.map) {
+        hash.Field(type.GetString());
+        hash.Value(static_cast<std::uint64_t>(network.nodes.size()));
+        for (const HdMaterialNode& node : network.nodes) {
+            hash.Field(relative(node.path));
+            hash.Field(node.identifier.GetString());
+            hash.Value(static_cast<std::uint64_t>(node.parameters.size()));
+            for (const auto& [name, parameter] : node.parameters) {
+                hash.Field(name.GetString());
+                value(parameter);
+            }
+        }
+        hash.Value(static_cast<std::uint64_t>(network.relationships.size()));
+        for (const HdMaterialRelationship& connection : network.relationships) {
+            hash.Field(relative(connection.inputId));
+            hash.Field(connection.inputName.GetString());
+            hash.Field(relative(connection.outputId));
+            hash.Field(connection.outputName.GetString());
+        }
+        hash.Value(static_cast<std::uint64_t>(network.primvars.size()));
+        for (const TfToken& primvar : network.primvars) {
+            hash.Field(primvar.GetString());
+        }
+    }
+    hash.Value(static_cast<std::uint64_t>(networkMap.terminals.size()));
+    for (const SdfPath& terminal : networkMap.terminals) {
+        hash.Field(relative(terminal));
+    }
+    hash.Value(static_cast<std::uint64_t>(networkMap.config.size()));
+    for (const auto& [name, setting] : networkMap.config) {
+        hash.Field(name);
+        value(setting);
+    }
+    // What a network that cannot be used is shaded with instead.
+    hash.Value(fallbackColor[0]).Value(fallbackColor[1]).Value(fallbackColor[2]);
+    return hdclaude::ToHex(hash.Finish());
+}
 
 /// Compile a generated material, with its kernel, through the process-wide
 /// SPIR-V cache.
@@ -993,6 +1077,35 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDiffuse(
 }
 
 HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::Compile(
+    const HdMaterialNetworkMap& networkMap, const SdfPath& path,
+    const GfVec3f& fallbackColor)
+{
+    const std::string key = NetworkContentKey(networkMap, path, fallbackColor);
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        const auto found = _compiled.find(key);
+        if (found != _compiled.end()) {
+            Result reused = found->second;
+            reused.reused = true;
+            reused.material.debugName = "hdclaude_" + HdMtlxCreateNameFromPath(path);
+            return reused;
+        }
+    }
+
+    // Compiled outside the cache's lock section: CompileUncached takes the same
+    // lock for the generator and glslang, and a second request for this key
+    // arriving meanwhile compiles it again rather than waiting -- wasted work,
+    // never a wrong result.
+    Result result = CompileUncached(networkMap, path, fallbackColor);
+    result.contentKey = key;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _compiled.emplace(key, result);
+    }
+    return result;
+}
+
+HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::CompileUncached(
     const HdMaterialNetworkMap& networkMap, const SdfPath& path,
     const GfVec3f& fallbackColor)
 {
