@@ -16,6 +16,7 @@
 #include <MaterialXGenShader/Shader.h>
 #include <MaterialXGenShader/Util.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -945,6 +946,124 @@ void main()
                 generated.source.size(), compiled.spirv.size());
 }
 
+/// Images whose `file` is routed rather than set, and where their paths are.
+///
+/// An asset that exposes its textures on the material's interface reaches each
+/// <image> through `dot` nodes, so the image's own `file` holds no path.
+/// MaterialX elides the `dot` and names the sampler after the image; hdClaude
+/// looked for the path on the image's own input, found none, and shaded the
+/// image as if no file had been authored -- black, and silently.
+///
+/// The first half pins MaterialX's behaviour, so a release that stops eliding
+/// `dot` is a failure here rather than textures that go missing again. The
+/// second is the walk hdClaude makes to find the path the sampler was baked
+/// with: a chain of two dots, a dot behind a nodegraph interface input, and a
+/// file set directly, which must be returned as itself.
+void TestRoutedImagesNameTheirSamplerAfterTheImage(mx::DocumentPtr libraries)
+{
+    std::printf("  --- routed image files ---\n");
+
+    mx::DocumentPtr doc = mx::createDocument();
+    doc->importLibrary(libraries);
+
+    mx::NodePtr direct = AddNode(doc, "image", "directImage", "color3");
+    SetValue(direct, "file", std::string("/textures/direct.tif"));
+    if (mx::InputPtr file = direct ? direct->getInput("file") : nullptr) {
+        file->setType("filename");
+    }
+
+    mx::NodePtr firstDot = AddNode(doc, "dot", "firstDot", "filename");
+    if (mx::InputPtr in = AddInput(firstDot, "in")) {
+        in->setValueString("/textures/chained.tif");
+    }
+    mx::NodePtr secondDot = AddNode(doc, "dot", "secondDot", "filename");
+    Connect(secondDot, "in", firstDot);
+    mx::NodePtr chained = AddNode(doc, "image", "chainedImage", "color3");
+    Connect(chained, "file", secondDot);
+
+    // The material-interface case: the path is an input of the nodegraph, and
+    // a dot inside it reads that input by interface name.
+    mx::NodeGraphPtr graph = doc->addNodeGraph("routedGraph");
+    graph->addInput("base_color_file", "filename")
+        ->setValueString("/textures/interface.tif");
+    mx::NodePtr graphDot = graph->addNode("dot", "graphDot", "filename");
+    graphDot->addInput("in", "filename")->setInterfaceName("base_color_file");
+    mx::NodePtr graphImage = graph->addNode("image", "graphImage", "color3");
+    graphImage->addInput("file", "filename")->setConnectedNode(graphDot);
+    mx::OutputPtr graphOut = graph->addOutput("out", "color3");
+    graphOut->setConnectedNode(graphImage);
+
+    mx::NodePtr sum = AddNode(doc, "add", "routedSum", "color3");
+    Connect(sum, "in1", direct);
+    Connect(sum, "in2", chained);
+    mx::NodePtr total = AddNode(doc, "add", "routedTotal", "color3");
+    Connect(total, "in1", sum);
+    if (mx::InputPtr in2 = AddInput(total, "in2")) {
+        in2->setConnectedOutput(graphOut);
+    }
+    mx::NodePtr shader =
+        AddNode(doc, "standard_surface", "routedShader", "surfaceshader");
+    Connect(shader, "base_color", total);
+    mx::NodePtr material =
+        AddNode(doc, "surfacematerial", "routedMaterial", "material");
+    Connect(material, "surfaceshader", shader);
+
+    std::string invalid;
+    CHECK(doc->validate(&invalid));
+    if (!invalid.empty()) {
+        std::fprintf(stderr, "  %s\n", invalid.c_str());
+    }
+
+    std::vector<std::string> uniforms;
+    try {
+        mx::ShaderGeneratorPtr generator = PathTracerShaderGenerator::create();
+        mx::GenContext context(generator);
+        context.registerSourceCodeSearchPath(SourceSearchPath());
+        context.getOptions().hwMaxActiveLightSources = 0;
+        context.getOptions().shaderInterfaceType = mx::SHADER_INTERFACE_REDUCED;
+        generator->generate("routed", shader, context);
+        const auto* pathTracer =
+            static_cast<const PathTracerShaderGenerator*>(generator.get());
+        for (const auto& slot : pathTracer->TextureOrder()) {
+            uniforms.push_back(slot.uniform);
+        }
+    } catch (const std::exception& error) {
+        std::fprintf(stderr, "  generation failed: %s\n", error.what());
+    }
+
+    const auto samples = [&](const std::string& uniform) {
+        return std::find(uniforms.begin(), uniforms.end(), uniform) !=
+               uniforms.end();
+    };
+    CHECK_EQ(uniforms.size(), std::size_t(3));
+    CHECK(samples("directImage_file"));
+    CHECK(samples("chainedImage_file"));
+    CHECK(samples("graphImage_file"));
+    for (const std::string& uniform : uniforms) {
+        std::printf("  sampler %s\n", uniform.c_str());
+    }
+
+    const auto pathBehind = [](const mx::NodePtr& image) {
+        const mx::InputPtr source =
+            image ? FilenameSource(image->getInput("file")) : nullptr;
+        return source ? source->getValueString() : std::string("<none>");
+    };
+    CHECK_EQ(pathBehind(direct), std::string("/textures/direct.tif"));
+    CHECK_EQ(pathBehind(chained), std::string("/textures/chained.tif"));
+    CHECK_EQ(pathBehind(graphImage), std::string("/textures/interface.tif"));
+
+    // A file computed by a node that is not a routing point has no path in the
+    // document to find, and says so rather than returning the image's own
+    // empty input.
+    mx::NodePtr computed = AddNode(doc, "image", "computedImage", "color3");
+    mx::NodePtr computing =
+        AddNode(doc, "geompropvalueuniform", "computing", "filename");
+    if (computed && computing) {
+        Connect(computed, "file", computing);
+        CHECK(FilenameSource(computed->getInput("file")) == nullptr);
+    }
+}
+
 int main()
 {
     // Unbuffered: a crash inside MaterialX would otherwise discard every
@@ -971,6 +1090,7 @@ int main()
     TestThinWalledIsReadFromTheDocument(libraries);
     TestDisplacementIsReadFromTheDocument(libraries);
     TestDisplacementGeneratesItsOwnProgram(compiler, libraries);
+    TestRoutedImagesNameTheirSamplerAfterTheImage(libraries);
 
     return hdclaude_test::Summarize("hdClaudeMaterialXTests");
 }

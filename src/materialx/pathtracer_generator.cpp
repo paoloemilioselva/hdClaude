@@ -1159,4 +1159,34 @@ DisplacementTerminal AuthoredDisplacement(const mx::DocumentPtr& document,
     return result;
 }
 
+mx::InputPtr FilenameSource(const mx::InputPtr& input)
+{
+    // The two nodes ShaderGraph bypasses when it optimises, and the input each
+    // passes through. Following exactly these is what keeps the path found
+    // here the one the generated sampler was baked with.
+    static const std::map<std::string, std::string> kRouting = {
+        {"dot", "in"},
+        {"constant", "value"},
+    };
+
+    // Bounded rather than recursive, for the reason ConstructorSpace gives.
+    mx::InputPtr current = input;
+    for (int hop = 0; current && hop < 64; ++hop) {
+        if (const mx::InputPtr interface = current->getInterfaceInput()) {
+            current = interface;
+            continue;
+        }
+        const mx::NodePtr upstream = current->getConnectedNode();
+        if (!upstream) {
+            return current;
+        }
+        const auto routing = kRouting.find(upstream->getCategory());
+        if (routing == kRouting.end()) {
+            return nullptr;
+        }
+        current = upstream->getInput(routing->second);
+    }
+    return nullptr;
+}
+
 }  // namespace hdclaude

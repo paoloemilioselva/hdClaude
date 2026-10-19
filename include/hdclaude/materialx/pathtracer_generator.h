@@ -370,6 +370,22 @@ DisplacementTerminal AuthoredDisplacement(
     const mx::DocumentPtr& document,
     std::vector<std::string>* diagnostics = nullptr);
 
+/// The input that holds the value a `filename` input reads.
+///
+/// An <image> whose `file` is connected rather than set holds no path of its
+/// own. Assets do this routinely: a material exposes its textures on its
+/// interface and routes each one to its images through `dot` nodes. MaterialX
+/// elides `dot` and `constant` nodes during generation and bakes the value they
+/// carry into a sampler named after the *image* -- `<image>_file` -- so
+/// whatever loads the textures has to make the same walk to find the path.
+///
+/// Follows `dot` and `constant` nodes and nodegraph interface inputs, and
+/// returns the input the value lives on: `input` itself when it is not
+/// connected. Null when the walk ends anywhere else -- a connection to a node
+/// that computes a filename, or a `dot` with nothing behind it -- because no
+/// path can be read from the document there.
+mx::InputPtr FilenameSource(const mx::InputPtr& input);
+
 }  // namespace hdclaude
 
 #endif  // HDCLAUDE_MATERIALX_PATHTRACER_GENERATOR_H

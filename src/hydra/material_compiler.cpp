@@ -73,6 +73,48 @@ bool IsMaterialXSurface(const TfToken& nodeType)
 /// HdMtlxCreateNameFromPath(hdNodePath), which is the path's last element, and
 /// MaterialX names a sampler uniform after its node and input. Both halves are
 /// public API, so this reproduces the name rather than pattern-matching it.
+/// The asset path a `dot` or `constant` routes to a downstream input, or empty.
+///
+/// The network side of hdclaude::FilenameSource: the nodes MaterialX elides
+/// during generation, followed to the one that holds the path, which USD has
+/// resolved against the layer that authored it.
+std::string RoutedAssetPath(const HdMaterialNetwork2& network, SdfPath nodePath)
+{
+    static const std::map<TfToken, TfToken> kRouting = {
+        {TfToken("ND_dot_filename"), TfToken("in")},
+        {TfToken("ND_constant_filename"), TfToken("value")},
+    };
+
+    // Bounded rather than recursive, as FilenameSource is.
+    for (int hop = 0; hop < 64; ++hop) {
+        const auto node = network.nodes.find(nodePath);
+        if (node == network.nodes.end()) {
+            return std::string();
+        }
+        const auto routing = kRouting.find(node->second.nodeTypeId);
+        if (routing == kRouting.end()) {
+            return std::string();
+        }
+        const auto connection =
+            node->second.inputConnections.find(routing->second);
+        if (connection != node->second.inputConnections.end() &&
+            connection->second.size() == 1) {
+            nodePath = connection->second.front().upstreamNode;
+            continue;
+        }
+        const auto parameter = node->second.parameters.find(routing->second);
+        if (parameter == node->second.parameters.end() ||
+            !parameter->second.IsHolding<SdfAssetPath>()) {
+            return std::string();
+        }
+        const SdfAssetPath& asset =
+            parameter->second.UncheckedGet<SdfAssetPath>();
+        std::string path = asset.GetResolvedPath();
+        return path.empty() ? asset.GetAssetPath() : path;
+    }
+    return std::string();
+}
+
 std::map<std::string, std::string> ResolvedTexturePaths(
     const HdMaterialNetwork2& network, const HdMtlxTexturePrimvarData& mxHdData)
 {
@@ -94,6 +136,28 @@ std::map<std::string, std::string> ResolvedTexturePaths(
             }
             resolved[mx::createValidName(mxNodeName + "_" +
                                          parameter.GetString())] = path;
+        }
+    }
+
+    // An image whose `file` is connected holds no path of its own; a `dot` or
+    // a `constant` upstream does. MaterialX elides those and names the sampler
+    // after the image, so the path is recorded under the image's name. Every
+    // node is visited rather than only hdTextureNodes, since what makes an
+    // input routed is the node upstream of it, not the node it is on.
+    for (const auto& [nodePath, node] : network.nodes) {
+        for (const auto& [input, connections] : node.inputConnections) {
+            if (connections.size() != 1) {
+                continue;
+            }
+            std::string path =
+                RoutedAssetPath(network, connections.front().upstreamNode);
+            if (path.empty()) {
+                continue;
+            }
+            resolved.emplace(
+                mx::createValidName(HdMtlxCreateNameFromPath(nodePath) + "_" +
+                                    input.GetString()),
+                std::move(path));
         }
     }
     return resolved;
@@ -220,7 +284,11 @@ HdClaudeMaterialCompiler::TextureRequest ResolveTexturePath(
                 mx::createValidName(node->getName() + "_" + input->getName());
             if (candidate == uniformName) {
                 HdClaudeMaterialCompiler::TextureRequest request;
-                request.path = input->getResolvedValueString();
+                // Through any `dot` in between, as the generator went through
+                // it when it named this sampler after the image.
+                if (const mx::InputPtr source = hdclaude::FilenameSource(input)) {
+                    request.path = source->getResolvedValueString();
+                }
                 request.colorSpace = ImageColorSpace(node, input);
                 return request;
             }
@@ -469,7 +537,8 @@ void TellGeneratorAboutUdimSets(
             // the two cannot disagree about which image is which.
             const std::string uniform = mx::createValidName(
                 node->getName() + "_" + input->getName());
-            std::string path = input->getResolvedValueString();
+            const mx::InputPtr source = hdclaude::FilenameSource(input);
+            std::string path = source ? source->getResolvedValueString() : "";
             if (resolvedTextures) {
                 const auto found = resolvedTextures->find(uniform);
                 if (found != resolvedTextures->end() && !found->second.empty()) {
