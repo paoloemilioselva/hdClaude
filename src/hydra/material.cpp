@@ -6,6 +6,7 @@
 #include <chrono>
 #include "scene_store.h"
 #include "texture_loader.h"
+#include "trace.h"
 
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/imaging/hd/sceneDelegate.h"
@@ -43,96 +44,133 @@ void HdClaudeMaterial::Sync(HdSceneDelegate* sceneDelegate,
     const SdfPath& id = GetId();
     const VtValue resource = sceneDelegate->GetMaterialResource(id);
 
+    // Published pending, not compiled. Hydra syncs every material in the
+    // stage, bound or not, and syncs them before any rprim, so nothing here can
+    // say whether this one will be used; the render pass compiles it once a
+    // visible prim binds it (HdClaudeCompileBoundMaterials). An edit to a
+    // bound material comes back through here and is compiled again on the next
+    // frame, which is when it was always going to be seen.
     HdClaudeMaterialEntry entry;
     if (resource.IsHolding<HdMaterialNetworkMap>()) {
-        // The grey here is only reached when the authored network cannot be
-        // used; a mesh's own displayColor fallback is handled by the mesh,
-        // which is the prim that knows it.
-        const auto compileStart = std::chrono::steady_clock::now();
-        HdClaudeMaterialCompiler::Result compiled =
-            param->MaterialCompiler()->Compile(
-                resource.UncheckedGet<HdMaterialNetworkMap>(), id,
-                GfVec3f(0.5f, 0.5f, 0.5f));
-        // Generation and SPIR-V compilation are one cost from out here, and
-        // there is no moment between them worth reporting separately.
-        const double compileMs = std::chrono::duration<double, std::milli>(
-                                     std::chrono::steady_clock::now() -
-                                     compileStart)
-                                     .count();
-        if (HdClaudeStageStats* stats = param->StageStats()) {
-            HdClaudeAddMilliseconds(stats->materialMilliseconds, compileMs);
-            stats->materialsCompiled.fetch_add(1, std::memory_order_relaxed);
-        }
-        entry.compiled = std::move(compiled.material);
-        entry.fallbackReason = std::move(compiled.fallbackReason);
-
-        // The generator numbered this material's samplers from zero; the pool
-        // turns each asset path into a slot shared with every other material
-        // that names the same image.
-        //
-        // Done twice, over two tables. A material's surface and its
-        // displacement are generated separately and each numbers its own
-        // samplers from zero, so a height map is index 0 of the displacement
-        // whatever the surface happens to read. The pool is one pool either
-        // way -- an image both programs name is decoded once and shared.
-        if (HdClaudeTexturePool* pool = param->TexturePool()) {
-            const auto acquire =
-                [&](const std::vector<
-                        HdClaudeMaterialCompiler::TextureRequest>& requests,
-                    std::vector<std::uint32_t>* slots) {
-                    slots->reserve(requests.size());
-                    for (const HdClaudeMaterialCompiler::TextureRequest&
-                             texture : requests) {
-                        // Timed around Acquire rather than around the decoder,
-                        // because the pool shares an image between every
-                        // material that names it: the second ask costs a
-                        // lookup, and counting it as a load would say a scene
-                        // decoded far more than it did.
-                        const std::size_t before = pool->Images().size();
-                        const auto textureStart =
-                            std::chrono::steady_clock::now();
-                        const std::uint32_t slot =
-                            pool->Acquire(texture.path, texture.colorSpace);
-                        const double textureMs =
-                            std::chrono::duration<double, std::milli>(
-                                std::chrono::steady_clock::now() - textureStart)
-                                .count();
-                        slots->push_back(slot);
-
-                        if (HdClaudeStageStats* stats = param->StageStats()) {
-                            HdClaudeAddMilliseconds(stats->textureMilliseconds,
-                                                    textureMs);
-                            if (pool->Images().size() > before &&
-                                slot < pool->Images().size()) {
-                                const hdclaude::TextureImage& image =
-                                    pool->Images()[slot];
-                                stats->texturesLoaded.fetch_add(
-                                    1, std::memory_order_relaxed);
-                                stats->textureBytes.fetch_add(
-                                    image.texels.size(),
-                                    std::memory_order_relaxed);
-                            }
-                        }
-                    }
-                };
-            acquire(compiled.texturePaths, &entry.compiled.textureSlots);
-            acquire(compiled.displacementTexturePaths,
-                    &entry.compiled.displaceTextureSlots);
-        }
+        entry.network = resource.UncheckedGet<HdMaterialNetworkMap>();
+        entry.pending = true;
     } else {
+        // Nothing to defer: there is no network to compile, and saying so at
+        // Sync is as useful as saying it later.
         entry.fallbackReason =
             "the material prim carries no HdMaterialNetworkMap";
-    }
-
-    if (!entry.fallbackReason.empty()) {
-        // Said once, at Sync, not once per frame: a per-frame warning buries
-        // the first occurrence and makes the log useless.
         TF_WARN("hdClaude: <%s> is not shaded as authored: %s", id.GetText(),
                 entry.fallbackReason.c_str());
     }
 
     param->SceneStore()->PublishMaterial(id, std::move(entry));
     *dirtyBits = HdMaterial::Clean;
+}
+
+namespace {
+
+HdClaudeMaterialEntry CompileMaterial(HdClaudeRenderParam* param,
+                                      const SdfPath& id,
+                                      const HdMaterialNetworkMap& network)
+{
+    HdClaudeMaterialEntry entry;
+
+    // The grey here is only reached when the authored network cannot be used;
+    // a mesh's own displayColor fallback is handled by the mesh, which is the
+    // prim that knows it.
+    const auto compileStart = std::chrono::steady_clock::now();
+    HdClaudeMaterialCompiler::Result compiled =
+        param->MaterialCompiler()->Compile(network, id,
+                                           GfVec3f(0.5f, 0.5f, 0.5f));
+    // Generation and SPIR-V compilation are one cost from out here, and there
+    // is no moment between them worth reporting separately.
+    const double compileMs = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() -
+                                 compileStart)
+                                 .count();
+    if (HdClaudeStageStats* stats = param->StageStats()) {
+        HdClaudeAddMilliseconds(stats->materialMilliseconds, compileMs);
+        stats->materialsCompiled.fetch_add(1, std::memory_order_relaxed);
+    }
+    entry.compiled = std::move(compiled.material);
+    entry.fallbackReason = std::move(compiled.fallbackReason);
+
+    // The generator numbered this material's samplers from zero; the pool
+    // turns each asset path into a slot shared with every other material that
+    // names the same image.
+    //
+    // Done twice, over two tables. A material's surface and its displacement
+    // are generated separately and each numbers its own samplers from zero, so
+    // a height map is index 0 of the displacement whatever the surface happens
+    // to read. The pool is one pool either way -- an image both programs name
+    // is decoded once and shared.
+    if (HdClaudeTexturePool* pool = param->TexturePool()) {
+        const auto acquire =
+            [&](const std::vector<HdClaudeMaterialCompiler::TextureRequest>&
+                    requests,
+                std::vector<std::uint32_t>* slots) {
+                slots->reserve(requests.size());
+                for (const HdClaudeMaterialCompiler::TextureRequest& texture :
+                     requests) {
+                    // Timed around Acquire rather than around the decoder,
+                    // because the pool shares an image between every material
+                    // that names it: the second ask costs a lookup, and
+                    // counting it as a load would say a scene decoded far more
+                    // than it did.
+                    const std::size_t before = pool->Images().size();
+                    const auto textureStart = std::chrono::steady_clock::now();
+                    const std::uint32_t slot =
+                        pool->Acquire(texture.path, texture.colorSpace);
+                    const double textureMs =
+                        std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - textureStart)
+                            .count();
+                    slots->push_back(slot);
+
+                    if (HdClaudeStageStats* stats = param->StageStats()) {
+                        HdClaudeAddMilliseconds(stats->textureMilliseconds,
+                                                textureMs);
+                        if (pool->Images().size() > before &&
+                            slot < pool->Images().size()) {
+                            const hdclaude::TextureImage& image =
+                                pool->Images()[slot];
+                            stats->texturesLoaded.fetch_add(
+                                1, std::memory_order_relaxed);
+                            stats->textureBytes.fetch_add(
+                                image.texels.size(), std::memory_order_relaxed);
+                        }
+                    }
+                }
+            };
+        acquire(compiled.texturePaths, &entry.compiled.textureSlots);
+        acquire(compiled.displacementTexturePaths,
+                &entry.compiled.displaceTextureSlots);
+    }
+
+    if (!entry.fallbackReason.empty()) {
+        // Said once, when compiled, not once per frame: a per-frame warning
+        // buries the first occurrence and makes the log useless.
+        TF_WARN("hdClaude: <%s> is not shaded as authored: %s", id.GetText(),
+                entry.fallbackReason.c_str());
+    }
+    return entry;
+}
+
+}  // namespace
+
+void HdClaudeCompileBoundMaterials(HdClaudeRenderParam* param)
+{
+    if (param == nullptr || param->MaterialCompiler() == nullptr) {
+        return;
+    }
+    HdClaudeSceneStore* store = param->SceneStore();
+    for (const HdClaudePendingMaterial& pending :
+         store->BoundPendingMaterials()) {
+        HdClaudeTrace("material <%s>: bound, compiling", pending.id.GetText());
+        store->CompletePendingMaterial(
+            pending.id, pending.generation,
+            CompileMaterial(param, pending.id, pending.network));
+    }
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

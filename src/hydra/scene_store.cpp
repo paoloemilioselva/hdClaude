@@ -40,7 +40,50 @@ void HdClaudeSceneStore::RemoveSplats(const SdfPath& id)
 void HdClaudeSceneStore::PublishMaterial(const SdfPath& id, HdClaudeMaterialEntry entry)
 {
     std::lock_guard<std::mutex> lock(_mutex);
+    entry.generation = ++_materialGeneration;
     _materials[id] = std::move(entry);
+    ++_revision;
+}
+
+std::vector<HdClaudePendingMaterial>
+HdClaudeSceneStore::BoundPendingMaterials() const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    // The same meshes Snapshot shades: an invisible or empty mesh binds
+    // nothing yet, and its material is compiled when it is shown.
+    std::set<SdfPath> bound;
+    for (const auto& [path, mesh] : _meshes) {
+        if ((mesh.prototype.indices.empty() && mesh.prototype.segments.empty()) ||
+            !mesh.visible) {
+            continue;
+        }
+        bound.insert(mesh.material);
+        bound.insert(mesh.subsetMaterials.begin(), mesh.subsetMaterials.end());
+    }
+
+    std::vector<HdClaudePendingMaterial> pending;
+    for (const SdfPath& id : bound) {
+        const auto found = _materials.find(id);
+        if (found != _materials.end() && found->second.pending) {
+            pending.push_back(
+                {id, found->second.network, found->second.generation});
+        }
+    }
+    return pending;
+}
+
+void HdClaudeSceneStore::CompletePendingMaterial(const SdfPath& id,
+                                                 std::uint64_t generation,
+                                                 HdClaudeMaterialEntry compiled)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    const auto found = _materials.find(id);
+    if (found == _materials.end() || found->second.generation != generation) {
+        return;
+    }
+    compiled.generation = generation;
+    found->second = std::move(compiled);
     ++_revision;
 }
 
