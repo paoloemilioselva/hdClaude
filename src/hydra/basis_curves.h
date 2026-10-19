@@ -30,10 +30,6 @@ class HdClaudeBasisCurves final : public HdBasisCurves {
     HdDirtyBits _PropagateDirtyBits(HdDirtyBits bits) const override;
 
   private:
-    /// The colour the generated displayColor material was last compiled for,
-    /// so an animated curve set does not rebuild a pipeline for a colour that
-    /// has not changed.
-    GfVec3f _lastDisplayColor{-1.0f, -1.0f, -1.0f};
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

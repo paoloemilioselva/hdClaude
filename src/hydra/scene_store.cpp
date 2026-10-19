@@ -274,6 +274,8 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
             }
             instance.material = material;
             instance.visible = true;
+            std::copy(std::begin(mesh.displayColor), std::end(mesh.displayColor),
+                      std::begin(instance.displayColor));
             if (i < mesh.instanceCategories.size() && !categoryIndex.empty()) {
                 for (const TfToken& token : mesh.instanceCategories[i]) {
                     const auto found = categoryIndex.find(token);

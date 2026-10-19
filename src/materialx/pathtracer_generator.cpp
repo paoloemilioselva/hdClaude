@@ -63,6 +63,23 @@ bool IsUvGeomProp(const string& loweredVariable, const ShaderPort* port)
     return primvar == "st" || primvar == "uv";
 }
 
+/// True when a vertex-data port is a `geompropvalue` node reading displayColor.
+///
+/// Matched exactly, for the reason IsUvGeomProp gives, and as a three-component
+/// port: `displayColor` is a `color3f[]` primvar, and a graph may read it as a
+/// `color3` or a `vector3`.
+bool IsDisplayColorGeomProp(const string& loweredVariable, const ShaderPort* port)
+{
+    if (port == nullptr ||
+        (port->getType() != Type::COLOR3 && port->getType() != Type::VECTOR3)) {
+        return false;
+    }
+    const string marker = "geomprop_";
+    const std::size_t at = loweredVariable.find(marker);
+    return at != string::npos &&
+           loweredVariable.substr(at + marker.size()) == "displaycolor";
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -546,7 +563,8 @@ void PathTracerShaderGenerator::emitInputs(GenContext& context,
         // document. Only its *body* does.
         const string setter = "void " + string(kSurfaceHitSetter) +
                               "(vec3 P, vec3 N, vec3 T, vec3 B, vec3 Pobj, "
-                              "vec3 Nobj, vec3 Tobj, vec3 Bobj, vec2 uv)";
+                              "vec3 Nobj, vec3 Tobj, vec3 Bobj, vec2 uv, "
+                              "vec3 displayColor)";
 
         if (vertexData.empty())
         {
@@ -654,6 +672,12 @@ void PathTracerShaderGenerator::emitInputs(GenContext& context,
                     // Every pixel then sampled the same texel, which reads as a
                     // material with no texture at all rather than as a bug.
                     emitLine(instance + "." + variable + " = uv", stage);
+                } else if (IsDisplayColorGeomProp(key, port)) {
+                    // The placement's displayColor, which the kernel reads from
+                    // the instance table. A `color3` port takes it as it is;
+                    // MaterialX declares both as `vec3`, so a `vector3` one
+                    // does too.
+                    emitLine(instance + "." + variable + " = displayColor", stage);
                 } else {
                     // A geomprop the kernel has no value for: a primvar the
                     // mesh adapter does not carry yet, or a colour set.

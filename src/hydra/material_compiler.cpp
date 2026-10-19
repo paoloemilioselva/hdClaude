@@ -884,28 +884,23 @@ bool HdClaudeMaterialCompiler::CompileDisplacement(
     return true;
 }
 
-hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDiffuse(
-    const GfVec3f& color, const std::string& name)
+namespace {
+
+/// A diffuse surface material in `document`, returning the BSDF's colour input
+/// for the caller to set or connect, or null when the nodedefs do not resolve.
+///
+/// Built as a MaterialX document, not as a special case in the renderer. Even
+/// the fallback goes through the one shading path, so there is no second code
+/// path to keep correct.
+mx::InputPtr AddDiffuseMaterial(const mx::DocumentPtr& document)
 {
-    std::lock_guard<std::mutex> lock(_mutex);
-    if (!Ready()) {
-        return {};
-    }
-
-    // Built as a MaterialX document, not as a special case in the renderer.
-    // Even the fallback goes through the one shading path, so there is no
-    // second code path to keep correct.
-    mx::DocumentPtr document = mx::createDocument();
-    document->importLibrary(_libraries);
-
     mx::NodePtr bsdf = document->addNode("oren_nayar_diffuse_bsdf",
                                          "hdclaudeFallbackBsdf", "BSDF");
     if (!bsdf || !bsdf->getNodeDef()) {
-        return {};
+        return nullptr;
     }
     bsdf->addInputFromNodeDef("weight")->setValue(1.0f);
-    bsdf->addInputFromNodeDef("color")->setValue(
-        mx::Color3(color[0], color[1], color[2]));
+    mx::InputPtr color = bsdf->addInputFromNodeDef("color");
     bsdf->addInputFromNodeDef("roughness")->setValue(0.0f);
 
     mx::NodePtr surface = document->addNode("surface", "hdclaudeFallbackSurface",
@@ -916,6 +911,57 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDiffuse(
     mx::NodePtr material = document->addNode("surfacematerial",
                                              "hdclaudeFallbackMaterial", "material");
     material->addInputFromNodeDef("surfaceshader")->setConnectedNode(surface);
+    return color;
+}
+
+}  // namespace
+
+hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDisplayColor(
+    const std::string& name)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (!Ready()) {
+        return {};
+    }
+
+    mx::DocumentPtr document = mx::createDocument();
+    document->importLibrary(_libraries);
+    mx::InputPtr color = AddDiffuseMaterial(document);
+    mx::NodePtr displayColor = document->addNode(
+        "geompropvalue", "hdclaudeDisplayColor", "color3");
+    if (!color || !displayColor || !displayColor->getNodeDef()) {
+        return {};
+    }
+    displayColor->addInputFromNodeDef("geomprop")->setValueString("displayColor");
+    displayColor->addInputFromNodeDef("default")->setValue(
+        mx::Color3(0.5f, 0.5f, 0.5f));
+    color->setConnectedNode(displayColor);
+
+    std::string error;
+    hdclaude::CompiledMaterial compiled = CompileDocument(document, name, &error);
+    if (compiled.spirv.empty() && !error.empty()) {
+        TF_RUNTIME_ERROR("hdClaude: the displayColor material failed to compile: "
+                         "%s",
+                         error.c_str());
+    }
+    return compiled;
+}
+
+hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDiffuse(
+    const GfVec3f& color, const std::string& name)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (!Ready()) {
+        return {};
+    }
+
+    mx::DocumentPtr document = mx::createDocument();
+    document->importLibrary(_libraries);
+    mx::InputPtr input = AddDiffuseMaterial(document);
+    if (!input) {
+        return {};
+    }
+    input->setValue(mx::Color3(color[0], color[1], color[2]));
 
     std::string error;
     hdclaude::CompiledMaterial compiled = CompileDocument(document, name, &error);

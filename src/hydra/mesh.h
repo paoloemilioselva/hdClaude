@@ -26,10 +26,6 @@ class HdClaudeMesh final : public HdMesh {
     HdDirtyBits _PropagateDirtyBits(HdDirtyBits bits) const override;
 
   private:
-    /// The colour the generated displayColor material was last compiled for.
-    /// Compared before recompiling, so an animated mesh does not rebuild a
-    /// pipeline every frame for a colour that has not changed.
-    GfVec3f _lastDisplayColor{-1.0f, -1.0f, -1.0f};
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

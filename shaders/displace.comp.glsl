@@ -120,8 +120,10 @@ void main()
     // displacement evaluated in world space would be a different mesh per
     // instance and the sharing -- which is what makes an instanced asset fit in
     // memory at all -- would be gone. A graph that asks for world space
-    // therefore reads object space, and the material compiler says so.
-    hdclaude_set_surface_hit(P, N, T, B, P, N, T, B, uv);
+    // therefore reads object space, and the material compiler says so. The
+    // displayColor is a placement's for the same reason, so a prototype has
+    // none to give and a graph that reads it gets neutral grey.
+    hdclaude_set_surface_hit(P, N, T, B, P, N, T, B, uv, vec3(0.5));
     hdclaude_material_displace();
 
     const vec3 offset = hdclaude_displacement.offset * hdclaude_displacement.scale;

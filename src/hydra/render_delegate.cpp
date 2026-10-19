@@ -490,6 +490,21 @@ void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
         } else {
             _store->SetFallbackMaterial(std::move(fallback));
         }
+
+        // And the one material every unbound mesh and curve set shares, up
+        // front for the same reason: it is needed by the first unbound prim,
+        // and Hydra syncs those in parallel, so a lazy compile would be raced
+        // for by every one of them.
+        HdClaudeMaterialEntry displayColor;
+        displayColor.compiled =
+            _materialCompiler->CompileDisplayColor("hdclaude_display_color");
+        if (displayColor.compiled.spirv.empty()) {
+            displayColor.fallbackReason =
+                "the displayColor material did not compile; unbound geometry "
+                "is shaded with the fallback";
+        }
+        _store->PublishMaterial(HdClaudeDisplayColorMaterialPath(),
+                                std::move(displayColor));
         HdClaudeAddMilliseconds(
             _stageStats.startupFallbackMs,
             std::chrono::duration<double, std::milli>(

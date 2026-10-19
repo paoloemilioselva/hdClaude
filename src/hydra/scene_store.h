@@ -48,7 +48,24 @@ struct HdClaudeMeshEntry {
     /// the same order. Empty when the mesh is in no category at all, which is
     /// every mesh of a stage that links nothing.
     std::vector<std::vector<TfToken>> instanceCategories;
+
+    /// The prim's displayColor, given to every one of its placements. What the
+    /// shared material for unbound geometry shades with, and what any material
+    /// reading a `displayColor` geomprop receives.
+    float displayColor[3] = {0.5f, 0.5f, 0.5f};
 };
+
+/// Where the one material for unbound geometry is published.
+///
+/// Every mesh and curve set with no binding shares it, and its colour comes
+/// from each placement's displayColor. A property path, so it can never be
+/// mistaken for -- or collide with -- a material prim the stage contains.
+inline SdfPath HdClaudeDisplayColorMaterialPath()
+{
+    static const SdfPath path =
+        SdfPath("/__hdClaude").AppendProperty(TfToken("displayColorMaterial"));
+    return path;
+}
 
 /// A Gaussian splat cloud as published by its Hydra prim.
 ///

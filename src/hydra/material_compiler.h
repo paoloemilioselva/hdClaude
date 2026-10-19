@@ -76,6 +76,12 @@ class HdClaudeMaterialCompiler {
 
     /// A diffuse material of a given colour, with no authored network behind
     /// it. Used for unbound geometry and as the delegate's fallback.
+    /// The one material for unbound geometry: diffuse, coloured by each
+    /// placement's displayColor through a `displayColor` geomprop. Compiled
+    /// once, where a colour baked into each program would compile a material
+    /// per unbound mesh.
+    hdclaude::CompiledMaterial CompileDisplayColor(const std::string& name);
+
     hdclaude::CompiledMaterial CompileDiffuse(const GfVec3f& color,
                                               const std::string& name);
 
