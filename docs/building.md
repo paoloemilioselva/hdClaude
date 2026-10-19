@@ -161,12 +161,14 @@ machine with a compiler.
 
 ## Linux
 
-Written from reading the code on Windows, not from a Linux build: no Linux
-toolchain has compiled hdClaude yet. What the port consists of:
+Built and run on Ubuntu 22.04 with GCC 11.2, against OpenUSD 26.05 and a
+separately packaged MaterialX 1.39.4 in a rez environment, through
+`compile.py`. What the port consists of:
 
 - **`setup_usd_env.sh`**, sourced (`. ./setup_usd_env.sh`), is the counterpart
-  of `setup_usd_env.bat` and does the same things in the same order. It probes
-  `~/dev/usd-*` and `/opt/usd-*` for OpenUSD, defaults `USDEXTRA` to the
+  of `setup_usd_env.bat` and does the same things in the same order. It takes
+  OpenUSD from `REZ_USD_ROOT` in a rez environment, else probes `~/dev/usd-*`
+  and `/opt/usd-*`, defaults `USDEXTRA` to the
   repository's `install/`, and puts OpenUSD's libraries on `LD_LIBRARY_PATH` where
   Windows uses `PATH`. Keep the two in step.
 - **`render_claude.sh`** passes `usdrecord` the same fixed flags as
@@ -185,10 +187,10 @@ toolchain has compiled hdClaude yet. What the port consists of:
 - **DLSS** is Windows-only: `dev-dlss` stops at configure on Linux, because
   `cmake/NvidiaDLSS.cmake` links only the SDK's Windows library.
 
-Expect the first real build to find what reading could not: GCC's standard
-library includes fewer headers transitively than MSVC's, so a few missing
-`#include`s (`<cstdint>`, `<cstring>`, `<algorithm>`) are likely, and
-OpenUSD's headers are noisy under `-Wpedantic`.
+GCC's standard library includes fewer headers transitively than MSVC's, so a
+header a file uses but reaches only through another compiles on Windows and
+not here; the first Linux build found one, `<cmath>` in `path_tracer.cpp`.
+OpenUSD's own headers are noisy under `-Wpedantic`.
 
 ## Install layout
 
