@@ -31,6 +31,26 @@ namespace mx = MaterialX;
 
 namespace {
 
+/// Compile a generated material, with its kernel, through the process-wide
+/// SPIR-V cache.
+///
+/// The source is the whole translation unit -- MaterialX resolves its includes
+/// during generation and the kernel's are inlined when it is loaded -- so it
+/// keys the entry completely; the generator's identity and the material ABI
+/// revision go in beside it, so a new MaterialX or a changed contract cannot be
+/// served an old module.
+hdclaude::GlslCompileResult CompileMaterialSource(
+    const hdclaude::GlslCompiler& compiler, const std::string& source,
+    const hdclaude::GlslCompileOptions& options)
+{
+    hdclaude::ShaderCacheKey key;
+    key.generatorTarget = "genglsl_pt";
+    key.generatorVersion = mx::getVersionString();
+    key.abiVersion = hdclaude::kMaterialAbiVersion;
+    return compiler.CompileCached(source, options, hdclaude::ProcessShaderCache(),
+                                  key);
+}
+
 /// Node types hdClaude shades through MaterialX.
 ///
 /// A terminal outside this set is not a MaterialX surface and is reported
@@ -756,7 +776,7 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
         hdclaude::GlslCompileOptions options;
         options.moduleName = name;
         const hdclaude::GlslCompileResult compiled =
-            _compiler.Compile(source, options);
+            CompileMaterialSource(_compiler, source, options);
         if (!compiled.ok) {
             if (error) *error = "shader compilation failed: " + compiled.log;
             return result;
@@ -849,8 +869,8 @@ bool HdClaudeMaterialCompiler::CompileDisplacement(
 
         hdclaude::GlslCompileOptions options;
         options.moduleName = name + "_displace";
-        const hdclaude::GlslCompileResult compiled =
-            _compiler.Compile(generated + _displaceKernel, options);
+        const hdclaude::GlslCompileResult compiled = CompileMaterialSource(
+            _compiler, generated + _displaceKernel, options);
         if (!compiled.ok) {
             if (error) {
                 *error = "displacement compilation failed: " + compiled.log;

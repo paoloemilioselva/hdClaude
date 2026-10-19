@@ -10,6 +10,7 @@
 #ifndef HDCLAUDE_CORE_SHADER_CACHE_H
 #define HDCLAUDE_CORE_SHADER_CACHE_H
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -59,16 +60,34 @@ class ShaderCache {
     const std::filesystem::path& Directory() const { return _directory; }
 
     /// Counters for tests and render statistics.
-    std::uint64_t HitCount() const { return _hits; }
-    std::uint64_t MissCount() const { return _misses; }
+    std::uint64_t HitCount() const { return _hits.load(); }
+    std::uint64_t MissCount() const { return _misses.load(); }
 
   private:
     std::filesystem::path PathFor(const ShaderCacheKey& key) const;
 
     std::filesystem::path _directory;
-    mutable std::uint64_t _hits = 0;
-    mutable std::uint64_t _misses = 0;
+    // Atomic because one cache serves every compile in the process, and those
+    // happen on Hydra's sync threads and on the render thread alike.
+    mutable std::atomic<std::uint64_t> _hits{0};
+    mutable std::atomic<std::uint64_t> _misses{0};
 };
+
+/// Where this process keeps its caches: HDCLAUDE_SHADER_CACHE when it is set,
+/// else `shader-cache` under the directory the application was launched from.
+///
+/// The fallback is deliberately visible rather than tucked into a temporary
+/// directory: a launch with nothing configured makes a folder where it was
+/// started, which is how an unset variable gets noticed. Read once, so a
+/// variable changed while running cannot split one process across two caches.
+const std::filesystem::path& DefaultShaderCacheDirectory();
+
+/// The process-wide SPIR-V cache, in DefaultShaderCacheDirectory().
+///
+/// One for every compile in the process -- the kernels at startup and every
+/// material -- so a material compiled by one render delegate is a hit for the
+/// next, and a kernel built in the last session is a hit in this one.
+ShaderCache& ProcessShaderCache();
 
 }  // namespace hdclaude
 

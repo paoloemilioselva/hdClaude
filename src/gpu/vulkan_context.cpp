@@ -1,4 +1,11 @@
 #include "hdclaude/gpu/vulkan_context.h"
+#include "hdclaude/core/shader_cache.h"
+
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 #include "hdclaude/core/environment.h"
 
@@ -783,14 +790,22 @@ std::filesystem::path VulkanContext::PipelineCachePath()
 {
     const std::string override = EnvironmentValue("HDCLAUDE_PIPELINE_CACHE");
     if (!override.empty()) {
-        return std::filesystem::path(override);
+        // Its folder is made if it is missing, as the SPIR-V cache's is: a
+        // configured path that does not exist yet is a setting, not a mistake,
+        // and refusing it would only mean the cache is silently never saved.
+        const std::filesystem::path configured(override);
+        std::error_code error;
+        if (configured.has_parent_path()) {
+            std::filesystem::create_directories(configured.parent_path(), error);
+        }
+        return configured;
     }
+    // Beside the SPIR-V cache rather than in the system temporary directory, so
+    // HDCLAUDE_SHADER_CACHE alone says where a machine keeps both -- and so an
+    // unconfigured launch shows both in the folder it started from.
     std::error_code error;
-    std::filesystem::path directory = std::filesystem::temp_directory_path(error);
-    if (error) {
-        return {};
-    }
-    return directory / "hdClaude.pipeline.cache";
+    std::filesystem::create_directories(DefaultShaderCacheDirectory(), error);
+    return DefaultShaderCacheDirectory() / "pipeline.cache";
 }
 
 void VulkanContext::CreatePipelineCache()
@@ -853,9 +868,18 @@ void VulkanContext::SavePipelineCache() const
     }
     // Written to a temporary and renamed, so a run interrupted mid-write leaves
     // the previous cache rather than a truncated one the driver must reject.
+    // The temporary is this process's own: two sessions closing together
+    // otherwise write one `.partial` between them and rename a mixture. Each
+    // still replaces the whole file, so the last to close wins -- a cache that
+    // loses entries, not one that is corrupt.
     std::error_code error;
+#ifdef _WIN32
+    const long long process = _getpid();
+#else
+    const long long process = static_cast<long long>(getpid());
+#endif
     const std::filesystem::path temporary =
-        _pipelineCachePath.string() + ".partial";
+        _pipelineCachePath.string() + "." + std::to_string(process) + ".partial";
     {
         std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
         if (!file) {

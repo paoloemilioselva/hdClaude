@@ -15,6 +15,10 @@
 #   MATERIALX_ROOT          MaterialX install root, when it is not inside OpenUSD
 #   USDEXTRA                install prefix for hdClaude's own plugin
 #   HDCLAUDE_VALIDATION_LAYER_DIR  directory holding VkLayer_khronos_validation.json
+#   HDCLAUDE_SHADER_CACHE   SPIR-V cache directory; unset, the renderer uses
+#                           shader-cache/ under the directory it was launched from
+#   HDCLAUDE_PIPELINE_CACHE driver pipeline-cache file; unset, pipeline.cache in
+#                           the SPIR-V cache directory
 #   HDCLAUDE_SKIP_PYTHON    set to 1 to skip the Python conformance check
 # ===========================================================================
 
@@ -162,7 +166,6 @@ _hdclaude_env() {
   #     finds MaterialX: MATERIALX_ROOT, else inside OpenUSD, else the
   #     MaterialX_DIR that OpenUSD recorded in pxrConfig.cmake.
   # -------------------------------------------------------------------------
-  export HDCLAUDE_SHADER_CACHE="${HDCLAUDE_SHADER_CACHE:-$HDCLAUDE_ROOT/shader-cache}"
   local materialx="${MATERIALX_ROOT:-}"
   if [ -z "$materialx" ] && [ -d "$USDROOT/libraries" ]; then
     materialx="$USDROOT"

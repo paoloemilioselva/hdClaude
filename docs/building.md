@@ -207,6 +207,27 @@ To install elsewhere, export `USDEXTRA` before sourcing. An assignment written
 in front of `.` (`USDEXTRA=... . ./setup_usd_env.sh`) is undone by bash when
 the script returns.
 
+## Shader caches
+
+hdClaude keeps two caches, both per user and per machine, and reads where they
+live from the environment when it starts:
+
+| Variable | What it holds | When unset |
+|---|---|---|
+| `HDCLAUDE_SHADER_CACHE` | compiled SPIR-V for the kernels and every material, one file per entry | `shader-cache/` under the directory the application was launched from |
+| `HDCLAUDE_PIPELINE_CACHE` | the driver's compiled pipelines, one file | `pipeline.cache` in the SPIR-V cache directory |
+
+The fallback is deliberately visible: a launch with nothing configured creates
+`shader-cache/` where it started, which is how an unset variable gets noticed.
+`setup_usd_env.bat`/`.sh` do not set either one.
+
+Both are meant for local disk. SPIR-V entries are named by a hash of
+everything that produces them and written to a per-process temporary that is
+renamed into place, so concurrent sessions on one machine are safe. The
+pipeline cache is one file that each session rewrites when it closes; the last
+to close wins, and its contents are specific to the GPU and driver that wrote
+them.
+
 ## Verifying
 
 ```bat

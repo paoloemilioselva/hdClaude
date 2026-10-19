@@ -1,5 +1,6 @@
 #include "hdclaude/core/shader_cache.h"
 
+#include "hdclaude/core/environment.h"
 #include "hdclaude/core/hash.h"
 
 #include <atomic>
@@ -7,6 +8,12 @@
 #include <cstring>
 #include <fstream>
 #include <system_error>
+
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace hdclaude {
 namespace {
@@ -24,12 +31,20 @@ struct EntryHeader {
 
 /// Process-unique suffix for temporary files, so two threads or two processes
 /// writing the same entry cannot collide on the temporary name.
+///
+/// The process id is what separates processes. The counter's address used to
+/// stand in for it, and two processes of the same binary can share that
+/// address whenever the loader places them identically.
 std::string UniqueSuffix()
 {
     static std::atomic<std::uint64_t> counter{0};
-    return std::to_string(counter.fetch_add(1, std::memory_order_relaxed)) + "." +
-           std::to_string(static_cast<std::uint64_t>(
-               reinterpret_cast<std::uintptr_t>(&counter)));
+#ifdef _WIN32
+    const long long process = _getpid();
+#else
+    const long long process = static_cast<long long>(getpid());
+#endif
+    return std::to_string(process) + "." +
+           std::to_string(counter.fetch_add(1, std::memory_order_relaxed));
 }
 
 }  // namespace
@@ -155,6 +170,26 @@ bool ShaderCache::Store(const ShaderCacheKey& key,
         return std::filesystem::exists(path);
     }
     return true;
+}
+
+const std::filesystem::path& DefaultShaderCacheDirectory()
+{
+    static const std::filesystem::path directory = [] {
+        const std::string configured = EnvironmentValue("HDCLAUDE_SHADER_CACHE");
+        if (!configured.empty()) {
+            return std::filesystem::path(configured);
+        }
+        std::error_code error;
+        std::filesystem::path launched = std::filesystem::current_path(error);
+        return (error ? std::filesystem::path(".") : launched) / "shader-cache";
+    }();
+    return directory;
+}
+
+ShaderCache& ProcessShaderCache()
+{
+    static ShaderCache cache(DefaultShaderCacheDirectory());
+    return cache;
 }
 
 }  // namespace hdclaude

@@ -1,6 +1,7 @@
 #include "hdclaude/gpu/path_tracer.h"
 
 #include "hdclaude/core/hash.h"
+#include "hdclaude/core/shader_cache.h"
 #include "hdclaude/gpu/vertex_frames.h"
 
 #include "hdclaude/gpu/environment_distribution.h"
@@ -495,6 +496,20 @@ std::string LoadKernel(const std::filesystem::path& directory,
     return ResolveKernelIncludes(directory, contents.str());
 }
 
+/// Compile a kernel through the process-wide SPIR-V cache.
+///
+/// Safe to key on the source because LoadKernel has already inlined every
+/// include: the text compiled is the whole translation unit, so an edit to a
+/// shared header is a different key rather than a stale hit.
+GlslCompileResult CompileKernel(const GlslCompiler& compiler,
+                                const std::string& source,
+                                const GlslCompileOptions& options)
+{
+    ShaderCacheKey key;
+    key.generatorTarget = "hdclaude-kernel";
+    return compiler.CompileCached(source, options, ProcessShaderCache(), key);
+}
+
 // ---------------------------------------------------------------------------
 
 PathTracer::PathTracer(const VulkanContext& context, VulkanAllocator& allocator,
@@ -524,7 +539,8 @@ PathTracer::PathTracer(const VulkanContext& context, VulkanAllocator& allocator,
         const std::string source = LoadKernel(_shaderDirectory, name);
         GlslCompileOptions options;
         options.moduleName = name;
-        const GlslCompileResult compiled = _compiler.Compile(source, options);
+        const GlslCompileResult compiled =
+            CompileKernel(_compiler, source, options);
         if (!compiled.ok) {
             throw VulkanError(VK_ERROR_INITIALIZATION_FAILED,
                               std::string("kernel ") + name + " failed:\n" +
@@ -1799,7 +1815,8 @@ bool PathTracer::EnsureReconstructionImages(
             LoadKernel(_shaderDirectory, "reconstruct_inputs.comp.glsl");
         GlslCompileOptions options;
         options.moduleName = "reconstruct_inputs.comp.glsl";
-        const GlslCompileResult compiled = _compiler.Compile(source, options);
+        const GlslCompileResult compiled =
+            CompileKernel(_compiler, source, options);
         if (!compiled.ok) {
             if (reason != nullptr) {
                 *reason = "reconstruct_inputs.comp.glsl failed:\n" + compiled.log;
@@ -1832,7 +1849,7 @@ bool PathTracer::EnsureReconstructionImages(
         GlslCompileOptions exposureOptions;
         exposureOptions.moduleName = "reconstruct_exposure.comp.glsl";
         const GlslCompileResult exposureCompiled =
-            _compiler.Compile(exposureSource, exposureOptions);
+            CompileKernel(_compiler, exposureSource, exposureOptions);
         if (!exposureCompiled.ok) {
             if (reason != nullptr) {
                 *reason = "reconstruct_exposure.comp.glsl failed:" +
