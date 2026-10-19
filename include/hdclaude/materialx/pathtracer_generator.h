@@ -193,6 +193,10 @@ class PathTracerShaderGenerator : public mx::VkShaderGenerator {
         /// The UDIM tile number, or 0 for an image that is not part of a set.
         /// A set contributes one of these per tile, in ascending tile order.
         int tile = 0;
+        /// The path MaterialX baked into the uniform, as the document authors
+        /// it: unresolved, and with any `<UDIM>` token still in place. Never
+        /// empty -- an `<image>` with no file takes no slot.
+        std::string path;
     };
 
     /// The images this material samples, in the order their array indices were
@@ -201,7 +205,8 @@ class PathTracerShaderGenerator : public mx::VkShaderGenerator {
     /// The caller needs this to know which image belongs at which index, and
     /// taking it from the generator rather than re-deriving it from the shader
     /// means the two orderings cannot drift apart. A UDIM set occupies a
-    /// contiguous run of indices, one per tile that exists.
+    /// contiguous run of indices, one per tile that exists. An `<image>` with
+    /// no file occupies none: its handle says so, and it reads its default.
     const std::vector<TextureSlot>& TextureOrder() const { return _textureOrder; }
 
     /// The UDIM tiles each filename uniform resolves to, keyed by the uniform

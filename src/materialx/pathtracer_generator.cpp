@@ -113,8 +113,9 @@ PathTracerSyntax::PathTracerSyntax(TypeSystemPtr typeSystem) : VkSyntax(typeSyst
     // texture coordinate -- so the node needs the whole set, and a sampler
     // cannot express it. The handle carries the set's first index into the
     // shared texture array and where its tile numbers live in the table the
-    // material declares; `tileCount` is one for an ordinary image, and the
-    // hdClaude `mx_image_*` overrides read it.
+    // material declares; `tileCount` is one for an ordinary image and zero for
+    // an `<image>` with no file, and the hdClaude `mx_image_*` overrides read
+    // it.
     //
     // Registered here rather than worked around at the call site because the
     // type has to be consistent everywhere MaterialX might emit it -- a
@@ -125,7 +126,9 @@ PathTracerSyntax::PathTracerSyntax(TypeSystemPtr typeSystem) : VkSyntax(typeSyst
         "struct HdclaudeTexture {" "\n"
         "    int slot;        // first index into hdclaude_textures" "\n"
         "    int tileOffset;  // into hdclaude_udim_tiles" "\n"
-        "    int tileCount;   // 1 when the image is not a UDIM set" "\n"
+        "    int tileCount;   // 1 when the image is not a UDIM set, 0 when" "\n"
+        "                     // there is no image and the node's default" "\n"
+        "                     // is the answer" "\n"
         "};";
     // A scalar syntax, not an aggregate one, and the distinction matters. An
     // aggregate type is one MaterialX will *construct*: it emits
@@ -457,10 +460,32 @@ void PathTracerShaderGenerator::emitUniforms(GenContext& context,
                 // together with the range of the tile table that says which
                 // tile each slot holds.
                 const size_t index = _textureOrder.size();
+                const std::string file =
+                    uniform->getValue() ? uniform->getValue()->getValueString()
+                                        : EMPTY_STRING;
+
+                // An `<image>` with no file. MaterialX defines one as returning
+                // its `default`, and assets rely on that: a material that
+                // exposes every parameter as "a value, or a map" reads each
+                // through an image whose file is usually empty and whose
+                // default is the value. The stock genglsl body says so by
+                // checking for a 1x1 sampler; a handle says it outright, takes
+                // no slot, and leaves a 1x1 *failure* placeholder free to stay
+                // magenta. The value is the one MaterialX baked, after
+                // following any `dot` in between, so it is empty exactly when
+                // MaterialX would sample nothing.
+                if (file.empty())
+                {
+                    emitLine("#define " + uniform->getVariable() +
+                                 " HdclaudeTexture(0, 0, 0)",
+                             stage, false);
+                    continue;
+                }
+
                 const auto range = udimRanges.find(uniform->getVariable());
                 if (range == udimRanges.end())
                 {
-                    _textureOrder.push_back({uniform->getVariable(), 0});
+                    _textureOrder.push_back({uniform->getVariable(), 0, file});
                     emitLine("#define " + uniform->getVariable() +
                                  " HdclaudeTexture(" + std::to_string(index) +
                                  ", 0, 1)",
@@ -472,7 +497,7 @@ void PathTracerShaderGenerator::emitUniforms(GenContext& context,
                     _udimTiles.at(uniform->getVariable());
                 for (const int tile : tiles)
                 {
-                    _textureOrder.push_back({uniform->getVariable(), tile});
+                    _textureOrder.push_back({uniform->getVariable(), tile, file});
                 }
                 emitLine("#define " + uniform->getVariable() +
                              " HdclaudeTexture(" + std::to_string(index) + ", " +

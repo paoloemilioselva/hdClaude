@@ -592,6 +592,12 @@ void CollectTexturePaths(
         // itself has.
         HdClaudeMaterialCompiler::TextureRequest request =
             ResolveTexturePath(document, uniform);
+        // The path MaterialX itself baked, for a uniform the document walk
+        // could not tie to an input. It is the authored one, so it stays the
+        // last resort behind both resolved answers.
+        if (request.path.empty()) {
+            request.path = slot.path;
+        }
         if (resolvedTextures) {
             const auto found = resolvedTextures->find(uniform);
             if (found != resolvedTextures->end() && !found->second.empty()) {
@@ -611,13 +617,10 @@ void CollectTexturePaths(
         }
         request.path = SubstituteUdimTile(request.path, tile);
         if (request.path.empty()) {
-            // An image node with no file at all. That is legal and common --
-            // an asset authors the node and leaves the file to a stronger
-            // opinion that never arrives -- and MaterialX says such a node
-            // returns its `default`. The pool turns the empty path into that
-            // value, so this is worth tracing and not worth warning about; a
-            // file that is authored and cannot be read is the case that
-            // deserves to be loud.
+            // Not expected: an `<image>` with no file takes no slot, and its
+            // handle returns the node's `default` in the shader. Should a slot
+            // still arrive without a path, the pool binds a black texel rather
+            // than the magenta that marks a file which could not be read.
             HdClaudeTrace("material %s samples '%s', which no asset path "
                           "backs; it reads the image node's default",
                           name.c_str(), uniform.c_str());

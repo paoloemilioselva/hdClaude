@@ -993,9 +993,28 @@ void TestRoutedImagesNameTheirSamplerAfterTheImage(mx::DocumentPtr libraries)
     mx::OutputPtr graphOut = graph->addOutput("out", "color3");
     graphOut->setConnectedNode(graphImage);
 
-    mx::NodePtr sum = AddNode(doc, "add", "routedSum", "color3");
-    Connect(sum, "in1", direct);
-    Connect(sum, "in2", chained);
+    // "A value, or a map": no file, and the value in `default`. MaterialX
+    // defines such an image as returning its default, and the second reaches
+    // an empty file through a dot, as a material input left unset does.
+    mx::NodePtr unfiled = AddNode(doc, "image", "unfiledImage", "color3");
+    SetValue(unfiled, "default", mx::Color3(1.0f, 1.0f, 1.0f));
+    mx::NodePtr emptyDot = AddNode(doc, "dot", "emptyDot", "filename");
+    if (mx::InputPtr in = AddInput(emptyDot, "in")) {
+        in->setValueString("");
+    }
+    mx::NodePtr emptyRouted = AddNode(doc, "image", "emptyRoutedImage", "color3");
+    SetValue(emptyRouted, "default", mx::Color3(1.0f, 1.0f, 1.0f));
+    Connect(emptyRouted, "file", emptyDot);
+    mx::NodePtr tints = AddNode(doc, "multiply", "routedTints", "color3");
+    Connect(tints, "in1", unfiled);
+    Connect(tints, "in2", emptyRouted);
+
+    mx::NodePtr filed = AddNode(doc, "add", "routedFiled", "color3");
+    Connect(filed, "in1", direct);
+    Connect(filed, "in2", chained);
+    mx::NodePtr sum = AddNode(doc, "multiply", "routedSum", "color3");
+    Connect(sum, "in1", filed);
+    Connect(sum, "in2", tints);
     mx::NodePtr total = AddNode(doc, "add", "routedTotal", "color3");
     Connect(total, "in1", sum);
     if (mx::InputPtr in2 = AddInput(total, "in2")) {
@@ -1015,13 +1034,15 @@ void TestRoutedImagesNameTheirSamplerAfterTheImage(mx::DocumentPtr libraries)
     }
 
     std::vector<std::string> uniforms;
+    std::string source;
     try {
         mx::ShaderGeneratorPtr generator = PathTracerShaderGenerator::create();
         mx::GenContext context(generator);
         context.registerSourceCodeSearchPath(SourceSearchPath());
         context.getOptions().hwMaxActiveLightSources = 0;
         context.getOptions().shaderInterfaceType = mx::SHADER_INTERFACE_REDUCED;
-        generator->generate("routed", shader, context);
+        mx::ShaderPtr generated = generator->generate("routed", shader, context);
+        source = generated ? generated->getSourceCode(mx::Stage::PIXEL) : "";
         const auto* pathTracer =
             static_cast<const PathTracerShaderGenerator*>(generator.get());
         for (const auto& slot : pathTracer->TextureOrder()) {
@@ -1039,6 +1060,16 @@ void TestRoutedImagesNameTheirSamplerAfterTheImage(mx::DocumentPtr libraries)
     CHECK(samples("directImage_file"));
     CHECK(samples("chainedImage_file"));
     CHECK(samples("graphImage_file"));
+
+    // The two images with no file take no slot, and their handles say there is
+    // no image, which is what makes them return their default.
+    CHECK(!samples("unfiledImage_file"));
+    CHECK(!samples("emptyRoutedImage_file"));
+    CHECK(source.find("#define unfiledImage_file HdclaudeTexture(0, 0, 0)") !=
+          std::string::npos);
+    CHECK(source.find("#define emptyRoutedImage_file HdclaudeTexture(0, 0, 0)") !=
+          std::string::npos);
+    CHECK(source.find("if (handle.tileCount == 0)") != std::string::npos);
     for (const std::string& uniform : uniforms) {
         std::printf("  sampler %s\n", uniform.c_str());
     }
