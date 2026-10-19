@@ -59,6 +59,7 @@ target_link_libraries(hdClaude
         usd
         usdLux
         vt
+        work
 )
 
 target_compile_definitions(hdClaude PRIVATE HDCLAUDE_EXPORTS)

@@ -71,6 +71,28 @@ class HdClaudeTexturePool {
         const std::string& assetPath,
         HdClaudeTextureColorSpace colorSpace = HdClaudeTextureColorSpace::Auto);
 
+    /// One image to acquire: where it is, and how to read it.
+    struct Request {
+        std::string assetPath;
+        HdClaudeTextureColorSpace colorSpace = HdClaudeTextureColorSpace::Auto;
+    };
+
+    /// What one AcquireAll decoded, as opposed to found already in the pool.
+    struct AcquireReport {
+        std::size_t decoded = 0;
+        std::uint64_t bytes = 0;
+    };
+
+    /// The pool slot for each request, in order, decoding every image not yet
+    /// in the pool in parallel.
+    ///
+    /// Slots are reserved under the pool's lock and the images decoded outside
+    /// it, so the decode -- seconds for a 4096-square TIFF -- runs on every
+    /// core rather than one image at a time. The pool must not be read until
+    /// this returns: the reserved slots hold nothing until then.
+    std::vector<std::uint32_t> AcquireAll(const std::vector<Request>& requests,
+                                          AcquireReport* report = nullptr);
+
     /// Every loaded image, indexed by the slot Acquire returned.
     const std::vector<hdclaude::TextureImage>& Images() const { return _images; }
 
