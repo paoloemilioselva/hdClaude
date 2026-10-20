@@ -22,7 +22,7 @@ of third-party or proprietary code.
 | Vulkan-ValidationLayers | CMake `ExternalProject`, opt-in | `HDCLAUDE_VULKAN_SDK_TAG` |
 | NVIDIA DLSS SDK | CMake `FetchContent`, optional | `HDCLAUDE_DLSS_TAG` |
 | **OpenUSD** | **external prebuilt install** | discovered by `setup_usd_env.bat` / `.sh` |
-| MaterialX | from inside the OpenUSD distribution | — |
+| MaterialX | the one OpenUSD was built against | `MATERIALX_ROOT` |
 | OpenSubdiv | from inside the OpenUSD distribution | — |
 
 Vulkan-Headers, volk, glslang, and the validation layers are held at the same
@@ -38,10 +38,27 @@ separate configure, a separate build, and an install prefix that
 `VK_LAYER_PATH` can point at. Their known-good SPIRV-Tools revision is used
 rather than a second set of pins that could disagree with theirs.
 
-MaterialX and OpenSubdiv come from **inside** the OpenUSD distribution rather
-than being fetched separately. Two MaterialX copies in one process is an ODR
-violation waiting to happen, and Hydra hands us MaterialX objects created by its
-own copy.
+MaterialX and OpenSubdiv are never fetched. They are the ones OpenUSD was built
+against, so Hydra and hdClaude agree on their ABI: Hydra hands us MaterialX
+objects created by its own copy.
+
+MaterialX can be laid out two ways, and both are found without configuration:
+
+- **Bundled.** `build_usd.py` installs MaterialX inside the OpenUSD root, with
+  `lib/cmake/MaterialX` and `libraries/` beside `pxrConfig.cmake`. This is the
+  Windows workstation's layout.
+- **Separate.** A package manager such as rez installs MaterialX as its own
+  package. OpenUSD's `pxrConfig.cmake` records the `MaterialX_DIR` it was built
+  against, and `cmake/OpenUSD.cmake` and `setup_usd_env.sh` read it from there.
+
+To use a different MaterialX root, set `MATERIALX_ROOT` before running
+`compile.py`, or pass `-DHDCLAUDE_MATERIALX_ROOT=<root>` to CMake. The standard
+data libraries (`libraries/`) come from the same root and are compiled in as
+the default search path.
+
+Under rez, resolve an environment that contains the `usd` package and the
+`materialx` package it requires. `setup_usd_env.sh` takes `USDROOT` from
+`REZ_USD_ROOT` when `USDROOT` is not set.
 
 ### Reusing an existing download
 
@@ -144,13 +161,15 @@ machine with a compiler.
 
 ## Linux
 
-Written from reading the code on Windows, not from a Linux build: no Linux
-toolchain has compiled hdClaude yet. What the port consists of:
+Built and run on Ubuntu 22.04 with GCC 11.2, against OpenUSD 26.05 and a
+separately packaged MaterialX 1.39.4 in a rez environment, through
+`compile.py`. What the port consists of:
 
 - **`setup_usd_env.sh`**, sourced (`. ./setup_usd_env.sh`), is the counterpart
-  of `setup_usd_env.bat` and does the same things in the same order. It probes
-  `~/dev/usd-*` and `/opt/usd-*` for OpenUSD, defaults `USDEXTRA` to
-  `~/usd-26.03-extra`, and puts OpenUSD's libraries on `LD_LIBRARY_PATH` where
+  of `setup_usd_env.bat` and does the same things in the same order. It takes
+  OpenUSD from `REZ_USD_ROOT` in a rez environment, else probes `~/dev/usd-*`
+  and `/opt/usd-*`, defaults `USDEXTRA` to the
+  repository's `install/`, and puts OpenUSD's libraries on `LD_LIBRARY_PATH` where
   Windows uses `PATH`. Keep the two in step.
 - **`render_claude.sh`** passes `usdrecord` the same fixed flags as
   `render_claude.bat`; the reasons are written there once.
@@ -168,19 +187,55 @@ toolchain has compiled hdClaude yet. What the port consists of:
 - **DLSS** is Windows-only: `dev-dlss` stops at configure on Linux, because
   `cmake/NvidiaDLSS.cmake` links only the SDK's Windows library.
 
-Expect the first real build to find what reading could not: GCC's standard
-library includes fewer headers transitively than MSVC's, so a few missing
-`#include`s (`<cstdint>`, `<cstring>`, `<algorithm>`) are likely, and
-OpenUSD's headers are noisy under `-Wpedantic`.
+GCC's standard library includes fewer headers transitively than MSVC's, so a
+header a file uses but reaches only through another compiles on Windows and
+not here; the first Linux build found one, `<cmath>` in `path_tracer.cpp`.
+OpenUSD's own headers are noisy under `-Wpedantic`.
 
 ## Install layout
 
 The delegate installs to `USDEXTRA` (default
-`%USERPROFILE%\Desktop\usd-26.03-extra` on Windows, `~/usd-26.03-extra` on
-Linux), placed beside the OpenUSD install
-rather than inside it, so that a USD upgrade does not delete the plugin and a
+`%USERPROFILE%\Desktop\usd-26.03-extra` on Windows, the repository's
+gitignored `install/` on Linux), placed outside the OpenUSD install, so that a USD upgrade does not delete the plugin and a
 plugin rebuild cannot corrupt a USD distribution. `setup_usd_env.bat`/`.sh` puts both
-trees on `PXR_PLUGINPATH_NAME`.
+trees on `PXR_PLUGINPATH_NAME`. To launch usdview against it on Linux:
+
+```sh
+. ./setup_usd_env.sh
+usdview scene.usda
+```
+
+To install elsewhere, export `USDEXTRA` before sourcing. An assignment written
+in front of `.` (`USDEXTRA=... . ./setup_usd_env.sh`) is undone by bash when
+the script returns.
+
+## Shader caches
+
+hdClaude keeps two caches, both per user and per machine, and reads where they
+live from the environment when it starts:
+
+| Variable | What it holds | When unset |
+|---|---|---|
+| `HDCLAUDE_SHADER_CACHE` | compiled SPIR-V for the kernels and every material, one file per entry | `shader-cache/` under the directory the application was launched from |
+| `HDCLAUDE_PIPELINE_CACHE` | the driver's compiled pipelines, one file | `pipeline.cache` in the SPIR-V cache directory |
+
+The fallback is deliberately visible: a launch with nothing configured creates
+`shader-cache/` where it started, which is how an unset variable gets noticed.
+`setup_usd_env.bat`/`.sh` do not set either one.
+
+Both are meant for local disk. SPIR-V entries are named by a hash of
+everything that produces them and written to a per-process temporary that is
+renamed into place, so concurrent sessions on one machine are safe. The
+pipeline cache is one file that each session rewrites when it closes; the last
+to close wins, and its contents are specific to the GPU and driver that wrote
+them.
+
+Within a session, a material whose network matches one already compiled --
+the same nodes, connections and input values, wherever it sits in the stage --
+is not compiled again, and the scene shades both with one program. Copies of
+an asset that embed their material, and elements that share a look, cost one
+compile per distinct look. `materialsCompiled` and `materialsReused` in the
+stats report say how it went.
 
 ## Verifying
 
@@ -225,7 +280,9 @@ fetch failure is not an error: the feature turns itself off and the build
 continues, because DLSS is never a requirement of the default build.
 
 **The delegate does not appear in usdview.** Confirm `USDEXTRA` is on
-`PXR_PLUGINPATH_NAME` (`setup_usd_env.bat` does this), that
-`plugin\usd\hdClaude\resources\plugInfo.json` exists under it, and that the
+`PXR_PLUGINPATH_NAME` (`setup_usd_env.bat` does this), that both
+`plugin\usd\plugInfo.json` and `plugin\usd\hdClaude\resources\plugInfo.json`
+exist under it -- Plug reads only the first from a search path entry, and its
+`Includes` leads to the second -- and that the
 plugin's dependent DLLs resolve — a missing dependency makes a plugin silently
 undiscoverable rather than producing an error.

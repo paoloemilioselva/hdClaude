@@ -1,4 +1,11 @@
 #include "hdclaude/gpu/vulkan_context.h"
+#include "hdclaude/core/shader_cache.h"
+
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 #include "hdclaude/core/environment.h"
 
@@ -481,7 +488,46 @@ VulkanContext::VulkanContext(const VulkanContextOptions& options)
     // seconds. Knowing which is which is what stopped the renderer paying for
     // four of them per render (docs/implementation-notes.md, 2026-09-16).
     const auto hdclaudeInstanceStart = std::chrono::steady_clock::now();
-    Check(vkCreateInstance(&instanceInfo, nullptr, &_instance), "vkCreateInstance");
+    VkResult created = vkCreateInstance(&instanceInfo, nullptr, &_instance);
+    if (created == VK_ERROR_EXTENSION_NOT_PRESENT && layerSettingsAvailable) {
+        // The layer offers VK_EXT_layer_settings and the *loader* refuses it: a
+        // loader older than the extension (Ubuntu 22.04 ships 1.3.204) checks
+        // every requested instance extension against a list it was built with.
+        // Every validated instance then failed, and every GPU test reported
+        // that as no device and skipped.
+        //
+        // The layer reads each setting from the environment as well, under
+        // its own prefix, whatever the loader's age -- so synchronisation
+        // validation survives through that instead. A value already set wins.
+        static const char* kValidateSync = "VK_KHRONOS_VALIDATION_VALIDATE_SYNC";
+        if (std::getenv(kValidateSync) == nullptr) {
+#ifdef _WIN32
+            _putenv_s(kValidateSync, "true");
+#else
+            setenv(kValidateSync, "true", 0);
+#endif
+        }
+        instanceExtensions.erase(
+            std::remove_if(instanceExtensions.begin(), instanceExtensions.end(),
+                           [](const char* name) {
+                               return std::strcmp(
+                                          name,
+                                          VK_EXT_LAYER_SETTINGS_EXTENSION_NAME) ==
+                                      0;
+                           }),
+            instanceExtensions.end());
+        instanceInfo.pNext = nullptr;
+        instanceInfo.enabledExtensionCount =
+            static_cast<std::uint32_t>(instanceExtensions.size());
+        instanceInfo.ppEnabledExtensionNames = instanceExtensions.data();
+        std::fprintf(stderr,
+                     "[hdClaude] The Vulkan loader does not know "
+                     "VK_EXT_layer_settings; synchronisation validation is "
+                     "enabled through %s instead.\n",
+                     kValidateSync);
+        created = vkCreateInstance(&instanceInfo, nullptr, &_instance);
+    }
+    Check(created, "vkCreateInstance");
     volkLoadInstanceOnly(_instance);
     const auto hdclaudeInstanceDone = std::chrono::steady_clock::now();
     if (EnvironmentFlag("HDCLAUDE_TRACE")) {
@@ -783,14 +829,22 @@ std::filesystem::path VulkanContext::PipelineCachePath()
 {
     const std::string override = EnvironmentValue("HDCLAUDE_PIPELINE_CACHE");
     if (!override.empty()) {
-        return std::filesystem::path(override);
+        // Its folder is made if it is missing, as the SPIR-V cache's is: a
+        // configured path that does not exist yet is a setting, not a mistake,
+        // and refusing it would only mean the cache is silently never saved.
+        const std::filesystem::path configured(override);
+        std::error_code error;
+        if (configured.has_parent_path()) {
+            std::filesystem::create_directories(configured.parent_path(), error);
+        }
+        return configured;
     }
+    // Beside the SPIR-V cache rather than in the system temporary directory, so
+    // HDCLAUDE_SHADER_CACHE alone says where a machine keeps both -- and so an
+    // unconfigured launch shows both in the folder it started from.
     std::error_code error;
-    std::filesystem::path directory = std::filesystem::temp_directory_path(error);
-    if (error) {
-        return {};
-    }
-    return directory / "hdClaude.pipeline.cache";
+    std::filesystem::create_directories(DefaultShaderCacheDirectory(), error);
+    return DefaultShaderCacheDirectory() / "pipeline.cache";
 }
 
 void VulkanContext::CreatePipelineCache()
@@ -853,9 +907,18 @@ void VulkanContext::SavePipelineCache() const
     }
     // Written to a temporary and renamed, so a run interrupted mid-write leaves
     // the previous cache rather than a truncated one the driver must reject.
+    // The temporary is this process's own: two sessions closing together
+    // otherwise write one `.partial` between them and rename a mixture. Each
+    // still replaces the whole file, so the last to close wins -- a cache that
+    // loses entries, not one that is corrupt.
     std::error_code error;
+#ifdef _WIN32
+    const long long process = _getpid();
+#else
+    const long long process = static_cast<long long>(getpid());
+#endif
     const std::filesystem::path temporary =
-        _pipelineCachePath.string() + ".partial";
+        _pipelineCachePath.string() + "." + std::to_string(process) + ".partial";
     {
         std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
         if (!file) {

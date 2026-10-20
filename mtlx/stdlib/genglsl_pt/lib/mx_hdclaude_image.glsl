@@ -26,6 +26,14 @@
 
 vec4 hdclaude_sample_image(HdclaudeTexture handle, vec2 uv, vec4 fallback)
 {
+    // An `<image>` with no file, which MaterialX defines as returning its
+    // default. Assets lean on this to make a parameter "a value, or a map", so
+    // reading anything else here turns a tint of white into black.
+    if (handle.tileCount == 0)
+    {
+        return fallback;
+    }
+
     int slot = handle.slot;
 
     if (handle.tileCount > 1)

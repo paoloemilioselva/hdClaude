@@ -3,6 +3,7 @@
 #include "trace.h"
 
 #include "pxr/base/gf/half.h"
+#include "pxr/base/work/loops.h"
 #include "pxr/imaging/hio/image.h"
 #include "pxr/imaging/hio/types.h"
 #include "pxr/usd/ar/resolver.h"
@@ -449,68 +450,125 @@ bool HdClaudeLoadTexture(const std::string& assetPath,
     return true;
 }
 
+namespace {
+
+/// Decode one pool entry. Free of the pool's state, so many run at once.
+bool DecodePoolImage(const std::string& assetPath,
+                     HdClaudeTextureColorSpace colorSpace, std::uint32_t maxEdge,
+                     hdclaude::TextureImage* image, std::string* error)
+{
+    if (assetPath.empty()) {
+        // An image node with no file. A generated material says so in its
+        // texture handle and never samples here, so this is reached only by
+        // a request that names nothing; it gets one black texel rather than
+        // the failure placeholder, because nothing was named that could fail.
+        image->width = 1;
+        image->height = 1;
+        image->texels = {0, 0, 0, 255};
+        image->format = hdclaude::TexelFormat::Rgba8Unorm;
+        image->debugName = "image node with no file";
+        return true;
+    }
+    if (HdClaudeLoadTexture(assetPath, image, error, colorSpace, maxEdge)) {
+        return true;
+    }
+    // The slot still exists and holds an invalid image, so the renderer binds
+    // its placeholder and the material's other indices are undisturbed. A
+    // missing texture should be visible, not silent.
+    *image = hdclaude::TextureImage();
+    image->debugName = assetPath;
+    return false;
+}
+
+}  // namespace
+
 std::uint32_t HdClaudeTexturePool::Acquire(const std::string& assetPath,
                                            HdClaudeTextureColorSpace colorSpace)
 {
-    std::lock_guard<std::mutex> lock(_mutex);
+    return AcquireAll({{assetPath, colorSpace}}).front();
+}
 
-    const auto key = std::make_pair(assetPath, colorSpace);
-    const auto found = _slots.find(key);
-    if (found != _slots.end()) {
-        return found->second;
-    }
+std::vector<std::uint32_t> HdClaudeTexturePool::AcquireAll(
+    const std::vector<Request>& requests, AcquireReport* report)
+{
+    struct Decode {
+        std::uint32_t slot;
+        Key key;
+        hdclaude::TextureImage image;
+        std::string error;
+        bool ok = false;
+    };
 
-    const auto slot = static_cast<std::uint32_t>(_images.size());
-    _slots[key] = slot;
-    _sources.push_back(key);
-
-    hdclaude::TextureImage image;
-    std::string error;
-    if (assetPath.empty()) {
-        // An image node with no file. MaterialX defines such a node as
-        // returning its `default` input, whose declared value for every
-        // `ND_image_*` is zero, so a one-pixel black texture is what the
-        // generated code has to sample to produce it -- the stock
-        // implementation samples unconditionally and has no other way to say
-        // "no image".
-        //
-        // This is deliberately *not* the failure placeholder. A node with no
-        // file is an authoring choice that assets make routinely; a file that
-        // is named and cannot be read is a broken asset. Rendering the first
-        // as magenta puts a glaring wrong colour on a surface that should be
-        // unaffected, which is exactly what the StandardShaderBall's inner
-        // shell did.
-        image.width = 1;
-        image.height = 1;
-        image.texels = {0, 0, 0, 255};
-        image.format = hdclaude::TexelFormat::Rgba8Unorm;
-        image.debugName = "image node with no file";
-        HdClaudeTrace("texture %u: unbound image node; reads its default", slot);
-        _images.push_back(std::move(image));
-        return slot;
-    }
-
-    if (HdClaudeLoadTexture(assetPath, &image, &error, colorSpace, _maxEdge)) {
-        const char* encoding = "linear";
-        if (image.format == hdclaude::TexelFormat::Rgba8Srgb) {
-            encoding = "sRGB";
-        } else if (image.format == hdclaude::TexelFormat::Rgba16Sfloat) {
-            encoding = "linear half";
+    // --- Reserve, under the lock ----------------------------------------------
+    // A key asked for twice in one batch is reserved once and decoded once,
+    // as it would be across two batches.
+    std::vector<std::uint32_t> slots;
+    slots.reserve(requests.size());
+    std::vector<Decode> decodes;
+    std::uint32_t maxEdge = 0;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        maxEdge = _maxEdge;
+        for (const Request& request : requests) {
+            Key key = std::make_pair(request.assetPath, request.colorSpace);
+            const auto found = _slots.find(key);
+            if (found != _slots.end()) {
+                slots.push_back(found->second);
+                continue;
+            }
+            const auto slot = static_cast<std::uint32_t>(_images.size());
+            _slots[key] = slot;
+            _sources.push_back(key);
+            _images.emplace_back();
+            slots.push_back(slot);
+            decodes.push_back({slot, std::move(key), {}, {}, false});
         }
-        HdClaudeTrace("texture %u: %s (%ux%u, %s)", slot, assetPath.c_str(),
-                      image.width, image.height, encoding);
-    } else {
-        // The slot still exists and still holds an invalid image, so the
-        // renderer binds its placeholder and the material's other indices are
-        // undisturbed. A missing texture should be visible, not silent.
-        image = hdclaude::TextureImage();
-        image.debugName = assetPath;
-        _failures.push_back(assetPath + ": " + error);
-        HdClaudeTrace("texture %u: FAILED %s (%s)", slot, assetPath.c_str(),
-                      error.c_str());
     }
-    _images.push_back(std::move(image));
-    return slot;
+
+    // --- Decode, in parallel and unlocked ------------------------------------
+    // Every image is an independent file, and Hio's readers are what Storm
+    // decodes its own textures with from many threads at once. The cap read
+    // above stays right throughout: it changes only through a render setting,
+    // which Hydra applies between frames, never while a frame is compiling
+    // its materials.
+    WorkParallelForN(decodes.size(), [&](std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+            Decode& decode = decodes[i];
+            decode.ok = DecodePoolImage(decode.key.first, decode.key.second,
+                                        maxEdge, &decode.image, &decode.error);
+        }
+    });
+
+    // --- Publish, under the lock ----------------------------------------------
+    std::lock_guard<std::mutex> lock(_mutex);
+    for (Decode& decode : decodes) {
+        const std::string& assetPath = decode.key.first;
+        if (assetPath.empty()) {
+            HdClaudeTrace("texture %u: unbound image node; reads its default",
+                          decode.slot);
+        } else if (decode.ok) {
+            const char* encoding = "linear";
+            if (decode.image.format == hdclaude::TexelFormat::Rgba8Srgb) {
+                encoding = "sRGB";
+            } else if (decode.image.format ==
+                       hdclaude::TexelFormat::Rgba16Sfloat) {
+                encoding = "linear half";
+            }
+            HdClaudeTrace("texture %u: %s (%ux%u, %s)", decode.slot,
+                          assetPath.c_str(), decode.image.width,
+                          decode.image.height, encoding);
+        } else {
+            _failures.push_back(assetPath + ": " + decode.error);
+            HdClaudeTrace("texture %u: FAILED %s (%s)", decode.slot,
+                          assetPath.c_str(), decode.error.c_str());
+        }
+        if (report) {
+            ++report->decoded;
+            report->bytes += decode.image.texels.size();
+        }
+        _images[decode.slot] = std::move(decode.image);
+    }
+    return slots;
 }
 
 void HdClaudeTexturePool::Clear()

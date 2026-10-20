@@ -78,11 +78,6 @@ void ExtractWidths(const VtValue& value, std::vector<float>& out)
     }
 }
 
-SdfPath DisplayColorMaterialPath(const SdfPath& id)
-{
-    return id.AppendProperty(TfToken("hdClaudeDisplayColor"));
-}
-
 GfVec3f DisplayColor(HdSceneDelegate* delegate, const SdfPath& id)
 {
     const VtValue value = delegate->Get(id, HdTokens->displayColor);
@@ -127,8 +122,6 @@ void HdClaudeBasisCurves::Finalize(HdRenderParam* renderParam)
     if (auto* param = dynamic_cast<HdClaudeRenderParam*>(renderParam)) {
         if (param->SceneStore() != nullptr) {
             param->SceneStore()->RemoveMesh(GetId());
-            param->SceneStore()->RemoveMaterial(
-                DisplayColorMaterialPath(GetId()));
         }
     }
 }
@@ -283,24 +276,12 @@ void HdClaudeBasisCurves::Sync(HdSceneDelegate* sceneDelegate,
     entry.visible = sceneDelegate->GetVisible(id);
     entry.material = GetMaterialId();
 
-    // Unbound curves get a diffuse material of their own displayColor, through
-    // the same MaterialX path everything else uses.
-    if (entry.material.IsEmpty() && param->MaterialCompiler() != nullptr) {
-        const SdfPath generated = DisplayColorMaterialPath(id);
-        const GfVec3f color = DisplayColor(sceneDelegate, id);
-        if (!param->SceneStore()->HasMaterial(generated) ||
-            color != _lastDisplayColor) {
-            HdClaudeMaterialEntry material;
-            material.compiled = param->MaterialCompiler()->CompileDiffuse(
-                color, "hdclaude_" + HdMtlxCreateNameFromPath(generated));
-            if (material.compiled.spirv.empty()) {
-                material.fallbackReason =
-                    "the generated displayColor material did not compile";
-            }
-            param->SceneStore()->PublishMaterial(generated, std::move(material));
-            _lastDisplayColor = color;
-        }
-        entry.material = generated;
+    // Unbound curves share the one displayColor material, as unbound meshes
+    // do, and every placement carries the prim's colour for it to read.
+    const GfVec3f color = DisplayColor(sceneDelegate, id);
+    std::copy(color.data(), color.data() + 3, entry.displayColor);
+    if (entry.material.IsEmpty()) {
+        entry.material = HdClaudeDisplayColorMaterialPath();
     }
 
     const GfMatrix4d curveTransform = sceneDelegate->GetTransform(id);

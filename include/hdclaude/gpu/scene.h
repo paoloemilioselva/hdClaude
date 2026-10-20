@@ -182,6 +182,11 @@ struct MeshInstance {
     /// The light-linking categories this placement belongs to, as indices
     /// into `Scene::linkCategoryCount`. Empty for geometry no light links.
     std::vector<std::uint32_t> linkCategories;
+
+    /// The placement's displayColor, linear RGB. Read by a material through a
+    /// `displayColor` geomprop -- which is how unbound geometry is shaded, by
+    /// one material for every colour rather than one material per colour.
+    float displayColor[3] = {0.5f, 0.5f, 0.5f};
 };
 
 /// One object-space Gaussian splat cloud prototype.

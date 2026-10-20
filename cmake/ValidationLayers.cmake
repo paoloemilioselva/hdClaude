@@ -53,6 +53,19 @@ if(NOT Python3_FOUND)
       "SDK instead. See docs/building.md.")
 endif()
 
+# Window-system support validates swapchains, and hdClaude presents nothing:
+# it renders into buffers Hydra reads back. Off Windows each platform is a
+# pkg-config package the layers require when theirs is on, so a machine
+# without the Wayland or X11 development files -- a render node, a minimal
+# workstation -- would fail to configure for support nothing here uses.
+set(_validation_wsi_args "")
+if(NOT WIN32)
+  set(_validation_wsi_args
+      -DBUILD_WSI_XCB_SUPPORT=OFF
+      -DBUILD_WSI_XLIB_SUPPORT=OFF
+      -DBUILD_WSI_WAYLAND_SUPPORT=OFF)
+endif()
+
 ExternalProject_Add(hdClaudeValidationLayers
     GIT_REPOSITORY  https://github.com/KhronosGroup/Vulkan-ValidationLayers.git
     GIT_TAG         ${HDCLAUDE_VULKAN_SDK_TAG}
@@ -73,6 +86,7 @@ ExternalProject_Add(hdClaudeValidationLayers
         -DUPDATE_DEPS=ON
         -DBUILD_TESTS=OFF
         -DBUILD_WERROR=OFF
+        ${_validation_wsi_args}
     # Release-only: the layer is a tool, and a debug build of SPIRV-Tools
     # roughly triples an already long build for no benefit to us.
     BUILD_COMMAND   ${CMAKE_COMMAND} --build <BINARY_DIR> --config Release

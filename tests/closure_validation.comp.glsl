@@ -124,7 +124,7 @@ void main()
     // geometry needs; a diffuse-only material has no tangent to write.
     hdclaude_set_surface_hit(P, N, vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), P,
                              N, vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0),
-                             vec2(0.5));
+                             vec2(0.5), vec3(0.5));
     hdclaude_wavelengths = vec4(450.0, 550.0, 600.0, 650.0);
     // A flat surface, so the geometric and shading normals are the same one.
     // Supplying it is what makes `viewTheta` past 90 degrees mean "inside" to a

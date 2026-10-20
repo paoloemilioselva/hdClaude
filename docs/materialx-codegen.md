@@ -316,9 +316,15 @@ The struct's members are whatever geometry the material reads, so the generator
 also emits the function that fills it:
 
 ```glsl
-void hdclaude_set_surface_hit(vec3 P, vec3 N, vec3 T,
-                              vec3 Pobj, vec3 Nobj, vec3 Tobj, vec2 uv);
+void hdclaude_set_surface_hit(vec3 P, vec3 N, vec3 T, vec3 B,
+                              vec3 Pobj, vec3 Nobj, vec3 Tobj, vec3 Bobj,
+                              vec2 uv, vec3 displayColor);
 ```
+
+`displayColor` is the placement's, from the instance table, and is what a
+`geompropvalue` reading `displayColor` receives. Unbound geometry is shaded by
+one shared diffuse material that reads it, rather than by a material compiled
+per colour.
 
 **Every member is assigned.** The struct is a global, so a member the setter
 skips is not "left for the kernel to fill" — nothing else fills it, and the

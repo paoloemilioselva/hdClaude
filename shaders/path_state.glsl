@@ -420,10 +420,16 @@ struct InstanceGeometry {
     /// `hdclaude::SplatKernel`: 0 ellipsoid, 1 Gaussian surflet, 2 constant
     /// surflet.
     uint splatKernel;
-    /// Explicit padding, so neither this struct nor its C++ mirror has any
-    /// *implicit* padding: nine addresses, three matrices, six words, 240
-    /// bytes. See the mirror in path_tracer.cpp for why that matters.
-    uint pad1;
+    /// The placement's displayColor, which the shared material for unbound
+    /// geometry reads through a `displayColor` geomprop. Carried per instance
+    /// rather than baked into a material: one material per colour cost a
+    /// MaterialX generation, a SPIR-V compile and a pipeline for every unbound
+    /// mesh in the stage.
+    ///
+    /// Also what keeps this struct free of *implicit* padding: nine addresses,
+    /// three matrices, five words and three floats, 248 bytes. See the mirror
+    /// in path_tracer.cpp for why that matters.
+    vec3 displayColor;
 };
 
 /// What a hit record's first component holds when the ray was stopped by a

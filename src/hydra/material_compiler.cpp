@@ -1,6 +1,7 @@
 #include "material_compiler.h"
 
 #include "hdclaude/core/environment.h"
+#include "hdclaude/core/hash.h"
 
 #include "trace.h"
 
@@ -17,6 +18,9 @@
 #include "pxr/usd/ar/resolver.h"
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/tf/getenv.h"
+#include "pxr/base/tf/stringUtils.h"
+#include "pxr/base/vt/array.h"
+#include "pxr/usd/sdf/assetPath.h"
 #include "pxr/imaging/hd/tokens.h"
 #include "pxr/imaging/hdMtlx/hdMtlx.h"
 
@@ -30,6 +34,106 @@ PXR_NAMESPACE_OPEN_SCOPE
 namespace mx = MaterialX;
 
 namespace {
+
+/// What a material network compiles from, as a hex digest.
+///
+/// Everything that reaches the generated program: every node's type and
+/// inputs, every connection, the primvars, the terminals and the network's
+/// config. Node paths are taken relative to the material, so the same network
+/// under `/elementA/mtl` and `/elementB/mtl` keys the same -- that is the whole
+/// point -- while anything that differs in content does not.
+///
+/// An asset path keys on where it *resolves*. Copies of an asset that name
+/// their textures relatively author identical paths that may resolve to
+/// different files, and those must not share a program's texture bindings.
+/// Other values key on both their text and their exact hash, so two floats
+/// that print alike but differ still key apart.
+std::string NetworkContentKey(const HdMaterialNetworkMap& networkMap,
+                              const SdfPath& material,
+                              const GfVec3f& fallbackColor)
+{
+    hdclaude::Sha256Builder hash;
+    const auto relative = [&](const SdfPath& path) {
+        return path.MakeRelativePath(material).GetString();
+    };
+    const auto asset = [&](const SdfAssetPath& path) {
+        const std::string& resolved = path.GetResolvedPath();
+        hash.Field(resolved.empty() ? path.GetAssetPath() : resolved);
+    };
+    const auto value = [&](const VtValue& held) {
+        hash.Field(held.GetTypeName());
+        if (held.IsHolding<SdfAssetPath>()) {
+            asset(held.UncheckedGet<SdfAssetPath>());
+            return;
+        }
+        if (held.IsHolding<VtArray<SdfAssetPath>>()) {
+            for (const SdfAssetPath& path :
+                 held.UncheckedGet<VtArray<SdfAssetPath>>()) {
+                asset(path);
+            }
+            return;
+        }
+        hash.Field(TfStringify(held));
+        hash.Value(static_cast<std::uint64_t>(held.GetHash()));
+    };
+
+    for (const auto& [type, network] : networkMap.map) {
+        hash.Field(type.GetString());
+        hash.Value(static_cast<std::uint64_t>(network.nodes.size()));
+        for (const HdMaterialNode& node : network.nodes) {
+            hash.Field(relative(node.path));
+            hash.Field(node.identifier.GetString());
+            hash.Value(static_cast<std::uint64_t>(node.parameters.size()));
+            for (const auto& [name, parameter] : node.parameters) {
+                hash.Field(name.GetString());
+                value(parameter);
+            }
+        }
+        hash.Value(static_cast<std::uint64_t>(network.relationships.size()));
+        for (const HdMaterialRelationship& connection : network.relationships) {
+            hash.Field(relative(connection.inputId));
+            hash.Field(connection.inputName.GetString());
+            hash.Field(relative(connection.outputId));
+            hash.Field(connection.outputName.GetString());
+        }
+        hash.Value(static_cast<std::uint64_t>(network.primvars.size()));
+        for (const TfToken& primvar : network.primvars) {
+            hash.Field(primvar.GetString());
+        }
+    }
+    hash.Value(static_cast<std::uint64_t>(networkMap.terminals.size()));
+    for (const SdfPath& terminal : networkMap.terminals) {
+        hash.Field(relative(terminal));
+    }
+    hash.Value(static_cast<std::uint64_t>(networkMap.config.size()));
+    for (const auto& [name, setting] : networkMap.config) {
+        hash.Field(name);
+        value(setting);
+    }
+    // What a network that cannot be used is shaded with instead.
+    hash.Value(fallbackColor[0]).Value(fallbackColor[1]).Value(fallbackColor[2]);
+    return hdclaude::ToHex(hash.Finish());
+}
+
+/// Compile a generated material, with its kernel, through the process-wide
+/// SPIR-V cache.
+///
+/// The source is the whole translation unit -- MaterialX resolves its includes
+/// during generation and the kernel's are inlined when it is loaded -- so it
+/// keys the entry completely; the generator's identity and the material ABI
+/// revision go in beside it, so a new MaterialX or a changed contract cannot be
+/// served an old module.
+hdclaude::GlslCompileResult CompileMaterialSource(
+    const hdclaude::GlslCompiler& compiler, const std::string& source,
+    const hdclaude::GlslCompileOptions& options)
+{
+    hdclaude::ShaderCacheKey key;
+    key.generatorTarget = "genglsl_pt";
+    key.generatorVersion = mx::getVersionString();
+    key.abiVersion = hdclaude::kMaterialAbiVersion;
+    return compiler.CompileCached(source, options, hdclaude::ProcessShaderCache(),
+                                  key);
+}
 
 /// Node types hdClaude shades through MaterialX.
 ///
@@ -73,6 +177,48 @@ bool IsMaterialXSurface(const TfToken& nodeType)
 /// HdMtlxCreateNameFromPath(hdNodePath), which is the path's last element, and
 /// MaterialX names a sampler uniform after its node and input. Both halves are
 /// public API, so this reproduces the name rather than pattern-matching it.
+/// The asset path a `dot` or `constant` routes to a downstream input, or empty.
+///
+/// The network side of hdclaude::FilenameSource: the nodes MaterialX elides
+/// during generation, followed to the one that holds the path, which USD has
+/// resolved against the layer that authored it.
+std::string RoutedAssetPath(const HdMaterialNetwork2& network, SdfPath nodePath)
+{
+    static const std::map<TfToken, TfToken> kRouting = {
+        {TfToken("ND_dot_filename"), TfToken("in")},
+        {TfToken("ND_constant_filename"), TfToken("value")},
+    };
+
+    // Bounded rather than recursive, as FilenameSource is.
+    for (int hop = 0; hop < 64; ++hop) {
+        const auto node = network.nodes.find(nodePath);
+        if (node == network.nodes.end()) {
+            return std::string();
+        }
+        const auto routing = kRouting.find(node->second.nodeTypeId);
+        if (routing == kRouting.end()) {
+            return std::string();
+        }
+        const auto connection =
+            node->second.inputConnections.find(routing->second);
+        if (connection != node->second.inputConnections.end() &&
+            connection->second.size() == 1) {
+            nodePath = connection->second.front().upstreamNode;
+            continue;
+        }
+        const auto parameter = node->second.parameters.find(routing->second);
+        if (parameter == node->second.parameters.end() ||
+            !parameter->second.IsHolding<SdfAssetPath>()) {
+            return std::string();
+        }
+        const SdfAssetPath& asset =
+            parameter->second.UncheckedGet<SdfAssetPath>();
+        std::string path = asset.GetResolvedPath();
+        return path.empty() ? asset.GetAssetPath() : path;
+    }
+    return std::string();
+}
+
 std::map<std::string, std::string> ResolvedTexturePaths(
     const HdMaterialNetwork2& network, const HdMtlxTexturePrimvarData& mxHdData)
 {
@@ -94,6 +240,28 @@ std::map<std::string, std::string> ResolvedTexturePaths(
             }
             resolved[mx::createValidName(mxNodeName + "_" +
                                          parameter.GetString())] = path;
+        }
+    }
+
+    // An image whose `file` is connected holds no path of its own; a `dot` or
+    // a `constant` upstream does. MaterialX elides those and names the sampler
+    // after the image, so the path is recorded under the image's name. Every
+    // node is visited rather than only hdTextureNodes, since what makes an
+    // input routed is the node upstream of it, not the node it is on.
+    for (const auto& [nodePath, node] : network.nodes) {
+        for (const auto& [input, connections] : node.inputConnections) {
+            if (connections.size() != 1) {
+                continue;
+            }
+            std::string path =
+                RoutedAssetPath(network, connections.front().upstreamNode);
+            if (path.empty()) {
+                continue;
+            }
+            resolved.emplace(
+                mx::createValidName(HdMtlxCreateNameFromPath(nodePath) + "_" +
+                                    input.GetString()),
+                std::move(path));
         }
     }
     return resolved;
@@ -220,7 +388,11 @@ HdClaudeMaterialCompiler::TextureRequest ResolveTexturePath(
                 mx::createValidName(node->getName() + "_" + input->getName());
             if (candidate == uniformName) {
                 HdClaudeMaterialCompiler::TextureRequest request;
-                request.path = input->getResolvedValueString();
+                // Through any `dot` in between, as the generator went through
+                // it when it named this sampler after the image.
+                if (const mx::InputPtr source = hdclaude::FilenameSource(input)) {
+                    request.path = source->getResolvedValueString();
+                }
                 request.colorSpace = ImageColorSpace(node, input);
                 return request;
             }
@@ -469,7 +641,8 @@ void TellGeneratorAboutUdimSets(
             // the two cannot disagree about which image is which.
             const std::string uniform = mx::createValidName(
                 node->getName() + "_" + input->getName());
-            std::string path = input->getResolvedValueString();
+            const mx::InputPtr source = hdclaude::FilenameSource(input);
+            std::string path = source ? source->getResolvedValueString() : "";
             if (resolvedTextures) {
                 const auto found = resolvedTextures->find(uniform);
                 if (found != resolvedTextures->end() && !found->second.empty()) {
@@ -523,6 +696,12 @@ void CollectTexturePaths(
         // itself has.
         HdClaudeMaterialCompiler::TextureRequest request =
             ResolveTexturePath(document, uniform);
+        // The path MaterialX itself baked, for a uniform the document walk
+        // could not tie to an input. It is the authored one, so it stays the
+        // last resort behind both resolved answers.
+        if (request.path.empty()) {
+            request.path = slot.path;
+        }
         if (resolvedTextures) {
             const auto found = resolvedTextures->find(uniform);
             if (found != resolvedTextures->end() && !found->second.empty()) {
@@ -542,13 +721,10 @@ void CollectTexturePaths(
         }
         request.path = SubstituteUdimTile(request.path, tile);
         if (request.path.empty()) {
-            // An image node with no file at all. That is legal and common --
-            // an asset authors the node and leaves the file to a stronger
-            // opinion that never arrives -- and MaterialX says such a node
-            // returns its `default`. The pool turns the empty path into that
-            // value, so this is worth tracing and not worth warning about; a
-            // file that is authored and cannot be read is the case that
-            // deserves to be loud.
+            // Not expected: an `<image>` with no file takes no slot, and its
+            // handle returns the node's `default` in the shader. Should a slot
+            // still arrive without a path, the pool binds a black texel rather
+            // than the magenta that marks a file which could not be read.
             HdClaudeTrace("material %s samples '%s', which no asset path "
                           "backs; it reads the image node's default",
                           name.c_str(), uniform.c_str());
@@ -684,7 +860,7 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
         hdclaude::GlslCompileOptions options;
         options.moduleName = name;
         const hdclaude::GlslCompileResult compiled =
-            _compiler.Compile(source, options);
+            CompileMaterialSource(_compiler, source, options);
         if (!compiled.ok) {
             if (error) *error = "shader compilation failed: " + compiled.log;
             return result;
@@ -777,8 +953,8 @@ bool HdClaudeMaterialCompiler::CompileDisplacement(
 
         hdclaude::GlslCompileOptions options;
         options.moduleName = name + "_displace";
-        const hdclaude::GlslCompileResult compiled =
-            _compiler.Compile(generated + _displaceKernel, options);
+        const hdclaude::GlslCompileResult compiled = CompileMaterialSource(
+            _compiler, generated + _displaceKernel, options);
         if (!compiled.ok) {
             if (error) {
                 *error = "displacement compilation failed: " + compiled.log;
@@ -812,28 +988,23 @@ bool HdClaudeMaterialCompiler::CompileDisplacement(
     return true;
 }
 
-hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDiffuse(
-    const GfVec3f& color, const std::string& name)
+namespace {
+
+/// A diffuse surface material in `document`, returning the BSDF's colour input
+/// for the caller to set or connect, or null when the nodedefs do not resolve.
+///
+/// Built as a MaterialX document, not as a special case in the renderer. Even
+/// the fallback goes through the one shading path, so there is no second code
+/// path to keep correct.
+mx::InputPtr AddDiffuseMaterial(const mx::DocumentPtr& document)
 {
-    std::lock_guard<std::mutex> lock(_mutex);
-    if (!Ready()) {
-        return {};
-    }
-
-    // Built as a MaterialX document, not as a special case in the renderer.
-    // Even the fallback goes through the one shading path, so there is no
-    // second code path to keep correct.
-    mx::DocumentPtr document = mx::createDocument();
-    document->importLibrary(_libraries);
-
     mx::NodePtr bsdf = document->addNode("oren_nayar_diffuse_bsdf",
                                          "hdclaudeFallbackBsdf", "BSDF");
     if (!bsdf || !bsdf->getNodeDef()) {
-        return {};
+        return nullptr;
     }
     bsdf->addInputFromNodeDef("weight")->setValue(1.0f);
-    bsdf->addInputFromNodeDef("color")->setValue(
-        mx::Color3(color[0], color[1], color[2]));
+    mx::InputPtr color = bsdf->addInputFromNodeDef("color");
     bsdf->addInputFromNodeDef("roughness")->setValue(0.0f);
 
     mx::NodePtr surface = document->addNode("surface", "hdclaudeFallbackSurface",
@@ -844,6 +1015,57 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDiffuse(
     mx::NodePtr material = document->addNode("surfacematerial",
                                              "hdclaudeFallbackMaterial", "material");
     material->addInputFromNodeDef("surfaceshader")->setConnectedNode(surface);
+    return color;
+}
+
+}  // namespace
+
+hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDisplayColor(
+    const std::string& name)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (!Ready()) {
+        return {};
+    }
+
+    mx::DocumentPtr document = mx::createDocument();
+    document->importLibrary(_libraries);
+    mx::InputPtr color = AddDiffuseMaterial(document);
+    mx::NodePtr displayColor = document->addNode(
+        "geompropvalue", "hdclaudeDisplayColor", "color3");
+    if (!color || !displayColor || !displayColor->getNodeDef()) {
+        return {};
+    }
+    displayColor->addInputFromNodeDef("geomprop")->setValueString("displayColor");
+    displayColor->addInputFromNodeDef("default")->setValue(
+        mx::Color3(0.5f, 0.5f, 0.5f));
+    color->setConnectedNode(displayColor);
+
+    std::string error;
+    hdclaude::CompiledMaterial compiled = CompileDocument(document, name, &error);
+    if (compiled.spirv.empty() && !error.empty()) {
+        TF_RUNTIME_ERROR("hdClaude: the displayColor material failed to compile: "
+                         "%s",
+                         error.c_str());
+    }
+    return compiled;
+}
+
+hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDiffuse(
+    const GfVec3f& color, const std::string& name)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (!Ready()) {
+        return {};
+    }
+
+    mx::DocumentPtr document = mx::createDocument();
+    document->importLibrary(_libraries);
+    mx::InputPtr input = AddDiffuseMaterial(document);
+    if (!input) {
+        return {};
+    }
+    input->setValue(mx::Color3(color[0], color[1], color[2]));
 
     std::string error;
     hdclaude::CompiledMaterial compiled = CompileDocument(document, name, &error);
@@ -855,6 +1077,35 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDiffuse(
 }
 
 HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::Compile(
+    const HdMaterialNetworkMap& networkMap, const SdfPath& path,
+    const GfVec3f& fallbackColor)
+{
+    const std::string key = NetworkContentKey(networkMap, path, fallbackColor);
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        const auto found = _compiled.find(key);
+        if (found != _compiled.end()) {
+            Result reused = found->second;
+            reused.reused = true;
+            reused.material.debugName = "hdclaude_" + HdMtlxCreateNameFromPath(path);
+            return reused;
+        }
+    }
+
+    // Compiled outside the cache's lock section: CompileUncached takes the same
+    // lock for the generator and glslang, and a second request for this key
+    // arriving meanwhile compiles it again rather than waiting -- wasted work,
+    // never a wrong result.
+    Result result = CompileUncached(networkMap, path, fallbackColor);
+    result.contentKey = key;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _compiled.emplace(key, result);
+    }
+    return result;
+}
+
+HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::CompileUncached(
     const HdMaterialNetworkMap& networkMap, const SdfPath& path,
     const GfVec3f& fallbackColor)
 {

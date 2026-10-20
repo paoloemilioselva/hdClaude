@@ -328,6 +328,9 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
                 << "materialsCompiled "
                 << stages.materialsCompiled.load(std::memory_order_relaxed)
                 << '\n'
+                << "materialsReused "
+                << stages.materialsReused.load(std::memory_order_relaxed)
+                << '\n'
                 << "textureMs "
                 << stages.textureMilliseconds.load(std::memory_order_relaxed)
                 << '\n'
@@ -490,6 +493,21 @@ void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
         } else {
             _store->SetFallbackMaterial(std::move(fallback));
         }
+
+        // And the one material every unbound mesh and curve set shares, up
+        // front for the same reason: it is needed by the first unbound prim,
+        // and Hydra syncs those in parallel, so a lazy compile would be raced
+        // for by every one of them.
+        HdClaudeMaterialEntry displayColor;
+        displayColor.compiled =
+            _materialCompiler->CompileDisplayColor("hdclaude_display_color");
+        if (displayColor.compiled.spirv.empty()) {
+            displayColor.fallbackReason =
+                "the displayColor material did not compile; unbound geometry "
+                "is shaded with the fallback";
+        }
+        _store->PublishMaterial(HdClaudeDisplayColorMaterialPath(),
+                                std::move(displayColor));
         HdClaudeAddMilliseconds(
             _stageStats.startupFallbackMs,
             std::chrono::duration<double, std::milli>(
@@ -1113,6 +1131,8 @@ VtDictionary HdClaudeRenderDelegate::GetRenderStats() const
         VtValue(_stageStats.materialMilliseconds.load(std::memory_order_relaxed));
     stats["materialsCompiled"] = VtValue(
         double(_stageStats.materialsCompiled.load(std::memory_order_relaxed)));
+    stats["materialsReused"] = VtValue(
+        double(_stageStats.materialsReused.load(std::memory_order_relaxed)));
     stats["textureMs"] =
         VtValue(_stageStats.textureMilliseconds.load(std::memory_order_relaxed));
     stats["texturesLoaded"] =

@@ -380,7 +380,8 @@ void main()
     hdclaude_set_surface_hit(point.position, point.shadingNormal, point.tangent,
                              point.bitangent, point.objectPosition,
                              point.objectNormal, point.objectTangent,
-                             point.objectBitangent, point.uv);
+                             point.objectBitangent, point.uv,
+                             instances.values[record.x].displayColor);
     // The path's own hero wavelengths, not a fixed quartet. Nothing reads this
     // yet, which is exactly why it was able to sit here wrong: a closure that
     // needs to know which wavelengths it is being asked about -- a dispersive

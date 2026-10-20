@@ -40,7 +40,50 @@ void HdClaudeSceneStore::RemoveSplats(const SdfPath& id)
 void HdClaudeSceneStore::PublishMaterial(const SdfPath& id, HdClaudeMaterialEntry entry)
 {
     std::lock_guard<std::mutex> lock(_mutex);
+    entry.generation = ++_materialGeneration;
     _materials[id] = std::move(entry);
+    ++_revision;
+}
+
+std::vector<HdClaudePendingMaterial>
+HdClaudeSceneStore::BoundPendingMaterials() const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    // The same meshes Snapshot shades: an invisible or empty mesh binds
+    // nothing yet, and its material is compiled when it is shown.
+    std::set<SdfPath> bound;
+    for (const auto& [path, mesh] : _meshes) {
+        if ((mesh.prototype.indices.empty() && mesh.prototype.segments.empty()) ||
+            !mesh.visible) {
+            continue;
+        }
+        bound.insert(mesh.material);
+        bound.insert(mesh.subsetMaterials.begin(), mesh.subsetMaterials.end());
+    }
+
+    std::vector<HdClaudePendingMaterial> pending;
+    for (const SdfPath& id : bound) {
+        const auto found = _materials.find(id);
+        if (found != _materials.end() && found->second.pending) {
+            pending.push_back(
+                {id, found->second.network, found->second.generation});
+        }
+    }
+    return pending;
+}
+
+void HdClaudeSceneStore::CompletePendingMaterial(const SdfPath& id,
+                                                 std::uint64_t generation,
+                                                 HdClaudeMaterialEntry compiled)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    const auto found = _materials.find(id);
+    if (found == _materials.end() || found->second.generation != generation) {
+        return;
+    }
+    compiled.generation = generation;
+    found->second = std::move(compiled);
     ++_revision;
 }
 
@@ -125,9 +168,24 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
     scene.linkCategoryCount = static_cast<std::uint32_t>(categoryIndex.size());
 
     std::map<SdfPath, std::uint32_t> materialIndex;
+    std::map<std::string, std::uint32_t> sharedIndex;
     for (const auto& [path, entry] : _materials) {
         if (entry.compiled.spirv.empty()) {
             continue;
+        }
+        // A material that compiled from the same network as one already in the
+        // table *is* that material, texture slots included -- the pool keys an
+        // image on its path -- so it takes the same index.
+        if (!entry.shareKey.empty()) {
+            const auto shared = sharedIndex.find(entry.shareKey);
+            if (shared != sharedIndex.end()) {
+                materialIndex[path] = shared->second;
+                HdClaudeTrace("material %u: <%s> (same network)", shared->second,
+                              path.GetText());
+                continue;
+            }
+            sharedIndex.emplace(entry.shareKey,
+                                static_cast<std::uint32_t>(materials.size()));
         }
         materialIndex[path] = static_cast<std::uint32_t>(materials.size());
         // The index a shading dispatch is keyed by, beside the prim it came
@@ -231,6 +289,8 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
             }
             instance.material = material;
             instance.visible = true;
+            std::copy(std::begin(mesh.displayColor), std::end(mesh.displayColor),
+                      std::begin(instance.displayColor));
             if (i < mesh.instanceCategories.size() && !categoryIndex.empty()) {
                 for (const TfToken& token : mesh.instanceCategories[i]) {
                     const auto found = categoryIndex.find(token);

@@ -97,15 +97,6 @@ bool ExtractVectors(const VtValue& value, VtVec3fArray& out)
     return false;
 }
 
-/// Where a mesh's generated displayColor material is published.
-///
-/// A property path, so it can never be mistaken for -- or collide with -- a
-/// material prim the stage actually contains.
-SdfPath DisplayColorMaterialPath(const SdfPath& id)
-{
-    return id.AppendProperty(TfToken("hdClaudeDisplayColor"));
-}
-
 GfVec3f DisplayColor(HdSceneDelegate* delegate, const SdfPath& id)
 {
     // Unbound geometry keeps the colour Hydra supplies rather than becoming a
@@ -481,10 +472,6 @@ void HdClaudeMesh::Finalize(HdRenderParam* renderParam)
 {
     if (auto* param = static_cast<HdClaudeRenderParam*>(renderParam)) {
         param->SceneStore()->RemoveMesh(GetId());
-        // The generated displayColor material, if this mesh made one, dies
-        // with it. Leaving it behind would keep a compiled pipeline alive for
-        // geometry that no longer exists.
-        param->SceneStore()->RemoveMaterial(DisplayColorMaterialPath(GetId()));
     }
 }
 
@@ -1214,27 +1201,16 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     entry.instanceCategories = HdClaudeRprimCategories(
         sceneDelegate, id, GetInstancerId(), entry.transforms.size());
 
-    // --- Unbound geometry -------------------------------------------------------
-    // A mesh with no material binding gets a diffuse material of its own
-    // displayColor, published under a property path so it cannot collide with a
-    // real material prim. It goes through the same MaterialX path as everything
-    // else -- there is no second shading route to keep correct -- and it keeps
-    // an unshaded asset looking like itself rather than uniformly grey.
-    if (entry.material.IsEmpty() && param->MaterialCompiler() != nullptr) {
-        const SdfPath generated = DisplayColorMaterialPath(id);
-        const GfVec3f color = DisplayColor(sceneDelegate, id);
-        if (!param->SceneStore()->HasMaterial(generated) || color != _lastDisplayColor) {
-            HdClaudeMaterialEntry material;
-            material.compiled = param->MaterialCompiler()->CompileDiffuse(
-                color, "hdclaude_" + HdMtlxCreateNameFromPath(generated));
-            if (material.compiled.spirv.empty()) {
-                material.fallbackReason =
-                    "the generated displayColor material did not compile";
-            }
-            param->SceneStore()->PublishMaterial(generated, std::move(material));
-            _lastDisplayColor = color;
-        }
-        entry.material = generated;
+    // --- displayColor and unbound geometry ------------------------------------
+    // Every placement carries the prim's displayColor. A mesh with no material
+    // binding is shaded by the one shared material that reads it, so it keeps
+    // looking like itself rather than uniformly grey -- without a material of
+    // its own: one per colour cost a MaterialX generation, a SPIR-V compile and
+    // a pipeline for every unbound mesh, serialised on the compiler's lock.
+    const GfVec3f color = DisplayColor(sceneDelegate, id);
+    std::copy(color.data(), color.data() + 3, entry.displayColor);
+    if (entry.material.IsEmpty()) {
+        entry.material = HdClaudeDisplayColorMaterialPath();
     }
 
     HdClaudeTrace("mesh <%s>%s: %zu vertices, %zu triangles, %zu instances, "

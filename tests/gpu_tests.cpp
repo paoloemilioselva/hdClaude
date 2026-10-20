@@ -772,7 +772,7 @@ int main()
         context = std::make_unique<VulkanContext>(options);
     } catch (const VulkanError& error) {
         std::printf("SKIP: no usable Vulkan ray-query device (%s)\n", error.what());
-        return 0;
+        return hdclaude_test::kSkipReturnCode;
     }
 
     // R8 in a new disguise: if validation was requested but the layer is

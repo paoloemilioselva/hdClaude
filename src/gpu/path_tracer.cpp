@@ -1,12 +1,14 @@
 #include "hdclaude/gpu/path_tracer.h"
 
 #include "hdclaude/core/hash.h"
+#include "hdclaude/core/shader_cache.h"
 #include "hdclaude/gpu/vertex_frames.h"
 
 #include "hdclaude/gpu/environment_distribution.h"
 #include "hdclaude/core/environment.h"
 #include "hdclaude/core/spectrum.h"
 
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -273,19 +275,21 @@ struct InstanceGeometry {
     /// Which spatial basis function the particles instantiate, matching
     /// `SplatKernel`.
     std::uint32_t splatKernel;
-    /// Explicit, so this struct has no *implicit* padding anywhere.
+    /// The placement's displayColor, read by the shared material for unbound
+    /// geometry.
     ///
-    /// The nine addresses come first and the six words last precisely so that
-    /// nothing has to be inserted between them: 72 + 144 + 24 = 240, a multiple
-    /// of the eight bytes a 64-bit member is aligned to, under C++ and under
-    /// GLSL's scalar block layout alike. Relying on two compilers to insert the
-    /// same invisible bytes in the same places is the kind of agreement that
-    /// holds until it does not, and a disagreement here reads every buffer
-    /// address off by a word.
-    std::uint32_t pad1;
+    /// Also what keeps this struct free of *implicit* padding. The nine
+    /// addresses come first and the words and floats last precisely so that
+    /// nothing has to be inserted between them: 72 + 144 + 20 + 12 = 248, a
+    /// multiple of the eight bytes a 64-bit member is aligned to, under C++ and
+    /// under GLSL's scalar block layout alike. Relying on two compilers to
+    /// insert the same invisible bytes in the same places is the kind of
+    /// agreement that holds until it does not, and a disagreement here reads
+    /// every buffer address off by a word.
+    float displayColor[3];
 };
-static_assert(sizeof(InstanceGeometry) == 240,
-              "InstanceGeometry must be 232 bytes with no implicit padding; "
+static_assert(sizeof(InstanceGeometry) == 248,
+              "InstanceGeometry must be 248 bytes with no implicit padding; "
               "path_state.glsl mirrors this layout member for member");
 
 VulkanBuffer MakeStorage(VulkanAllocator& allocator, VkDeviceSize size,
@@ -492,6 +496,20 @@ std::string LoadKernel(const std::filesystem::path& directory,
     return ResolveKernelIncludes(directory, contents.str());
 }
 
+/// Compile a kernel through the process-wide SPIR-V cache.
+///
+/// Safe to key on the source because LoadKernel has already inlined every
+/// include: the text compiled is the whole translation unit, so an edit to a
+/// shared header is a different key rather than a stale hit.
+GlslCompileResult CompileKernel(const GlslCompiler& compiler,
+                                const std::string& source,
+                                const GlslCompileOptions& options)
+{
+    ShaderCacheKey key;
+    key.generatorTarget = "hdclaude-kernel";
+    return compiler.CompileCached(source, options, ProcessShaderCache(), key);
+}
+
 // ---------------------------------------------------------------------------
 
 PathTracer::PathTracer(const VulkanContext& context, VulkanAllocator& allocator,
@@ -521,7 +539,8 @@ PathTracer::PathTracer(const VulkanContext& context, VulkanAllocator& allocator,
         const std::string source = LoadKernel(_shaderDirectory, name);
         GlslCompileOptions options;
         options.moduleName = name;
-        const GlslCompileResult compiled = _compiler.Compile(source, options);
+        const GlslCompileResult compiled =
+            CompileKernel(_compiler, source, options);
         if (!compiled.ok) {
             throw VulkanError(VK_ERROR_INITIALIZATION_FAILED,
                               std::string("kernel ") + name + " failed:\n" +
@@ -1134,6 +1153,8 @@ void PathTracer::SetScene(const Scene& publishedScene,
                                                   : instance.transform.m,
                     sizeof(entry.previousObjectToWorld));
         entry.material = instance.material;
+        std::memcpy(entry.displayColor, instance.displayColor,
+                    sizeof(entry.displayColor));
         if (instance.prototype < scene.prototypes.size()) {
             entry.uvsPerCorner =
                 scene.prototypes[instance.prototype].uvsPerCorner ? 1u : 0u;
@@ -1794,7 +1815,8 @@ bool PathTracer::EnsureReconstructionImages(
             LoadKernel(_shaderDirectory, "reconstruct_inputs.comp.glsl");
         GlslCompileOptions options;
         options.moduleName = "reconstruct_inputs.comp.glsl";
-        const GlslCompileResult compiled = _compiler.Compile(source, options);
+        const GlslCompileResult compiled =
+            CompileKernel(_compiler, source, options);
         if (!compiled.ok) {
             if (reason != nullptr) {
                 *reason = "reconstruct_inputs.comp.glsl failed:\n" + compiled.log;
@@ -1827,7 +1849,7 @@ bool PathTracer::EnsureReconstructionImages(
         GlslCompileOptions exposureOptions;
         exposureOptions.moduleName = "reconstruct_exposure.comp.glsl";
         const GlslCompileResult exposureCompiled =
-            _compiler.Compile(exposureSource, exposureOptions);
+            CompileKernel(_compiler, exposureSource, exposureOptions);
         if (!exposureCompiled.ok) {
             if (reason != nullptr) {
                 *reason = "reconstruct_exposure.comp.glsl failed:" +

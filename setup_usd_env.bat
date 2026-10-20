@@ -10,9 +10,14 @@ REM SETLOCAL: the variables it sets must survive into the caller.
 REM
 REM Overrides, all optional, all honoured if already set:
 REM   USDROOT                 OpenUSD install root
+REM   MATERIALX_ROOT          MaterialX install root, when it is not inside OpenUSD
 REM   USDEXTRA                install prefix for hdClaude's own plugin
 REM   HDCLAUDE_VALIDATION_LAYER_DIR  directory holding the validation layer
 REM   HDCLAUDE_DLSS_SDK       NVIDIA DLSS SDK root
+REM   HDCLAUDE_SHADER_CACHE   SPIR-V cache directory; unset, the renderer uses
+REM                           shader-cache\ under the directory it was launched from
+REM   HDCLAUDE_PIPELINE_CACHE driver pipeline-cache file; unset, pipeline.cache in
+REM                           the SPIR-V cache directory
 REM   HDCLAUDE_SKIP_PYTHON    set to 1 to skip the Python conformance check
 REM ===========================================================================
 
@@ -168,7 +173,8 @@ REM ---------------------------------------------------------------------------
 REM 7. hdClaude runtime defaults. Only set what is not already set, so a
 REM     caller's explicit choice always wins.
 REM ---------------------------------------------------------------------------
-IF NOT DEFINED HDCLAUDE_SHADER_CACHE SET "HDCLAUDE_SHADER_CACHE=%HDCLAUDE_ROOT%\shader-cache"
-IF NOT DEFINED MATERIALX_SEARCH_PATH SET "MATERIALX_SEARCH_PATH=%HDCLAUDE_ROOT%\mtlx;%USDROOT%\libraries"
+IF NOT DEFINED MATERIALX_ROOT SET "HDCLAUDE_MATERIALX=%USDROOT%"
+IF DEFINED MATERIALX_ROOT SET "HDCLAUDE_MATERIALX=%MATERIALX_ROOT%"
+IF NOT DEFINED MATERIALX_SEARCH_PATH SET "MATERIALX_SEARCH_PATH=%HDCLAUDE_ROOT%\mtlx;%HDCLAUDE_MATERIALX%\libraries"
 
 EXIT /B 0

@@ -14,6 +14,7 @@
 #include "hdclaude/gpu/scene.h"
 
 #include "pxr/base/tf/token.h"
+#include "pxr/imaging/hd/material.h"
 #include "pxr/usd/sdf/path.h"
 
 #include <cstdint>
@@ -47,7 +48,24 @@ struct HdClaudeMeshEntry {
     /// the same order. Empty when the mesh is in no category at all, which is
     /// every mesh of a stage that links nothing.
     std::vector<std::vector<TfToken>> instanceCategories;
+
+    /// The prim's displayColor, given to every one of its placements. What the
+    /// shared material for unbound geometry shades with, and what any material
+    /// reading a `displayColor` geomprop receives.
+    float displayColor[3] = {0.5f, 0.5f, 0.5f};
 };
+
+/// Where the one material for unbound geometry is published.
+///
+/// Every mesh and curve set with no binding shares it, and its colour comes
+/// from each placement's displayColor. A property path, so it can never be
+/// mistaken for -- or collide with -- a material prim the stage contains.
+inline SdfPath HdClaudeDisplayColorMaterialPath()
+{
+    static const SdfPath path =
+        SdfPath("/__hdClaude").AppendProperty(TfToken("displayColorMaterial"));
+    return path;
+}
 
 /// A Gaussian splat cloud as published by its Hydra prim.
 ///
@@ -70,13 +88,39 @@ struct HdClaudeSplatEntry {
     std::vector<std::string> reports;
 };
 
-/// A compiled material, keyed by the path of the Hydra material prim.
+/// A material, keyed by the path of the Hydra material prim.
+///
+/// Published *pending* by Sync and compiled only once something that will be
+/// rendered binds it. Hydra syncs every material in the stage whether or not a
+/// prim uses it, and a stage with material variants carries every variant's
+/// materials; compiling them all, and decoding every texture they name, is
+/// what a material Sync cost before this was lazy.
 struct HdClaudeMaterialEntry {
     hdclaude::CompiledMaterial compiled;
     /// Why this material is not being used as authored, if it is not. Empty
     /// when the authored network compiled. Reported once rather than per
     /// frame, and surfaced through render stats.
     std::string fallbackReason;
+
+    /// The authored network, held while the material is pending and dropped
+    /// once it is compiled.
+    HdMaterialNetworkMap network;
+    /// True from Sync until the material is compiled.
+    bool pending = false;
+    /// Which publication this is, so a compilation finished after the
+    /// material was published again is not mistaken for the current one.
+    std::uint64_t generation = 0;
+    /// The compiled network's content key, or empty. Materials that share one
+    /// share a material index in the snapshot, so the GPU builds one pipeline
+    /// and runs one shading dispatch for all of them rather than one each.
+    std::string shareKey;
+};
+
+/// A pending material something visible binds, ready to be compiled.
+struct HdClaudePendingMaterial {
+    SdfPath id;
+    HdMaterialNetworkMap network;
+    std::uint64_t generation = 0;
 };
 
 /// A light as published by its Hydra prim.
@@ -123,6 +167,20 @@ class HdClaudeSceneStore {
 
     /// True if a material prim of this path has been published.
     bool HasMaterial(const SdfPath& id) const;
+
+    /// Pending materials that a visible mesh, curve or GeomSubset binds.
+    ///
+    /// The bound set is only known here, after every rprim has published: Hydra
+    /// syncs sprims before rprims, so a material at Sync cannot tell whether
+    /// anything will use it. Networks are copied out so the compile runs
+    /// without the store's lock -- a compile is long, and publication from
+    /// other prims must not wait on it.
+    std::vector<HdClaudePendingMaterial> BoundPendingMaterials() const;
+
+    /// Replace a pending material with its compiled form, unless it was
+    /// published again or removed since `generation` was handed out.
+    void CompletePendingMaterial(const SdfPath& id, std::uint64_t generation,
+                                 HdClaudeMaterialEntry compiled);
 
     void PublishLight(const SdfPath& id, HdClaudeLightEntry entry);
     void RemoveLight(const SdfPath& id);
@@ -173,6 +231,7 @@ class HdClaudeSceneStore {
     /// is trying to deliver.
     std::set<SdfPath> _reportedMissingUvs;
     std::map<SdfPath, HdClaudeMaterialEntry> _materials;
+    std::uint64_t _materialGeneration = 0;
     std::map<SdfPath, HdClaudeLightEntry> _lights;
     /// What the last snapshot could not honour across lights, such as two dome
     /// lights linked differently. Reported beside the per-entry reports.

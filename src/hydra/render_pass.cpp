@@ -5,6 +5,7 @@
 #include <cstdlib>
 
 #include "camera.h"
+#include "material.h"
 #include "retessellation_scene_index_plugin.h"
 #include "sphere_scene_index.h"
 
@@ -507,6 +508,15 @@ void HdClaudeRenderPass::_Execute(
         }
     }
 
+    // --- Materials --------------------------------------------------------------
+    //
+    // Compiled here, the first time a visible prim binds them, rather than at
+    // material Sync -- which Hydra runs for every material in the stage, bound
+    // or not. Before the revision is read, so what this compiles is part of the
+    // snapshot below rather than a reason to take another one.
+    HdClaudeCompileBoundMaterials(
+        static_cast<HdClaudeRenderParam*>(_renderDelegate->GetRenderParam()));
+
     Framing framing;
     framing.camera = cameraResult.camera;
     framing.width = width;
@@ -624,9 +634,9 @@ void HdClaudeRenderPass::_Execute(
         hdclaude::Scene scene = store->Snapshot(materials);
 
         // The texture pool is the delegate's, not the store's: it is filled
-        // during material Sync and is shared by every material that names the
-        // same image, so it is copied into the snapshot here rather than
-        // duplicated per material.
+        // as bound materials are compiled and is shared by every material that
+        // names the same image, so it is copied into the snapshot here rather
+        // than duplicated per material.
         if (HdClaudeTexturePool* pool = _renderDelegate->TexturePool()) {
             scene.textures = pool->Images();
         }

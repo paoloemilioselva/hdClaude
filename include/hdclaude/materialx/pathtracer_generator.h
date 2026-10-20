@@ -46,7 +46,7 @@ namespace mx = MaterialX;
 /// Bumped whenever the entry-point signature, the BSDF struct, or the ClosureData
 /// struct changes. It is part of the shader cache key, so a change here
 /// invalidates every cached module by construction rather than by remembering.
-inline constexpr std::uint32_t kMaterialAbiVersion = 2;
+inline constexpr std::uint32_t kMaterialAbiVersion = 3;
 
 /// Name of the generated entry point the `shade` kernel calls.
 inline constexpr const char* kMaterialShadeEntryPoint = "hdclaude_material_shade";
@@ -193,6 +193,10 @@ class PathTracerShaderGenerator : public mx::VkShaderGenerator {
         /// The UDIM tile number, or 0 for an image that is not part of a set.
         /// A set contributes one of these per tile, in ascending tile order.
         int tile = 0;
+        /// The path MaterialX baked into the uniform, as the document authors
+        /// it: unresolved, and with any `<UDIM>` token still in place. Never
+        /// empty -- an `<image>` with no file takes no slot.
+        std::string path;
     };
 
     /// The images this material samples, in the order their array indices were
@@ -201,7 +205,8 @@ class PathTracerShaderGenerator : public mx::VkShaderGenerator {
     /// The caller needs this to know which image belongs at which index, and
     /// taking it from the generator rather than re-deriving it from the shader
     /// means the two orderings cannot drift apart. A UDIM set occupies a
-    /// contiguous run of indices, one per tile that exists.
+    /// contiguous run of indices, one per tile that exists. An `<image>` with
+    /// no file occupies none: its handle says so, and it reads its default.
     const std::vector<TextureSlot>& TextureOrder() const { return _textureOrder; }
 
     /// The UDIM tiles each filename uniform resolves to, keyed by the uniform
@@ -369,6 +374,22 @@ struct DisplacementTerminal {
 DisplacementTerminal AuthoredDisplacement(
     const mx::DocumentPtr& document,
     std::vector<std::string>* diagnostics = nullptr);
+
+/// The input that holds the value a `filename` input reads.
+///
+/// An <image> whose `file` is connected rather than set holds no path of its
+/// own. Assets do this routinely: a material exposes its textures on its
+/// interface and routes each one to its images through `dot` nodes. MaterialX
+/// elides `dot` and `constant` nodes during generation and bakes the value they
+/// carry into a sampler named after the *image* -- `<image>_file` -- so
+/// whatever loads the textures has to make the same walk to find the path.
+///
+/// Follows `dot` and `constant` nodes and nodegraph interface inputs, and
+/// returns the input the value lives on: `input` itself when it is not
+/// connected. Null when the walk ends anywhere else -- a connection to a node
+/// that computes a filename, or a `dot` with nothing behind it -- because no
+/// path can be read from the document there.
+mx::InputPtr FilenameSource(const mx::InputPtr& input);
 
 }  // namespace hdclaude
 
