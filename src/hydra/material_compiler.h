@@ -18,6 +18,7 @@
 #include "hdclaude/gpu/path_tracer.h"
 
 #include <MaterialXCore/Document.h>
+#include <MaterialXFormat/File.h>
 
 #include "pxr/imaging/hd/material.h"
 #include "pxr/usd/sdf/assetPath.h"
@@ -146,6 +147,7 @@ class HdClaudeMaterialCompiler {
     std::string _shadeKernel;
     std::string _displaceKernel;
     hdclaude::GlslCompiler _compiler;
+    MaterialX::FileSearchPath _sourceSearchPath;
     MaterialX::DocumentPtr _libraries;
 };
 
