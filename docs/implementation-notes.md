@@ -7661,3 +7661,35 @@ from Houdini's `usdImaging` plugin and registers its own `HD_CameraAdapter` in
 `SetCameraPath` resolves nothing, the render pass gets an identity projection
 (hdClaude warns of an orthographic camera and draws black), and Storm fails
 with `HdxSimpleLightTask: camera ''`.
+
+## 2026-10-22 -- Camera rays ignored an off-centre projection
+
+Reported from Houdini 22.0: "something is weird with the camera". The cause
+was older than the Houdini build. `raygen` built each camera ray from two
+numbers taken from the host's projection, the vertical field of view and the
+aspect, which describe only a symmetric frustum. A film or aperture offset, a
+window offset, or a viewport framing a camera it does not match puts the
+frustum off-centre. Rays then went beside the pixels the host drew, while the
+depth guide, computed through the full matrix, described where the host
+thought those pixels were. Overlays composited by that depth sat against the
+wrong surfaces.
+
+Rays now unproject each pixel through the inverse of the host's projection
+(`FrameBlock::clipToView`), starting from the eye as before, so nothing that
+was visible is clipped. An orthographic projection keeps its perspective
+stand-in.
+
+`tests/usd/picking.py` now gives its camera an aperture offset of (-3, -2.5)
+mm and refuses probes outside the frame. Every pick is placed through USD's
+own frustum. With the old rays 7 of 9 checks fail; with the new ones all 9
+pass, under the standalone build and under Houdini's USD.
+
+Two more things the Houdini integration had wrong:
+
+- `UsdRenderers.json` set `needsdepth` true. That asks Houdini's OpenGL
+  renderer to produce the depth, for delegates that cannot. hdClaude writes
+  its own, so it is false now.
+- `depthstyle` stays `opengl`. Per the HDK, it means depth in [0, 1], against
+  `normalized` in [-1, 1] and `linear` for distance to the camera. hdClaude's
+  depth is OpenGL window depth through the host's projection, as Storm's is
+  and as usdview's picking expects. It is not inverted.

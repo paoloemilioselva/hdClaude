@@ -40,9 +40,27 @@ void main()
     // here instead would put row 0 at the top and hand every Hydra host an
     // upside-down image, which is what it did until this line was corrected.
     vec2 ndc = uv * 2.0 - 1.0;
-    vec3 directionCamera = normalize(vec3(ndc.x * frame.tanHalfFov * frame.aspect,
-                                          ndc.y * frame.tanHalfFov,
-                                          -1.0));
+
+    // Through the host's own projection, unprojected. A field of view and an
+    // aspect describe only a symmetric frustum, and a host need not hand one:
+    // a window offset, a film offset, or a viewport framing a camera it does
+    // not match all put the frustum off-centre, and a ray built from the two
+    // numbers then lands beside the pixel the host drew there -- and beside
+    // the depth this frame reports for it, which is computed through the full
+    // matrix. Any point on the pixel's line will do, since the ray starts at
+    // the eye; NDC z = 0 is well inside the frustum and well conditioned.
+    vec3 directionCamera;
+    if (frame.unprojectCameraRays != 0u)
+    {
+        vec4 onLine = frame.clipToView * vec4(ndc, 0.0, 1.0);
+        directionCamera = normalize(onLine.xyz / onLine.w);
+    }
+    else
+    {
+        directionCamera = normalize(vec3(ndc.x * frame.tanHalfFov * frame.aspect,
+                                         ndc.y * frame.tanHalfFov,
+                                         -1.0));
+    }
 
     vec3 origin = (frame.cameraToWorld * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
     vec3 direction = normalize((frame.cameraToWorld * vec4(directionCamera, 0.0)).xyz);

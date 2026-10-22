@@ -139,7 +139,8 @@ if(HDCLAUDE_ENABLE_MATERIALX)
             "usd_cull_volumes|cull_volume_equivalence"
             "usd_implicit_surfaces|implicit_surfaces"
             "usd_texture_quality|texture_quality"
-            "usd_picking|picking")
+            "usd_picking|picking"
+            "usd_houdini_parameters|houdini_parameters")
       string(REPLACE "|" ";" _usd_test "${_usd_test}")
       list(GET _usd_test 0 _name)
       list(GET _usd_test 1 _script)

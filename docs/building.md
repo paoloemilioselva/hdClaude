@@ -233,6 +233,19 @@ does not load there.
   found. `HDCLAUDE_HOUDINI_USER_DIR` overrides it. Configure prints the
   directory it chose. To check what Houdini loads, run `hconfig -ap` from a
   shell without `HOME` set: Houdini prefers `$HOME`, and Git Bash sets it.
+- **Settings.** `soho/parameters/HdClaudeRendererPlugin_Viewport.ds` puts
+  the delegate's settings in the viewport's Display Options, and
+  `HdClaudeRendererPlugin_Global.ds` puts them in the Render Settings LOP,
+  which authors them on the RenderSettings prim for husk. Houdini finds both
+  by the plugin's name. They are generated from the delegate's own setting
+  descriptors by `scripts/generate_houdini_parameters.py`, and the
+  `usd_houdini_parameters` test fails when they are stale. Run the script
+  after adding or changing a setting; it also refuses a setting it has not
+  been told which folder to put in.
+- **Depth.** `UsdRenderers.json` declares `depthstyle` `opengl`: depth in
+  [0, 1] through the host's projection, which is what the `depth` AOV holds
+  for every host. `needsdepth` is false: true would ask Houdini to
+  rasterise depth itself instead of using hdClaude's.
 - **No tests and no tools.** The test and gallery scripts run against the
   standalone OpenUSD, so the preset turns `BUILD_TESTING` off and skips the
   image tools.

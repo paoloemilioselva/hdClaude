@@ -158,6 +158,11 @@ if(HDCLAUDE_HOUDINI_VERSION)
                  "${CMAKE_BINARY_DIR}/houdini/hdClaude.json" @ONLY)
   install(FILES "${CMAKE_SOURCE_DIR}/resources/houdini/UsdRenderers.json"
       DESTINATION ".")
+  # The delegate's settings as Houdini parameters: the viewport's Display
+  # Options and the Render Settings LOP. Generated, and checked by the
+  # usd_houdini_parameters test (scripts/generate_houdini_parameters.py).
+  install(DIRECTORY "${CMAKE_SOURCE_DIR}/resources/houdini/soho"
+      DESTINATION ".")
   install(FILES "${CMAKE_BINARY_DIR}/houdini/hdClaude.json"
       DESTINATION "${HDCLAUDE_HOUDINI_USER_PREF_DIR}/packages")
 endif()

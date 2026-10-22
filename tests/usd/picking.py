@@ -14,6 +14,9 @@ the installed plugin, at the projected centre of each object:
                 seen, not what the BVH holds.
   miss          The sky picks nothing.
 
+The camera's frustum is off-centre, so every one of these also checks that
+camera rays follow the host's projection.
+
 Usage: python picking.py <output directory>
 Runs in the OpenUSD environment with the hdClaude plugin installed, like
 cull_volume_equivalence.py, and tests what compile.py last installed. Needs
@@ -44,6 +47,12 @@ def make_stage(path):
     cam.CreateFocalLengthAttr(35.0)
     cam.CreateHorizontalApertureAttr(36.0)
     cam.CreateVerticalApertureAttr(24.0)
+    # Off-centre, as a film offset or a host's window makes a frustum. Every
+    # pick below is placed through USD's own frustum, so it finds its object
+    # only if camera rays honour the whole projection rather than a field of
+    # view and an aspect, which describe only a centred frustum.
+    cam.CreateHorizontalApertureOffsetAttr(-3.0)
+    cam.CreateVerticalApertureOffsetAttr(-2.5)
 
     UsdLux.DomeLight.Define(stage, "/sky").CreateIntensityAttr(1.0)
 
@@ -59,8 +68,8 @@ def make_stage(path):
     tile.CreateSizeAttr(0.6)
     row.CreatePrototypesRel().SetTargets([tile.GetPath()])
     row.CreateProtoIndicesAttr([0, 0, 0])
-    row.CreatePositionsAttr([Gf.Vec3f(1.5, -2.2, 0.0), Gf.Vec3f(3.0, -2.2, 0.0),
-                             Gf.Vec3f(4.5, -2.2, 0.0)])
+    row.CreatePositionsAttr([Gf.Vec3f(0.5, -2.2, 0.0), Gf.Vec3f(2.0, -2.2, 0.0),
+                             Gf.Vec3f(3.5, -2.2, 0.0)])
 
     # The wall stands in front of the hidden sphere, both centred on one ray
     # from the camera, and the volume encloses the wall and not the sphere.
@@ -144,6 +153,11 @@ def main():
 
     def pick(world):
         ndc = to_ndc.Transform(Gf.Vec3d(*world))
+        # A probe off the image would pass a miss and fail a hit for reasons
+        # that have nothing to do with picking.
+        if abs(ndc[0]) > 0.95 or abs(ndc[1]) > 0.95:
+            raise RuntimeError("probe %s is outside the frame (NDC %.3f %.3f)"
+                               % (world, ndc[0], ndc[1]))
         narrowed = frustum.ComputeNarrowedFrustum(
             Gf.Vec2d(ndc[0], ndc[1]), Gf.Vec2d(1.0 / WIDTH, 1.0 / HEIGHT))
         result = engine.TestIntersection(narrowed.ComputeViewMatrix(),
@@ -160,12 +174,12 @@ def main():
         ("prim: sphere", (0.0, 0.0, 0.8), ("/World/Ball", "", None)),
         ("cull volume: the sphere behind the culled wall",
          (3.0, 1.5, 2.0), ("/World/Hidden", "", None)),
-        ("miss: sky", (-3.0, 2.8, 0.0), None),
+        ("miss: sky", (-1.0, 2.2, 0.0), None),
     ]
     for name, x in (("PegA", -4.4), ("PegB", -2.0)):
         checks.append(("native instance " + name, (x, -2.2, 0.35),
                        ("/World/%s/Geom" % name, None, None)))
-    for index, x in enumerate((1.5, 3.0, 4.5)):
+    for index, x in enumerate((0.5, 2.0, 3.5)):
         checks.append(("instance %d" % index, (x, -2.2, 0.3),
                        ("/World/Row/Prototypes/Tile", "/World/Row", index)))
 
