@@ -37,6 +37,7 @@ bool HdClaudeRenderBuffer::Allocate(const GfVec3i& dimensions, HdFormat format,
     _data.assign(static_cast<std::size_t>(_width) * _height *
                      HdDataSizeOfFormat(format),
                  0);
+    _written = false;
     return true;
 }
 
@@ -48,6 +49,7 @@ void HdClaudeRenderBuffer::_Deallocate()
     _data.clear();
     _data.shrink_to_fit();
     _converged = false;
+    _written = false;
     _mappers.store(0);
 }
 
@@ -56,6 +58,7 @@ void HdClaudeRenderBuffer::Clear(const float* value)
     if (_data.empty() || value == nullptr) {
         return;
     }
+    _written = true;
     const size_t componentCount = HdGetComponentCount(_format);
     const HdFormat component = HdGetComponentFormat(_format);
     const size_t pixelSize = HdDataSizeOfFormat(_format);
@@ -93,14 +96,21 @@ void HdClaudeRenderBuffer::Clear(const float* value)
     }
 }
 
-void HdClaudeRenderBuffer::WriteScalar(const std::vector<float>& values)
+bool HdClaudeRenderBuffer::WriteScalar(const std::vector<float>& values)
 {
     const size_t pixels = static_cast<size_t>(_width) * _height;
     if (pixels == 0 || values.size() < pixels) {
-        return;
+        return true;
     }
     const HdFormat component = HdGetComponentFormat(_format);
+    if (component != HdFormatFloat32 && component != HdFormatFloat16 &&
+        component != HdFormatUNorm8 && component != HdFormatFloat32UInt8) {
+        // Left at its clear value rather than filled with something
+        // plausible, and the caller told.
+        return false;
+    }
     const size_t pixelSize = HdDataSizeOfFormat(_format);
+    _written = true;
 
     for (size_t i = 0; i < pixels; ++i) {
         char* destination = _data.data() + i * pixelSize;
@@ -109,23 +119,27 @@ void HdClaudeRenderBuffer::WriteScalar(const std::vector<float>& values)
             case HdFormatFloat32:
                 std::memcpy(destination, &value, sizeof(float));
                 break;
+            case HdFormatFloat32UInt8: {
+                // Depth first, then the stencil, which nothing here draws.
+                std::memcpy(destination, &value, sizeof(float));
+                std::memset(destination + sizeof(float), 0,
+                            pixelSize - sizeof(float));
+                break;
+            }
             case HdFormatFloat16: {
                 const GfHalf half(value);
                 std::memcpy(destination, &half, sizeof(GfHalf));
                 break;
             }
-            case HdFormatUNorm8: {
+            default: {
                 const auto quantised = static_cast<unsigned char>(
                     std::clamp(value, 0.0f, 1.0f) * 255.0f + 0.5f);
                 std::memcpy(destination, &quantised, sizeof(unsigned char));
                 break;
             }
-            default:
-                // A format this does not know how to fill is left at its clear
-                // value rather than filled with something plausible.
-                return;
         }
     }
+    return true;
 }
 
 void HdClaudeRenderBuffer::WriteData(const std::vector<float>& values,
@@ -142,6 +156,7 @@ void HdClaudeRenderBuffer::WriteData(const std::vector<float>& values,
     if (component != HdFormatFloat32 && component != HdFormatFloat16) {
         return;
     }
+    _written = true;
     const size_t pixelSize = HdDataSizeOfFormat(_format);
 
     for (size_t i = 0; i < pixels; ++i) {
@@ -169,6 +184,7 @@ void HdClaudeRenderBuffer::WriteIds(const std::vector<std::int32_t>& values,
         HdGetComponentFormat(_format) != HdFormatInt32) {
         return;
     }
+    _written = true;
     const size_t pixelSize = HdDataSizeOfFormat(_format);
     for (size_t i = 0; i < pixels; ++i) {
         std::memcpy(_data.data() + i * pixelSize, &values[i * stride + offset],
@@ -185,6 +201,7 @@ void HdClaudeRenderBuffer::Write(const std::vector<float>& linearRgba)
     const size_t componentCount =
         std::min<size_t>(4, HdGetComponentCount(_format));
     const HdFormat component = HdGetComponentFormat(_format);
+    _written = true;
     const size_t pixelSize = HdDataSizeOfFormat(_format);
 
     for (size_t i = 0; i < pixels; ++i) {

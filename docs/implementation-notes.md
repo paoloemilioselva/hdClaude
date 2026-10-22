@@ -7746,3 +7746,49 @@ surfaces to within 1e-5 window depth (8e-5 on the tessellated sphere).
 hdClaude's differ by up to 1e-4 when compared at the pick's corner, because
 its depth comes from a jittered point inside the pixel. That is why the test
 compares against the pixel's footprint and not a single point.
+
+## 2026-10-23 -- Houdini's tumble pivot landed on the camera
+
+Reported from Houdini 22.0: with "set pivot on hit", tumbling turned about
+the camera itself, as though the depth under the cursor were at the eye.
+A depth of 0 decodes to the near plane, which is a few hundredths of a unit
+in front of the eye. The question was how a host could read 0 from
+hdClaude. There were four ways, and none of them was reported:
+
+1. **A finished frame wrote nothing.** `_Execute` returned on
+   `_samplesCompleted >= _targetSamples` before any AOV write. A buffer the
+   host bound or reallocated after that kept its allocation, which is zeros.
+   Reproduced with usdview's engine: converge, switch the viewer's AOV to
+   `normal` and back, which makes `HdxTaskController` replace every buffer,
+   then pick. The pick lands 0.050 from the eye, the near-clip distance.
+   Now each `HdClaudeRenderBuffer` knows whether it holds a frame
+   (`HoldsNoFrame`). The pass keeps the last frame it wrote (`_shown`) and
+   writes it, on the finished path, into any buffer that does not.
+2. **A depth binding had to be named exactly `depth`.** Hydra identifies
+   depth by suffix (`HdAovHasDepthSemantic`, and `HdAovHasDepthStencilSemantic`
+   for depth-stencil), so a host may name it otherwise. The pass now
+   matches by suffix.
+3. **A depth-stencil buffer (`HdFormatFloat32UInt8`) was not written.**
+   `WriteScalar` returned silently for any format it did not know. It now
+   writes depth with a zero stencil, returns false for a format it cannot
+   fill, and the pass warns, naming the binding and its format.
+4. **A buffer another delegate created** was skipped silently. It now gets
+   a warning.
+
+A related gap turned up while testing. `Framing`, which decides when the
+film starts again, compared the camera's position and field of view but
+not its projection. An off-centre shift, a new near or far plane, or an
+orthographic zoom left the old frame, and its depth, in place. It now
+compares `worldToClip` and `orthographicHalfHeight` as well.
+
+`tests/usd/depth.py` covers both. It probes the perspective camera again
+after its buffers are replaced, and the orthographic camera after a zoom.
+Under Houdini's USD, the previous build fails all 268 and all 210 of those
+probes, and the fixed build passes them all.
+
+Which of the four Houdini actually hits is not known: this machine has no
+Houdini licence to watch it. With `HDCLAUDE_TRACE=1` the pass now prints
+the host's bindings whenever they change (name, format, extent, and whether
+each is an hdClaude buffer), and for every depth write the centre pixel's
+depth, the nearest depth, and whether the write went to a buffer bound
+after the frame finished.

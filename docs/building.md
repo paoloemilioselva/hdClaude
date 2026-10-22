@@ -247,7 +247,11 @@ does not load there.
   for every host. `needsdepth` is false: true would ask Houdini to
   rasterise depth itself instead of using hdClaude's. The `usd_depth` test
   decodes it as usdview does, for a perspective and an orthographic camera
-  (Houdini's Top, Front and Side views are orthographic).
+  (Houdini's Top, Front and Side views are orthographic), and after buffers
+  are replaced on a finished frame, which is what put Houdini's tumble pivot
+  on the camera. If the pivot is still wrong, start Houdini with
+  `HDCLAUDE_TRACE=1`: it prints the AOVs Houdini binds and the depth each
+  frame writes.
 - **No tests and no tools.** The test and gallery scripts run against the
   standalone OpenUSD, so the preset turns `BUILD_TESTING` off and skips the
   image tools.

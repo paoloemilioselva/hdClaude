@@ -18,7 +18,9 @@
 #include "trace.h"
 
 #include "pxr/base/tf/diagnostic.h"
+#include "pxr/base/tf/enum.h"
 #include "pxr/base/tf/getenv.h"
+#include "pxr/imaging/hd/aov.h"
 #include "pxr/imaging/hd/changeTracker.h"
 #include "pxr/imaging/hd/renderIndex.h"
 #include "pxr/imaging/hd/renderPassState.h"
@@ -153,6 +155,130 @@ bool ParsePreset(const std::string& value, hdclaude::ReconstructionPreset* out)
     return true;
 }
 
+/// The AOVs a pass writes, as the host bound them.
+struct BoundAovs {
+    HdClaudeRenderBuffer* color = nullptr;
+    HdClaudeRenderBuffer* depth = nullptr;
+    TfToken depthName;
+    HdClaudeRenderBuffer* normal = nullptr;
+    HdClaudeRenderBuffer* roughness = nullptr;
+    HdClaudeRenderBuffer* diffuseAlbedo = nullptr;
+    HdClaudeRenderBuffer* specularAlbedo = nullptr;
+    HdClaudeRenderBuffer* primId = nullptr;
+    HdClaudeRenderBuffer* instanceId = nullptr;
+    HdClaudeRenderBuffer* elementId = nullptr;
+};
+
+/// Writes one finished frame -- its image already exposed -- into the bound
+/// AOVs. With `onlyEmpty`, only into buffers that hold no frame yet: a
+/// frame that has finished is not written again into buffers that have it.
+void WriteFrame(const BoundAovs& aovs, const hdclaude::FrameResult& frame,
+                unsigned int width, unsigned int height, bool onlyEmpty)
+{
+    const auto wants = [onlyEmpty](HdClaudeRenderBuffer* buffer) {
+        return buffer != nullptr && (!onlyEmpty || buffer->HoldsNoFrame());
+    };
+    const std::vector<float>& image = frame.image;
+    if (wants(aovs.color)) {
+        aovs.color->Write(image);
+    }
+    // Depth only when a host asked for it, and untouched on the way: it is a
+    // geometric measurement rather than a picture, so no exposure and no
+    // transfer function apply to it.
+    //
+    // And only when it describes the same grid as the colour AOV. An upscaling
+    // reconstruction traces smaller than it outputs, so the depth guide is at
+    // `renderWidth` x `renderHeight` while the buffer is at the output extent;
+    // writing one into the other reads a correct buffer at the wrong stride.
+    // The guide is real and correct, it is simply not an AOV at this size, so
+    // it is withheld rather than stretched into place.
+    // The reconstruction guides follow depth's rule for the same reason: they
+    // describe the traced grid, so they are written only where that is the
+    // buffer's grid.
+    if (frame.renderWidth == width && frame.renderHeight == height) {
+        if (wants(aovs.normal)) {
+            aovs.normal->WriteData(frame.normalRoughness, 4, 0);
+        }
+        if (wants(aovs.roughness)) {
+            aovs.roughness->WriteData(frame.normalRoughness, 4, 3);
+        }
+        if (wants(aovs.diffuseAlbedo)) {
+            aovs.diffuseAlbedo->WriteData(frame.diffuseAlbedo, 3, 0);
+        }
+        if (wants(aovs.specularAlbedo)) {
+            aovs.specularAlbedo->WriteData(frame.specularAlbedo, 3, 0);
+        }
+        // The picking AOVs. A host such as usdview binds them beside colour
+        // and depth, and reads them back when the user clicks: the prim id
+        // names the rprim through the render index, and the instance id which
+        // of its instances.
+        if (wants(aovs.primId)) {
+            aovs.primId->WriteIds(frame.pick, 2, 0);
+        }
+        if (wants(aovs.instanceId)) {
+            aovs.instanceId->WriteIds(frame.pick, 2, 1);
+        }
+    }
+    // Faces are not tracked through triangulation and refinement, so no pixel
+    // names one. -1, the AOV's clear value, says that; the zero a fresh buffer
+    // holds would name face 0 of whatever was hit.
+    if (wants(aovs.elementId)) {
+        const float none = -1.0f;
+        aovs.elementId->Clear(&none);
+    }
+    if (wants(aovs.depth) && !frame.depth.empty()) {
+        if (frame.renderWidth == width && frame.renderHeight == height) {
+            if (!aovs.depth->WriteScalar(frame.depth)) {
+                static bool warnedDepthFormat = false;
+                if (!warnedDepthFormat) {
+                    warnedDepthFormat = true;
+                    TF_WARN(
+                        "hdClaude: the depth AOV <%s> is bound as %s, which "
+                        "hdClaude cannot write; it keeps its allocation, "
+                        "which a host reads as a surface on the near plane.",
+                        aovs.depthName.GetText(),
+                        TfEnum::GetName(aovs.depth->GetFormat()).c_str());
+                }
+            } else if (HdClaudeTraceEnabled()) {
+                // What a host reading depth under its cursor will find: the
+                // centre pixel, and the nearest surface anywhere.
+                float nearest = 1.0f;
+                std::size_t covered = 0;
+                for (float value : frame.depth) {
+                    if (value < 1.0f) {
+                        nearest = std::min(nearest, value);
+                        ++covered;
+                    }
+                }
+                const std::size_t centre =
+                    static_cast<std::size_t>(height / 2) * width + width / 2;
+                HdClaudeTrace(
+                    "depth <%s> %s: centre %.7f, nearest %.7f, %.1f%% of "
+                    "pixels on a surface%s",
+                    aovs.depthName.GetText(),
+                    TfEnum::GetName(aovs.depth->GetFormat()).c_str(),
+                    frame.depth[centre], nearest,
+                    100.0 * static_cast<double>(covered) /
+                        static_cast<double>(frame.depth.size()),
+                    onlyEmpty ? ", into a buffer bound after the frame "
+                                "finished"
+                              : "");
+            }
+        } else {
+            static bool warnedDepthExtent = false;
+            if (!warnedDepthExtent) {
+                warnedDepthExtent = true;
+                TF_WARN(
+                    "hdClaude: the depth AOV, and with it the picking AOVs, "
+                    "are not written while reconstruction upscales -- the "
+                    "frame was traced at %ux%u and the buffer is %ux%u. Use "
+                    "the DLAA mode, which traces at the output extent.",
+                    frame.renderWidth, frame.renderHeight, width, height);
+            }
+        }
+    }
+}
+
 }  // namespace
 
 bool HdClaudeRenderPass::Framing::operator==(const Framing& other) const
@@ -163,8 +289,15 @@ bool HdClaudeRenderPass::Framing::operator==(const Framing& other) const
            settingsVersion == other.settingsVersion &&
            std::memcmp(camera.cameraToWorld, other.camera.cameraToWorld,
                        sizeof(camera.cameraToWorld)) == 0 &&
+           // The whole projection, and not only the field of view it
+           // implies: an off-centre shift, a new near or far plane and an
+           // orthographic zoom change nothing else, and each changes every
+           // pixel's ray or depth.
+           std::memcmp(camera.worldToClip, other.camera.worldToClip,
+                       sizeof(camera.worldToClip)) == 0 &&
            camera.tanHalfFov == other.camera.tanHalfFov &&
-           camera.aspect == other.camera.aspect;
+           camera.aspect == other.camera.aspect &&
+           camera.orthographicHalfHeight == other.camera.orthographicHalfHeight;
 }
 
 HdClaudeRenderPass::HdClaudeRenderPass(HdRenderIndex* index,
@@ -201,17 +334,36 @@ void HdClaudeRenderPass::_Execute(
     HdClaudeRenderBuffer* elementIdBuffer = nullptr;
     const HdRenderPassAovBindingVector& bindings =
         renderPassState->GetAovBindings();
+    TfToken depthName;
     for (const HdRenderPassAovBinding& binding : bindings) {
         auto* buffer = dynamic_cast<HdClaudeRenderBuffer*>(binding.renderBuffer);
         if (!buffer) {
+            // A buffer hdClaude did not create, which it has no way to fill.
+            // Said rather than skipped: a host reading it gets its own
+            // allocation back, and a depth of zero is a surface at the eye.
+            static bool warnedForeignBuffer = false;
+            if (!warnedForeignBuffer) {
+                warnedForeignBuffer = true;
+                TF_WARN("hdClaude: the AOV binding \"%s\" holds %s, not a "
+                        "render buffer this delegate created; it is not "
+                        "written",
+                        binding.aovName.GetText(),
+                        binding.renderBuffer ? "a buffer of another delegate"
+                                             : "no buffer");
+            }
             continue;
         }
         buffer->SetConverged(false);
         if (binding.aovName == HdAovTokens->color) {
             colorBuffer = buffer;
             colorBinding = &binding;
-        } else if (binding.aovName == HdAovTokens->depth) {
+        } else if (HdAovHasDepthSemantic(binding.aovName) ||
+                   HdAovHasDepthStencilSemantic(binding.aovName)) {
+            // By suffix, which is how Hydra identifies a depth binding
+            // (HdRenderPassAovBinding::aovName): a host need not call it
+            // exactly "depth".
             depthBuffer = buffer;
+            depthName = binding.aovName;
         } else if (binding.aovName == HdAovTokens->normal) {
             normalBuffer = buffer;
         } else if (binding.aovName == _tokens->roughness) {
@@ -260,6 +412,40 @@ void HdClaudeRenderPass::_Execute(
     };
 
     HdClaudeTrace("execute: %zu aov bindings", bindings.size());
+    if (HdClaudeTraceEnabled()) {
+        // What the host bound, said when it changes: the AOVs a host reads
+        // are the ones it binds, under the names and formats it chose.
+        std::string described;
+        for (const HdRenderPassAovBinding& binding : bindings) {
+            const HdRenderBuffer* buffer = binding.renderBuffer;
+            char line[256];
+            std::snprintf(
+                line, sizeof(line), " \"%s\" %s %ux%u%s;",
+                binding.aovName.GetText(),
+                buffer ? TfEnum::GetName(buffer->GetFormat()).c_str() : "-",
+                buffer ? buffer->GetWidth() : 0u,
+                buffer ? buffer->GetHeight() : 0u,
+                dynamic_cast<const HdClaudeRenderBuffer*>(buffer)
+                    ? ""
+                    : " (not an hdClaude buffer)");
+            described += line;
+        }
+        if (described != _tracedBindings) {
+            _tracedBindings = described;
+            HdClaudeTrace("aov bindings:%s", described.c_str());
+        }
+    }
+    BoundAovs bound;
+    bound.color = colorBuffer;
+    bound.depth = depthBuffer;
+    bound.depthName = depthName;
+    bound.normal = normalBuffer;
+    bound.roughness = roughnessBuffer;
+    bound.diffuseAlbedo = diffuseAlbedoBuffer;
+    bound.specularAlbedo = specularAlbedoBuffer;
+    bound.primId = primIdBuffer;
+    bound.instanceId = instanceIdBuffer;
+    bound.elementId = elementIdBuffer;
 
     hdclaude::PathTracer* tracer = _renderDelegate->PathTracer();
     HdClaudeSceneStore* store = _renderDelegate->SceneStore();
@@ -736,6 +922,12 @@ void HdClaudeRenderPass::_Execute(
     }
 
     if (_samplesCompleted >= _targetSamples) {
+        // Finished, but a buffer bound or reallocated since still has to be
+        // given the frame. Left alone it reads as its allocation, and a
+        // depth of zero puts the surface under every pixel at the eye.
+        if (_hasShown && _shown.width == width && _shown.height == height) {
+            WriteFrame(bound, _shown, width, height, /*onlyEmpty=*/true);
+        }
         markConverged(true);
         return;
     }
@@ -985,69 +1177,12 @@ void HdClaudeRenderPass::_Execute(
         }
     }
 
-    if (colorBuffer != nullptr) {
-        colorBuffer->Write(image);
-    }
-    // Depth only when a host asked for it, and untouched on the way: it is a
-    // geometric measurement rather than a picture, so no exposure and no
-    // transfer function apply to it.
-    //
-    // And only when it describes the same grid as the colour AOV. An upscaling
-    // reconstruction traces smaller than it outputs, so the depth guide is at
-    // `renderWidth` x `renderHeight` while the buffer is at the output extent;
-    // writing one into the other reads a correct buffer at the wrong stride.
-    // The guide is real and correct, it is simply not an AOV at this size, so
-    // it is withheld rather than stretched into place.
-    // The reconstruction guides follow depth's rule for the same reason: they
-    // describe the traced grid, so they are written only where that is the
-    // buffer's grid.
-    if (frame.renderWidth == width && frame.renderHeight == height) {
-        if (normalBuffer != nullptr) {
-            normalBuffer->WriteData(frame.normalRoughness, 4, 0);
-        }
-        if (roughnessBuffer != nullptr) {
-            roughnessBuffer->WriteData(frame.normalRoughness, 4, 3);
-        }
-        if (diffuseAlbedoBuffer != nullptr) {
-            diffuseAlbedoBuffer->WriteData(frame.diffuseAlbedo, 3, 0);
-        }
-        if (specularAlbedoBuffer != nullptr) {
-            specularAlbedoBuffer->WriteData(frame.specularAlbedo, 3, 0);
-        }
-        // The picking AOVs. A host such as usdview binds them beside colour
-        // and depth, and reads them back when the user clicks: the prim id
-        // names the rprim through the render index, and the instance id which
-        // of its instances.
-        if (primIdBuffer != nullptr) {
-            primIdBuffer->WriteIds(frame.pick, 2, 0);
-        }
-        if (instanceIdBuffer != nullptr) {
-            instanceIdBuffer->WriteIds(frame.pick, 2, 1);
-        }
-    }
-    // Faces are not tracked through triangulation and refinement, so no pixel
-    // names one. -1, the AOV's clear value, says that; the zero a fresh buffer
-    // holds would name face 0 of whatever was hit.
-    if (elementIdBuffer != nullptr) {
-        const float none = -1.0f;
-        elementIdBuffer->Clear(&none);
-    }
-    if (depthBuffer != nullptr && !frame.depth.empty()) {
-        if (frame.renderWidth == width && frame.renderHeight == height) {
-            depthBuffer->WriteScalar(frame.depth);
-        } else {
-            static bool warnedDepthExtent = false;
-            if (!warnedDepthExtent) {
-                warnedDepthExtent = true;
-                TF_WARN(
-                    "hdClaude: the depth AOV, and with it the picking AOVs, "
-                    "are not written while reconstruction upscales -- the "
-                    "frame was traced at %ux%u and the buffer is %ux%u. Use "
-                    "the DLAA mode, which traces at the output extent.",
-                    frame.renderWidth, frame.renderHeight, width, height);
-            }
-        }
-    }
+    WriteFrame(bound, frame, width, height, /*onlyEmpty=*/false);
+    // Kept, so a buffer the host binds or reallocates after the frame has
+    // finished can still be given it.
+    _shown = std::move(frame);
+    _hasShown = true;
+
     // Taken from the tracer rather than accumulated here: it counts them on
     // the device and reads them back once, and a total kept on this side would
     // be a second answer to the same question.

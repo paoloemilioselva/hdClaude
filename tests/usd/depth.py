@@ -17,6 +17,16 @@ hdClaude draws them exactly -- for two cameras:
   orthographic   which has no eye: rays start on the near plane and are
                  parallel, and depth is linear in distance
 
+Each camera is probed again after a change a viewer makes to a finished
+frame:
+
+  buffers replaced   the perspective frame, after the viewer's AOV is
+                     switched away and back, which replaces every buffer;
+                     a finished frame must still be written into the new
+                     ones, whose zeros would put every pick at the eye
+  zoomed             the orthographic camera made smaller, which changes
+                     only the projection and must start the frame again
+
 The decoded depth must lie within the range the analytic surface takes
 across that pixel, since the frame traces jittered points inside it. Pixels
 that straddle two surfaces are left out; so are probes Hydra resolves to a
@@ -152,74 +162,97 @@ def check_camera(stage, camera_path):
     params = UsdImagingGL.RenderParams()
     params.enableLighting = True
     root = stage.GetPseudoRoot()
-    for _ in range(200):
-        engine.Render(root, params)
-        if engine.IsConverged():
-            break
 
-    frustum = UsdGeom.Camera(stage.GetPrimAtPath(camera_path)).GetCamera(
-        Usd.TimeCode.Default()).frustum
-    world_to_clip = frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix()
+    def probe(label):
+        """Renders until converged and probes that frame's depth."""
+        for _ in range(200):
+            engine.Render(root, params)
+            if engine.IsConverged():
+                break
 
-    def surface_at(x, y):
-        """Analytic (prim, window depth) at window position x, y in pixels."""
-        ray = frustum.ComputePickRay(Gf.Vec2d(2.0 * x / WIDTH - 1.0,
-                                              2.0 * y / HEIGHT - 1.0))
-        t, prim = nearest_hit(ray)
-        if prim is None:
-            return None, None
-        clip = world_to_clip.Transform(ray.startPoint + ray.direction * t)
-        return prim, (clip[2] + 1.0) * 0.5
+        frustum = UsdGeom.Camera(stage.GetPrimAtPath(camera_path)).GetCamera(
+            Usd.TimeCode.Default()).frustum
+        world_to_clip = (frustum.ComputeViewMatrix() *
+                         frustum.ComputeProjectionMatrix())
 
-    failures = checked = 0
-    for py in range(STEP // 2, HEIGHT, STEP):
-        for px in range(STEP // 2, WIDTH, STEP):
-            prim, _ = surface_at(px + 0.5, py + 0.5)
+        def surface_at(x, y):
+            """Analytic (prim, window depth) at window position x, y in pixels."""
+            ray = frustum.ComputePickRay(Gf.Vec2d(2.0 * x / WIDTH - 1.0,
+                                                  2.0 * y / HEIGHT - 1.0))
+            t, prim = nearest_hit(ray)
             if prim is None:
-                continue
-            ndc = Gf.Vec2d(2.0 * (px + 0.5) / WIDTH - 1.0,
-                           2.0 * (py + 0.5) / HEIGHT - 1.0)
-            narrowed = frustum.ComputeNarrowedFrustum(
-                ndc, Gf.Vec2d(1.0 / WIDTH, 1.0 / HEIGHT))
-            result = engine.TestIntersection(
-                narrowed.ComputeViewMatrix(),
-                narrowed.ComputeProjectionMatrix(), root, params)
-            if not result or not result[2] or result[2].isEmpty:
-                failures += 1
-                print("FAIL  %s pixel (%d, %d): nothing picked, expected %s"
-                      % (camera_path, px, py, prim))
-                continue
+                return None, None
+            clip = world_to_clip.Transform(ray.startPoint + ray.direction * t)
+            return prim, (clip[2] + 1.0) * 0.5
 
-            # The pixel Hydra read: it unprojects at the pixel's lower-left
-            # corner (HdxPickResult), which is where the point projects back.
-            clip = world_to_clip.Transform(Gf.Vec3d(result[0]))
-            x = round((clip[0] + 1.0) * 0.5 * WIDTH)
-            y = round((clip[1] + 1.0) * 0.5 * HEIGHT)
-            depth = (clip[2] + 1.0) * 0.5
+        failures = checked = 0
+        for py in range(STEP // 2, HEIGHT, STEP):
+            for px in range(STEP // 2, WIDTH, STEP):
+                prim, _ = surface_at(px + 0.5, py + 0.5)
+                if prim is None:
+                    continue
+                ndc = Gf.Vec2d(2.0 * (px + 0.5) / WIDTH - 1.0,
+                               2.0 * (py + 0.5) / HEIGHT - 1.0)
+                narrowed = frustum.ComputeNarrowedFrustum(
+                    ndc, Gf.Vec2d(1.0 / WIDTH, 1.0 / HEIGHT))
+                result = engine.TestIntersection(
+                    narrowed.ComputeViewMatrix(),
+                    narrowed.ComputeProjectionMatrix(), root, params)
+                if not result or not result[2] or result[2].isEmpty:
+                    failures += 1
+                    print("FAIL  %s pixel (%d, %d): nothing picked, expected %s"
+                          % (label, px, py, prim))
+                    continue
 
-            footprint = [surface_at(x + u, y + v) for u, v in
-                         ((0, 0), (1, 0), (0, 1), (1, 1), (0.5, 0.5))]
-            prims = {p for p, _ in footprint}
-            if len(prims) != 1:
-                continue
-            expected = prims.pop()
-            checked += 1
-            low = min(z for _, z in footprint) - TOLERANCE
-            high = max(z for _, z in footprint) + TOLERANCE
-            picked = str(result[2])
-            if picked != expected or not low <= depth <= high:
-                failures += 1
-                print("FAIL  %s pixel (%d, %d): picked %s at depth %.8f, "
-                      "expected %s in [%.8f, %.8f]"
-                      % (camera_path, x, y, picked, depth, expected, low, high))
+                # The pixel Hydra read: it unprojects at the pixel's lower-left
+                # corner (HdxPickResult), which is where the point projects back.
+                clip = world_to_clip.Transform(Gf.Vec3d(result[0]))
+                x = round((clip[0] + 1.0) * 0.5 * WIDTH)
+                y = round((clip[1] + 1.0) * 0.5 * HEIGHT)
+                depth = (clip[2] + 1.0) * 0.5
 
+                footprint = [surface_at(x + u, y + v) for u, v in
+                             ((0, 0), (1, 0), (0, 1), (1, 1), (0.5, 0.5))]
+                prims = {p for p, _ in footprint}
+                if len(prims) != 1:
+                    continue
+                expected = prims.pop()
+                checked += 1
+                low = min(z for _, z in footprint) - TOLERANCE
+                high = max(z for _, z in footprint) + TOLERANCE
+                picked = str(result[2])
+                if picked != expected or not low <= depth <= high:
+                    failures += 1
+                    print("FAIL  %s pixel (%d, %d): picked %s at depth %.8f, "
+                          "expected %s in [%.8f, %.8f]"
+                          % (label, x, y, picked, depth, expected, low, high))
+
+        if checked < MINIMUM_PROBES:
+            failures += 1
+            print("FAIL  %s: only %d probes checked, expected at least %d"
+                  % (label, checked, MINIMUM_PROBES))
+        print("%s  %-34s %d probes, %d failed"
+              % ("ok  " if not failures else "FAIL", label, checked, failures))
+        return failures
+
+    failures = probe(camera_path)
+    if camera_path == "/persp":
+        # Buffers replaced after the frame finished, as a viewer does when its
+        # outputs change: the task controller creates new ones, and a
+        # finished frame has to be written into them all the same. Unwritten,
+        # their zeros put the pick -- and a tumble pivot -- at the eye.
+        engine.SetRendererAov("normal")
+        engine.Render(root, params)
+        engine.SetRendererAov("color")
+        failures += probe("/persp, buffers replaced")
+    else:
+        # An orthographic zoom changes only the projection. The frame has to
+        # start again, or the depth goes on describing the old view.
+        camera = UsdGeom.Camera(stage.GetPrimAtPath(camera_path))
+        camera.GetHorizontalApertureAttr().Set(80.0)
+        camera.GetVerticalApertureAttr().Set(50.0)
+        failures += probe("/ortho, zoomed in")
     del engine
-    if checked < MINIMUM_PROBES:
-        failures += 1
-        print("FAIL  %s: only %d probes checked, expected at least %d"
-              % (camera_path, checked, MINIMUM_PROBES))
-    print("%s  %-14s %d probes, %d failed"
-          % ("ok  " if not failures else "FAIL", camera_path, checked, failures))
     return failures
 
 

@@ -49,7 +49,11 @@ class HdClaudeRenderBuffer final : public HdRenderBuffer {
     /// in what they are given and not merely in how they walk it: expanding a
     /// depth buffer to RGBA to reuse the other path would allocate four times
     /// the data to throw three quarters of it away.
-    void WriteScalar(const std::vector<float>& values);
+    ///
+    /// Returns false, writing nothing, for a format it cannot fill, so the
+    /// caller can say so. Depth-stencil (Float32UInt8) takes the value as its
+    /// depth and a zero stencil.
+    bool WriteScalar(const std::vector<float>& values);
 
     /// A per-pixel vector of data -- a normal, an albedo -- `stride` floats a
     /// pixel starting `offset` into each, into however many channels the
@@ -71,6 +75,14 @@ class HdClaudeRenderBuffer final : public HdRenderBuffer {
 
     void Clear(const float* value);
 
+    /// Whether nothing has been written since the buffer was allocated.
+    ///
+    /// A host can bind a new buffer, or reallocate one, after the frame it
+    /// shows has finished. That buffer still has to receive the frame, or
+    /// it reads as its allocation: zeros, which in a depth AOV is the near
+    /// plane -- a surface at the eye.
+    bool HoldsNoFrame() const { return !_written; }
+
   protected:
     void _Deallocate() override;
 
@@ -81,6 +93,7 @@ class HdClaudeRenderBuffer final : public HdRenderBuffer {
     std::vector<char> _data;
     std::atomic<int> _mappers{0};
     bool _converged = false;
+    bool _written = false;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

@@ -54,6 +54,12 @@ class HDCLAUDE_API HdClaudeRenderPass final : public HdRenderPass {
     HdClaudeRenderDelegate* _renderDelegate;
 
     Framing _framing;
+    /// The last frame written, its image exposed, for a buffer the host
+    /// binds after it finished (HdClaudeRenderBuffer::HoldsNoFrame).
+    hdclaude::FrameResult _shown;
+    bool _hasShown = false;
+    /// The bindings last traced, so they are traced when they change.
+    std::string _tracedBindings;
     /// The cull revision whose volumes the tracer holds.
     std::uint64_t _uploadedCullRevision = 0;
     /// Whether every rprim has to be resynced before the next frame.
