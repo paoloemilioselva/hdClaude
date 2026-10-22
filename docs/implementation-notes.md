@@ -7844,3 +7844,6 @@ the Euclidean distance to the eye. The HDK says "distance to camera", and
 the two differ by up to 8% at the edge of a 45-degree frame. If Houdini
 means the Euclidean one, overlays near the left and right edges will sit
 slightly wrong against surfaces while the centre is right.
+
+Confirmed in Houdini 22.0 on 2026-10-23: with the package's `linear` depth,
+Paolo reports the viewport working as expected, tumble pivot included.
