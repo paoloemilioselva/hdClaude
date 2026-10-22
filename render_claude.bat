@@ -71,6 +71,9 @@ IF "%~1"=="" (
   ECHO                                  on hands the choice back to each light.
   ECHO                                  Off changes what is in the picture, not
   ECHO                                  how much light is in it
+  ECHO   HDCLAUDE_CULL_VOLUMES          default on. Off ignores every cull
+  ECHO                                  volume in the stage, to compare a render
+  ECHO                                  with and without them
   ECHO   HDCLAUDE_DEVICE                substring of the GPU to select
   ECHO.
   ECHO Reconstruction. Off renders the progressive reference this delegate has

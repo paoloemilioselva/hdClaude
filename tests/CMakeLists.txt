@@ -136,6 +136,7 @@ if(HDCLAUDE_ENABLE_MATERIALX)
     foreach(_usd_test
             "usd_instancing|instancing_equivalence"
             "usd_lights|light_linking_equivalence"
+            "usd_cull_volumes|cull_volume_equivalence"
             "usd_implicit_surfaces|implicit_surfaces"
             "usd_texture_quality|texture_quality")
       string(REPLACE "|" ";" _usd_test "${_usd_test}")

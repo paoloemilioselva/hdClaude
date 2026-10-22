@@ -13,6 +13,7 @@
 
 add_library(hdClaude MODULE
     camera.cpp
+    cull_volume.cpp
     instancer.cpp
     light.cpp
     implicit_surface_scene_index_plugin.cpp

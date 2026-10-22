@@ -96,7 +96,14 @@ layout(set = 0, binding = 0, scalar) uniform FrameBlock {
     // takes a range rather than a list of its own.
     uint  splatInstanceBegin;
     uint  splatInstanceCount;
-    uint  padTail;
+    // Cull volumes: how many there are, which of them affect each kind of ray
+    // (one bit a volume, only volumes that can contain anything), and whether
+    // each kind has exception placements (bit 0 primary, bit 1 secondary).
+    // The first takes the slot a pad held. See docs/cull-volumes.md.
+    uint  cullVolumeCount;
+    uint  cullPrimaryVolumes;
+    uint  cullSecondaryVolumes;
+    uint  cullExceptions;
 } frame;
 
 const uint HDCLAUDE_SPLAT_COVERAGE = 0u;
@@ -571,6 +578,317 @@ bool hdclaude_linked(int instance, int category)
     uint word = instanceLinks.values[uint(instance) * frame.linkWords +
                                      uint(category) / 32u];
     return ((word >> (uint(category) % 32u)) & 1u) != 0u;
+}
+
+// --- Cull volumes -----------------------------------------------------------
+//
+// A cull volume discards hits on the geometry it links, inside its shape (or
+// outside it, inverted), for the kinds of ray it affects
+// (extensions/cullVolume/README.md). Every shape is convex, so a ray is inside
+// one over a single interval of t, and culling is done on the *ray*: a kernel
+// traces only the stretches of a ray that are kept, each as an ordinary opaque
+// query, and the BVH is never changed (docs/cull-volumes.md 2).
+//
+// Placements culled by every volume that affects a kind of ray are *regular*
+// for it and share those kept stretches. The rest are *exceptions*, met by one
+// more query over the whole ray that tests each hit. The TLAS mask says which
+// a placement is; these mirror kInstanceMask* in scene.h.
+
+const uint HDCLAUDE_MAX_CULL_VOLUMES = 32u;
+
+const uint HDCLAUDE_CULL_NONE = 0u;
+const uint HDCLAUDE_CULL_CUBE = 1u;
+const uint HDCLAUDE_CULL_SPHERE = 2u;
+const uint HDCLAUDE_CULL_PLANE = 3u;
+
+const uint HDCLAUDE_CULL_INVERT = 4u;
+
+const uint HDCLAUDE_MASK_PRIMARY = 0x01u;
+const uint HDCLAUDE_MASK_PRIMARY_EXCEPTION = 0x02u;
+const uint HDCLAUDE_MASK_SECONDARY = 0x04u;
+const uint HDCLAUDE_MASK_SECONDARY_EXCEPTION = 0x08u;
+
+// Mirrors hdclaude::CullVolume. The rows take a world point into the shape's
+// unit frame, where the cube is [-1, 1]^3, the sphere has radius one and the
+// plane's inside is a negative `axis` coordinate. The map is affine, so the ray
+// parameter is the same in both frames.
+struct CullVolume {
+    vec4 row0;
+    vec4 row1;
+    vec4 row2;
+    uint shape;
+    uint axis;
+    uint flags;
+    uint pad;
+};
+
+layout(set = 0, binding = 33, scalar) readonly buffer CullVolumes {
+    CullVolume values[];
+} cullVolumes;
+
+// Which volumes cull each placement, one bit a volume, by custom index.
+layout(set = 0, binding = 34, scalar) readonly buffer InstanceCullLinks {
+    uint values[];
+} instanceCullLinks;
+
+// "Everything" and "nothing", as intervals of t. Beyond any ray's extent, so a
+// half-space that contains a whole ray contains it at both ends.
+const float HDCLAUDE_CULL_FOREVER = 1.0e38;
+const vec2 HDCLAUDE_CULL_EMPTY = vec2(HDCLAUDE_CULL_FOREVER, -HDCLAUDE_CULL_FOREVER);
+
+// The current ray's interval inside each volume, filled by
+// hdclaude_cull_prepare for the volumes that affect it. Per invocation.
+vec2 hdclaude_cullInterval[HDCLAUDE_MAX_CULL_VOLUMES];
+
+/// The volumes that affect a ray, or none when there are no cull volumes.
+uint hdclaude_cull_volumes(bool primary)
+{
+    if (frame.cullVolumeCount == 0u)
+    {
+        return 0u;
+    }
+    return primary ? frame.cullPrimaryVolumes : frame.cullSecondaryVolumes;
+}
+
+/// The interval of t over which origin + t * direction is inside `volume`.
+vec2 hdclaude_cull_interval(CullVolume volume, vec3 origin, vec3 direction)
+{
+    vec3 o = vec3(dot(volume.row0.xyz, origin) + volume.row0.w,
+                  dot(volume.row1.xyz, origin) + volume.row1.w,
+                  dot(volume.row2.xyz, origin) + volume.row2.w);
+    vec3 d = vec3(dot(volume.row0.xyz, direction),
+                  dot(volume.row1.xyz, direction),
+                  dot(volume.row2.xyz, direction));
+
+    if (volume.shape == HDCLAUDE_CULL_CUBE)
+    {
+        // Slabs. An axis the ray is parallel to either contains all of it or
+        // none of it, decided explicitly rather than by dividing by zero.
+        float lo = -HDCLAUDE_CULL_FOREVER;
+        float hi = HDCLAUDE_CULL_FOREVER;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            if (d[axis] == 0.0)
+            {
+                if (abs(o[axis]) > 1.0)
+                {
+                    return HDCLAUDE_CULL_EMPTY;
+                }
+                continue;
+            }
+            float t0 = (-1.0 - o[axis]) / d[axis];
+            float t1 = (1.0 - o[axis]) / d[axis];
+            lo = max(lo, min(t0, t1));
+            hi = min(hi, max(t0, t1));
+        }
+        return lo < hi ? vec2(lo, hi) : HDCLAUDE_CULL_EMPTY;
+    }
+    if (volume.shape == HDCLAUDE_CULL_SPHERE)
+    {
+        float a = dot(d, d);
+        float b = dot(o, d);
+        float c = dot(o, o) - 1.0;
+        if (a == 0.0)
+        {
+            return c < 0.0 ? vec2(-HDCLAUDE_CULL_FOREVER, HDCLAUDE_CULL_FOREVER)
+                           : HDCLAUDE_CULL_EMPTY;
+        }
+        float discriminant = b * b - a * c;
+        if (discriminant <= 0.0)
+        {
+            return HDCLAUDE_CULL_EMPTY;
+        }
+        float root = sqrt(discriminant);
+        return vec2((-b - root) / a, (-b + root) / a);
+    }
+    if (volume.shape == HDCLAUDE_CULL_PLANE)
+    {
+        uint axis = min(volume.axis, 2u);
+        float oa = o[axis];
+        float da = d[axis];
+        if (da == 0.0)
+        {
+            return oa < 0.0 ? vec2(-HDCLAUDE_CULL_FOREVER, HDCLAUDE_CULL_FOREVER)
+                            : HDCLAUDE_CULL_EMPTY;
+        }
+        float crossing = -oa / da;
+        return da > 0.0 ? vec2(-HDCLAUDE_CULL_FOREVER, crossing)
+                        : vec2(crossing, HDCLAUDE_CULL_FOREVER);
+    }
+    return HDCLAUDE_CULL_EMPTY;
+}
+
+/// Fill the current ray's interval for every volume in `volumes`.
+void hdclaude_cull_prepare(vec3 origin, vec3 direction, uint volumes)
+{
+    uint bits = volumes;
+    while (bits != 0u)
+    {
+        uint i = uint(findLSB(bits));
+        bits &= bits - 1u;
+        hdclaude_cullInterval[i] =
+            hdclaude_cull_interval(cullVolumes.values[i], origin, direction);
+    }
+}
+
+/// The inverted volumes among `volumes`.
+uint hdclaude_cull_inverted(uint volumes)
+{
+    uint inverted = 0u;
+    uint bits = volumes;
+    while (bits != 0u)
+    {
+        uint i = uint(findLSB(bits));
+        bits &= bits - 1u;
+        if ((cullVolumes.values[i].flags & HDCLAUDE_CULL_INVERT) != 0u)
+        {
+            inverted |= 1u << i;
+        }
+    }
+    return inverted;
+}
+
+/// Whether the volumes in `volumes` cull a hit at `t` on the current ray.
+///
+/// README semantics rule 4: culled inside any volume that is not inverted, and,
+/// when any is inverted, outside all of the inverted ones. `volumes` is already
+/// narrowed to the ones that affect this ray and link the hit geometry.
+bool hdclaude_cull_point(float t, uint volumes)
+{
+    bool anyInverted = false;
+    bool insideInverted = false;
+    uint bits = volumes;
+    while (bits != 0u)
+    {
+        uint i = uint(findLSB(bits));
+        bits &= bits - 1u;
+        vec2 interval = hdclaude_cullInterval[i];
+        bool inside = interval.x <= t && t < interval.y;
+        if ((cullVolumes.values[i].flags & HDCLAUDE_CULL_INVERT) != 0u)
+        {
+            anyInverted = true;
+            insideInverted = insideInverted || inside;
+        }
+        else if (inside)
+        {
+            return true;
+        }
+    }
+    return anyInverted && !insideInverted;
+}
+
+/// The next stretch of the current ray, at or after `t` and before `tMax`,
+/// that the volumes in `volumes` keep. Moves `t` to its start, sets
+/// `stretchEnd`, and returns false when nothing more of the ray is kept.
+///
+/// The same rule as hdclaude_cull_point, applied to a whole interval at once:
+/// the kept part of the ray is the union of the inverted volumes' intervals
+/// (the whole ray if none is inverted) minus the others' intervals. `t` only
+/// ever moves forward to an interval's end point, so the search ends after at
+/// most one step per end point; and a stretch it returns is never empty.
+bool hdclaude_cull_next(inout float t, float tMax, uint volumes,
+                        out float stretchEnd)
+{
+    stretchEnd = t;
+    uint inverted = hdclaude_cull_inverted(volumes);
+    uint cutting = volumes & ~inverted;
+
+    for (uint guard = 0u; guard <= 2u * HDCLAUDE_MAX_CULL_VOLUMES + 1u; ++guard)
+    {
+        if (t >= tMax)
+        {
+            return false;
+        }
+        bool moved = false;
+        if (inverted != 0u)
+        {
+            bool inside = false;
+            float next = HDCLAUDE_CULL_FOREVER;
+            uint bits = inverted;
+            while (bits != 0u)
+            {
+                uint i = uint(findLSB(bits));
+                bits &= bits - 1u;
+                vec2 interval = hdclaude_cullInterval[i];
+                if (interval.x <= t && t < interval.y)
+                {
+                    inside = true;
+                }
+                else if (interval.x > t && interval.x < interval.y)
+                {
+                    next = min(next, interval.x);
+                }
+            }
+            if (!inside)
+            {
+                if (next >= tMax)
+                {
+                    return false;
+                }
+                t = next;
+                moved = true;
+            }
+        }
+        uint bits = cutting;
+        while (bits != 0u)
+        {
+            uint i = uint(findLSB(bits));
+            bits &= bits - 1u;
+            vec2 interval = hdclaude_cullInterval[i];
+            if (interval.x <= t && t < interval.y)
+            {
+                t = interval.y;
+                moved = true;
+            }
+        }
+        if (!moved)
+        {
+            break;
+        }
+    }
+    if (t >= tMax)
+    {
+        return false;
+    }
+
+    float end = tMax;
+    uint bits = cutting;
+    while (bits != 0u)
+    {
+        uint i = uint(findLSB(bits));
+        bits &= bits - 1u;
+        vec2 interval = hdclaude_cullInterval[i];
+        if (interval.x > t && interval.x < interval.y)
+        {
+            end = min(end, interval.x);
+        }
+    }
+    if (inverted != 0u)
+    {
+        // The end of the union of inverted intervals that contains t, which
+        // may chain through several overlapping ones.
+        float reach = t;
+        bool grew = true;
+        for (uint guard = 0u; grew && guard <= HDCLAUDE_MAX_CULL_VOLUMES; ++guard)
+        {
+            grew = false;
+            uint chain = inverted;
+            while (chain != 0u)
+            {
+                uint i = uint(findLSB(chain));
+                chain &= chain - 1u;
+                vec2 interval = hdclaude_cullInterval[i];
+                if (interval.x <= reach && interval.y > reach)
+                {
+                    reach = interval.y;
+                    grew = true;
+                }
+            }
+        }
+        end = min(end, reach);
+    }
+    stretchEnd = end;
+    return true;
 }
 
 // --- Textures ---------------------------------------------------------------

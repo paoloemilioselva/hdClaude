@@ -11,38 +11,49 @@
 
 layout(local_size_x = 64) in;
 
-void main()
+// Whether anything occludes the shadow ray over [tMin, tMax], among the
+// placements whose TLAS mask shares a bit with `cullMask`.
+//
+// With `exceptions`, a hit also has to survive the cull volumes among
+// `volumes` that link the hit placement (docs/cull-volumes.md 2.1). Without
+// it, the stretch is one the volumes already keep for every placement it can
+// meet.
+bool shadow_occluded(ShadowRay ray, float tMin, float tMax, uint cullMask,
+                     bool exceptions, uint volumes)
 {
-    uint index = gl_GlobalInvocationID.x;
-    if (index >= counters.shadowCount)
-    {
-        return;
-    }
-    ShadowRay ray = shadowRays.values[index];
-
     // A light with a shadow link is occluded only by the geometry in it
     // (UsdLux `collection:shadowLink`). Membership is a property of the
     // instance, which only the shader can test, so for such a ray every
     // triangle is handed to the loop below as a candidate instead of being
     // committed by the implementation. Every other ray keeps the opaque fast
     // path.
+    //
+    // The exception query of a cull volume hands every triangle to the loop for
+    // the same reason: whether the hit placement is culled there is a property of
+    // the placement.
     bool linked = ray.shadowLink >= 0;
     uint flags = gl_RayFlagsTerminateOnFirstHitEXT |
-                 (linked ? gl_RayFlagsNoOpaqueEXT : gl_RayFlagsOpaqueEXT);
+                 (linked || exceptions ? gl_RayFlagsNoOpaqueEXT
+                                       : gl_RayFlagsOpaqueEXT);
 
     rayQueryEXT query;
-    rayQueryInitializeEXT(query, sceneTlas, flags, 0xFF, ray.origin, 1.0e-4,
-                          ray.direction, ray.maxDistance);
+    rayQueryInitializeEXT(query, sceneTlas, flags, cullMask, ray.origin, tMin,
+                          ray.direction, tMax);
     while (rayQueryProceedEXT(query))
     {
         if (rayQueryGetIntersectionTypeEXT(query, false) ==
             gl_RayQueryCandidateIntersectionTriangleEXT)
         {
-            // Only reached for a linked ray. The implementation has already
-            // placed the hit inside the ray's interval.
-            if (hdclaude_linked(
-                    rayQueryGetIntersectionInstanceCustomIndexEXT(query, false),
-                    ray.shadowLink))
+            // Only reached for a linked ray or an exception query. The
+            // implementation has already placed the hit inside the ray's
+            // interval.
+            int candidateInstance =
+                rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
+            if (hdclaude_linked(candidateInstance, ray.shadowLink) &&
+                !(exceptions &&
+                  hdclaude_cull_point(
+                      rayQueryGetIntersectionTEXT(query, false),
+                      instanceCullLinks.values[candidateInstance] & volumes)))
             {
                 rayQueryConfirmIntersectionEXT(query);
             }
@@ -93,8 +104,12 @@ void main()
                 if (hdclaude_splat_peak(splat, candidateGeometry.splatKernel,
                                         candidateOrigin, candidateDirection,
                                         rayQueryGetRayTMinEXT(query),
-                                        ray.maxDistance, hit, response) &&
-                    hdclaude_linked(candidateInstance, ray.shadowLink))
+                                        tMax, hit, response) &&
+                    hdclaude_linked(candidateInstance, ray.shadowLink) &&
+                    !(exceptions &&
+                      hdclaude_cull_point(
+                          hit, instanceCullLinks.values[candidateInstance] &
+                                   volumes)))
                 {
                     float alpha = clamp(splat.opacity * response, 0.0, 1.0);
                     // A different stream from the camera ray's, because the two
@@ -153,12 +168,61 @@ void main()
                 // nine per cent of the light off the surface below it
                 // (`tests/render_tests.cpp`). The comparison is made here
                 // rather than trusted to the implementation.
-                if (hit >= rayQueryGetRayTMinEXT(query) && hit < ray.maxDistance &&
-                    hdclaude_linked(candidateInstance, ray.shadowLink))
+                if (hit >= rayQueryGetRayTMinEXT(query) && hit < tMax &&
+                    hdclaude_linked(candidateInstance, ray.shadowLink) &&
+                    !(exceptions &&
+                      hdclaude_cull_point(
+                          hit, instanceCullLinks.values[candidateInstance] &
+                                   volumes)))
                 {
                     rayQueryGenerateIntersectionEXT(query, hit);
                 }
             }
+        }
+    }
+
+    return rayQueryGetIntersectionTypeEXT(query, true) !=
+           gl_RayQueryCommittedIntersectionNoneEXT;
+}
+
+void main()
+{
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= counters.shadowCount)
+    {
+        return;
+    }
+    ShadowRay ray = shadowRays.values[index];
+
+    // A shadow ray is a secondary ray, so it is traced in the stretches the
+    // cull volumes affecting secondary rays keep, then once more against the
+    // exception placements (docs/cull-volumes.md 2).
+    uint volumes = hdclaude_cull_volumes(false);
+    bool occluded = false;
+    if (volumes == 0u)
+    {
+        occluded = shadow_occluded(ray, 1.0e-4, ray.maxDistance, 0xFFu, false,
+                                   0u);
+    }
+    else
+    {
+        hdclaude_cull_prepare(ray.origin, ray.direction, volumes);
+        float t = 1.0e-4;
+        float stretchEnd;
+        for (uint guard = 0u;
+             !occluded && guard <= HDCLAUDE_MAX_CULL_VOLUMES &&
+             hdclaude_cull_next(t, ray.maxDistance, volumes, stretchEnd);
+             ++guard)
+        {
+            occluded = shadow_occluded(ray, t, stretchEnd, HDCLAUDE_MASK_SECONDARY,
+                                       false, volumes);
+            t = stretchEnd;
+        }
+        if (!occluded && (frame.cullExceptions & 2u) != 0u)
+        {
+            occluded = shadow_occluded(ray, 1.0e-4, ray.maxDistance,
+                                       HDCLAUDE_MASK_SECONDARY_EXCEPTION, true,
+                                       volumes);
         }
     }
 
@@ -185,15 +249,36 @@ void main()
             SplatVolume volume = SplatVolumeBuffer(cloud.splatVolume).value;
             float collision;
             vec3 emitted;
-            blockedByVolume = hdclaude_splat_volume_collision(
-                cloud, volume, ray.origin, ray.direction, 0.0, ray.maxDistance,
-                rng, collision, emitted);
+            // Only over the stretches this cloud's cull volumes keep, as in
+            // `extend`.
+            uint cloudVolumes =
+                volumes & instanceCullLinks.values[frame.splatInstanceBegin + i];
+            if (cloudVolumes == 0u)
+            {
+                blockedByVolume = hdclaude_splat_volume_collision(
+                    cloud, volume, ray.origin, ray.direction, 0.0,
+                    ray.maxDistance, rng, collision, emitted);
+            }
+            else
+            {
+                float t = 0.0;
+                float stretchEnd;
+                for (uint guard = 0u;
+                     !blockedByVolume && guard <= HDCLAUDE_MAX_CULL_VOLUMES &&
+                     hdclaude_cull_next(t, ray.maxDistance, cloudVolumes,
+                                        stretchEnd);
+                     ++guard)
+                {
+                    blockedByVolume = hdclaude_splat_volume_collision(
+                        cloud, volume, ray.origin, ray.direction, t, stretchEnd,
+                        rng, collision, emitted);
+                    t = stretchEnd;
+                }
+            }
         }
     }
 
-    if (!blockedByVolume &&
-        rayQueryGetIntersectionTypeEXT(query, true) ==
-        gl_RayQueryCommittedIntersectionNoneEXT)
+    if (!blockedByVolume && !occluded)
     {
         // No atomic: a path emits at most one shadow ray per bounce, so no two
         // invocations here write the same path's radiance.

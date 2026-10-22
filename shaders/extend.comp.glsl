@@ -29,6 +29,263 @@ layout(local_size_x = 64) in;
 // rendering; short enough that a mis-authored one cannot hang the kernel.
 const int kMaxWalkSteps = 256;
 
+layout(push_constant) uniform ExtendParams {
+    /// Which bounce this dispatch is, counted from zero. Only a cull volume
+    /// asks: its flags are about whether a ray is still the camera's.
+    uint bounce;
+} extendParams;
+
+// One closest-hit query over [tMin, tMax], meeting only the placements whose
+// TLAS mask shares a bit with `cullMask`, and keeping the nearest hit in the
+// outputs. They are left as they were when nothing is met, so a caller can
+// trace a ray in several stretches and stop at the first that hits.
+//
+// With `exceptions`, every candidate -- triangles included -- is handed to the
+// shader, and a hit is kept only if the cull volumes among `volumes` that link
+// the hit placement do not cull it (docs/cull-volumes.md 2.1). Without it the
+// query is the ordinary opaque one, which a stretch of a ray already kept for
+// every placement it can meet needs nothing more than.
+void extend_trace(vec3 origin, vec3 direction, float tMin, float tMax,
+                  uint cullMask, bool exceptions, uint volumes, uint path,
+                  inout bool hitGeometry, inout float tGeometry,
+                  inout vec2 barycentrics, inout int instance,
+                  inout int primitive)
+{
+    rayQueryEXT query;
+    rayQueryInitializeEXT(query, sceneTlas,
+                          exceptions ? gl_RayFlagsNoOpaqueEXT
+                                     : gl_RayFlagsOpaqueEXT,
+                          cullMask, origin, tMin, direction, tMax);
+    while (rayQueryProceedEXT(query))
+    {
+        // Only reached by the exception query, which hands every triangle to
+        // the shader so that its own cull links can be asked about the hit.
+        if (rayQueryGetIntersectionTypeEXT(query, false) ==
+            gl_RayQueryCandidateIntersectionTriangleEXT)
+        {
+            int candidateInstance =
+                rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
+            if (!hdclaude_cull_point(
+                    rayQueryGetIntersectionTEXT(query, false),
+                    instanceCullLinks.values[candidateInstance] & volumes))
+            {
+                rayQueryConfirmIntersectionEXT(query);
+            }
+            continue;
+        }
+
+        // A box is only ever a *candidate*. Triangle geometry is committed
+        // by the implementation; a curve's box says "the segment inside me
+        // might be hit", and this is where that question is answered.
+        if (rayQueryGetIntersectionTypeEXT(query, false) ==
+            gl_RayQueryCandidateIntersectionAABBEXT)
+        {
+            int candidateInstance =
+                rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
+            InstanceGeometry candidateGeometry =
+                instances.values[candidateInstance];
+            if (candidateGeometry.splats != 0ul &&
+                frame.splatTransport == HDCLAUDE_SPLAT_COVERAGE)
+            {
+                // A Gaussian splat. The box says a particle's support is
+                // somewhere ahead; what decides whether the ray stops is the
+                // kernel's response at its peak along the ray, times the
+                // particle's opacity, taken as the probability that this
+                // particle covers the ray. The nearest particle that accepts
+                // is committed, and Vulkan's own closest-hit rule is what
+                // makes that the front-to-back answer -- nothing here sorts
+                // anything (docs/gaussian-splats.md 3).
+                int candidateSplat =
+                    rayQueryGetIntersectionPrimitiveIndexEXT(query, false);
+                Splat splat = hdclaude_splat(candidateGeometry.splats,
+                                             candidateSplat);
+
+                vec3 candidateOrigin =
+                    rayQueryGetIntersectionObjectRayOriginEXT(query, false);
+                vec3 candidateDirection =
+                    rayQueryGetIntersectionObjectRayDirectionEXT(query, false);
+
+                float committedT =
+                    rayQueryGetIntersectionTypeEXT(query, true) !=
+                            gl_RayQueryCommittedIntersectionNoneEXT
+                        ? rayQueryGetIntersectionTEXT(query, true)
+                        : 1.0e30;
+
+                // The peak is searched over the *ray*, not over the part of
+                // it that is still unoccluded, and the committed distance is
+                // applied afterwards. Those are not the same thing, and
+                // conflating them is a real defect that measured itself: a
+                // particle behind the committed hit had its peak clamped
+                // onto that hit, evaluated its falloff there instead of at
+                // its own centre, and generated an intersection at exactly
+                // the committed distance -- where the driver was free to
+                // prefer either. Two particles whose composite should have
+                // been 0.6 and 0.32 came out 0.48 and 0.51, which is the
+                // signature of the nearer one winning only half the time.
+                float hit;
+                float response;
+                if (hdclaude_splat_peak(splat, candidateGeometry.splatKernel,
+                                        candidateOrigin, candidateDirection,
+                                        rayQueryGetRayTMinEXT(query), 1.0e30,
+                                        hit, response) &&
+                    hit < min(committedT, tMax) &&
+                    !(exceptions &&
+                      hdclaude_cull_point(
+                          hit, instanceCullLinks.values[candidateInstance] &
+                                   volumes)))
+                {
+                    // Clamped because this is a probability. The opacity is
+                    // carried as authored -- an asset outside [0, 1] is
+                    // reported rather than corrected -- so the clamp belongs
+                    // here, where the number is used as one, and not on the
+                    // data.
+                    float alpha = clamp(splat.opacity * response, 0.0, 1.0);
+                    float coin = hdclaude_splat_coin(path, frame.sampleIndex,
+                                                     candidateInstance,
+                                                     candidateSplat);
+                    if (coin < alpha)
+                    {
+                        rayQueryGenerateIntersectionEXT(query, hit);
+                    }
+                }
+            }
+            else if (candidateGeometry.segments != 0ul)
+            {
+                int candidateSegment =
+                    rayQueryGetIntersectionPrimitiveIndexEXT(query, false);
+                SegmentBuffer curveSegments =
+                    SegmentBuffer(candidateGeometry.segments);
+                uint base = uint(candidateSegment) * 10u;
+                vec3 pa = vec3(curveSegments.values[base + 0u],
+                               curveSegments.values[base + 1u],
+                               curveSegments.values[base + 2u]);
+                float ra = curveSegments.values[base + 3u];
+                vec3 pb = vec3(curveSegments.values[base + 5u],
+                               curveSegments.values[base + 6u],
+                               curveSegments.values[base + 7u]);
+                float rb = curveSegments.values[base + 8u];
+
+                // The object-space ray, which is the space the segments are
+                // in. Asking the query for it rather than transforming the
+                // world ray keeps the two from disagreeing about a
+                // non-uniform scale.
+                vec3 candidateOrigin =
+                    rayQueryGetIntersectionObjectRayOriginEXT(query, false);
+                vec3 candidateDirection =
+                    rayQueryGetIntersectionObjectRayDirectionEXT(query, false);
+
+                float hit = hdclaude_intersect_segment(
+                    candidateOrigin, candidateDirection, pa, ra, pb, rb);
+                // Inside the ray's own interval, and nearer than the hit
+                // already committed. A triangle hit is tested against both
+                // by the implementation; a *generated* one is whatever the
+                // shader says it is, so the shader owes the check. Below
+                // tMin an offset ray is stopped by the surface it just
+                // left, which at a curve joint is a second segment
+                // coincident with the first.
+                //
+                // The committed hit is the half that was the crescent at
+                // every curve joint (roadmap open question 5). Where two
+                // segments meet, a ray that has found the surface also
+                // meets the neighbouring segment's end sphere *behind* it,
+                // inside the solid. Vulkan's closest hit determination
+                // drops a confirmed hit with t > t_max; the driver this was
+                // measured on committed it whenever that box was visited
+                // later, so the surface reported depended on traversal
+                // order. A chain of four segments and the one segment
+                // describing the same capsule differed at 656 of 36,864
+                // depths without this comparison and at none with it.
+                float committedT =
+                    rayQueryGetIntersectionTypeEXT(query, true) !=
+                            gl_RayQueryCommittedIntersectionNoneEXT
+                        ? rayQueryGetIntersectionTEXT(query, true)
+                        : 1.0e30;
+                if (hit >= rayQueryGetRayTMinEXT(query) &&
+                    hit < min(committedT, tMax) &&
+                    !(exceptions &&
+                      hdclaude_cull_point(
+                          hit, instanceCullLinks.values[candidateInstance] &
+                                   volumes)))
+                {
+                    rayQueryGenerateIntersectionEXT(query, hit);
+                }
+            }
+        }
+    }
+
+    // Either kind of committed intersection is a surface. A curve reports
+    // no barycentrics -- there is no triangle to have any -- and the shade
+    // kernel rebuilds its geometry from the segment and the hit point.
+    uint committed = rayQueryGetIntersectionTypeEXT(query, true);
+    if (committed == gl_RayQueryCommittedIntersectionTriangleEXT ||
+        committed == gl_RayQueryCommittedIntersectionGeneratedEXT)
+    {
+        hitGeometry = true;
+        tGeometry = rayQueryGetIntersectionTEXT(query, true);
+        barycentrics =
+            committed == gl_RayQueryCommittedIntersectionTriangleEXT
+                ? rayQueryGetIntersectionBarycentricsEXT(query, true)
+                : vec2(0.0);
+        instance = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
+        primitive = rayQueryGetIntersectionPrimitiveIndexEXT(query, true);
+    }
+}
+
+// The nearest surface along a ray, with cull volumes applied.
+//
+// A ray no volume affects is the single opaque query it always was. Otherwise
+// the ray is traced in the stretches its volumes keep, nearest first, against
+// the placements regular for its kind; then, if there are exceptions, once
+// more over the whole ray up to the hit found, against those alone.
+void extend_closest(vec3 origin, vec3 direction, bool primary, uint path,
+                    out bool hitGeometry, out float tGeometry,
+                    out vec2 barycentrics, out int instance,
+                    out int primitive)
+{
+    hitGeometry = false;
+    tGeometry = 1.0e30;
+    barycentrics = vec2(0.0);
+    instance = -1;
+    primitive = -1;
+
+    uint volumes = hdclaude_cull_volumes(primary);
+    if (volumes == 0u)
+    {
+        extend_trace(origin, direction, 0.0, 1.0e30, 0xFFu, false, 0u, path,
+                     hitGeometry, tGeometry, barycentrics, instance,
+                     primitive);
+        return;
+    }
+
+    hdclaude_cull_prepare(origin, direction, volumes);
+    uint regular = primary ? HDCLAUDE_MASK_PRIMARY : HDCLAUDE_MASK_SECONDARY;
+    float t = 0.0;
+    float stretchEnd;
+    for (uint guard = 0u; guard <= HDCLAUDE_MAX_CULL_VOLUMES &&
+                          hdclaude_cull_next(t, 1.0e30, volumes, stretchEnd);
+         ++guard)
+    {
+        extend_trace(origin, direction, t, stretchEnd, regular, false, volumes,
+                     path, hitGeometry, tGeometry, barycentrics, instance,
+                     primitive);
+        if (hitGeometry)
+        {
+            break;
+        }
+        t = stretchEnd;
+    }
+
+    if ((frame.cullExceptions & (primary ? 1u : 2u)) != 0u)
+    {
+        extend_trace(origin, direction, 0.0, tGeometry,
+                     primary ? HDCLAUDE_MASK_PRIMARY_EXCEPTION
+                             : HDCLAUDE_MASK_SECONDARY_EXCEPTION,
+                     true, volumes, path, hitGeometry, tGeometry,
+                     barycentrics, instance, primitive);
+    }
+}
+
+
 void main()
 {
     uint slot = gl_GlobalInvocationID.x;
@@ -215,158 +472,12 @@ void main()
 
     for (int step = 0; step <= kMaxWalkSteps; ++step)
     {
-        rayQueryEXT query;
-        rayQueryInitializeEXT(query, sceneTlas, gl_RayFlagsOpaqueEXT, 0xFF,
-                              origin, 0.0, direction, 1.0e30);
-        while (rayQueryProceedEXT(query))
-        {
-            // A box is only ever a *candidate*. Triangle geometry is committed
-            // by the implementation; a curve's box says "the segment inside me
-            // might be hit", and this is where that question is answered.
-            if (rayQueryGetIntersectionTypeEXT(query, false) ==
-                gl_RayQueryCandidateIntersectionAABBEXT)
-            {
-                int candidateInstance =
-                    rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
-                InstanceGeometry candidateGeometry =
-                    instances.values[candidateInstance];
-                if (candidateGeometry.splats != 0ul &&
-                    frame.splatTransport == HDCLAUDE_SPLAT_COVERAGE)
-                {
-                    // A Gaussian splat. The box says a particle's support is
-                    // somewhere ahead; what decides whether the ray stops is the
-                    // kernel's response at its peak along the ray, times the
-                    // particle's opacity, taken as the probability that this
-                    // particle covers the ray. The nearest particle that accepts
-                    // is committed, and Vulkan's own closest-hit rule is what
-                    // makes that the front-to-back answer -- nothing here sorts
-                    // anything (docs/gaussian-splats.md 3).
-                    int candidateSplat =
-                        rayQueryGetIntersectionPrimitiveIndexEXT(query, false);
-                    Splat splat = hdclaude_splat(candidateGeometry.splats,
-                                                 candidateSplat);
-
-                    vec3 candidateOrigin =
-                        rayQueryGetIntersectionObjectRayOriginEXT(query, false);
-                    vec3 candidateDirection =
-                        rayQueryGetIntersectionObjectRayDirectionEXT(query, false);
-
-                    float committedT =
-                        rayQueryGetIntersectionTypeEXT(query, true) !=
-                                gl_RayQueryCommittedIntersectionNoneEXT
-                            ? rayQueryGetIntersectionTEXT(query, true)
-                            : 1.0e30;
-
-                    // The peak is searched over the *ray*, not over the part of
-                    // it that is still unoccluded, and the committed distance is
-                    // applied afterwards. Those are not the same thing, and
-                    // conflating them is a real defect that measured itself: a
-                    // particle behind the committed hit had its peak clamped
-                    // onto that hit, evaluated its falloff there instead of at
-                    // its own centre, and generated an intersection at exactly
-                    // the committed distance -- where the driver was free to
-                    // prefer either. Two particles whose composite should have
-                    // been 0.6 and 0.32 came out 0.48 and 0.51, which is the
-                    // signature of the nearer one winning only half the time.
-                    float hit;
-                    float response;
-                    if (hdclaude_splat_peak(splat, candidateGeometry.splatKernel,
-                                            candidateOrigin, candidateDirection,
-                                            rayQueryGetRayTMinEXT(query), 1.0e30,
-                                            hit, response) &&
-                        hit < committedT)
-                    {
-                        // Clamped because this is a probability. The opacity is
-                        // carried as authored -- an asset outside [0, 1] is
-                        // reported rather than corrected -- so the clamp belongs
-                        // here, where the number is used as one, and not on the
-                        // data.
-                        float alpha = clamp(splat.opacity * response, 0.0, 1.0);
-                        float coin = hdclaude_splat_coin(path, frame.sampleIndex,
-                                                         candidateInstance,
-                                                         candidateSplat);
-                        if (coin < alpha)
-                        {
-                            rayQueryGenerateIntersectionEXT(query, hit);
-                        }
-                    }
-                }
-                else if (candidateGeometry.segments != 0ul)
-                {
-                    int candidateSegment =
-                        rayQueryGetIntersectionPrimitiveIndexEXT(query, false);
-                    SegmentBuffer curveSegments =
-                        SegmentBuffer(candidateGeometry.segments);
-                    uint base = uint(candidateSegment) * 10u;
-                    vec3 pa = vec3(curveSegments.values[base + 0u],
-                                   curveSegments.values[base + 1u],
-                                   curveSegments.values[base + 2u]);
-                    float ra = curveSegments.values[base + 3u];
-                    vec3 pb = vec3(curveSegments.values[base + 5u],
-                                   curveSegments.values[base + 6u],
-                                   curveSegments.values[base + 7u]);
-                    float rb = curveSegments.values[base + 8u];
-
-                    // The object-space ray, which is the space the segments are
-                    // in. Asking the query for it rather than transforming the
-                    // world ray keeps the two from disagreeing about a
-                    // non-uniform scale.
-                    vec3 candidateOrigin =
-                        rayQueryGetIntersectionObjectRayOriginEXT(query, false);
-                    vec3 candidateDirection =
-                        rayQueryGetIntersectionObjectRayDirectionEXT(query, false);
-
-                    float hit = hdclaude_intersect_segment(
-                        candidateOrigin, candidateDirection, pa, ra, pb, rb);
-                    // Inside the ray's own interval, and nearer than the hit
-                    // already committed. A triangle hit is tested against both
-                    // by the implementation; a *generated* one is whatever the
-                    // shader says it is, so the shader owes the check. Below
-                    // tMin an offset ray is stopped by the surface it just
-                    // left, which at a curve joint is a second segment
-                    // coincident with the first.
-                    //
-                    // The committed hit is the half that was the crescent at
-                    // every curve joint (roadmap open question 5). Where two
-                    // segments meet, a ray that has found the surface also
-                    // meets the neighbouring segment's end sphere *behind* it,
-                    // inside the solid. Vulkan's closest hit determination
-                    // drops a confirmed hit with t > t_max; the driver this was
-                    // measured on committed it whenever that box was visited
-                    // later, so the surface reported depended on traversal
-                    // order. A chain of four segments and the one segment
-                    // describing the same capsule differed at 656 of 36,864
-                    // depths without this comparison and at none with it.
-                    float committedT =
-                        rayQueryGetIntersectionTypeEXT(query, true) !=
-                                gl_RayQueryCommittedIntersectionNoneEXT
-                            ? rayQueryGetIntersectionTEXT(query, true)
-                            : 1.0e30;
-                    if (hit >= rayQueryGetRayTMinEXT(query) && hit < committedT)
-                    {
-                        rayQueryGenerateIntersectionEXT(query, hit);
-                    }
-                }
-            }
-        }
-
-        // Either kind of committed intersection is a surface. A curve reports
-        // no barycentrics -- there is no triangle to have any -- and the shade
-        // kernel rebuilds its geometry from the segment and the hit point.
-        uint committed = rayQueryGetIntersectionTypeEXT(query, true);
-        hitGeometry = committed == gl_RayQueryCommittedIntersectionTriangleEXT ||
-                      committed == gl_RayQueryCommittedIntersectionGeneratedEXT;
-        tGeometry = hitGeometry ? rayQueryGetIntersectionTEXT(query, true)
-                                : 1.0e30;
-        if (hitGeometry)
-        {
-            barycentrics =
-                committed == gl_RayQueryCommittedIntersectionTriangleEXT
-                    ? rayQueryGetIntersectionBarycentricsEXT(query, true)
-                    : vec2(0.0);
-            instance = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
-            primitive = rayQueryGetIntersectionPrimitiveIndexEXT(query, true);
-        }
+        // Primary while it is still the camera's ray: the first bounce, and
+        // no collision in a medium yet (README semantics rule 3).
+        extend_closest(origin, direction,
+                       extendParams.bounce == 0u && collisions == 0, path,
+                       hitGeometry, tGeometry, barycentrics, instance,
+                       primitive);
 
         // An analytic light is intersected in closed form and competes with the
         // geometry hit on distance, which is what makes it an opaque emitter: a
@@ -484,6 +595,11 @@ void main()
     if (frame.splatTransport == HDCLAUDE_SPLAT_VOLUME &&
         frame.splatInstanceCount > 0u)
     {
+        // The volumes that affect the ray the walk ended on, with their
+        // intervals along it.
+        uint cullVolumes_ =
+            hdclaude_cull_volumes(extendParams.bounce == 0u && collisions == 0);
+        hdclaude_cull_prepare(origin, direction, cullVolumes_);
         float bound = min(tGeometry, tLight);
         for (uint i = 0u; i < frame.splatInstanceCount; ++i)
         {
@@ -495,11 +611,36 @@ void main()
             }
             SplatVolume volume = SplatVolumeBuffer(cloud.splatVolume).value;
 
+            // Only the stretches of the ray this cloud's cull volumes keep
+            // (README semantics rule 7). Free flights are memoryless, so a
+            // walk over each kept stretch in turn is the walk over the kept
+            // part of the ray, and the first collision found is the nearest.
+            uint cloudVolumes = cullVolumes_ & instanceCullLinks.values[index];
             float collision;
             vec3 emitted;
-            if (hdclaude_splat_volume_collision(cloud, volume, origin, direction,
-                                                0.0, bound, rng, collision,
-                                                emitted))
+            bool collided = false;
+            if (cloudVolumes == 0u)
+            {
+                collided = hdclaude_splat_volume_collision(
+                    cloud, volume, origin, direction, 0.0, bound, rng,
+                    collision, emitted);
+            }
+            else
+            {
+                float t = 0.0;
+                float stretchEnd;
+                for (uint guard = 0u;
+                     !collided && guard <= HDCLAUDE_MAX_CULL_VOLUMES &&
+                     hdclaude_cull_next(t, bound, cloudVolumes, stretchEnd);
+                     ++guard)
+                {
+                    collided = hdclaude_splat_volume_collision(
+                        cloud, volume, origin, direction, t, stretchEnd, rng,
+                        collision, emitted);
+                    t = stretchEnd;
+                }
+            }
+            if (collided)
             {
                 // A pure absorber emits and stops. The radiance is added here
                 // rather than carried in a hit record because there is nowhere

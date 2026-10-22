@@ -51,6 +51,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (reconstructionModel)
                          (reconstructionAutoExposure)
                          (lightGeometry)
+                         (cullVolumes)
                          (splatTransport)
                          (curveGeometry)
                          (curveSides)
@@ -158,6 +159,7 @@ bool HdClaudeRenderPass::Framing::operator==(const Framing& other) const
 {
     return width == other.width && height == other.height &&
            sceneRevision == other.sceneRevision &&
+           cullRevision == other.cullRevision &&
            settingsVersion == other.settingsVersion &&
            std::memcmp(camera.cameraToWorld, other.camera.cameraToWorld,
                        sizeof(camera.cameraToWorld)) == 0 &&
@@ -517,11 +519,17 @@ void HdClaudeRenderPass::_Execute(
     HdClaudeCompileBoundMaterials(
         static_cast<HdClaudeRenderParam*>(_renderDelegate->GetRenderParam()));
 
+    // Before either revision is read, so turning the setting over is part of
+    // this frame's snapshot rather than a reason to take another.
+    store->SetCullVolumesEnabled(
+        _renderDelegate->GetRenderSetting<bool>(_tokens->cullVolumes, true));
+
     Framing framing;
     framing.camera = cameraResult.camera;
     framing.width = width;
     framing.height = height;
     framing.sceneRevision = store->Revision();
+    framing.cullRevision = store->CullRevision();
     framing.settingsVersion = settingsVersion;
 
     // --- Tessellation ---------------------------------------------------------
@@ -682,6 +690,9 @@ void HdClaudeRenderPass::_Execute(
                 tracer->LastDisplacementReusedCount());
             _uploadedRevision = framing.sceneRevision;
             _hasUploaded = true;
+            // A published scene renumbers the volumes with it, so they are
+            // uploaded again below whatever their own revision says.
+            _uploadedCullRevision = 0;
         } catch (const std::exception& error) {
             // Not committed: _uploadedRevision keeps its old value, so the next
             // execute retries this revision. A failure that advanced the
@@ -689,6 +700,25 @@ void HdClaudeRenderPass::_Execute(
             // back short of reloading the stage.
             HdClaudeTrace("scene publication failed: %s", error.what());
             TF_RUNTIME_ERROR("hdClaude: could not publish the scene: %s",
+                             error.what());
+            markConverged(noteFailure());
+            return;
+        }
+    }
+
+    // --- Cull volumes -----------------------------------------------------------
+    //
+    // Their placement and shape, on their own: moving a volume uploads these
+    // and nothing else (docs/cull-volumes.md 3.2).
+    if (_hasUploaded && _uploadedCullRevision != framing.cullRevision) {
+        const std::vector<hdclaude::CullVolume> volumes = store->CullVolumes();
+        try {
+            tracer->SetCullVolumes(volumes);
+            _uploadedCullRevision = framing.cullRevision;
+            HdClaudeTrace("cull volumes uploaded: %zu", volumes.size());
+        } catch (const std::exception& error) {
+            HdClaudeTrace("cull volume upload failed: %s", error.what());
+            TF_RUNTIME_ERROR("hdClaude: could not upload the cull volumes: %s",
                              error.what());
             markConverged(noteFailure());
             return;

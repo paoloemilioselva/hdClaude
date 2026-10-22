@@ -95,6 +95,8 @@ std::vector<BindingDescription> KernelBindings()
     bindings.push_back(storage(22, "environmentDistribution"));
     bindings.push_back(storage(23, "pathWavelengths"));
     bindings.push_back(storage(24, "spectralTables"));
+    bindings.push_back(storage(33, "cullVolumes"));
+    bindings.push_back(storage(34, "instanceCullLinks"));
 
     return bindings;
 }
@@ -117,6 +119,12 @@ struct ShadePush {
 
 /// Mirrors EnvironmentParams in environment.comp.glsl.
 struct EnvironmentPush {
+    std::uint32_t bounce = 0;
+};
+
+/// Mirrors ExtendParams in extend.comp.glsl. The bounce decides whether the
+/// ray is primary, which is what a cull volume's two flags are about.
+struct ExtendPush {
     std::uint32_t bounce = 0;
 };
 
@@ -179,7 +187,13 @@ struct FrameBlock {
     /// walk needs a range rather than a list of its own.
     std::uint32_t splatInstanceBegin;
     std::uint32_t splatInstanceCount;
-    std::uint32_t padTail;
+    /// Cull volumes: how many, which affect each kind of ray (and can contain
+    /// anything), and whether each kind has exception placements. The first
+    /// takes the slot a pad held. See Scene::cullVolumeCount.
+    std::uint32_t cullVolumeCount;
+    std::uint32_t cullPrimaryVolumes;
+    std::uint32_t cullSecondaryVolumes;
+    std::uint32_t cullExceptions;
 };
 
 /// The radical inverse of `index` in `base`, one coordinate of a Halton
@@ -550,7 +564,7 @@ PathTracer::PathTracer(const VulkanContext& context, VulkanAllocator& allocator,
     };
 
     _raygen = build("raygen.comp.glsl", 0);
-    _extend = build("extend.comp.glsl", 0);
+    _extend = build("extend.comp.glsl", sizeof(ExtendPush));
     _prepareDispatch = build("prepare_dispatch.comp.glsl", sizeof(std::uint32_t));
     _materialSort = build("material_sort.comp.glsl", sizeof(std::uint32_t));
     _environment = build("environment.comp.glsl", sizeof(EnvironmentPush));
@@ -1287,6 +1301,62 @@ void PathTracer::SetScene(const Scene& publishedScene,
         _domeShadowLink = scene.domeShadowLink;
     }
 
+    // --- Cull volume linking -------------------------------------------------
+    // One word a placement, mesh placements then splat placements, which is the
+    // custom index order. Always allocated, like the light-linking membership.
+    {
+        std::vector<std::uint32_t> links;
+        links.reserve(scene.instances.size() + scene.splatInstances.size() + 1);
+        _cullExceptions = 0;
+        const auto note = [&](std::uint32_t cullLinks, bool visible) {
+            links.push_back(cullLinks);
+            if (!visible) {
+                return;
+            }
+            const std::uint8_t mask = CullInstanceMask(
+                cullLinks, scene.cullPrimaryVolumes, scene.cullSecondaryVolumes);
+            if (mask & kInstanceMaskPrimaryException) {
+                _cullExceptions |= 1u;
+            }
+            if (mask & kInstanceMaskSecondaryException) {
+                _cullExceptions |= 2u;
+            }
+        };
+        for (const MeshInstance& instance : scene.instances) {
+            note(instance.cullLinks, instance.visible);
+        }
+        for (const SplatInstance& instance : scene.splatInstances) {
+            note(instance.cullLinks, instance.visible);
+        }
+        if (links.empty()) {
+            links.push_back(0u);
+        }
+        const VkDeviceSize size = links.size() * sizeof(std::uint32_t);
+
+        BufferDescription staging;
+        staging.size = size;
+        staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        staging.domain = BufferDomain::HostUpload;
+        staging.debugName = "instanceCullLinks.staging";
+        VulkanBuffer upload(_allocator, staging);
+        upload.Write(links.data(), size);
+
+        _instanceCullLinks = MakeStorage(_allocator, size, "instanceCullLinks");
+        _context.SubmitImmediate([&](VkCommandBuffer command) {
+            VkBufferCopy region{};
+            region.size = size;
+            vkCmdCopyBuffer(command, upload.Handle(),
+                            _instanceCullLinks.Handle(), 1, &region);
+        });
+
+        _cullVolumeCount = std::min(scene.cullVolumeCount, kMaxCullVolumes);
+        _cullPrimaryVolumes = scene.cullPrimaryVolumes;
+        _cullSecondaryVolumes = scene.cullSecondaryVolumes;
+        if (!_cullVolumes.Valid()) {
+            SetCullVolumes({});
+        }
+    }
+
     // --- Textures ------------------------------------------------------------
     // Uploaded at the top of this function, before the displacement pass that
     // samples them.
@@ -1616,6 +1686,46 @@ void PathTracer::WriteDescriptors(VkDescriptorSet set,
     pipeline.WriteBuffer(set, 22, _environmentDistribution);
     pipeline.WriteBuffer(set, 23, slot.wavelengths);
     pipeline.WriteBuffer(set, 24, _spectralTables);
+    pipeline.WriteBuffer(set, 33, _cullVolumes);
+    pipeline.WriteBuffer(set, 34, _instanceCullLinks);
+}
+
+void PathTracer::SetCullVolumes(const std::vector<CullVolume>& volumes)
+{
+    _context.RequireLive("PathTracer::SetCullVolumes");
+    if (!_cullVolumes.Valid()) {
+        _cullVolumes = MakeStorage(_allocator, kMaxCullVolumes * sizeof(CullVolume),
+                                   "cullVolumes");
+        ++_resourceGeneration;
+    }
+
+    // Every slot written, the unused ones as volumes that contain nothing, so
+    // a kernel that read past the count would still cull nothing.
+    std::vector<CullVolume> table(kMaxCullVolumes);
+    _cullValidVolumes = 0;
+    for (std::size_t i = 0; i < volumes.size() && i < kMaxCullVolumes; ++i) {
+        table[i] = volumes[i];
+        if (volumes[i].shape != CullShape::None) {
+            _cullValidVolumes |= 1u << i;
+        }
+    }
+    const VkDeviceSize size = table.size() * sizeof(CullVolume);
+
+    BufferDescription staging;
+    staging.size = size;
+    staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    staging.domain = BufferDomain::HostUpload;
+    staging.debugName = "cullVolumes.staging";
+    VulkanBuffer upload(_allocator, staging);
+    upload.Write(table.data(), size);
+    // Safe between frames: a frame is traced and waited for inside
+    // BeginFrame, so nothing is reading this buffer now.
+    _context.SubmitImmediate([&](VkCommandBuffer command) {
+        VkBufferCopy region{};
+        region.size = size;
+        vkCmdCopyBuffer(command, upload.Handle(), _cullVolumes.Handle(), 1,
+                        &region);
+    });
 }
 
 std::vector<std::uint32_t> PathTracer::MaterialCounts() const
@@ -2510,7 +2620,10 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     block.splatTransport = static_cast<std::uint32_t>(settings.splatTransport);
     block.splatInstanceBegin = _splatInstanceBegin;
     block.splatInstanceCount = _splatInstanceCount;
-    block.padTail = 0;
+    block.cullVolumeCount = _cullVolumeCount;
+    block.cullPrimaryVolumes = _cullPrimaryVolumes & _cullValidVolumes;
+    block.cullSecondaryVolumes = _cullSecondaryVolumes & _cullValidVolumes;
+    block.cullExceptions = _cullExceptions;
     block.linkWords = _linkWords;
     block.domeLightLink = _domeLightLink;
     block.domeShadowLink = _domeShadowLink;
@@ -2675,8 +2788,11 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
                 stamp(base + 1);
 
                 stamp(base + 2);
+                ExtendPush extendPush;
+                extendPush.bounce = bounce;
                 _extend.DispatchIndirect(command, extendSet, slot.dispatchArgs,
-                                         kDispatchSlotActive * kDispatchArgStride);
+                                         kDispatchSlotActive * kDispatchArgStride,
+                                         &extendPush, sizeof(extendPush));
                 Barrier(command);
                 stamp(base + 3);
 

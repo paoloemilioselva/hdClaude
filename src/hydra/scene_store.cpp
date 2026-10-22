@@ -2,6 +2,10 @@
 
 #include "trace.h"
 
+#include "pxr/base/tf/diagnostic.h"
+#include "pxr/base/tf/stringUtils.h"
+#include "pxr/imaging/hd/collectionExpressionEvaluator.h"
+
 #include <algorithm>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -110,6 +114,84 @@ void HdClaudeSceneStore::RemoveLight(const SdfPath& id)
     }
 }
 
+void HdClaudeSceneStore::PublishCullVolume(const SdfPath& id,
+                                           HdClaudeCullVolumeEntry entry)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    const auto existing = _cullVolumes.find(id);
+    // What decides instance masks: whether the volume takes part at all, which
+    // rays it affects, and what it links. Invert and placement do not, and a
+    // volume that only moved must not cost a scene publication.
+    constexpr std::uint32_t kKinds =
+        hdclaude::kCullAffectsPrimary | hdclaude::kCullAffectsSecondary;
+    const bool structural =
+        existing == _cullVolumes.end() ||
+        existing->second.active != entry.active ||
+        (existing->second.volume.flags & kKinds) != (entry.volume.flags & kKinds) ||
+        existing->second.linksEverything != entry.linksEverything ||
+        existing->second.cullLink.GetText() != entry.cullLink.GetText();
+    _cullVolumes[id] = std::move(entry);
+    if (structural) {
+        ++_revision;
+    }
+    ++_cullRevision;
+}
+
+void HdClaudeSceneStore::RemoveCullVolume(const SdfPath& id)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (_cullVolumes.erase(id) != 0) {
+        ++_revision;
+        ++_cullRevision;
+    }
+}
+
+void HdClaudeSceneStore::SetSceneIndex(const HdSceneIndexBaseRefPtr& sceneIndex)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    _sceneIndex = sceneIndex;
+}
+
+void HdClaudeSceneStore::SetCullVolumesEnabled(bool enabled)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (enabled != _cullVolumesEnabled) {
+        _cullVolumesEnabled = enabled;
+        ++_revision;
+        ++_cullRevision;
+    }
+}
+
+std::uint64_t HdClaudeSceneStore::CullRevision() const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    return _cullRevision;
+}
+
+std::vector<SdfPath> HdClaudeSceneStore::_ActiveCullVolumes() const
+{
+    std::vector<SdfPath> active;
+    if (!_cullVolumesEnabled) {
+        return active;
+    }
+    for (const auto& [path, volume] : _cullVolumes) {
+        if (volume.active && active.size() < hdclaude::kMaxCullVolumes) {
+            active.push_back(path);
+        }
+    }
+    return active;
+}
+
+std::vector<hdclaude::CullVolume> HdClaudeSceneStore::CullVolumes() const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    std::vector<hdclaude::CullVolume> volumes;
+    for (const SdfPath& path : _ActiveCullVolumes()) {
+        volumes.push_back(_cullVolumes.at(path).volume);
+    }
+    return volumes;
+}
+
 bool HdClaudeSceneStore::HasMaterial(const SdfPath& id) const
 {
     std::lock_guard<std::mutex> lock(_mutex);
@@ -148,6 +230,66 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
     // has none, still renders -- a dropped prim is much harder to diagnose than
     // an obviously untextured one.
     materials.push_back(_fallback);
+
+    // Cull volumes: which affect each kind of ray, and which geometry each
+    // links, as one bit per volume. The bits are numbered as CullVolumes()
+    // numbers the volumes, so the kernels' per-placement links and the volume
+    // table agree.
+    const std::vector<SdfPath> activeCullVolumes = _ActiveCullVolumes();
+    std::vector<HdCollectionExpressionEvaluator> cullLinks;
+    std::uint32_t cullLinksEverything = 0;
+    for (std::size_t bit = 0; bit < activeCullVolumes.size(); ++bit) {
+        const HdClaudeCullVolumeEntry& volume =
+            _cullVolumes.at(activeCullVolumes[bit]);
+        if (volume.volume.flags & hdclaude::kCullAffectsPrimary) {
+            scene.cullPrimaryVolumes |= 1u << bit;
+        }
+        if (volume.volume.flags & hdclaude::kCullAffectsSecondary) {
+            scene.cullSecondaryVolumes |= 1u << bit;
+        }
+        if (volume.linksEverything) {
+            cullLinksEverything |= 1u << bit;
+            cullLinks.emplace_back();
+        } else if (volume.cullLink.IsEmpty() || !_sceneIndex) {
+            // Links nothing: an evaluator left empty never matches.
+            cullLinks.emplace_back();
+        } else {
+            cullLinks.emplace_back(_sceneIndex, volume.cullLink);
+        }
+    }
+    scene.cullVolumeCount = static_cast<std::uint32_t>(activeCullVolumes.size());
+    // The membership of one Hydra prim, which every placement of it shares.
+    // Instances of a native instance or a point instancer are not resolved
+    // one by one, the limit HdsiLightLinkingSceneIndex has for light links.
+    const auto cullLinksOf = [&](const SdfPath& path) -> std::uint32_t {
+        std::uint32_t links = cullLinksEverything;
+        for (std::size_t bit = 0; bit < cullLinks.size(); ++bit) {
+            if (!cullLinks[bit].IsEmpty() && cullLinks[bit].Match(path)) {
+                links |= 1u << bit;
+            }
+        }
+        return links;
+    };
+    {
+        std::vector<std::string> ignored;
+        if (_cullVolumesEnabled) {
+            std::size_t active = 0;
+            for (const auto& [path, volume] : _cullVolumes) {
+                if (volume.active && ++active > hdclaude::kMaxCullVolumes) {
+                    ignored.push_back(path.GetString());
+                }
+            }
+        }
+        const std::string overflow = TfStringJoin(ignored, ", ");
+        if (overflow != _reportedCullOverflow) {
+            if (!overflow.empty()) {
+                TF_WARN("hdClaude: at most %u cull volumes are honoured, by "
+                        "path; these are ignored: %s",
+                        hdclaude::kMaxCullVolumes, overflow.c_str());
+            }
+            _reportedCullOverflow = overflow;
+        }
+    }
 
     // Light-linking categories, numbered by the lights that name them. A
     // category no light names cannot change anything, so geometry that
@@ -279,8 +421,10 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
         const bool matched = previous != _previousTransforms.end() &&
                              previous->second.size() == mesh.transforms.size();
 
+        const std::uint32_t meshCullLinks = cullLinksOf(path);
         for (std::size_t i = 0; i < mesh.transforms.size(); ++i) {
             hdclaude::MeshInstance instance;
+            instance.cullLinks = meshCullLinks;
             instance.prototype = prototype;
             instance.transform = mesh.transforms[i];
             if (matched) {
@@ -320,8 +464,10 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
         const bool matched = previous != _previousSplatTransforms.end() &&
                              previous->second.size() == splats.transforms.size();
 
+        const std::uint32_t splatCullLinks = cullLinksOf(path);
         for (std::size_t i = 0; i < splats.transforms.size(); ++i) {
             hdclaude::SplatInstance instance;
+            instance.cullLinks = splatCullLinks;
             instance.prototype = prototype;
             instance.transform = splats.transforms[i];
             if (matched) {

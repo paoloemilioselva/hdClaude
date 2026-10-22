@@ -472,6 +472,16 @@ class PathTracer {
     /// the scene is the index here.
     void SetScene(const Scene& scene, const std::vector<CompiledMaterial>& materials);
 
+    /// Where the cull volumes are and what shape each is, indexed as the
+    /// scene's `cullLinks` bits are.
+    ///
+    /// Separate from SetScene so that moving a volume -- the interactive case
+    /// cull volumes exist for -- uploads 64 bytes a volume and rebuilds no
+    /// acceleration structure (docs/cull-volumes.md 1). Which volumes affect
+    /// which rays, and which placements they cull, are the scene's; a volume
+    /// whose shape is `CullShape::None` is present but culls nothing.
+    void SetCullVolumes(const std::vector<CullVolume>& volumes);
+
     /// Begin a frame. The one entry point; nothing else invalidates anything.
     ///
     /// Every decision this frame implies -- whether the resolution changed,
@@ -775,6 +785,23 @@ class PathTracer {
     std::uint32_t _linkWords = 0;
     std::int32_t _domeLightLink = -1;
     std::int32_t _domeShadowLink = -1;
+
+    /// The cull volumes, kMaxCullVolumes of them always allocated, so a move
+    /// rewrites the contents and never the descriptor sets.
+    VulkanBuffer _cullVolumes;
+    /// Which volumes cull each placement, one word each, indexed by the custom
+    /// index a ray query reports.
+    VulkanBuffer _instanceCullLinks;
+    /// From the scene: how many volumes, and which affect each kind of ray.
+    std::uint32_t _cullVolumeCount = 0;
+    std::uint32_t _cullPrimaryVolumes = 0;
+    std::uint32_t _cullSecondaryVolumes = 0;
+    /// From the scene: bit 0 when some placement is a primary-ray exception,
+    /// bit 1 a secondary-ray one. Without one, the kernels skip the exception
+    /// query altogether.
+    std::uint32_t _cullExceptions = 0;
+    /// From SetCullVolumes: the volumes with a shape that can contain anything.
+    std::uint32_t _cullValidVolumes = 0;
 
     // The scene's texture pool: each distinct image once, referred to by a
     // material's textureSlots.

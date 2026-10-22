@@ -1,6 +1,8 @@
 # Cull volumes in hdClaude
 
-Status: design. Written 2026-10-22. Nothing here is implemented yet.
+Status: implemented, except pruning (section 6), and the GPU unit tests and
+the interactive measurement that section 7 lists as not done. Written and
+built 2026-10-22.
 
 The schema, the use cases, and the rules every renderer must follow are in
 [`extensions/cullVolume/README.md`](../extensions/cullVolume/README.md). This
@@ -168,10 +170,16 @@ not change which instances are exceptions, so it stays in the first row.
 
 Each volume's `collections/cullLink/membershipExpression` is evaluated with
 `HdCollectionExpressionEvaluator` over the terminal scene index, against each
-geometry rprim's path. The results are cached per rprim and recomputed when the
-expression or the set of rprims changes. The default collection resolves to
-`//`, which matches everything and skips evaluation. Instancer instances
-inherit the limits `HdsiLightLinkingSceneIndex` already has.
+geometry rprim's path, at every scene snapshot, and not cached. The default
+collection resolves to `//`, which matches everything and skips evaluation. A
+collection that includes nothing resolves to an *empty* expression, which in
+USD matches nothing, not everything. Only a volume with no published
+collection at all falls back to the schema's default of the whole stage.
+
+Membership is decided per Hydra prim, and every placement of that prim
+shares it. Prototypes of a native instance or a point instancer are matched
+by their own paths, not their instances' paths, which is the limit
+`HdsiLightLinkingSceneIndex` has for light links.
 
 Each instance carries a 32-bit link mask, one bit per active volume. A scene
 with more than 32 active volumes is reported, and the volumes beyond 32 are
@@ -179,8 +187,17 @@ ignored and named. They are not merged or approximated.
 
 ### 3.4 Invalid input
 
-A negative `size` or `radius`, or an unknown `axis`, is reported once per prim
-with its path, and that volume is inactive, as README rule 5 requires.
+A negative `size` or `radius`, an unknown `axis` or shape, or a singular
+transform is reported once per prim with its path, whenever the report
+changes. That volume is then ignored, as README rule 5 requires: its shape is
+`CullShape::None`, and it drops out of the per-kind volume masks the kernels
+read.
+
+A volume of size or radius zero is valid. It contains nothing, so it culls
+nothing; inverted, it keeps nothing.
+
+Purpose follows the rprims': hdClaude renders the `default` and `render`
+purposes, so a cull volume whose purpose is `guide` or `proxy` is inactive.
 
 ## 4. Settings
 
@@ -190,7 +207,7 @@ environment variable.
 | Setting | Environment variable | Default | Effect |
 | --- | --- | --- | --- |
 | `cullVolumes` | `HDCLAUDE_CULL_VOLUMES` | on | Off ignores every volume, for A/B comparison without editing the stage. |
-| `cullVolumePruning` | `HDCLAUDE_CULL_VOLUME_PRUNING` | off | Section 6. |
+| `cullVolumePruning` | `HDCLAUDE_CULL_VOLUME_PRUNING` | off | Section 6. Not implemented; there is no such setting yet. |
 
 ## 5. Validation
 
@@ -215,6 +232,40 @@ Performance is measured, not assumed: `lookdev_region.usda` with and without
 its volume, and the kernel profile (`HDCLAUDE_PROFILE_KERNELS`) for `extend`
 and `shadow`.
 
+### 5.1 What was run (2026-10-22)
+
+`tests/usd/cull_volume_equivalence.py` (ctest `usd_cull_volumes`) runs
+checks 1 to 5 above with a cube, a sphere and a plane. It adds:
+
+- a mixed case, where the block is excluded and the post beside it is culled
+  in the same ray;
+- the ray kinds, seen from above with the block out of frame: primary-only
+  culling must leave the shadow, and secondary-only culling must remove it;
+- three pairs that must *not* match.
+
+All 13 pass. Most matching pairs are identical to the pixel (z = 0), not just
+equal within noise. The first run caught one defect: a collection that
+includes nothing was read as the whole stage (section 3.3). The other 11
+suites passed with the change, so scenes without cull volumes are unaffected.
+
+The GPU unit tests for the interval functions were not written. The
+equivalence renders cover those functions end to end, but not edge cases such
+as grazing rays and rays parallel to a plane.
+
+Timing, on the gallery kitchen (1,788 instances, 8.7 M triangles; 640 px,
+128 spp, 8 bounces), with an inverted cube around the stove that affects all
+rays, and a camera framing it:
+
+| | Trace time |
+| --- | --- |
+| `HDCLAUDE_CULL_VOLUMES=0` | 815 ms |
+| on | 620 ms |
+
+24% less trace time. Memory and BVH build time (about 3.3 s) are unchanged,
+as section 1 says. A frame that showed mostly empty sky behind the region
+took 763 ms without it and 550 ms with it. Those figures say little, because
+sky pixels are cheap whether or not they are culled.
+
 ## 6. Optional: pruning for memory (`cullVolumePruning`)
 
 Off by default. When on, hdClaude also changes the acceleration structure:
@@ -231,12 +282,16 @@ turning it on, and the README of the extension says the same.
 
 ## 7. Order of work
 
-1. The adapter, the Hydra schema, and the sprim, with linking, settings, and
-   invalid-input reporting. Verified by printing the published scene index.
-2. GLSL intervals and kept lists, with GPU unit tests.
-3. The traversal refactor in `extend`, `shadow` and `specular_hit`, and the
-   instance masks. Then equivalence renders 1-4.
-4. The update path: volume edits restart accumulation without a scene
-   publication. Measured on a volume animated in usdview.
+1. Done. The adapter, the Hydra schema, and the sprim, with linking, the
+   setting, and invalid-input reporting. Checked through renders, not by
+   printing the scene index, because UsdImaging has no Python bindings in
+   this install.
+2. Done, without the GPU unit tests. GLSL intervals and kept lists.
+3. Done. The traversal refactor in `extend`, `shadow` and `specular_hit`,
+   the instance masks, and equivalence renders (5.1).
+4. Built, not yet measured. The update path: moving a volume bumps only the
+   store's cull revision, which uploads the volume table and restarts the
+   film without a scene publication. The measurement on a volume animated in
+   usdview is still to do.
 5. Performance on `lookdev_region.usda`.
 6. Pruning (section 6), only if a real scene needs the memory.

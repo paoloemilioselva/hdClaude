@@ -187,6 +187,11 @@ struct MeshInstance {
     /// `displayColor` geomprop -- which is how unbound geometry is shaded, by
     /// one material for every colour rather than one material per colour.
     float displayColor[3] = {0.5f, 0.5f, 0.5f};
+
+    /// Which cull volumes cull this placement, one bit per index into the
+    /// frame's cull volumes: its membership of each volume's `cullLink`
+    /// collection. See `CullVolume`.
+    std::uint32_t cullLinks = 0;
 };
 
 /// One object-space Gaussian splat cloud prototype.
@@ -245,7 +250,82 @@ struct SplatInstance {
     /// emits rather than reflects, so these do not decide whether it is lit;
     /// they decide whose shadow rays it occludes.
     std::vector<std::uint32_t> linkCategories;
+
+    /// Which cull volumes cull this placement. See `MeshInstance::cullLinks`.
+    std::uint32_t cullLinks = 0;
 };
+
+// --- Cull volumes --------------------------------------------------------------
+//
+// Regions inside which hits on linked geometry are discarded, per ray kind
+// (extensions/cullVolume/README.md). hdClaude culls in ray space: each volume
+// is convex, so a ray is inside it over one interval of t, and the kernels
+// trace only the parts of a ray that are kept (docs/cull-volumes.md 2).
+
+/// The most cull volumes a frame honours. Each placement carries its linking
+/// as one word and each ray one interval per volume; volumes beyond this are
+/// reported and ignored, never merged.
+inline constexpr std::uint32_t kMaxCullVolumes = 32;
+
+/// Mirrors the HDCLAUDE_CULL_* constants in path_state.glsl.
+enum class CullShape : std::uint32_t {
+    /// Contains nothing: a volume that is invalid as authored, which is
+    /// reported and ignored (README semantics rule 5).
+    None = 0,
+    /// [-1, 1] on each axis of the unit frame.
+    Cube = 1,
+    /// Radius one about the unit frame's origin.
+    Sphere = 2,
+    /// The half-space whose `axis` coordinate is negative.
+    Plane = 3,
+};
+
+inline constexpr std::uint32_t kCullAffectsPrimary = 1u;
+inline constexpr std::uint32_t kCullAffectsSecondary = 2u;
+inline constexpr std::uint32_t kCullInvert = 4u;
+
+/// One cull volume as the kernels read it. Mirrors CullVolume in
+/// path_state.glsl, scalar layout, 64 bytes.
+///
+/// The transform takes a world point into the shape's *unit* frame, with the
+/// size or radius folded in, so the kernels test against fixed shapes and an
+/// affine map keeps the ray parameter t unchanged.
+struct CullVolume {
+    /// World to unit frame, row-major 3x4.
+    float worldToUnit[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+    CullShape shape = CullShape::None;
+    /// The plane's normal axis, 0 to 2. Unused by the other shapes.
+    std::uint32_t axis = 2;
+    /// kCullAffectsPrimary, kCullAffectsSecondary, kCullInvert.
+    std::uint32_t flags = 0;
+    std::uint32_t pad = 0;
+};
+static_assert(sizeof(CullVolume) == 64, "CullVolume mirrors a 64-byte GLSL struct");
+
+/// TLAS instance mask bits. A ray of each kind traces its *regular* bit over
+/// the parts of the ray that are kept, and its *exception* bit over the whole
+/// ray with an exact test per hit. Regular means culled by every volume that
+/// affects that kind of ray, so the kept parts of the ray are the same for it
+/// as for every other regular placement (docs/cull-volumes.md 2.1).
+inline constexpr std::uint8_t kInstanceMaskPrimary = 0x01;
+inline constexpr std::uint8_t kInstanceMaskPrimaryException = 0x02;
+inline constexpr std::uint8_t kInstanceMaskSecondary = 0x04;
+inline constexpr std::uint8_t kInstanceMaskSecondaryException = 0x08;
+
+/// The mask a visible placement is given, from which volumes cull it and which
+/// volumes affect each kind of ray.
+inline std::uint8_t CullInstanceMask(std::uint32_t cullLinks,
+                                     std::uint32_t primaryVolumes,
+                                     std::uint32_t secondaryVolumes)
+{
+    const bool primaryRegular = (cullLinks & primaryVolumes) == primaryVolumes;
+    const bool secondaryRegular =
+        (cullLinks & secondaryVolumes) == secondaryVolumes;
+    return static_cast<std::uint8_t>(
+        (primaryRegular ? kInstanceMaskPrimary : kInstanceMaskPrimaryException) |
+        (secondaryRegular ? kInstanceMaskSecondary
+                          : kInstanceMaskSecondaryException));
+}
 
 /// What kind of emitter a Light is. Mirrors `path_state.glsl`.
 enum class LightType : std::uint32_t {
@@ -497,6 +577,18 @@ struct Scene {
     std::int32_t domeLightLink = -1;
     /// The dome light's `shadowLink` category, or -1.
     std::int32_t domeShadowLink = -1;
+
+    // --- Cull volumes ---------------------------------------------------------
+    //
+    // Which volumes affect each kind of ray, one bit per volume. These decide
+    // which placements are regular and which are exceptions, so they are part
+    // of the scene. Where each volume *is* is not: that is uploaded on its own
+    // (PathTracer::SetCullVolumes), so moving one rebuilds nothing.
+
+    /// How many cull volumes there are, at most kMaxCullVolumes.
+    std::uint32_t cullVolumeCount = 0;
+    std::uint32_t cullPrimaryVolumes = 0;
+    std::uint32_t cullSecondaryVolumes = 0;
 
     std::uint64_t revision = 0;
 

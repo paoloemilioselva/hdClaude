@@ -41,6 +41,10 @@ class HDCLAUDE_API HdClaudeRenderPass final : public HdRenderPass {
         unsigned int width = 0;
         unsigned int height = 0;
         std::uint64_t sceneRevision = 0;
+        /// The cull volumes' own revision. A volume that only moved changes
+        /// this and not the scene's, so it restarts the film and uploads the
+        /// volumes without publishing the scene.
+        std::uint64_t cullRevision = 0;
         unsigned int settingsVersion = 0;
 
         bool operator==(const Framing& other) const;
@@ -50,6 +54,8 @@ class HDCLAUDE_API HdClaudeRenderPass final : public HdRenderPass {
     HdClaudeRenderDelegate* _renderDelegate;
 
     Framing _framing;
+    /// The cull revision whose volumes the tracer holds.
+    std::uint64_t _uploadedCullRevision = 0;
     /// Whether every rprim has to be resynced before the next frame.
     ///
     /// Set when a setting that decides what geometry an rprim *is* changed,

@@ -15,7 +15,9 @@
 
 #include "pxr/base/tf/token.h"
 #include "pxr/imaging/hd/material.h"
+#include "pxr/imaging/hd/sceneIndex.h"
 #include "pxr/usd/sdf/path.h"
+#include "pxr/usd/sdf/pathExpression.h"
 
 #include <cstdint>
 #include <map>
@@ -151,6 +153,32 @@ struct HdClaudeLightEntry {
     TfToken shadowLink;
 };
 
+/// A cull volume as published by its Hydra prim (docs/cull-volumes.md).
+///
+/// Two kinds of field, because they cost different amounts to change. The
+/// volume's placement, shape and invert flag are uploaded on their own, so a
+/// volume can be moved interactively without a scene publication. Whether it is
+/// active, which rays it affects and which geometry it links decide every
+/// placement's instance mask, and changing those publishes the scene.
+struct HdClaudeCullVolumeEntry {
+    /// World-to-unit transform, shape, axis and flags, as the kernels read it.
+    /// `CullShape::None` when the volume is invalid as authored.
+    hdclaude::CullVolume volume;
+    /// Visible, and of a purpose this render includes.
+    bool active = true;
+    /// The `cullLink` collection's membership expression. An empty one
+    /// matches nothing, as it does in USD: it is what a collection that
+    /// includes nothing resolves to.
+    SdfPathExpression cullLink;
+    /// Whether the volume links every placement without asking `cullLink`:
+    /// the expression is `//`, or no collection was published at all, which
+    /// leaves the schema's own default of the whole stage.
+    bool linksEverything = true;
+    /// Why the volume is ignored, if it is. Reported by the prim when it
+    /// changes.
+    std::string report;
+};
+
 /// Thread-safe accumulator and snapshot source.
 class HdClaudeSceneStore {
   public:
@@ -185,11 +213,32 @@ class HdClaudeSceneStore {
     void PublishLight(const SdfPath& id, HdClaudeLightEntry entry);
     void RemoveLight(const SdfPath& id);
 
+    /// Publish a cull volume. Bumps `CullRevision` always, and `Revision` only
+    /// when what changed decides instance masks (HdClaudeCullVolumeEntry).
+    void PublishCullVolume(const SdfPath& id, HdClaudeCullVolumeEntry entry);
+    void RemoveCullVolume(const SdfPath& id);
+
+    /// The scene index cull-link expressions are evaluated against. Their
+    /// predicates may ask about any prim, which only the scene index knows.
+    void SetSceneIndex(const HdSceneIndexBaseRefPtr& sceneIndex);
+
+    /// The `cullVolumes` render setting. Off, every volume is ignored, so a
+    /// render can be compared with and without them without editing the stage.
+    void SetCullVolumesEnabled(bool enabled);
+
     // --- Consumption, from the render pass ------------------------------------
 
     /// Bumped by every publication. The render pass compares it to decide
     /// whether to rebuild, so one comparison covers geometry and shading alike.
     std::uint64_t Revision() const;
+
+    /// Bumped by every cull volume publication, including the ones that only
+    /// moved a volume. The render pass uploads `CullVolumes()` when it changes.
+    std::uint64_t CullRevision() const;
+
+    /// The active cull volumes, in the order their bits are numbered in every
+    /// snapshot's `cullLinks`: by path, the first kMaxCullVolumes of them.
+    std::vector<hdclaude::CullVolume> CullVolumes() const;
 
     /// Build a coherent scene and the material table its indices refer to.
     ///
@@ -233,12 +282,22 @@ class HdClaudeSceneStore {
     std::map<SdfPath, HdClaudeMaterialEntry> _materials;
     std::uint64_t _materialGeneration = 0;
     std::map<SdfPath, HdClaudeLightEntry> _lights;
+    std::map<SdfPath, HdClaudeCullVolumeEntry> _cullVolumes;
+    HdSceneIndexBaseRefPtr _sceneIndex;
+    bool _cullVolumesEnabled = true;
+    std::uint64_t _cullRevision = 1;
+    /// The volumes past kMaxCullVolumes the last snapshot ignored, so the
+    /// report is made when that set changes rather than on every snapshot.
+    std::string _reportedCullOverflow;
     /// What the last snapshot could not honour across lights, such as two dome
     /// lights linked differently. Reported beside the per-entry reports.
     std::vector<std::string> _snapshotReports;
     hdclaude::CompiledMaterial _fallback;
     bool _hasFallback = false;
     std::uint64_t _revision = 1;
+
+    /// The active volumes' paths in bit order. Called with the lock held.
+    std::vector<SdfPath> _ActiveCullVolumes() const;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

@@ -4,6 +4,7 @@
 #include "trace.h"
 
 #include "camera.h"
+#include "cull_volume.h"
 #include "light.h"
 #include "material.h"
 #include "basis_curves.h"
@@ -48,6 +49,8 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (reconstructionModel)
                          (reconstructionAutoExposure)
                          (lightGeometry)
+                         (cullVolumes)
+                         ((cullVolumePrimType, "cullVolume"))
                          (curveGeometry)
                          (splatTransport)
                          (device)
@@ -98,6 +101,7 @@ const std::vector<std::pair<TfToken, std::string>>& HdClaudeEnvironmentSettings(
         {_tokens->environmentIntensity, "HDCLAUDE_ENVIRONMENT_INTENSITY"},
         {_tokens->sunIntensity, "HDCLAUDE_SUN_INTENSITY"},
         {_tokens->lightGeometry, "HDCLAUDE_LIGHT_GEOMETRY"},
+        {_tokens->cullVolumes, "HDCLAUDE_CULL_VOLUMES"},
         {_tokens->textureQuality, "HDCLAUDE_TEXTURE_QUALITY"},
         {_tokens->curveGeometry, "HDCLAUDE_CURVE_GEOMETRY"},
         {_tokens->curveSides, "HDCLAUDE_CURVE_SIDES"},
@@ -166,6 +170,9 @@ TfTokenVector MakeSupportedSprimTypes()
         HdPrimTypeTokens->camera,
         HdPrimTypeTokens->material,
         HdPrimTypeTokens->extComputation,
+        // Published by extensions/cullVolume's UsdImaging adapter. A stage
+        // without that plugin simply has none.
+        _tokens->cullVolumePrimType,
     };
     types.insert(types.end(), kSupportedLightTypes.begin(),
                  kSupportedLightTypes.end());
@@ -679,6 +686,9 @@ HdSprim* HdClaudeRenderDelegate::CreateSprim(const TfToken& typeId,
     if (IsSupportedLightType(typeId)) {
         return new HdClaudeLight(typeId, sprimId);
     }
+    if (typeId == _tokens->cullVolumePrimType) {
+        return new HdClaudeCullVolume(sprimId);
+    }
     TF_WARN("hdClaude: unsupported sprim type <%s>", typeId.GetText());
     return nullptr;
 }
@@ -696,6 +706,9 @@ HdSprim* HdClaudeRenderDelegate::CreateFallbackSprim(const TfToken& typeId)
     }
     if (IsSupportedLightType(typeId)) {
         return new HdClaudeLight(typeId, SdfPath::EmptyPath());
+    }
+    if (typeId == _tokens->cullVolumePrimType) {
+        return new HdClaudeCullVolume(SdfPath::EmptyPath());
     }
     return nullptr;
 }
@@ -987,6 +1000,11 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
          VtValue(std::string(TfGetenv("HDCLAUDE_SPLAT_TRANSPORT", "coverage")))},
         {"Light geometry", _tokens->lightGeometry,
          VtValue(TfGetenvBool("HDCLAUDE_LIGHT_GEOMETRY", false))},
+        // On by default: a cull volume in the stage is authored intent. Off
+        // ignores every one of them, for comparing a render with and without
+        // them without editing the stage (docs/cull-volumes.md 4).
+        {"Cull volumes", _tokens->cullVolumes,
+         VtValue(TfGetenvBool("HDCLAUDE_CULL_VOLUMES", true))},
 
         // Reconstruction, and which model reconstructs.
         //

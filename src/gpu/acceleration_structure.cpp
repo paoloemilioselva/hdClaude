@@ -1166,7 +1166,15 @@ void SceneAccelerator::Update(const Scene& scene)
         // hit, and through it the material and the geometry buffers.
         entry.instanceCustomIndex =
             static_cast<std::uint32_t>(&instance - scene.instances.data()) & 0xFFFFFF;
-        entry.mask = instance.visible ? 0xFF : 0x00;
+        // Which rays meet it: none when it is invisible, and otherwise every
+        // ray, through either its regular or its exception bit for each kind
+        // (scene.h, CullInstanceMask). A ray that asks for 0xFF still meets
+        // every visible placement.
+        entry.mask = instance.visible
+                         ? CullInstanceMask(instance.cullLinks,
+                                            scene.cullPrimaryVolumes,
+                                            scene.cullSecondaryVolumes)
+                         : 0x00;
         entry.instanceShaderBindingTableRecordOffset = 0;
         entry.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
         entry.accelerationStructureReference = found->second.DeviceAddress();
@@ -1194,7 +1202,11 @@ void SceneAccelerator::Update(const Scene& scene)
                     sizeof(instance.transform.m));
         entry.instanceCustomIndex =
             static_cast<std::uint32_t>(scene.instances.size() + i) & 0xFFFFFF;
-        entry.mask = instance.visible ? 0xFF : 0x00;
+        entry.mask = instance.visible
+                         ? CullInstanceMask(instance.cullLinks,
+                                            scene.cullPrimaryVolumes,
+                                            scene.cullSecondaryVolumes)
+                         : 0x00;
         entry.instanceShaderBindingTableRecordOffset = 0;
         entry.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
         entry.accelerationStructureReference = found->second.DeviceAddress();
