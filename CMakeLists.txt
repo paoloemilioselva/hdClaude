@@ -22,6 +22,8 @@ option(HDCLAUDE_ENABLE_DLSS        "Build the optional NVIDIA DLSS reconstructio
 option(HDCLAUDE_BUILD_VALIDATION_LAYERS
        "Build the Khronos Vulkan validation layers from source" OFF)
 option(HDCLAUDE_WARNINGS_AS_ERRORS "Treat hdClaude compiler warnings as errors" OFF)
+option(HDCLAUDE_BUILD_CULL_VOLUMES
+       "Build the usdCullVolume schema and its UsdImaging adapter (extensions/cullVolume)" ON)
 
 set(HDCLAUDE_OPENUSD_ROOT "$ENV{USDROOT}" CACHE PATH
     "OpenUSD install root. Defaults to the USDROOT set by setup_usd_env.bat/.sh.")
@@ -165,6 +167,9 @@ if(HDCLAUDE_BUILD_HYDRA_PLUGIN)
         "MaterialX is the only shading path (see docs/architecture.md 1.1).")
   endif()
   add_subdirectory(src/hydra)
+  if(HDCLAUDE_BUILD_CULL_VOLUMES)
+    add_subdirectory(extensions/cullVolume)
+  endif()
 endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/CMakeLists.txt")
@@ -189,6 +194,7 @@ message(STATUS "  MaterialX genglsl_pt ${HDCLAUDE_ENABLE_MATERIALX}")
 if(HDCLAUDE_ENABLE_MATERIALX)
   message(STATUS "  MaterialX libraries  ${HDCLAUDE_MATERIALX_LIBRARIES}")
 endif()
+message(STATUS "  Cull volumes ....... ${HDCLAUDE_BUILD_CULL_VOLUMES}")
 message(STATUS "  NVIDIA DLSS ........ ${HDCLAUDE_ENABLE_DLSS}")
 if(HDCLAUDE_ENABLE_VULKAN)
   if(HDCLAUDE_BUILD_VALIDATION_LAYERS)

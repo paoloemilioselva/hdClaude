@@ -1,0 +1,20 @@
+{
+  "Plugins": [
+    {
+      "Info": {
+        "Types": {
+          "UsdImagingCullVolumeAdapter": {
+            "bases": ["UsdImagingSceneIndexPrimAdapter"],
+            "primTypeName": "CullVolume",
+            "includeDerivedPrimTypes": true
+          }
+        }
+      },
+      "LibraryPath": "../$<TARGET_FILE_NAME:usdImagingCullVolume>",
+      "Name": "usdImagingCullVolume",
+      "ResourcePath": "resources",
+      "Root": "..",
+      "Type": "library"
+    }
+  ]
+}
