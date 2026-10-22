@@ -94,6 +94,7 @@ def Xform "World"
     def DistantLight "Sun"
     {
         float inputs:angle = 0.53
+        bool inputs:normalize = 1
         float inputs:intensity = 3
         float3 xformOp:rotateXYZ = (-45, 35, 0)
         uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]

@@ -3,9 +3,10 @@
     doc = """Cull volumes, use case 2: letting sunlight through a canopy.
 
     The camera stands under a dense canopy, which is above the frame. Two
-    sphere cull volumes open holes in it, culling both primary and
-    secondary rays (the defaults), so sunlight reaches the ground through
-    them as pools of light in shot. The canopy itself is never in frame, so
+    sphere cull volumes above and behind the camera open holes through it --
+    each wider than the slab is thick, or it would only thin it -- culling
+    both primary and secondary rays (the defaults), so sunlight reaches the
+    ground through them as pools of light in shot. The canopy itself is never in frame, so
     culling primary rays as well changes nothing the camera sees directly;
     it is kept on so the scene stays consistent if the camera tilts up.
     """
@@ -60,6 +61,7 @@ def Xform "World"
     def DistantLight "Sun"
     {
         float inputs:angle = 0.53
+        bool inputs:normalize = 1
         float inputs:intensity = 5
         float3 xformOp:rotateXYZ = (-65, 20, 0)
         uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
@@ -75,15 +77,15 @@ def Xform "World"
     {
         def SphereCullVolume "Gap1"
         {
-            double radius = 2.5
-            double3 xformOp:translate = (-1, 12, -8)
+            double radius = 3
+            double3 xformOp:translate = (0, 12, 1)
             uniform token[] xformOpOrder = ["xformOp:translate"]
         }
 
         def SphereCullVolume "Gap2"
         {
-            double radius = 1.5
-            double3 xformOp:translate = (3, 12, -4)
+            double radius = 2.2
+            double3 xformOp:translate = (4.5, 12, 4)
             uniform token[] xformOpOrder = ["xformOp:translate"]
         }
     }

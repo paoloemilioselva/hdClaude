@@ -96,9 +96,15 @@ def Xform "World"
     def DistantLight "Sun"
     {
         float inputs:angle = 0.53
+        bool inputs:normalize = 1
         float inputs:intensity = 3
         float3 xformOp:rotateXYZ = (-40, 30, 0)
         uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+
+    def DomeLight "Sky"
+    {
+        float inputs:intensity = 0.2
     }
 
     def CubeCullVolume "Cutaway"
