@@ -183,7 +183,7 @@ void mx_generalized_schlick_bsdf(ClosureData closureData, float weight, vec3 col
         float reflectProbability =
             transmissive ? clamp(mx_pt_luminance_weight(F), 0.05, 0.95) : 1.0;
         bsdf.pdf = dot(N, L) > 0.0
-                       ? mx_ggx_VNDF_reflection_PDF(Ht, safeAlpha, G1V, NdotV) *
+                       ? mx_pt_ggx_VNDF_reflection_PDF(Ht, safeAlpha, G1V, NdotV) *
                              reflectProbability
                        : 0.0;
         bsdf.isDelta = smoothSurface ? 1.0 : 0.0;
@@ -247,4 +247,12 @@ void mx_generalized_schlick_bsdf(ClosureData closureData, float weight, vec3 col
 
         bsdf.isDelta = smoothSurface ? 1.0 : 0.0;
     }
+}
+
+// MaterialX 1.39.5's signature, which adds `retroreflective` after the
+// roughness. Accepted and ignored, as for dielectric_bsdf, and reported by the
+// material compiler (ReportRetroreflection). 1.39.3 calls the form above.
+void mx_generalized_schlick_bsdf(ClosureData closureData, float weight, vec3 color0, vec3 color82, vec3 color90, float exponent, vec2 roughness, bool retroreflective, float thinfilm_thickness, float thinfilm_ior, vec3 N, vec3 X, int distribution, int scatter_mode, inout BSDF bsdf)
+{
+    mx_generalized_schlick_bsdf(closureData, weight, color0, color82, color90, exponent, roughness, thinfilm_thickness, thinfilm_ior, N, X, distribution, scatter_mode, bsdf);
 }

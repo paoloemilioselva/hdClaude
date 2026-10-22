@@ -137,6 +137,7 @@ compile.bat                :: the full delegate ("dev" preset)
 compile.bat dev-validation :: the full delegate, building the validation layer
 compile.bat dev-dlss       :: with the optional NVIDIA DLSS backend (Windows only)
 compile.bat clean          :: remove the build tree, then build "dev"
+compile.bat houdini-22.0   :: against Houdini 22.0's USD, as a Houdini package
 ```
 
 `compile.bat` forwards to `compile.py`, which is the build driver on every
@@ -191,6 +192,46 @@ GCC's standard library includes fewer headers transitively than MSVC's, so a
 header a file uses but reaches only through another compiles on Windows and
 not here; the first Linux build found one, `<cmath>` in `path_tracer.cpp`.
 OpenUSD's own headers are noisy under `-Wpedantic`.
+
+## Houdini
+
+`compile.bat houdini-22.0` builds the same delegate against the USD inside a
+Houdini installation, which is what Solaris and husk can load: Houdini's USD
+has its own namespace (`pxrInternal_v0_26_5__pxrReserved__` in 22.0.469), TBB
+and Python, so a plugin linked against a standalone OpenUSD of the same version
+does not load there.
+
+- **Finding Houdini.** `HDCLAUDE_HOUDINI_VERSION` (22.0 in the preset) selects
+  `cmake/HoudiniUSD.cmake` in place of `cmake/OpenUSD.cmake`. The root is
+  `HDCLAUDE_HOUDINI_ROOT` if set, else `$HFS` if it is that version, else the
+  newest `C:\Program Files\Side Effects Software\Houdini 22.0.*`. The
+  standalone environment (`setup_usd_env.bat`) is not used.
+- **Linking.** Houdini installs no `pxrConfig.cmake`, and its
+  `HoudiniConfig.cmake` describes the HDK. So `HoudiniUSD.cmake` defines,
+  over Houdini's `libpxr_*` and `MaterialX*` import libraries, the target
+  names the rest of the build links (`hd`, `usd`, `MaterialXCore`, ...).
+  Python is linked by name, since Houdini's `pyconfig.h` does not ask for it,
+  and OpenSubdiv is Houdini's static `libosdCPU_md`.
+- **MaterialX.** Houdini 22.0 ships 1.39.5, where the hardware nodes moved to
+  `MaterialXGenHw` and the stock GLSL library gained `AIRY_FRESNEL_ITERATIONS`
+  and `mx_ggx_VNDF_reflection_PDF`. hdClaude builds against both 1.39.3 and
+  1.39.5, and every material compiles. **It does not yet shade correctly
+  against 1.39.5:** `standard_surface` and `open_pbr_surface` are built
+  there from BSDF combinators whose rules hdClaude's overrides do not follow,
+  and render with fireflies and too much light. displayColor and the fallback
+  material render the same as the standalone build. See the 2026-10-22 note
+  in `implementation-notes.md`; configure warns about it.
+- **Install.** To `%USERPROFILE%\Documents\houdini22.0\hdClaude`: the plugin
+  tree in `dso/usd_plugins`, `UsdRenderers.json` (the viewport menu entry and
+  what the delegate renders) at its root, and a package,
+  `packages\hdClaude.json`, that puts it on `HOUDINI_PATH`. Houdini adds every
+  `HOUDINI_PATH` entry's `dso/usd_plugins` to the USD plugin path.
+- **No tests and no tools.** The test and gallery scripts run against the
+  standalone OpenUSD, so the preset turns `BUILD_TESTING` off and skips the
+  image tools.
+
+Another Houdini version is a copy of the preset with a different
+`HDCLAUDE_HOUDINI_VERSION`.
 
 ## Install layout
 

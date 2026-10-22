@@ -465,7 +465,7 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
             float G1V = mx_pt_ggx_smith_G1_anisotropic(
                 vec3(dot(V, Xa), dot(V, Ya), NdotV), safeAlpha);
             bsdf.pdf = dot(N, L) > 0.0
-                           ? mx_ggx_VNDF_reflection_PDF(Ht, safeAlpha, G1V, NdotV) *
+                           ? mx_pt_ggx_VNDF_reflection_PDF(Ht, safeAlpha, G1V, NdotV) *
                                  reflectProbability
                            : 0.0;
             bsdf.isDelta = smoothSurface ? 1.0 : 0.0;
@@ -634,7 +634,7 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
         float reflectProbability =
             choosesLobe ? clamp(mx_pt_luminance_weight(F), 0.0, 1.0) : 1.0;
         bsdf.pdf = dot(N, L) > 0.0
-                       ? mx_ggx_VNDF_reflection_PDF(Ht, safeAlpha, G1V, NdotV) *
+                       ? mx_pt_ggx_VNDF_reflection_PDF(Ht, safeAlpha, G1V, NdotV) *
                              reflectProbability
                        : 0.0;
         bsdf.isDelta = smoothSurface ? 1.0 : 0.0;
@@ -766,4 +766,14 @@ void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float 
 
         bsdf.isDelta = smoothSurface ? 1.0 : 0.0;
     }
+}
+
+// MaterialX 1.39.5's signature, which adds `retroreflective` after the
+// roughness. Accepted so a 1.39.5 document generates, and ignored: upstream
+// mirrors V for the reflection lobe only, and this closure samples reflection
+// and refraction together. The material compiler reports any node that asks
+// for it (ReportRetroreflection). 1.39.3 calls the form above.
+void mx_dielectric_bsdf(ClosureData closureData, float weight, vec3 tint, float ior, vec2 roughness, bool retroreflective, float thinfilm_thickness, float thinfilm_ior, vec3 N, vec3 X, int distribution, int scatter_mode, inout BSDF bsdf)
+{
+    mx_dielectric_bsdf(closureData, weight, tint, ior, roughness, thinfilm_thickness, thinfilm_ior, N, X, distribution, scatter_mode, bsdf);
 }

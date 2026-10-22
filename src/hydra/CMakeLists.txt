@@ -131,15 +131,33 @@ add_custom_command(TARGET hdClaude POST_BUILD
     VERBATIM
 )
 
+set(_plugins "${HDCLAUDE_PLUGIN_INSTALL_DIR}")
 install(TARGETS hdClaude
-    LIBRARY DESTINATION "plugin/usd"
-    RUNTIME DESTINATION "plugin/usd"
+    LIBRARY DESTINATION "${_plugins}"
+    RUNTIME DESTINATION "${_plugins}"
 )
 install(FILES "${HDCLAUDE_PLUGIN_RESOURCES}/plugInfo.json"
-    DESTINATION "plugin/usd/hdClaude/resources")
+    DESTINATION "${_plugins}/hdClaude/resources")
 install(FILES "${CMAKE_BINARY_DIR}/plugin/usd/plugInfo.json"
-    DESTINATION "plugin/usd")
+    DESTINATION "${_plugins}")
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/shaders/"
-    DESTINATION "plugin/usd/hdClaude/resources/shaders")
+    DESTINATION "${_plugins}/hdClaude/resources/shaders")
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/mtlx/"
-    DESTINATION "plugin/usd/hdClaude/resources/mtlx")
+    DESTINATION "${_plugins}/hdClaude/resources/mtlx")
+
+# ---------------------------------------------------------------------------
+# Houdini.
+#
+# A package in the user preferences puts the install prefix on HOUDINI_PATH,
+# which puts its dso/usd_plugins on the USD plugin path; UsdRenderers.json,
+# at the prefix's root, is what Solaris reads to offer the delegate in its
+# viewport menu and to know what it renders.
+# ---------------------------------------------------------------------------
+if(HDCLAUDE_HOUDINI_VERSION)
+  configure_file("${CMAKE_SOURCE_DIR}/resources/houdini/hdClaude.json.in"
+                 "${CMAKE_BINARY_DIR}/houdini/hdClaude.json" @ONLY)
+  install(FILES "${CMAKE_SOURCE_DIR}/resources/houdini/UsdRenderers.json"
+      DESTINATION ".")
+  install(FILES "${CMAKE_BINARY_DIR}/houdini/hdClaude.json"
+      DESTINATION "${HDCLAUDE_HOUDINI_USER_DIR}/packages")
+endif()

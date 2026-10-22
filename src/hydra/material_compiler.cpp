@@ -767,6 +767,7 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
         hdclaude::AuthoredDispersion(document, &dispersionDiagnostics);
     result.thinWalled =
         hdclaude::AuthoredThinWalled(document, &dispersionDiagnostics);
+    hdclaude::ReportRetroreflection(document, &dispersionDiagnostics);
     // A thin sheet does not refract, so there is no direction for dispersion to
     // spread and nothing for it to do. Said once rather than silently ignored,
     // because an author who set both asked for something the model cannot give.

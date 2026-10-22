@@ -330,6 +330,18 @@ float AuthoredDispersion(const mx::DocumentPtr& document,
 bool AuthoredThinWalled(const mx::DocumentPtr& document,
                         std::vector<std::string>* diagnostics = nullptr);
 
+/// Report every BSDF node that asks for retroreflection.
+///
+/// MaterialX 1.39.5 adds a `retroreflective` input to `conductor_bsdf`,
+/// `dielectric_bsdf` and `generalized_schlick_bsdf`. hdClaude's overrides
+/// accept it, so a 1.39.5 document generates, and ignore it: the dielectric
+/// samples reflection and refraction together, and retroreflection applies to
+/// the reflection alone. No stock surface shader sets it, so only a BSDF node
+/// authored directly can, and each one that does -- or connects it -- is
+/// reported rather than silently rendered as an ordinary reflection.
+void ReportRetroreflection(const mx::DocumentPtr& document,
+                           std::vector<std::string>* diagnostics);
+
 /// A document's displacement terminal, and how to read what it produces.
 struct DisplacementTerminal {
     /// The element to generate the displacement program from, or null when the

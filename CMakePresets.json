@@ -44,6 +44,16 @@
       "cacheVariables": {
         "HDCLAUDE_ENABLE_DLSS": "ON"
       }
+    },
+    {
+      "name": "houdini-22.0",
+      "displayName": "Full delegate against Houdini 22.0's USD (cmake/HoudiniUSD.cmake)",
+      "inherits": "dev",
+      "binaryDir": "${sourceDir}/build/houdini-22.0",
+      "cacheVariables": {
+        "HDCLAUDE_HOUDINI_VERSION": "22.0",
+        "BUILD_TESTING": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -62,6 +72,10 @@
     {
       "name": "dev-dlss",
       "configurePreset": "dev-dlss"
+    },
+    {
+      "name": "houdini-22.0",
+      "configurePreset": "houdini-22.0"
     }
   ],
   "testPresets": [

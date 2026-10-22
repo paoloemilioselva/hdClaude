@@ -183,9 +183,10 @@ links and generates with. The differences are not cosmetic:
 version of record is stated in each file. Three consequences worth keeping:
 
 - `mx_ggx_VNDF_reflection_PDF` is defined in
-  `lib/mx_pt_sampling.glsl` under its upstream name, so the definition can be
-  deleted outright when the OpenUSD distribution moves to a MaterialX that
-  supplies it.
+  `lib/mx_pt_sampling.glsl`, now as `mx_pt_ggx_VNDF_reflection_PDF`. It was
+  first written under its upstream name so that it could be deleted when
+  MaterialX supplied it. Then hdClaude had to build against 1.39.3 and
+  Houdini's 1.39.5 at once (2026-10-22), and only one of them has it.
 - `layer_bsdf`'s selection probability reads `top.throughput` — the *child's*
   value, which a leaf closure sets to `1 - directional_albedo` — so it is
   unaffected by the combinator's own throughput rule changing between versions.
@@ -7575,3 +7576,88 @@ What the code does, without a test yet of either reading:
   inside tMin and passes through. That fits where the cube's light gathers,
   but not how much of it there is: the band it describes is far narrower
   than a pixel. So the cube is not explained.
+
+## 2026-10-22 -- Building against Houdini 22.0's USD
+
+What the `houdini-22.0` preset (`cmake/HoudiniUSD.cmake`, docs/building.md)
+ran into, in the order it appeared. Houdini 22.0.469 ships OpenUSD 26.05,
+MaterialX 1.39.5 and Python 3.13; the standalone build is 26.03 with
+MaterialX 1.39.3.
+
+**Linking.** Everything compiled first time against Houdini's headers. The
+link then failed on `_Py_Dealloc` and `_Py_NoneStruct`. Stock CPython's
+`pyconfig.h` asks for its import library by `#pragma`, and Houdini's does
+not, so `python313.lib` is named explicitly. TBB's headers still link
+themselves.
+
+**MaterialX 1.39.5, four differences.** Each showed up only once the
+previous one was fixed:
+
+1. `HwImageNode.h` moved from `MaterialXGenShader/Nodes` to the new
+   `MaterialXGenHw` library. The include takes whichever exists, and
+   `MaterialXGenHw` is linked when it is defined.
+2. The stock `mx_microfacet_specular.glsl` loops to `AIRY_FRESNEL_ITERATIONS`.
+   The stock pixel stage defines it from
+   `GenOptions::hwAiryFresnelIterations`, but hdClaude owns its pixel stage,
+   so it defines it there too. The `GenOptions` field doesn't exist in 1.39.3,
+   so a `requires` check inside a template detects it.
+3. The same file now defines `mx_ggx_VNDF_reflection_PDF`, which hdClaude had
+   back-ported under the upstream name. The upstream function says 1.39.6, but
+   Houdini's 1.39.5 has it already, so a version check would have been wrong
+   either way. hdClaude's copy is now `mx_pt_ggx_VNDF_reflection_PDF`.
+4. `conductor_bsdf`, `dielectric_bsdf` and `generalized_schlick_bsdf` gained
+   a `retroreflective` input after `roughness`, so the generated calls have
+   one argument more. These were the only signature changes among the 32
+   nodedefs hdClaude overrides. Each closure now has a GLSL overload with the
+   new signature that ignores the flag. Upstream mirrors `V` for the
+   reflection lobe only, while hdClaude's dielectric samples reflection and
+   refraction together. Retroreflection is not implemented, and
+   `ReportRetroreflection` reports any node that sets or connects it. No
+   stock surface shader in 1.39.5 does.
+
+Items 1 and 2 broke every material, the fallback included. Item 4 broke only
+real materials, which is why a plugin that loaded and drew grey geometry was
+not yet a working Houdini build.
+
+**Still wrong: the stock surface shaders.** With all four fixed, every
+material compiles. A scene shaded only by displayColor then renders
+identically under both builds: same trace, and luminance statistics equal to
+five digits. The shader balls do not. Gold at 240 px, 4 spp, through the
+same script:
+
+    standalone (MaterialX 1.39.3)   mean 0.42   max 14.8    98.5% non-black
+    Houdini    (MaterialX 1.39.5)   mean 1.70   max 3397    75.9% non-black
+
+The lights, textures, camera and every other traced line agree. Diffing the
+generated programs shows why. The helper-library changes are equivalent
+(Smith G2 rewritten, `mx_matrix_mul`, `M_PI` as a macro), but
+`standard_surface` and `open_pbr_surface` are composed differently in
+1.39.5: `add_bsdf`, `multiply_bsdf_float` and conversion nodes appear where
+1.39.3's graphs had other combinators. hdClaude overrides those combinators
+with 1.39.3's rules, the ones the 2026-09 table above lists as changed
+upstream (`add_bsdf` throughput `t1 + t2`, `layer_bsdf`, `multiply_bsdf`). Its
+`add_bsdf` also picks a lobe 50/50 for sampling. Under graphs designed for the
+newer rules, the sampled densities no longer describe the responses.
+
+Not fixed. It is a port of the combinators, and of whatever else the 1.39.5
+graphs assume, validated by the furnace and closure tests against 1.39.5. The
+configure step for a Houdini build warns about it until that is done.
+
+**Verifying without a licence.** husk refuses to run without one. Houdini's
+own `python313\python.exe` doesn't check for one, and can run Houdini's USD
+and the installed plugin through `UsdImagingGL` with:
+
+- `$HFS\bin` registered through `os.add_dll_directory`, for Qt;
+- `site-packages-forced` on `PYTHONPATH`, for PySide6;
+- on `PXR_PLUGINPATH_NAME`: the installed package, `$HFS\bin\usd_plugins`,
+  and `$HFS\houdini\dso\usd_plugins`.
+
+`tests/usd/picking.py` passes 9 of 9 there.
+
+The last plugin directory is easy to miss, and leaving it out looks like a
+Houdini bug. SideFX removed the stock `UsdImagingCameraAdapter` registration
+from Houdini's `usdImaging` plugin and registers its own `HD_CameraAdapter` in
+`hdHoudini`, which lives there. Without it, no Camera prim reaches Hydra:
+`SetCameraPath` resolves nothing, the render pass gets an identity projection
+(hdClaude warns of an orthographic camera and draws black), and Storm fails
+with `HdxSimpleLightTask: camera ''`.

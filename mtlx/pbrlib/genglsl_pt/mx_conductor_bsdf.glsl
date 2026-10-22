@@ -132,7 +132,7 @@ void mx_conductor_bsdf(ClosureData closureData, float weight, vec3 ior_n, vec3 i
         float G1V = mx_pt_ggx_smith_G1_anisotropic(
             vec3(dot(V, Xa), dot(V, Ya), NdotV), safeAlpha);
         bsdf.pdf = dot(N, L) > 0.0
-                       ? mx_ggx_VNDF_reflection_PDF(Ht, safeAlpha, G1V, NdotV)
+                       ? mx_pt_ggx_VNDF_reflection_PDF(Ht, safeAlpha, G1V, NdotV)
                        : 0.0;
         bsdf.isDelta = min(roughness.x, roughness.y) <= M_FLOAT_EPS ? 1.0 : 0.0;
 
@@ -140,4 +140,13 @@ void mx_conductor_bsdf(ClosureData closureData, float weight, vec3 ior_n, vec3 i
         // consulted, which is what lets reconstruction guides work for an
         // arbitrary authored nodegraph (docs/dlss-integration.md 4).
     }
+}
+
+// MaterialX 1.39.5's signature, which adds `retroreflective` after the
+// roughness. Accepted so a 1.39.5 document generates, and ignored: hdClaude
+// does not implement retroreflection, and the material compiler reports any
+// node that asks for it (ReportRetroreflection). 1.39.3 calls the form above.
+void mx_conductor_bsdf(ClosureData closureData, float weight, vec3 ior_n, vec3 ior_k, vec2 roughness, bool retroreflective, float thinfilm_thickness, float thinfilm_ior, vec3 N, vec3 X, int distribution, inout BSDF bsdf)
+{
+    mx_conductor_bsdf(closureData, weight, ior_n, ior_k, roughness, thinfilm_thickness, thinfilm_ior, N, X, distribution, bsdf);
 }

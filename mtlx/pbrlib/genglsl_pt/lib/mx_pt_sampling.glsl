@@ -87,9 +87,11 @@ float mx_pt_uniform_sphere_pdf()
 // --- GGX visible-normal density ---------------------------------------------
 
 // MaterialX 1.39.3 provides mx_ggx_importance_sample_VNDF but not its density;
-// 1.39.6 added mx_ggx_VNDF_reflection_PDF upstream. This is that function, with
-// the same name so the definition can simply be deleted when the OpenUSD
-// distribution moves to a MaterialX that supplies it.
+// later releases add mx_ggx_VNDF_reflection_PDF upstream. This is that
+// function, under hdClaude's own prefix: hdClaude builds against both -- OpenUSD
+// 26.03's MaterialX has no such function and Houdini 22.0's (1.39.5) has it --
+// and GLSL cannot ask whether a function exists, so the upstream name would
+// either be missing or defined twice.
 //
 // Expressed in terms of MaterialX's own mx_ggx_NDF and mx_ggx_smith_G1, so it
 // cannot disagree with the distribution the sampler actually draws from.
@@ -119,7 +121,7 @@ float mx_pt_ggx_smith_G1_anisotropic(vec3 V, vec2 alpha)
     return 2.0 / (1.0 + sqrt(1.0 + a2tan2));
 }
 
-float mx_ggx_VNDF_reflection_PDF(vec3 H, vec2 alpha, float G1V, float NdotV)
+float mx_pt_ggx_VNDF_reflection_PDF(vec3 H, vec2 alpha, float G1V, float NdotV)
 {
     return mx_ggx_NDF(H, alpha) * G1V / (4.0 * NdotV);
 }

@@ -25,6 +25,12 @@ option(HDCLAUDE_WARNINGS_AS_ERRORS "Treat hdClaude compiler warnings as errors" 
 option(HDCLAUDE_BUILD_CULL_VOLUMES
        "Build the usdCullVolume schema and its UsdImaging adapter (extensions/cullVolume)" ON)
 
+# Building against the USD inside a Houdini installation rather than a
+# standalone one: its version, such as 22.0 (cmake/HoudiniUSD.cmake). Empty
+# for a standalone OpenUSD, which HDCLAUDE_OPENUSD_ROOT then names.
+set(HDCLAUDE_HOUDINI_VERSION "" CACHE STRING
+    "Build against this Houdini version's USD, e.g. 22.0. Empty: standalone OpenUSD.")
+
 set(HDCLAUDE_OPENUSD_ROOT "$ENV{USDROOT}" CACHE PATH
     "OpenUSD install root. Defaults to the USDROOT set by setup_usd_env.bat/.sh.")
 if(NOT HDCLAUDE_OPENUSD_ROOT AND WIN32)
@@ -40,7 +46,7 @@ set(HDCLAUDE_DEPS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/_deps" CACHE PATH
 set(HDCLAUDE_SHADER_CACHE_DIR "shader-cache" CACHE STRING
     "Default runtime SPIR-V cache directory")
 
-if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT AND NOT HDCLAUDE_HOUDINI_VERSION)
   if(DEFINED ENV{USDEXTRA})
     set(CMAKE_INSTALL_PREFIX "$ENV{USDEXTRA}" CACHE PATH "hdClaude install prefix" FORCE)
   endif()
@@ -147,8 +153,20 @@ if(HDCLAUDE_ENABLE_VULKAN)
   add_subdirectory(src/gpu)
 endif()
 
+# Where the plugin tree goes under the install prefix: beside OpenUSD's own
+# plugins, or where Houdini looks for them.
+set(HDCLAUDE_PLUGIN_INSTALL_DIR "plugin/usd")
 if(HDCLAUDE_BUILD_HYDRA_PLUGIN OR HDCLAUDE_ENABLE_MATERIALX)
-  include(OpenUSD)
+  if(HDCLAUDE_HOUDINI_VERSION)
+    include(HoudiniUSD)
+    set(HDCLAUDE_PLUGIN_INSTALL_DIR "dso/usd_plugins")
+    if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+      set(CMAKE_INSTALL_PREFIX "${HDCLAUDE_HOUDINI_USER_DIR}/hdClaude"
+          CACHE PATH "hdClaude install prefix" FORCE)
+    endif()
+  else()
+    include(OpenUSD)
+  endif()
 endif()
 
 if(HDCLAUDE_ENABLE_MATERIALX)
@@ -172,7 +190,10 @@ if(HDCLAUDE_BUILD_HYDRA_PLUGIN)
   endif()
 endif()
 
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/CMakeLists.txt")
+# The image tools serve the test and gallery scripts, which run against a
+# standalone OpenUSD; built against Houdini they would only run inside it.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/CMakeLists.txt" AND
+   NOT HDCLAUDE_HOUDINI_VERSION)
   add_subdirectory(tools)
 endif()
 
@@ -185,7 +206,11 @@ endif()
 # ---------------------------------------------------------------------------
 message(STATUS "")
 message(STATUS "hdClaude ${PROJECT_VERSION} configuration")
-message(STATUS "  OpenUSD root ....... ${HDCLAUDE_OPENUSD_ROOT}")
+if(HDCLAUDE_HOUDINI_VERSION)
+  message(STATUS "  Houdini ............ ${HDCLAUDE_HOUDINI_VERSION} at ${HDCLAUDE_HOUDINI_ROOT}")
+else()
+  message(STATUS "  OpenUSD root ....... ${HDCLAUDE_OPENUSD_ROOT}")
+endif()
 message(STATUS "  Install prefix ..... ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "  Dependencies ....... ${HDCLAUDE_DEPS_DIR}")
 message(STATUS "  Hydra plugin ....... ${HDCLAUDE_BUILD_HYDRA_PLUGIN}")

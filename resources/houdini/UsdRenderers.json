@@ -1,0 +1,12 @@
+{
+    "HdClaudeRendererPlugin": {
+        "valid": true,
+        "menulabel": "Claude GPU Path Tracer",
+        "menupriority": 40,
+        "aovsupport": true,
+        "needsdepth": true,
+        "depthstyle": "opengl",
+        "defaultpurposes": [ "render" ],
+        "drawmodesupport": false
+    }
+}

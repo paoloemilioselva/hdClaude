@@ -509,6 +509,14 @@ void HdClaudeRenderPass::_Execute(
     const HdClaudeCameraResult cameraResult = HdClaudeMakeRenderCamera(
         renderPassState->GetWorldToViewMatrix(),
         renderPassState->GetProjectionMatrix());
+    {
+        const GfMatrix4d projection = renderPassState->GetProjectionMatrix();
+        const HdCamera* passCamera = renderPassState->GetCamera();
+        HdClaudeTrace("camera <%s>: projection diagonal %g %g %g %g, [2][3] %g",
+                      passCamera ? passCamera->GetId().GetText() : "none",
+                      projection[0][0], projection[1][1], projection[2][2],
+                      projection[3][3], projection[2][3]);
+    }
     if (cameraResult.orthographic) {
         // Said once per framing change rather than once per frame.
         static bool warned = false;

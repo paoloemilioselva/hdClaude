@@ -30,6 +30,10 @@ target_link_libraries(hdClaudeMaterialX
         MaterialXGenShader
         MaterialXGenGlsl
 )
+# Where HwImageNode lives from MaterialX 1.39.5 on (pathtracer_generator.cpp).
+if(TARGET MaterialXGenHw)
+  target_link_libraries(hdClaudeMaterialX PUBLIC MaterialXGenHw)
+endif()
 
 # The data library location is compiled in so a test or tool can find it
 # without an environment variable, while MATERIALX_SEARCH_PATH still overrides.

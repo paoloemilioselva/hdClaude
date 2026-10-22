@@ -2,12 +2,19 @@
 
 #include <MaterialXFormat/Util.h>
 #include <MaterialXGenShader/Shader.h>
+// MaterialX 1.39.5 moved the hardware nodes into MaterialXGenHw; Houdini 22.0
+// ships that layout, a standalone OpenUSD 26.03 the earlier one.
+#if __has_include(<MaterialXGenHw/Nodes/HwImageNode.h>)
+#include <MaterialXGenHw/Nodes/HwImageNode.h>
+#else
 #include <MaterialXGenShader/Nodes/HwImageNode.h>
+#endif
 #include <MaterialXGenShader/ShaderGraph.h>
 #include <MaterialXGenShader/ShaderStage.h>
 
 #include <algorithm>
 #include <cctype>
+#include <optional>
 
 namespace hdclaude {
 namespace {
@@ -25,6 +32,25 @@ using namespace MaterialX;
 /// per-invocation, so this is a naming convention, not shared state.
 constexpr const char* kBsdfGlobal = "hdclaude_bsdf";
 constexpr const char* kDisplacementGlobal = "hdclaude_displacement";
+
+/// The thin-film Airy series length, on a MaterialX that has the option.
+///
+/// From 1.39.5 the stock `mx_microfacet_specular.glsl` loops to
+/// `AIRY_FRESNEL_ITERATIONS`, which GlslShaderGenerator::emitPixelStage
+/// defines from `GenOptions::hwAiryFresnelIterations`. This target owns the
+/// pixel stage, so it defines it too -- but only where the option exists, as
+/// older MaterialX (OpenUSD 26.03's) has neither the field nor the loop. A
+/// template, so a MaterialX without the member is a discarded branch rather
+/// than a compile error.
+template <typename Options>
+std::optional<unsigned int> AiryFresnelIterations(const Options& options)
+{
+    if constexpr (requires { options.hwAiryFresnelIterations; }) {
+        return static_cast<unsigned int>(options.hwAiryFresnelIterations);
+    } else {
+        return std::nullopt;
+    }
+}
 
 /// Whether this graph produces a displacement rather than a surface.
 ///
@@ -741,6 +767,11 @@ void PathTracerShaderGenerator::emitPixelStage(const ShaderGraph& graph,
     // methods both assume a rasteriser's prefiltered environment, which this
     // target does not have.
     emitLine("#define DIRECTIONAL_ALBEDO_METHOD 0", stage, false);
+    if (const std::optional<unsigned int> iterations =
+            AiryFresnelIterations(context.getOptions())) {
+        emitLine("#define AIRY_FRESNEL_ITERATIONS " + std::to_string(*iterations),
+                 stage, false);
+    }
     emitLineBreak(stage);
 
     // Screen-space derivatives, defined as zero.
@@ -1056,6 +1087,39 @@ bool AuthoredThinWalled(const mx::DocumentPtr& document,
         thin = authored;
     }
     return thin;
+}
+
+void ReportRetroreflection(const mx::DocumentPtr& document,
+                           std::vector<std::string>* diagnostics)
+{
+    if (!document || !diagnostics) {
+        return;
+    }
+    for (mx::ElementPtr element : document->traverseTree()) {
+        const mx::NodePtr node = element->asA<mx::Node>();
+        if (!node) {
+            continue;
+        }
+        const std::string& category = node->getCategory();
+        if (category != "conductor_bsdf" && category != "dielectric_bsdf" &&
+            category != "generalized_schlick_bsdf") {
+            continue;
+        }
+        // Inside a library's own implementation graph is not the author's.
+        if (const mx::NodeGraphPtr graph = node->getParent()->asA<mx::NodeGraph>()) {
+            if (graph->hasNodeDefString()) {
+                continue;
+            }
+        }
+        bool connected = false;
+        if (ReadBoolInput(node, "retroreflective", &connected) || connected) {
+            diagnostics->push_back(
+                "node '" + node->getNamePath() + "' " +
+                (connected ? "connects" : "sets") +
+                " 'retroreflective', which hdClaude does not implement; it "
+                "renders as an ordinary reflection");
+        }
+    }
 }
 
 float AuthoredDispersion(const mx::DocumentPtr& document,

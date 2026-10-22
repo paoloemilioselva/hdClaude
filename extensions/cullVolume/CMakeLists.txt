@@ -74,12 +74,12 @@ add_custom_command(TARGET usdImagingCullVolume POST_BUILD
 )
 
 install(TARGETS usdImagingCullVolume
-    LIBRARY DESTINATION "plugin/usd"
-    RUNTIME DESTINATION "plugin/usd"
+    LIBRARY DESTINATION "${HDCLAUDE_PLUGIN_INSTALL_DIR}"
+    RUNTIME DESTINATION "${HDCLAUDE_PLUGIN_INSTALL_DIR}"
 )
 install(FILES "${_adapterResources}/plugInfo.json"
-    DESTINATION "plugin/usd/usdImagingCullVolume/resources")
+    DESTINATION "${HDCLAUDE_PLUGIN_INSTALL_DIR}/usdImagingCullVolume/resources")
 install(FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/usdCullVolume/plugInfo.json"
     "${CMAKE_CURRENT_SOURCE_DIR}/usdCullVolume/generatedSchema.usda"
-    DESTINATION "plugin/usd/usdCullVolume/resources")
+    DESTINATION "${HDCLAUDE_PLUGIN_INSTALL_DIR}/usdCullVolume/resources")

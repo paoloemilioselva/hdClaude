@@ -6,6 +6,8 @@ Usage:
   python compile.py core-only    build only the dependency-free core and its tests
   python compile.py dev-validation  the full delegate, building the validation layer
   python compile.py dev-dlss     build with the optional NVIDIA DLSS backend (Windows)
+  python compile.py houdini-22.0 build against the USD inside Houdini 22.0, and
+                                 install it as a Houdini package
   python compile.py clean        remove the build tree, then build "dev"
 
 The one build driver on every platform; compile.bat forwards to it. The build
@@ -131,7 +133,11 @@ def main(arguments):
         return 0 if arguments and arguments[0] in ("-h", "--help") else 2
 
     preset = arguments[0] if arguments else "dev"
-    environment = usd_environment()
+    # A Houdini preset finds Houdini's own USD (cmake/HoudiniUSD.cmake) and
+    # installs into the Houdini user directory, so the standalone OpenUSD
+    # environment is neither needed nor passed on.
+    houdini = preset.lower().startswith("houdini-")
+    environment = os.environ.copy() if houdini else usd_environment()
 
     if preset.lower() == "clean":
         log("Removing build tree.")
@@ -141,11 +147,15 @@ def main(arguments):
     environment = toolchain_environment(environment)
 
     log(f'Configuring preset "{preset}"...')
-    # Passed even when empty, so unsetting MATERIALX_ROOT reaches the cache too.
-    run(["cmake", "--preset", preset,
-         f"-DHDCLAUDE_OPENUSD_ROOT={environment['USDROOT']}",
-         f"-DHDCLAUDE_MATERIALX_ROOT={environment.get('MATERIALX_ROOT', '')}",
-         f"-DCMAKE_INSTALL_PREFIX={environment['USDEXTRA']}"], environment)
+    if houdini:
+        run(["cmake", "--preset", preset], environment)
+    else:
+        # Passed even when empty, so unsetting MATERIALX_ROOT reaches the cache
+        # too.
+        run(["cmake", "--preset", preset,
+             f"-DHDCLAUDE_OPENUSD_ROOT={environment['USDROOT']}",
+             f"-DHDCLAUDE_MATERIALX_ROOT={environment.get('MATERIALX_ROOT', '')}",
+             f"-DCMAKE_INSTALL_PREFIX={environment['USDEXTRA']}"], environment)
 
     log("Building...")
     run(["cmake", "--build", "--preset", preset], environment)
@@ -153,7 +163,8 @@ def main(arguments):
     # The core-only preset builds no installable artifact; it exists to run the
     # host-independent tests.
     if preset.lower() != "core-only":
-        log(f"Installing to {environment['USDEXTRA']}...")
+        log("Installing to "
+            f"{'the Houdini user directory' if houdini else environment['USDEXTRA']}...")
         run(["cmake", "--build", os.path.join(ROOT, "build", preset),
              "--target", "install"], environment)
 
