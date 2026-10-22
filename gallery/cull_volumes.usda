@@ -1,0 +1,238 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+# Cull volume settings, one station each, read back row then front row, left
+# to right:
+#
+#   back:  inverted cubes      cube, all rays      plane, with an exclusion
+#   front: reference sphere    primary rays only   secondary rays only
+#
+# Every volume links only its own station (includeRoot off, the station
+# included), so the ground and the other stations are never culled. The front
+# row is the same sphere three times: as authored, with a bite culled for
+# camera rays only (its shadow stays whole), and with the same bite culled for
+# every other ray (the sphere looks whole and its shadow is cut short).
+#
+# The sun comes from the right and a little in front, so every shadow falls
+# to the left of its station where the camera can see it.
+def Xform "World"
+{
+    def Camera "camera"
+    {
+        float2 clippingRange = (0.1, 100)
+        float focalLength = 32
+        float horizontalAperture = 36
+        float verticalAperture = 24
+        double3 xformOp:translate = (0, 10.5, 13.5)
+        float xformOp:rotateX = -37
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateX"]
+    }
+
+    def DistantLight "sun"
+    {
+        float inputs:angle = 0.53
+        float inputs:intensity = 3
+        bool inputs:normalize = 1
+        float3 xformOp:rotateXYZ = (-45, 70, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+
+    def DomeLight "sky"
+    {
+        color3f inputs:color = (0.75, 0.85, 1)
+        float inputs:intensity = 0.5
+    }
+
+    def Cube "Ground"
+    {
+        color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)]
+        double3 xformOp:translate = (0, -0.5, 0)
+        float3 xformOp:scale = (14, 0.5, 10)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+
+    # Back left. Two inverted cubes keep the union of their insides, so the
+    # column survives as two floating bands and nothing else of it is traced.
+    def Xform "Inverted"
+    {
+        double3 xformOp:translate = (-4.5, 0, -3)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cylinder "Column"
+        {
+            uniform token axis = "Y"
+            double height = 3.2
+            double radius = 0.45
+            color3f[] primvars:displayColor = [(0.85, 0.55, 0.2)]
+            double3 xformOp:translate = (0, 1.6, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+
+        def CubeCullVolume "LowerBand"
+        {
+            bool cullVolume:invert = 1
+            uniform bool collection:cullLink:includeRoot = 0
+            prepend rel collection:cullLink:includes = </World/Inverted>
+            double size = 1
+            double3 xformOp:translate = (0, 0.9, 0)
+            float3 xformOp:scale = (1.4, 0.6, 1.4)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def CubeCullVolume "UpperBand"
+        {
+            bool cullVolume:invert = 1
+            uniform bool collection:cullLink:includeRoot = 0
+            prepend rel collection:cullLink:includes = </World/Inverted>
+            double size = 1
+            double3 xformOp:translate = (0, 2.3, 0)
+            float3 xformOp:scale = (1.4, 0.6, 1.4)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+    }
+
+    # Back middle. A cube volume around the box's near top-right corner, for
+    # every ray: the camera sees into the box, and sunlight enters through the
+    # same opening and lights the inside. Nothing caps the cut.
+    def Xform "CubeAllRays"
+    {
+        double3 xformOp:translate = (0, 0, -3)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cube "Box"
+        {
+            double size = 1.6
+            color3f[] primvars:displayColor = [(0.3, 0.55, 0.8)]
+            double3 xformOp:translate = (0, 0.8, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+
+        def CubeCullVolume "Corner"
+        {
+            uniform bool collection:cullLink:includeRoot = 0
+            prepend rel collection:cullLink:includes = </World/CubeAllRays>
+            double size = 2
+            double3 xformOp:translate = (0.8, 1.6, 0.8)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+    }
+
+    # Back right. A tilted plane culls the half-space above it. The column is
+    # cut on the slant; the sphere reaches above the plane too, but it is
+    # excluded from the plane's collection and stays whole.
+    def Xform "Plane"
+    {
+        double3 xformOp:translate = (4.5, 0, -3)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cylinder "Column"
+        {
+            uniform token axis = "Y"
+            double height = 2.4
+            double radius = 0.5
+            color3f[] primvars:displayColor = [(0.35, 0.7, 0.35)]
+            double3 xformOp:translate = (-0.7, 1.2, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+
+        def Sphere "Excluded"
+        {
+            double radius = 0.7
+            color3f[] primvars:displayColor = [(0.8, 0.3, 0.6)]
+            double3 xformOp:translate = (0.8, 0.7, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+
+        # A plane's inside is the negative side of its axis. Turned over
+        # (rotateZ 180) its axis points down, so its inside is above it; 25
+        # degrees less tilt it down to the right, under most of the sphere.
+        def PlaneCullVolume "Slice"
+        {
+            uniform token axis = "Y"
+            uniform bool collection:cullLink:includeRoot = 0
+            prepend rel collection:cullLink:includes = </World/Plane>
+            prepend rel collection:cullLink:excludes = </World/Plane/Excluded>
+            double3 xformOp:translate = (0, 1.0, 0)
+            float xformOp:rotateZ = 155
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateZ"]
+        }
+    }
+
+    # Front left. The sphere with no volume, for the two beside it.
+    def Xform "Reference"
+    {
+        double3 xformOp:translate = (-4.5, 0, 3)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Ball"
+        {
+            double radius = 0.9
+            color3f[] primvars:displayColor = [(0.85, 0.8, 0.7)]
+            double3 xformOp:translate = (0, 0.9, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+    }
+
+    # Front middle. A bite out of the sphere's upper left, culled for camera
+    # rays only: the camera sees into the sphere, but shadow and bounce rays
+    # still meet the whole sphere, so its shadow is the reference's. The
+    # inside is black, and should be: for every ray but the camera's the
+    # sphere is still closed, so no light reaches the inside.
+    def Xform "PrimaryOnly"
+    {
+        double3 xformOp:translate = (0, 0, 3)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Ball"
+        {
+            double radius = 0.9
+            color3f[] primvars:displayColor = [(0.85, 0.8, 0.7)]
+            double3 xformOp:translate = (0, 0.9, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+
+        def SphereCullVolume "Bite"
+        {
+            bool cullVolume:affectsSecondaryRays = 0
+            uniform bool collection:cullLink:includeRoot = 0
+            prepend rel collection:cullLink:includes = </World/PrimaryOnly>
+            double radius = 0.8
+            double3 xformOp:translate = (-0.5, 1.55, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+    }
+
+    # Front right. The same bite, culled for every ray but the camera's: the
+    # sphere looks whole, and sunlight passes where the bite is, cutting off
+    # the far end of its shadow. The bite sits on the sphere's upper-left
+    # edge as the sun sees it, because a shadow ray is blocked by any part of
+    # its chord through the sphere, and only near that edge is the whole chord
+    # inside the bite.
+    def Xform "SecondaryOnly"
+    {
+        double3 xformOp:translate = (4.5, 0, 3)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Ball"
+        {
+            double radius = 0.9
+            color3f[] primvars:displayColor = [(0.85, 0.8, 0.7)]
+            double3 xformOp:translate = (0, 0.9, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+
+        def SphereCullVolume "Bite"
+        {
+            bool cullVolume:affectsPrimaryRays = 0
+            uniform bool collection:cullLink:includeRoot = 0
+            prepend rel collection:cullLink:includes = </World/SecondaryOnly>
+            double radius = 0.8
+            double3 xformOp:translate = (-0.5, 1.55, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+    }
+}

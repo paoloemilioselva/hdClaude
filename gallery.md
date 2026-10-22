@@ -184,6 +184,7 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 | Subdivision Feature Matrix | 2026-09-21 | 14.818 s (0m 14.818s) | 832.0 MiB | `5027c7a8b083f04ddd18f927de952bc2fbcf907bce7348346912b3a61854acb2` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | New Zealand Height Map | 2026-09-21 | 11.812 s (0m 11.812s) | 480.0 MiB | `e1801d60c65f221bbbc27bec010774632b2fbc62447498566a69e6e2f886afb6` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 6 |
 | Sphere Refinement | 2026-09-21 | 15.602 s (0m 15.602s) | 602.4 MiB | `75102b4e2842547d4f867063b451e7da1b52df2c4c449e94533bdbe931a70abc` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 6 |
+| Cull Volumes | 2026-10-22 | 8.897 s (0m 8.897s) | 565.3 MiB | `ea1bb5b8a40561b61f3cc84366300f930bf865d11ed910adfa8677870f76e266` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 <!-- gallery-timings:end -->
 
 ## Against hdCodex
@@ -784,3 +785,50 @@ light a surface that is not there. On this asset that is worth rms 4.1e-4 and
 at most 0.037 in a pixel -- small, because the terrain is mostly flat, and not
 because the normals go unread: forcing every one of them to (1, 0, 0) moves
 8.6% of the frame where recomputing them moves 0.004%.
+
+### Cull Volumes
+
+![Six stations of simple shapes on a grey ground. Back row: an orange column reduced to two floating rings, a blue box with its near top corner cut away to show its lit inside, and a green column sliced on the slant beside a whole pink sphere. Front row: three white spheres, the middle one with a black hole in its upper left, the right one whole but with the far end of its shadow cut off](gallery/cull_volumes.jpg)
+
+A renderer-owned scene for the proposed cull volume schema
+([extensions/cullVolume](extensions/cullVolume/README.md)), one setting per
+station. Every volume's `cullLink` collection includes only its own station,
+so the ground and the other stations are never culled. Read back row then
+front row, left to right:
+
+| Station | Volume | What it shows |
+|---|---|---|
+| Inverted | two inverted cubes | a column kept only inside the union of the two, as two floating rings, with ring-shaped shadows |
+| Cube, all rays | a cube around the box's near top corner | the camera sees into the box, and sunlight enters through the same opening |
+| Plane | a tilted `PlaneCullVolume`, the sphere excluded | the column is cut on the slant; the sphere crosses the plane and stays whole |
+| Reference | none | the sphere the next two are compared against |
+| Primary rays only | a sphere-shaped bite | the camera sees into the sphere; its shadow is the reference's |
+| Secondary rays only | the same bite | the sphere looks whole; the far end of its shadow is gone |
+
+The bite sits on the sphere's upper-left edge as the sun sees it. A shadow ray
+is blocked by any part of its chord through the sphere, so only where the
+whole chord is inside the bite does light pass; a bite on the sphere's sunlit
+side removes no shadow at all, which is what the first draft of the scene
+showed.
+
+The volumes reach the renderer only through the UsdImaging adapter built with
+hdClaude (`HDCLAUDE_BUILD_CULL_VOLUMES`, on by default). Without it the stage
+renders as if it had no volumes, and the gate fails.
+
+```cmd
+set "HDCLAUDE_SAMPLES_PER_PIXEL=1024"
+set "HDCLAUDE_SAMPLES_PER_FRAME=32"
+render_claude.bat --imageWidth 1024 --colorCorrectionMode disabled --camera camera gallery\cull_volumes.usda build\gallery-linear\cull_volumes.exr
+```
+
+**Current state.** Renders as the schema's rules describe, at 4.4 s of
+tracing.
+
+The inside of the primary-only sphere is black, and should be. For every ray
+but the camera's, the sphere is still closed, so nothing lights its inside.
+It is not exactly zero: it measures 0.0049 in the linear image, against 0.86
+on the sphere's lit side. That is sparse coloured fireflies, and a closed
+sphere with no cull volume, seen from inside, shows the same pattern. So it
+is a light leak through closed meshes that predates cull volumes, and is
+recorded in the
+[implementation notes](docs/implementation-notes.md#2026-10-22----light-inside-closed-meshes).

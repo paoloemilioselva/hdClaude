@@ -7538,3 +7538,40 @@ tabulated dielectric albedo and gates of its own.
 Worth saying plainly: the gain and the deficit were partly cancelling. The
 rough sphere was 17% high because a density defect was overpaying it by about a
 third and the missing compensation was underpaying it by an eighth.
+
+## 2026-10-22 -- Light inside closed meshes
+
+Found while adding the cull volume gallery scene, and not fixed. The inside of
+that scene's primary-only sphere should be black, because for every ray but
+the camera's the sphere is closed. It measured 0.0049. Taking cull volumes out
+of the question shows that the leak predates them.
+
+The probe is a camera inside a closed shape standing on a ground cube, at 256
+px and 256 spp, with light geometry on and no cull volume anywhere. The only
+light that can reach the camera is light that got through the mesh.
+
+    sphere r 0.9, sun only     mean 2.4e-4   max 0.070   sparse coloured fireflies
+    sphere r 0.9, dome only    mean 2.8e-4   max 0.029   sparse coloured fireflies
+    cube size 1.8, dome only   mean 0.023    max 0.116   smooth, brightest along edges and corners
+    the same cube, lifted 0.05 mean 0.024
+
+The two shapes leak differently. The sphere's leak is rare and bright. The
+cube's is a hundred times larger, smooth, and concentrated where faces meet at
+a concave edge. Lifting the cube off the ground changes nothing, so contact
+with the coplanar ground face is not the cause. Turning reconstruction off
+left the gallery measurement identical, so the cause is not image-space
+filtering either.
+
+What the code does, without a test yet of either reading:
+
+- A scattered ray's origin is offset 1e-5 x scale along the geometric normal,
+  to the side the ray leaves on (`shade.comp.glsl`, `hdclaude_offset_ray`).
+  `extend` then traces from t = 0. If a sampled direction falls on the
+  geometric back side, as interpolated shading normals allow on a
+  tessellated sphere, the offset puts the origin on the far side of the
+  surface and the ray escapes. That fits the sphere's rare, bright samples.
+- Shadow rays start at tMin 1e-4, ten times the offset. From a point within
+  1e-4 of a concave edge, a shadow ray toward the adjacent face meets it
+  inside tMin and passes through. That fits where the cube's light gathers,
+  but not how much of it there is: the band it describes is far narrower
+  than a pixel. So the cube is not explained.
