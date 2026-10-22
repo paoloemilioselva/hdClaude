@@ -695,13 +695,36 @@ void HdClaudeRenderPass::_Execute(
     const HdClaudeCameraResult cameraResult = HdClaudeMakeRenderCamera(
         renderPassState->GetWorldToViewMatrix(),
         renderPassState->GetProjectionMatrix());
-    {
+    if (HdClaudeTraceEnabled()) {
         const GfMatrix4d projection = renderPassState->GetProjectionMatrix();
+        const GfMatrix4d viewToWorld =
+            renderPassState->GetWorldToViewMatrix().GetInverse();
         const HdCamera* passCamera = renderPassState->GetCamera();
-        HdClaudeTrace("camera <%s>: projection diagonal %g %g %g %g, [2][3] %g",
+        // The clip planes, read back from the projection in the OpenGL
+        // convention a USD host uses: what depth 0 and depth 1 mean.
+        const bool orthographic = std::abs(projection[3][3] - 1.0) < 1e-6;
+        const double p22 = projection[2][2];
+        const double p32 = projection[3][2];
+        const double nearPlane =
+            orthographic ? (p32 + 1.0) / p22 : p32 / (p22 - 1.0);
+        const double farPlane =
+            orthographic ? (p32 - 1.0) / p22
+            : p22 == -1.0 ? std::numeric_limits<double>::infinity()
+                          : p32 / (p22 + 1.0);
+        // The eye and the way it looks, -Z of the camera, in the world.
+        const GfVec3d eye = viewToWorld.ExtractTranslation();
+        const GfVec3d forward =
+            -GfVec3d(viewToWorld[2][0], viewToWorld[2][1], viewToWorld[2][2])
+                 .GetNormalized();
+        HdClaudeTrace("camera <%s>: %s, eye (%g, %g, %g) looking (%.4f, %.4f, "
+                      "%.4f), near %g far %g; projection diagonal %g %g %g %g, "
+                      "[2][3] %g [3][2] %g",
                       passCamera ? passCamera->GetId().GetText() : "none",
-                      projection[0][0], projection[1][1], projection[2][2],
-                      projection[3][3], projection[2][3]);
+                      orthographic ? "orthographic" : "perspective", eye[0],
+                      eye[1], eye[2], forward[0], forward[1], forward[2],
+                      nearPlane, farPlane, projection[0][0], projection[1][1],
+                      projection[2][2], projection[3][3], projection[2][3],
+                      projection[3][2]);
     }
 
     // --- Materials --------------------------------------------------------------
