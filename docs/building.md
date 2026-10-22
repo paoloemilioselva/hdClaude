@@ -245,7 +245,9 @@ does not load there.
 - **Depth.** `UsdRenderers.json` declares `depthstyle` `opengl`: depth in
   [0, 1] through the host's projection, which is what the `depth` AOV holds
   for every host. `needsdepth` is false: true would ask Houdini to
-  rasterise depth itself instead of using hdClaude's.
+  rasterise depth itself instead of using hdClaude's. The `usd_depth` test
+  decodes it as usdview does, for a perspective and an orthographic camera
+  (Houdini's Top, Front and Side views are orthographic).
 - **No tests and no tools.** The test and gallery scripts run against the
   standalone OpenUSD, so the preset turns `BUILD_TESTING` off and skips the
   image tools.

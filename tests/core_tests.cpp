@@ -1807,6 +1807,14 @@ void TestTessellationProjectionIsThePinhole()
     // No distance, no projection -- and no crash.
     CHECK_EQ(hdclaude::PixelsPerWorldUnit(view, 0.0f), 0.0f);
 
+    // An orthographic view five units tall at a thousand pixels is two
+    // hundred pixels to the unit, near or far.
+    hdclaude::TessellationView ortho = ViewAt(0.0f, 1000, 0.0f);
+    ortho.orthographicHalfHeight = 2.5f;
+    CHECK_NEAR(hdclaude::PixelsPerWorldUnit(ortho, 1.0f), 200.0, 1e-4);
+    CHECK_NEAR(hdclaude::PixelsPerWorldUnit(ortho, 100.0f), 200.0, 1e-4);
+    CHECK_NEAR(hdclaude::PixelsPerWorldUnit(ortho, 0.0f), 200.0, 1e-4);
+
     const float low[3] = {-1.0f, -1.0f, -1.0f};
     const float high[3] = {1.0f, 1.0f, 1.0f};
     // Eye at +11 on Z, the box reaching +1: ten units between them.

@@ -517,16 +517,6 @@ void HdClaudeRenderPass::_Execute(
                       projection[0][0], projection[1][1], projection[2][2],
                       projection[3][3], projection[2][3]);
     }
-    if (cameraResult.orthographic) {
-        // Said once per framing change rather than once per frame.
-        static bool warned = false;
-        if (!warned) {
-            warned = true;
-            TF_WARN(
-                "hdClaude: orthographic cameras are not implemented; rendering "
-                "with the equivalent perspective view");
-        }
-    }
 
     // --- Materials --------------------------------------------------------------
     //
@@ -574,6 +564,8 @@ void HdClaudeRenderPass::_Execute(
                 std::memcpy(view.worldToClip, cameraResult.camera.worldToClip,
                             sizeof(view.worldToClip));
                 view.tanHalfFov = cameraResult.camera.tanHalfFov;
+                view.orthographicHalfHeight =
+                    cameraResult.camera.orthographicHalfHeight;
                 view.pixelHeight = height;
                 // Only when a projection was actually composed. An
                 // identity world-to-clip is not a frustum containing the

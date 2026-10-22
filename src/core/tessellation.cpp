@@ -124,6 +124,12 @@ bool BoundsAreOffScreen(const TessellationView& view, const float boundsMin[3],
 
 float PixelsPerWorldUnit(const TessellationView& view, float distance)
 {
+    // Parallel rays: the frame is 2 * orthographicHalfHeight world units tall
+    // however far away the mesh is.
+    if (view.pixelHeight != 0 && view.orthographicHalfHeight > 0.0f) {
+        return static_cast<float>(view.pixelHeight) /
+               (2.0f * view.orthographicHalfHeight);
+    }
     if (view.pixelHeight == 0 || !(view.tanHalfFov > 0.0f) ||
         !(distance > 0.0f)) {
         return 0.0f;
@@ -167,7 +173,9 @@ TessellationChoice ChooseTessellation(const TessellationView& view,
     // cannot describe its mesh gets back -- an unrefined mesh would be a
     // silent downgrade where a question was really unanswerable.
     const bool describable = view.valid && request.coarseEdgeLength > 0.0f &&
-                             view.tanHalfFov > 0.0f && view.pixelHeight != 0;
+                             (view.tanHalfFov > 0.0f ||
+                              view.orthographicHalfHeight > 0.0f) &&
+                             view.pixelHeight != 0;
 
     choice.offScreen =
         describable &&

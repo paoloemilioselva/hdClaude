@@ -7693,3 +7693,56 @@ Two more things the Houdini integration had wrong:
   `normalized` in [-1, 1] and `linear` for distance to the camera. hdClaude's
   depth is OpenGL window depth through the host's projection, as Storm's is
   and as usdview's picking expects. It is not inverted.
+
+## 2026-10-23 -- Is the depth AOV what Houdini expects? Yes, except orthographic
+
+The question came from Houdini 22.0, after the off-centre camera fix. The
+answer was checked three ways.
+
+- **The convention.** Houdini's own `$HFS/houdini/UsdRenderers.json` gives
+  Storm and its own VK viewport `depthstyle` `opengl`, and Karma `linear`.
+  Hydra's convention is in OpenUSD's source: `HdxPickFromRenderBufferTask`
+  decodes the depth AOV with range (0, 1), and `HdxPickResult` maps it to NDC
+  z as `depth * 2 - 1` before unprojecting through the render's view and
+  projection. hdClaude's `guides.comp.glsl` writes `(clip.z / clip.w + 1) / 2`
+  through the host's world-to-clip, as hdEmbree does. These are the same
+  convention.
+- **The values.** `tests/usd/depth.py` (new, `usd_depth`) renders a tilted
+  panel, a ground plane and a far wall, and picks a grid of pixels through
+  `TestIntersection`. On a delegate, that call decodes the depth AOV, so the
+  point it returns is the AOV read the way a host reads it. The decoded
+  depth must lie inside the range the analytic surface covers across that
+  pixel. Under both the standalone USD and Houdini's, the off-centre
+  perspective camera (near 0.05, far 500) passes all 268 probes.
+- **The gap.** An orthographic camera failed 174 of 188 probes. The render
+  pass warned "orthographic cameras are not implemented" and traced a
+  perspective view, so neither the image nor the depth was the host's.
+  Houdini's Top, Front and Side viewports are orthographic. Raygen now has a
+  third mode, `FrameBlock::cameraRays == 2`: a ray starts where the pixel
+  meets the near plane (`clipToView` at NDC z = -1) and runs toward the far
+  plane. Before the near plane the host draws nothing and depth has no value.
+  `RenderCamera::orthographicHalfHeight` (1 / P[1][1]) marks such a camera.
+  Under Hydra, an identity projection is orthographic by its matrix. It is
+  now traced as one, as Storm draws it. A `RenderCamera` that leaves
+  `worldToClip` as the identity, as the GPU unit tests do, has no half-height
+  and keeps the field-of-view stand-in. Adaptive
+  subdivision sizes an orthographic view at `pixelHeight / (2 * halfHeight)`
+  pixels per unit at every distance, where before it fell back to the
+  uniform level.
+
+Two things that are easy to mistake for depth errors:
+
+- `HdxPickResult` unprojects at a pixel's lower-left corner
+  (`x / bufferSize`, no half-pixel offset) and resolves to a pixel near the
+  pick, not under it. Delegate picks therefore land 0.5 to 1.5 pixels from
+  the probe; Storm renders its own pick pass and does not. The test reads
+  back which pixel was used and checks that pixel's footprint.
+- hdClaude tessellates spheres, so a sphere's depth is slightly further than
+  the analytic sphere's. The test uses only flat surfaces for that reason.
+
+Storm, which Houdini also declares `opengl`, was measured the same way
+under Houdini's USD as a reference. Its picks agree with the analytic
+surfaces to within 1e-5 window depth (8e-5 on the tessellated sphere).
+hdClaude's differ by up to 1e-4 when compared at the pick's corner, because
+its depth comes from a jittered point inside the pixel. That is why the test
+compares against the pixel's footprint and not a single point.

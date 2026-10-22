@@ -104,11 +104,11 @@ layout(set = 0, binding = 0, scalar) uniform FrameBlock {
     uint  cullPrimaryVolumes;
     uint  cullSecondaryVolumes;
     uint  cullExceptions;
-    // The inverse of the host's projection, and whether raygen unprojects
-    // through it (perspective) or keeps the field-of-view stand-in
-    // (orthographic). See raygen.comp.glsl.
+    // The inverse of the host's projection, and how raygen uses it: 1 from
+    // the eye (perspective), 2 parallel from the near plane (orthographic),
+    // 0 not at all, when no projection was supplied. See raygen.comp.glsl.
     mat4  clipToView;
-    uint  unprojectCameraRays;
+    uint  cameraRays;
 } frame;
 
 const uint HDCLAUDE_SPLAT_COVERAGE = 0u;

@@ -35,11 +35,19 @@ HdClaudeCameraResult HdClaudeMakeRenderCamera(const GfMatrix4d& worldToView,
     }
 
     // P[3][3] is 0 for a perspective projection and 1 for an orthographic one.
-    result.orthographic = std::abs(projection[3][3] - 1.0) < 1e-6;
+    const bool orthographic = std::abs(projection[3][3] - 1.0) < 1e-6;
 
     const double focalY = projection[1][1];
     const double focalX = projection[0][0];
-    if (!result.orthographic && std::abs(focalY) > 1e-9) {
+    if (orthographic) {
+        // No field of view: P[1][1] is 2 / height, so 1 / P[1][1] is the
+        // half-height in world units. The rays come from `worldToClip`.
+        result.camera.tanHalfFov = 0.0f;
+        if (std::abs(focalY) > 1e-9) {
+            result.camera.orthographicHalfHeight =
+                static_cast<float>(1.0 / std::abs(focalY));
+        }
+    } else if (std::abs(focalY) > 1e-9) {
         result.camera.tanHalfFov = static_cast<float>(1.0 / std::abs(focalY));
         if (std::abs(focalX) > 1e-9) {
             result.camera.aspect =

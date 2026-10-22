@@ -28,12 +28,11 @@ class HdClaudeCamera final : public HdCamera {
 ///
 ///     tan(fovY/2) = 1 / P[1][1]        aspect = P[1][1] / P[0][0]
 ///
-/// An orthographic projection has P[3][3] == 1 and is *not* representable by a
-/// pinhole; the caller is told rather than silently given a perspective view of
-/// the scene.
+/// An orthographic projection has P[3][3] == 1 and is not a pinhole: it has no
+/// field of view, and its size is `orthographicHalfHeight = 1 / P[1][1]`.
+/// Camera rays for it come from the full projection, as perspective ones do.
 struct HdClaudeCameraResult {
     hdclaude::RenderCamera camera;
-    bool orthographic = false;
 };
 
 HdClaudeCameraResult HdClaudeMakeRenderCamera(const GfMatrix4d& worldToView,

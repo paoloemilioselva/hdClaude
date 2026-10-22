@@ -35,6 +35,10 @@ struct RenderCamera {
     float cameraToWorld[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     float tanHalfFov = 0.414f;  // ~45 degrees vertical
     float aspect = 1.0f;
+    /// Half the height of an orthographic view, in world units; zero for a
+    /// perspective one. Non-zero means camera rays are parallel, each starting
+    /// on the near plane of `worldToClip`, which then must be supplied.
+    float orthographicHalfHeight = 0.0f;
 
     /// World to clip, column-major for GLSL: the host's view matrix times its
     /// own projection, carried rather than re-derived.
@@ -64,7 +68,8 @@ struct RenderCamera {
                 return false;
             }
         }
-        return tanHalfFov == other.tanHalfFov && aspect == other.aspect;
+        return tanHalfFov == other.tanHalfFov && aspect == other.aspect &&
+               orthographicHalfHeight == other.orthographicHalfHeight;
     }
     bool operator!=(const RenderCamera& other) const { return !(*this == other); }
 };

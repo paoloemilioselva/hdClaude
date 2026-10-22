@@ -51,6 +51,10 @@ struct TessellationView {
     float worldToClip[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     /// Tangent of half the *vertical* field of view, matching `RenderCamera`.
     float tanHalfFov = 0.414f;
+    /// Half the height of an orthographic view in world units, as
+    /// `RenderCamera` carries it; zero for a perspective one. When set, a
+    /// world unit covers the same pixels at every distance.
+    float orthographicHalfHeight = 0.0f;
     /// Height of the frame in pixels, which is what turns a world length into
     /// a pixel length together with the field of view.
     std::uint32_t pixelHeight = 0;
@@ -162,8 +166,9 @@ bool BoundsAreOffScreen(const TessellationView& view, const float boundsMin[3],
 /// How many pixels one world unit covers at `distance` from the eye.
 ///
 /// `pixelHeight / (2 * distance * tanHalfFov)`, which is the pinhole
-/// projection and nothing more. Zero for a view with no pixels or no field of
-/// view.
+/// projection and nothing more, or `pixelHeight / (2 * orthographicHalfHeight)`
+/// at any distance for an orthographic view. Zero for a view with no pixels or
+/// no projection, and for a perspective view at no distance.
 float PixelsPerWorldUnit(const TessellationView& view, float distance);
 
 /// The level at which `request`'s refined edges are about

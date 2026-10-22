@@ -201,10 +201,11 @@ struct FrameBlock {
     /// frustum puts that pixel -- off-centre and asymmetric windows included.
     /// Last, so every field above keeps its offset.
     float clipToView[16];
-    /// One when `clipToView` describes a perspective projection raygen can
-    /// use; zero for an orthographic one, which keeps its perspective
-    /// stand-in (HdClaudeMakeRenderCamera).
-    std::uint32_t unprojectCameraRays;
+    /// How raygen makes camera rays: 1 from the eye through `clipToView` (a
+    /// perspective projection), 2 parallel from its near plane (an
+    /// orthographic one), 0 from the field of view, for a caller that
+    /// supplied no projection.
+    std::uint32_t cameraRays;
 };
 
 /// The radical inverse of `index` in `base`, one coordinate of a Halton
@@ -2668,9 +2669,12 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
         float viewToClip[16];
         MultiplyMatrix4(camera.worldToClip, camera.cameraToWorld, viewToClip);
         InvertMatrix4(viewToClip, block.clipToView);
-        // Column-major [3][3]: one for an orthographic projection, zero for a
-        // perspective one.
-        block.unprojectCameraRays = std::abs(viewToClip[15]) < 1e-6f ? 1u : 0u;
+        // Column-major [3][3] is zero for a perspective projection. It is one
+        // for an orthographic one, and for the identity a caller with no
+        // projection leaves, so the camera says which of those it is.
+        block.cameraRays = camera.orthographicHalfHeight > 0.0f     ? 2u
+                           : std::abs(viewToClip[15]) < 1e-6f ? 1u
+                                                              : 0u;
     }
     // The previous frame's matrix, or this one's when there is no previous
     // frame. The second reports no motion, which is the truth: a surface seen

@@ -49,11 +49,25 @@ void main()
     // the depth this frame reports for it, which is computed through the full
     // matrix. Any point on the pixel's line will do, since the ray starts at
     // the eye; NDC z = 0 is well inside the frustum and well conditioned.
+    //
+    // An orthographic projection has no eye. Its rays are parallel, and each
+    // starts where the pixel meets the near plane: nearer than that the host
+    // draws nothing, and the depth AOV, 0 at the near plane, has no value for
+    // it. The direction is near to far through the same matrix, so an oblique
+    // projection is followed too.
+    vec3 originCamera = vec3(0.0);
     vec3 directionCamera;
-    if (frame.unprojectCameraRays != 0u)
+    if (frame.cameraRays == 1u)
     {
         vec4 onLine = frame.clipToView * vec4(ndc, 0.0, 1.0);
         directionCamera = normalize(onLine.xyz / onLine.w);
+    }
+    else if (frame.cameraRays == 2u)
+    {
+        vec4 nearPoint = frame.clipToView * vec4(ndc, -1.0, 1.0);
+        vec4 farPoint = frame.clipToView * vec4(ndc, 1.0, 1.0);
+        originCamera = nearPoint.xyz / nearPoint.w;
+        directionCamera = normalize(farPoint.xyz / farPoint.w - originCamera);
     }
     else
     {
@@ -62,7 +76,7 @@ void main()
                                          -1.0));
     }
 
-    vec3 origin = (frame.cameraToWorld * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+    vec3 origin = (frame.cameraToWorld * vec4(originCamera, 1.0)).xyz;
     vec3 direction = normalize((frame.cameraToWorld * vec4(directionCamera, 0.0)).xyz);
 
     pathOrigin.values[index] = origin;

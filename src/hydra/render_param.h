@@ -214,6 +214,7 @@ class HdClaudeRenderParam final : public HdRenderParam {
         const bool changed =
             view.valid != _view.valid || view.hasClip != _view.hasClip ||
             view.tanHalfFov != _view.tanHalfFov ||
+            view.orthographicHalfHeight != _view.orthographicHalfHeight ||
             view.pixelHeight != _view.pixelHeight ||
             std::memcmp(view.cameraToWorld, _view.cameraToWorld,
                         sizeof(view.cameraToWorld)) != 0 ||
