@@ -1,0 +1,127 @@
+#usda 1.0
+(
+    doc = """Cull volumes, use case 3: restricting a render to one region.
+
+    During look development the subject is one asset in a large set. An
+    inverted cube cull volume around it, affecting all rays, keeps only what
+    is inside the cube: everything else is culled for every ray, so the path
+    tracer traces the small region rather than the whole set. Unlike a
+    screen-space render region, the cut is in 3D, so the asset can be turned
+    and framed freely.
+
+    The lighting is the region's own: geometry outside no longer shadows or
+    bounces light into it, and light from the dome and sun reaches it
+    unobstructed. The backdrop is excluded from the cull volume's collection
+    so the asset keeps a background in frame.
+    """
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Xform "Set"
+    {
+        def Cube "Ground"
+        {
+            double3 xformOp:translate = (0, -0.5, 0)
+            float3 xformOp:scale = (60, 0.5, 60)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)]
+        }
+
+        def Cube "Building1"
+        {
+            double3 xformOp:translate = (-12, 8, -15)
+            float3 xformOp:scale = (5, 8, 5)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            color3f[] primvars:displayColor = [(0.6, 0.55, 0.5)]
+        }
+
+        def Cube "Building2"
+        {
+            double3 xformOp:translate = (14, 12, -20)
+            float3 xformOp:scale = (6, 12, 6)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            color3f[] primvars:displayColor = [(0.5, 0.55, 0.6)]
+        }
+
+        def Cube "Wall"
+        {
+            double3 xformOp:translate = (4, 2, 2)
+            float3 xformOp:scale = (0.3, 2, 6)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            color3f[] primvars:displayColor = [(0.7, 0.4, 0.3)]
+        }
+
+        def Sphere "OtherAsset"
+        {
+            double radius = 1
+            double3 xformOp:translate = (-5, 1, 3)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            color3f[] primvars:displayColor = [(0.2, 0.4, 0.8)]
+        }
+    }
+
+    def Xform "Hero"
+    {
+        def Sphere "Asset"
+        {
+            double radius = 1
+            double3 xformOp:translate = (0, 1, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            color3f[] primvars:displayColor = [(0.9, 0.7, 0.2)]
+        }
+
+        def Cube "Plinth"
+        {
+            double3 xformOp:translate = (0, -0.0, 0)
+            float3 xformOp:scale = (1.5, 0.05, 1.5)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            color3f[] primvars:displayColor = [(0.3, 0.3, 0.3)]
+        }
+    }
+
+    def Cube "Backdrop"
+    {
+        double3 xformOp:translate = (0, 3, -6)
+        float3 xformOp:scale = (8, 4, 0.05)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        color3f[] primvars:displayColor = [(0.18, 0.18, 0.18)]
+    }
+
+    def DistantLight "Sun"
+    {
+        float inputs:angle = 0.53
+        float inputs:intensity = 3
+        float3 xformOp:rotateXYZ = (-45, 35, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+
+    def DomeLight "Sky"
+    {
+        float inputs:intensity = 0.5
+    }
+
+    def CubeCullVolume "LookdevRegion"
+    {
+        bool cullVolume:invert = true
+        prepend rel collection:cullLink:excludes = </World/Backdrop>
+        double size = 1
+        double3 xformOp:translate = (0, 1.25, 0)
+        float3 xformOp:scale = (4, 2.6, 4)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+
+    def Camera "Camera"
+    {
+        float focalLength = 50
+        float horizontalAperture = 36
+        float verticalAperture = 24
+        float2 clippingRange = (0.1, 1000)
+        double3 xformOp:translate = (0, 1.4, 7)
+        float3 xformOp:rotateXYZ = (-3, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+    }
+}

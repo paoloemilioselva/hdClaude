@@ -4,10 +4,11 @@ Status: proposal and prototype. Schema drafted 2026-10-22; the Hydra adapter
 and the hdClaude implementation are not written yet (see
 [Status](#status-in-this-repository)).
 
-A **cull volume** is a simple closed shape -- a cube or a sphere -- placed in a
-USD scene. Inside it, a renderer ignores ray hits on geometry. Primary
-(camera) rays and secondary rays are controlled separately, and a collection
-says which geometry a volume culls. The aim is to propose this as an addition
+A **cull volume** is a simple shape -- a cube, a sphere, or a plane -- placed
+in a USD scene. Inside it, a renderer ignores ray hits on geometry. An
+*inverted* cull volume does the opposite: it keeps only what is inside it.
+Primary (camera) rays and secondary rays are controlled separately, and a
+collection says which geometry a volume culls. The aim is to propose this as an addition
 to OpenUSD, so the schema is kept small and has no renderer-specific parts.
 hdClaude is where it is first implemented and tested.
 
@@ -80,9 +81,34 @@ on their own and in the shot layer, not baked into the set.
 
 See [`examples/canopy.usda`](examples/canopy.usda).
 
+### Restricting a render to one region
+
+Look development usually focuses on one asset or one area of a large set. A
+screen-space render region limits the pixels that are rendered, but every ray
+still traverses the whole set, and the region has to be redrawn whenever the
+camera moves.
+
+An inverted cube cull volume around the area of interest, affecting all rays,
+keeps only what is inside the cube. Everything outside is culled for every
+ray. A renderer can drop geometry that lies entirely outside from its
+acceleration structure, so the path tracer only traces the small region. The
+cut is in 3D, so the asset can be turned and reframed freely while the region
+stays where it is.
+
+This is a different render, not a faster version of the same one. The region
+is lit as if it were alone: geometry outside it no longer shadows it or
+bounces light into it, and the dome and sun reach it unobstructed. For
+judging a material, that is usually what is wanted. Set elements the shot
+needs, such as a backdrop, can be excluded from the volume's collection so
+they stay.
+
+See [`examples/lookdev_region.usda`](examples/lookdev_region.usda).
+
 ### Others the same schema covers
 
-- Architectural and product cutaways ("section views").
+- Architectural and product sections: a plane cull volume cuts a building
+  open, and several planes build a section box. See
+  [`examples/section.usda`](examples/section.usda).
 - Pushing a camera through a wall during a move, with a cull volume keyed to
   the camera.
 - Removing an occluder from shadow rays only, to open up a light on a
@@ -97,18 +123,21 @@ Definition: [`usdCullVolume/schema.usda`](usdCullVolume/schema.usda).
 Xformable
  └── CullVolume              (abstract; built-in CollectionAPI:cullLink)
       ├── CubeCullVolume     size   (as UsdGeomCube)
-      └── SphereCullVolume   radius (as UsdGeomSphere)
+      ├── SphereCullVolume   radius (as UsdGeomSphere)
+      └── PlaneCullVolume    axis   (as UsdGeomPlane; an infinite half-space)
 ```
 
 | Property | Type | Fallback | Meaning |
 | --- | --- | --- | --- |
 | `cullVolume:affectsPrimaryRays` | `bool` | `true` | Cull camera rays. |
 | `cullVolume:affectsSecondaryRays` | `bool` | `true` | Cull every other ray, including shadow rays. |
+| `cullVolume:invert` | `bool` | `false` | Cull what is outside the shape and keep what is inside. |
 | `collection:cullLink:*` | CollectionAPI | `includeRoot = true` | The geometry this volume culls. |
 | `size` (`CubeCullVolume`) | `double` | `2.0` | Edge length; the cube spans `[-size/2, size/2]` on each axis. |
 | `radius` (`SphereCullVolume`) | `double` | `1.0` | Sphere radius. |
+| `axis` (`PlaneCullVolume`) | `uniform token` | `Z` | The plane's normal; the inside is the half-space on its negative side. |
 
-Both flags are animatable, and so are the transform and the shape. `visibility`
+The three flags are animatable, and so are the transform, `size` and `radius`. `visibility`
 and `purpose` come from `Imageable` and turn a volume on or off in the usual
 way.
 
@@ -133,12 +162,15 @@ same scene produce the same image, up to sampling noise.
 
 1. **What is culled.** For a ray of a kind the volume affects, take an
    intersection with geometry in the volume's `cullLink` collection. If the
-   world-space hit point is inside the volume, discard it. The ray goes on
-   as if that surface were not there. Nothing else changes: the hit is not
-   shaded, not counted as an occlusion, and not replaced by anything.
-2. **Inside** means inside the closed shape in its local frame, after the
-   volume's full world transform at the ray's time is applied. Points exactly
-   on the boundary may be treated either way.
+   world-space hit point is in the volume's culled region, discard it. The
+   ray goes on as if that surface were not there. Nothing else changes: the
+   hit is not shaded, not counted as an occlusion, and not replaced by
+   anything.
+2. **Culled region.** The culled region is the inside of the shape, or,
+   when `invert` is true, everything outside it. *Inside* is decided in the
+   shape's local frame, after the volume's full world transform at the ray's
+   time is applied. For a plane, the inside is the half-space on the negative
+   side of `axis`. Points exactly on the boundary may be treated either way.
 3. **Primary rays** are the rays leaving the camera, *including their
    continuation* past surfaces the renderer treats as not hit: cutout
    opacity, a surface removed by a cull volume, and so on. Every other ray
@@ -146,11 +178,19 @@ same scene produce the same image, up to sampling noise.
    scattered ray (diffuse, glossy, specular reflection or refraction). A
    mirror therefore shows a wall that is culled for primary rays only, and
    that is correct.
-4. **Several volumes combine as a union.** An intersection is discarded if
-   *any* active volume that affects the ray's kind and links the hit geometry
-   contains the hit point.
+4. **Combining volumes.** Consider only the active volumes that affect the
+   ray's kind and link the hit geometry. An intersection is discarded if
+   either:
+   - it is inside any of those volumes that is *not* inverted, or
+   - at least one of those volumes *is* inverted, and it is inside none of
+     the inverted ones.
+
+   So the inverted volumes together say what is kept (the union of their
+   insides), and the others cut holes in it. With no inverted volumes, this
+   is the plain union of the insides.
 5. **Active** means visible, with a purpose the render includes, and with a
-   valid shape. A negative `size` or `radius` is invalid input. A renderer
+   valid shape. A negative `size` or `radius`, or an `axis` other than `X`,
+   `Y` or `Z`, is invalid input. A renderer
    reports it and ignores that volume; it does not clamp or fix the value.
 6. **Cull volumes act on geometry, not lights.** Gprims and their instances
    are culled. Lights, including geometry lights, are controlled by light
@@ -190,8 +230,29 @@ exactly the same thing, so an author's intuition carries over.
 ### An abstract base, so new shapes don't need new rules
 
 All of the semantics live on `CullVolume`, and the concrete types only add a
-shape. A cylinder, a capsule, a half-space, or a closed mesh referenced by a
-relationship would each be one new subclass, with no change to the contract.
+shape. A cylinder, a capsule, or a closed mesh referenced by a relationship
+would each be one new subclass, with no change to the contract.
+
+### How inverted volumes combine
+
+The simplest rule, "a hit is culled if any volume culls it", gives the wrong
+answer for inverted volumes. Two inverted boxes around two areas of interest
+would then keep only where the boxes overlap, which is usually nothing. Under
+rule 4, inverted volumes add up to the kept region, and the others subtract
+from it. So two look-development regions can be kept at once, and a hole can
+still be cut in the middle of a kept region.
+
+Planes that are not inverted still combine by intersection of their kept
+sides. That is what a section box made of planes needs, and it is how a
+camera's `clippingPlanes` combine.
+
+### Planes follow `UsdGeomCamera.clippingPlanes`
+
+A plane's inside, the side it culls, is the half-space its axis points away
+from. `clippingPlanes` cull the side opposite the plane's normal, so the
+normal of both points toward what is kept. Reusing that convention is cheaper
+for authors and reviewers than defining a new one. The axis is a token, as on
+`UsdGeomPlane`, and any other orientation comes from the transform.
 
 ### Two booleans, not a list of ray types
 
@@ -231,7 +292,7 @@ concrete cull volume into the scene index as a prim of a single Hydra type,
 
 | Data source | Contents |
 | --- | --- |
-| `cullVolume` | `shape` (`cube` or `sphere`), `size`, `radius`, `affectsPrimaryRays`, `affectsSecondaryRays` |
+| `cullVolume` | `shape` (`cube`, `sphere` or `plane`), `size`, `radius`, `axis`, `invert`, `affectsPrimaryRays`, `affectsSecondaryRays` |
 | `xform` | the usual Xformable data source |
 | `visibility`, `purpose` | the usual Imageable data sources |
 | `collections/cullLink` | from UsdImaging's CollectionAPI adapter, with no extra code |
@@ -250,9 +311,9 @@ where a ray tracer already decides whether to accept a candidate hit. That is
 the any-hit shader in a ray tracing pipeline, or the candidate loop of a ray
 query, and it is the same place cutout opacity is tested.
 
-- Upload the active volumes as world-to-local transforms plus a shape. Test a
-  point by transforming it into the volume's frame and comparing against the
-  unit cube or sphere.
+- Upload the active volumes as world-to-local transforms plus a shape and
+  the invert flag. Test a point by transforming it into the volume's frame
+  and comparing it against the unit cube, the unit sphere, or the plane.
 - Store each geometry instance's linking as a bitmask over the active volumes,
   computed on the CPU from `cullLink`. A ray's kind selects the volumes whose
   flag allows it.
@@ -260,15 +321,19 @@ query, and it is the same place cutout opacity is tested.
   need to be traced as non-opaque. Everything else stays on the opaque fast
   path, so a scene with no cull volumes, or with volumes far away, costs
   nothing.
+- An instance whose world bounds lie entirely in the culled region for every
+  ray kind can be left out of the acceleration structure altogether. This is
+  what makes an inverted region cheaper to render than the whole set. If
+  culled geometry were only rejected hit by hit, rays would still traverse
+  it, and the render would get slower, not faster.
 
 ## Open questions
 
 - **Granularity of ray kinds.** Is primary/secondary enough for a first
   version, or should shadow rays get their own flag from the start?
-- **Inverted volumes ("keep only what is inside").** Section boxes in
-  architecture need this. The union rule in semantics rule 4 does not extend
-  to it cleanly, so it is left out for now and would come with its own
-  combination rule.
+- **Finite planes.** A plane cull volume is infinite. A cut that stops at
+  the edge of a wall is a thin cube instead. Is that enough, or should the
+  plane accept UsdGeomPlane's `width` and `length`?
 - **Viewport display.** The adapter could publish a guide-purpose wireframe as
   a second subprim, as UsdLux light adapters do. Then Storm would show where
   the volumes are without culling anything.
@@ -280,8 +345,8 @@ query, and it is the same place cutout opacity is tested.
 
 | Part | State |
 | --- | --- |
-| Schema (`usdCullVolume`, codeless) | Drafted; loads in OpenUSD 26.03 and gives both concrete types their properties and built-in collection. |
-| Example scenes | `examples/cutaway.usda`, `examples/canopy.usda`. |
+| Schema (`usdCullVolume`, codeless) | Drafted; loads in OpenUSD 26.03 and gives all three concrete types their properties and built-in collection. |
+| Example scenes | `examples/cutaway.usda`, `examples/canopy.usda`, `examples/lookdev_region.usda`, `examples/section.usda`. |
 | UsdImaging adapter + Hydra `cullVolume` prim | Not written. |
 | hdClaude: sprim, linking masks, extend/shadow kernel tests | Not written. |
 

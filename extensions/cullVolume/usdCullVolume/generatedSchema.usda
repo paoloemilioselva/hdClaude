@@ -34,6 +34,14 @@ class "CullVolume" (
         displayGroup = "Cull Volume"
         displayName = "Affects Secondary Rays"
     )
+    bool cullVolume:invert = 0 (
+        customData = {
+            string userDocBrief = """When true, the volume culls everything outside its shape and
+        keeps what is inside, instead of culling what is inside."""
+        }
+        displayGroup = "Cull Volume"
+        displayName = "Invert"
+    )
     rel proxyPrim (
         customData = {
             string userDocBrief = '''The proxyPrim relationship allows us to link a
@@ -97,6 +105,14 @@ class CubeCullVolume "CubeCullVolume" (
         }
         displayGroup = "Cull Volume"
         displayName = "Affects Secondary Rays"
+    )
+    bool cullVolume:invert = 0 (
+        customData = {
+            string userDocBrief = """When true, the volume culls everything outside its shape and
+        keeps what is inside, instead of culling what is inside."""
+        }
+        displayGroup = "Cull Volume"
+        displayName = "Invert"
     )
     rel proxyPrim (
         customData = {
@@ -169,6 +185,14 @@ class SphereCullVolume "SphereCullVolume" (
         displayGroup = "Cull Volume"
         displayName = "Affects Secondary Rays"
     )
+    bool cullVolume:invert = 0 (
+        customData = {
+            string userDocBrief = """When true, the volume culls everything outside its shape and
+        keeps what is inside, instead of culling what is inside."""
+        }
+        displayGroup = "Cull Volume"
+        displayName = "Invert"
+    )
     rel proxyPrim (
         customData = {
             string userDocBrief = '''The proxyPrim relationship allows us to link a
@@ -189,6 +213,86 @@ class SphereCullVolume "SphereCullVolume" (
             string userDocBrief = "Radius of the sphere, as UsdGeomSphere's radius."
         }
         displayGroup = "Cull Volume"
+    )
+    token visibility = "inherited" (
+        allowedTokens = ["inherited", "invisible"]
+        customData = {
+            string userDocBrief = '''Visibility is meant to be the simplest form of "pruning" 
+        visibility that is supported by most DCC apps.'''
+        }
+    )
+    uniform token[] xformOpOrder (
+        customData = {
+            string userDocBrief = """Encodes the sequence of transformation operations in the
+        order in which they should be pushed onto a transform stack while
+        visiting a UsdStage's prims in a graph traversal that will effect
+        the desired positioning for this prim and its descendant prims."""
+        }
+    )
+}
+
+class PlaneCullVolume "PlaneCullVolume" (
+    apiSchemas = ["CollectionAPI:cullLink"]
+    customData = {
+        token[] apiSchemaOverridePropertyNames = ["collection:cullLink:includeRoot"]
+        string userDocBrief = """A cull volume that is an infinite half-space bounded by a plane
+    through the origin of its local frame, normal to the local `axis`."""
+    }
+)
+{
+    uniform token axis = "Z" (
+        allowedTokens = ["X", "Y", "Z"]
+        customData = {
+            string userDocBrief = """The local axis the plane is normal to, as UsdGeomPlane's
+        axis."""
+        }
+        displayGroup = "Cull Volume"
+    )
+    uniform bool collection:cullLink:includeRoot = 1 (
+        customData = {
+            string userDocBrief = "The geometry this volume culls, as a collection."
+        }
+    )
+    bool cullVolume:affectsPrimaryRays = 1 (
+        customData = {
+            string userDocBrief = """When true, the volume culls primary rays: rays leaving the
+        camera, including their continuation through surfaces the renderer
+        treats as not hit (cutout opacity, presence, or another cull volume)."""
+        }
+        displayGroup = "Cull Volume"
+        displayName = "Affects Primary Rays"
+    )
+    bool cullVolume:affectsSecondaryRays = 1 (
+        customData = {
+            string userDocBrief = """When true, the volume culls secondary rays: every ray that
+        is not primary, including shadow (occlusion) rays toward lights and
+        all scattered rays."""
+        }
+        displayGroup = "Cull Volume"
+        displayName = "Affects Secondary Rays"
+    )
+    bool cullVolume:invert = 0 (
+        customData = {
+            string userDocBrief = """When true, the volume culls everything outside its shape and
+        keeps what is inside, instead of culling what is inside."""
+        }
+        displayGroup = "Cull Volume"
+        displayName = "Invert"
+    )
+    rel proxyPrim (
+        customData = {
+            string userDocBrief = '''The proxyPrim relationship allows us to link a
+        prim whose purpose is "render" to its (single target)
+        purpose="proxy" prim.'''
+        }
+    )
+    uniform token purpose = "default" (
+        allowedTokens = ["default", "render", "proxy", "guide"]
+        customData = {
+            string userDocBrief = """Purpose is a classification of geometry into categories that 
+        can each be independently included or excluded from traversals of prims 
+        on a stage, such as rendering or bounding-box computation traversals."""
+        }
     )
     token visibility = "inherited" (
         allowedTokens = ["inherited", "invisible"]

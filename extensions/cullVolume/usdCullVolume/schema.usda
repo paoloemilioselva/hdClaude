@@ -29,17 +29,21 @@ class "CullVolume" (
     inherits = </Xformable>
     doc = """Base class for cull volumes.
 
-    A cull volume is a closed region of space, defined by the concrete
-    subclass in its local frame and placed by its transform. For every ray of
-    a kind it affects, a renderer discards each intersection of that ray with
-    geometry in the `cullLink` collection whose world-space hit point lies
-    inside the region, and the ray continues as if that surface were not
-    there. Geometry outside the region, rays of a kind it does not affect, and
-    geometry outside the collection are untouched.
+    A cull volume is a region of space, defined by the concrete subclass in
+    its local frame and placed by its transform. For every ray of a kind it
+    affects, a renderer discards each intersection of that ray with geometry
+    in the `cullLink` collection whose world-space hit point lies in the
+    volume's culled region, and the ray continues as if that surface were not
+    there. The culled region is the inside of the shape, or, when
+    `cullVolume:invert` is true, everything outside it. Rays of a kind the
+    volume does not affect, and geometry outside the collection, are
+    untouched.
 
     Unlike backface or frustum culling, which only skip geometry that would
     not have been seen, culling by a cull volume changes the image: it is an
-    authored, artistic removal of geometry, not a performance hint.
+    authored removal of geometry. Rendering can become cheaper as a result,
+    because there is less of the scene to trace, but the image is what the
+    volume defines, not an approximation of the full scene.
 
     A cull volume removes geometry from rays; it is not itself geometry. It
     contributes nothing to the image, casts no shadow, and is not part of any
@@ -47,9 +51,13 @@ class "CullVolume" (
     Gprim: a renderer that does not know this schema draws nothing for it,
     rather than drawing an opaque shape over the shot.
 
-    Several cull volumes combine as a union: an intersection is discarded if
-    any active cull volume that affects the ray's kind and links the hit
-    geometry contains the hit point.
+    Several cull volumes combine as follows. Of the active volumes that
+    affect the ray's kind and link the hit geometry, an intersection is
+    discarded if it lies inside any volume that is not inverted, or if at
+    least one of them is inverted and it lies inside none of the inverted
+    ones. Inverted volumes therefore together define the part of the scene
+    that is kept (the union of their insides), and volumes that are not
+    inverted cut holes in it.
 
     A cull volume is active when it is visible and its purpose is one the
     render includes, exactly as for any other Imageable. Making it invisible
@@ -81,6 +89,17 @@ class "CullVolume" (
 
         Culling secondary rays alone changes how light reaches the scene
         without changing what the camera sees directly.
+        """
+    )
+    bool cullVolume:invert = false (
+        displayGroup = "Cull Volume"
+        displayName = "Invert"
+        doc = """When true, the volume culls everything outside its shape and
+        keeps what is inside, instead of culling what is inside. An inverted
+        volume defines the region of the scene a render is restricted to,
+        for example to focus a look-development render on one area of a
+        large set; see the class documentation for how inverted and
+        non-inverted volumes combine.
         """
     )
     uniform bool collection:cullLink:includeRoot = 1 (
@@ -132,5 +151,31 @@ class SphereCullVolume "SphereCullVolume" (
         displayGroup = "Cull Volume"
         doc = """Radius of the sphere, as UsdGeomSphere's radius. A negative
         radius is invalid and is reported, and the volume is ignored."""
+    )
+}
+
+class PlaneCullVolume "PlaneCullVolume" (
+    inherits = </CullVolume>
+    doc = """A cull volume that is an infinite half-space bounded by a plane
+    through the origin of its local frame, normal to the local `axis`.
+
+    The inside of the volume is the half-space the axis points away from:
+    the points whose coordinate along `axis` is negative. This is the same
+    convention as UsdGeomCamera's `clippingPlanes`, which cull the side of
+    the plane opposite its normal, so the normal points toward what is kept.
+    Several planes that are not inverted keep the intersection of their
+    positive sides, which is how a convex section, such as a section box, is
+    built from planes.
+    """
+    customData = {
+        string className = "PlaneCullVolume"
+    }
+) {
+    uniform token axis = "Z" (
+        allowedTokens = ["X", "Y", "Z"]
+        displayGroup = "Cull Volume"
+        doc = """The local axis the plane is normal to, as UsdGeomPlane's
+        axis. The volume's inside is the half-space on the negative side of
+        this axis."""
     )
 }
