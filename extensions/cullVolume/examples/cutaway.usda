@@ -1,13 +1,13 @@
 #usda 1.0
 (
-    doc = """Clip volumes, use case 1: seeing into a closed room.
+    doc = """Cull volumes, use case 1: seeing into a closed room.
 
-    The camera stands outside the room. A cube clip volume around part of
-    the front wall clips primary rays only, so the camera sees inside while
+    The camera stands outside the room. A cube cull volume around part of
+    the front wall culls primary rays only, so the camera sees inside while
     the wall still blocks, shadows and bounces light exactly as before: the
     interior is lit by its own light alone, as it would be with the wall in
-    place. The pillar is excluded from the clip volume's collection, so it
-    survives inside the clipped region.
+    place. The pillar is excluded from the cull volume's collection, so it
+    survives inside the culled region.
     """
     defaultPrim = "World"
     metersPerUnit = 1
@@ -101,11 +101,11 @@ def Xform "World"
         uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
     }
 
-    def CubeClipVolume "Cutaway"
+    def CubeCullVolume "Cutaway"
     {
-        bool clipVolume:affectsPrimaryRays = true
-        bool clipVolume:affectsSecondaryRays = false
-        prepend rel collection:clipLink:excludes = </World/Room/Pillar>
+        bool cullVolume:affectsPrimaryRays = true
+        bool cullVolume:affectsSecondaryRays = false
+        prepend rel collection:cullLink:excludes = </World/Room/Pillar>
         double size = 1
         double3 xformOp:translate = (0, 1.4, 3.05)
         float3 xformOp:scale = (4, 2.2, 0.6)

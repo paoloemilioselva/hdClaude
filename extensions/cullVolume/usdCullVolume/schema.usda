@@ -1,6 +1,6 @@
 #usda 1.0
 (
-    """ Clip volumes: analytic regions of space inside which a renderer
+    """ Cull volumes: analytic regions of space inside which a renderer
         discards ray intersections with linked geometry, independently for
         primary (camera) rays and secondary rays.
 
@@ -15,9 +15,9 @@
 
 over "GLOBAL" (
     customData = {
-        string libraryName = "usdClipVolume"
+        string libraryName = "usdCullVolume"
         string libraryPath = "."
-        string libraryPrefix = "UsdClipVolume"
+        string libraryPrefix = "UsdCullVolume"
         # Codeless while this is a prototype: the UsdImaging adapter reads the
         # attributes by name. A proposal to OpenUSD would generate the classes.
         bool skipCodeGeneration = true
@@ -25,66 +25,70 @@ over "GLOBAL" (
 ) {
 }
 
-class "ClipVolume" (
+class "CullVolume" (
     inherits = </Xformable>
-    doc = """Base class for clip volumes.
+    doc = """Base class for cull volumes.
 
-    A clip volume is a closed region of space, defined by the concrete
+    A cull volume is a closed region of space, defined by the concrete
     subclass in its local frame and placed by its transform. For every ray of
     a kind it affects, a renderer discards each intersection of that ray with
-    geometry in the `clipLink` collection whose world-space hit point lies
+    geometry in the `cullLink` collection whose world-space hit point lies
     inside the region, and the ray continues as if that surface were not
     there. Geometry outside the region, rays of a kind it does not affect, and
     geometry outside the collection are untouched.
 
-    A clip volume removes geometry from rays; it is not itself geometry. It
+    Unlike backface or frustum culling, which only skip geometry that would
+    not have been seen, culling by a cull volume changes the image: it is an
+    authored, artistic removal of geometry, not a performance hint.
+
+    A cull volume removes geometry from rays; it is not itself geometry. It
     contributes nothing to the image, casts no shadow, and is not part of any
     bounding box, which is why it derives from Xformable and not Boundable or
     Gprim: a renderer that does not know this schema draws nothing for it,
     rather than drawing an opaque shape over the shot.
 
-    Several clip volumes combine as a union: an intersection is discarded if
-    any active clip volume that affects the ray's kind and links the hit
+    Several cull volumes combine as a union: an intersection is discarded if
+    any active cull volume that affects the ray's kind and links the hit
     geometry contains the hit point.
 
-    A clip volume is active when it is visible and its purpose is one the
+    A cull volume is active when it is visible and its purpose is one the
     render includes, exactly as for any other Imageable. Making it invisible
     is how it is switched off.
     """
-    prepend apiSchemas = ["CollectionAPI:clipLink"]
+    prepend apiSchemas = ["CollectionAPI:cullLink"]
     customData = {
-        string className = "ClipVolume"
+        string className = "CullVolume"
     }
 ) {
-    bool clipVolume:affectsPrimaryRays = true (
-        displayGroup = "Clip Volume"
+    bool cullVolume:affectsPrimaryRays = true (
+        displayGroup = "Cull Volume"
         displayName = "Affects Primary Rays"
-        doc = """When true, the volume clips primary rays: rays leaving the
+        doc = """When true, the volume culls primary rays: rays leaving the
         camera, including their continuation through surfaces the renderer
-        treats as not hit (cutout opacity, presence, or another clip volume).
+        treats as not hit (cutout opacity, presence, or another cull volume).
         A reflection, refraction or any other scattered ray is not primary.
 
-        Clipping primary rays alone changes what the camera sees and nothing
-        else: the clipped geometry still shadows, reflects and bounces light.
+        Culling primary rays alone changes what the camera sees and nothing
+        else: the culled geometry still shadows, reflects and bounces light.
         """
     )
-    bool clipVolume:affectsSecondaryRays = true (
-        displayGroup = "Clip Volume"
+    bool cullVolume:affectsSecondaryRays = true (
+        displayGroup = "Cull Volume"
         displayName = "Affects Secondary Rays"
-        doc = """When true, the volume clips secondary rays: every ray that
+        doc = """When true, the volume culls secondary rays: every ray that
         is not primary, including shadow (occlusion) rays toward lights and
         all scattered rays.
 
-        Clipping secondary rays alone changes how light reaches the scene
+        Culling secondary rays alone changes how light reaches the scene
         without changing what the camera sees directly.
         """
     )
-    uniform bool collection:clipLink:includeRoot = 1 (
+    uniform bool collection:cullLink:includeRoot = 1 (
         customData = {
             bool apiSchemaOverride = true
         }
-        doc = """The geometry this volume clips, as a collection. By default
-        it includes the whole stage, so a clip volume clips everything inside
+        doc = """The geometry this volume culls, as a collection. By default
+        it includes the whole stage, so a cull volume culls everything inside
         it; excludes, or a membership expression, protect specific prims from
         it, and includes restrict it to specific prims.
 
@@ -95,37 +99,37 @@ class "ClipVolume" (
     )
 }
 
-class CubeClipVolume "CubeClipVolume" (
-    inherits = </ClipVolume>
-    doc = """A clip volume that is an axis-aligned cube centered at the
+class CubeCullVolume "CubeCullVolume" (
+    inherits = </CullVolume>
+    doc = """A cull volume that is an axis-aligned cube centered at the
     origin of its local frame, with the same parameterization as UsdGeomCube.
     A box of any proportions is a cube with a non-uniform scale in its
     transform, as it is for UsdGeomCube.
     """
     customData = {
-        string className = "CubeClipVolume"
+        string className = "CubeCullVolume"
     }
 ) {
     double size = 2.0 (
-        displayGroup = "Clip Volume"
+        displayGroup = "Cull Volume"
         doc = """Length of each edge of the cube, as UsdGeomCube's size: the
         cube spans [-size/2, size/2] on each local axis. A negative size is
         invalid and is reported, and the volume is ignored."""
     )
 }
 
-class SphereClipVolume "SphereClipVolume" (
-    inherits = </ClipVolume>
-    doc = """A clip volume that is a sphere centered at the origin of its
+class SphereCullVolume "SphereCullVolume" (
+    inherits = </CullVolume>
+    doc = """A cull volume that is a sphere centered at the origin of its
     local frame, with the same parameterization as UsdGeomSphere. An
     ellipsoid is a sphere with a non-uniform scale in its transform.
     """
     customData = {
-        string className = "SphereClipVolume"
+        string className = "SphereCullVolume"
     }
 ) {
     double radius = 1.0 (
-        displayGroup = "Clip Volume"
+        displayGroup = "Cull Volume"
         doc = """Radius of the sphere, as UsdGeomSphere's radius. A negative
         radius is invalid and is reported, and the volume is ignored."""
     )

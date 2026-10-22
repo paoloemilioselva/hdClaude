@@ -1,12 +1,12 @@
 #usda 1.0
 (
-    doc = """Clip volumes, use case 2: letting sunlight through a canopy.
+    doc = """Cull volumes, use case 2: letting sunlight through a canopy.
 
     The camera stands under a dense canopy, which is above the frame. Two
-    sphere clip volumes open holes in it, clipping both primary and
+    sphere cull volumes open holes in it, culling both primary and
     secondary rays (the defaults), so sunlight reaches the ground through
     them as pools of light in shot. The canopy itself is never in frame, so
-    clipping primary rays as well changes nothing the camera sees directly;
+    culling primary rays as well changes nothing the camera sees directly;
     it is kept on so the scene stays consistent if the camera tilts up.
     """
     defaultPrim = "World"
@@ -73,14 +73,14 @@ def Xform "World"
 
     def Xform "Gaps"
     {
-        def SphereClipVolume "Gap1"
+        def SphereCullVolume "Gap1"
         {
             double radius = 2.5
             double3 xformOp:translate = (-1, 12, -8)
             uniform token[] xformOpOrder = ["xformOp:translate"]
         }
 
-        def SphereClipVolume "Gap2"
+        def SphereCullVolume "Gap2"
         {
             double radius = 1.5
             double3 xformOp:translate = (3, 12, -4)
