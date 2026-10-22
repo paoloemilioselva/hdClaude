@@ -55,6 +55,10 @@ struct HdClaudeMeshEntry {
     /// shared material for unbound geometry shades with, and what any material
     /// reading a `displayColor` geomprop receives.
     float displayColor[3] = {0.5f, 0.5f, 0.5f};
+
+    /// The rprim's `HdRprim::GetPrimId`, which the `primId` AOV reports and a
+    /// picking host maps back to a path through the render index.
+    int primId = -1;
 };
 
 /// Where the one material for unbound geometry is published.
@@ -88,6 +92,9 @@ struct HdClaudeSplatEntry {
     /// schema's own validation rules, plus the rasterizer hints a ray tracer
     /// has nothing to do with. Reported once rather than per frame.
     std::vector<std::string> reports;
+
+    /// The rprim's prim id. See `HdClaudeMeshEntry::primId`.
+    int primId = -1;
 };
 
 /// A material, keyed by the path of the Hydra material prim.

@@ -160,6 +160,22 @@ void HdClaudeRenderBuffer::WriteData(const std::vector<float>& values,
     }
 }
 
+void HdClaudeRenderBuffer::WriteIds(const std::vector<std::int32_t>& values,
+                                    std::size_t stride, std::size_t offset)
+{
+    const size_t pixels = static_cast<size_t>(_width) * _height;
+    if (pixels == 0 || stride == 0 || offset >= stride ||
+        values.size() < pixels * stride ||
+        HdGetComponentFormat(_format) != HdFormatInt32) {
+        return;
+    }
+    const size_t pixelSize = HdDataSizeOfFormat(_format);
+    for (size_t i = 0; i < pixels; ++i) {
+        std::memcpy(_data.data() + i * pixelSize, &values[i * stride + offset],
+                    sizeof(std::int32_t));
+    }
+}
+
 void HdClaudeRenderBuffer::Write(const std::vector<float>& linearRgba)
 {
     const size_t pixels = static_cast<size_t>(_width) * _height;

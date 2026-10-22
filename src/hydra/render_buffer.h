@@ -3,6 +3,7 @@
 #include "pxr/imaging/hd/renderBuffer.h"
 
 #include <atomic>
+#include <cstdint>
 #include <vector>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -61,6 +62,12 @@ class HdClaudeRenderBuffer final : public HdRenderBuffer {
     /// one.
     void WriteData(const std::vector<float>& values, std::size_t stride,
                    std::size_t offset);
+
+    /// Per-pixel integers -- an id -- `stride` a pixel starting `offset` into
+    /// each, into an Int32 buffer's first channel. Any other format is left at
+    /// its clear value: an id converted to a float is a different id past 2^24.
+    void WriteIds(const std::vector<std::int32_t>& values, std::size_t stride,
+                  std::size_t offset);
 
     void Clear(const float* value);
 

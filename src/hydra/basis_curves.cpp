@@ -234,6 +234,7 @@ void HdClaudeBasisCurves::Sync(HdSceneDelegate* sceneDelegate,
     }
 
     HdClaudeMeshEntry entry;
+    entry.primId = GetPrimId();
     entry.prototype.debugName = id.GetString();
 
     if (param->ImplicitCurves()) {

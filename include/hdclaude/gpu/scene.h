@@ -192,6 +192,14 @@ struct MeshInstance {
     /// frame's cull volumes: its membership of each volume's `cullLink`
     /// collection. See `CullVolume`.
     std::uint32_t cullLinks = 0;
+
+    /// Two numbers the host chose to name this placement by, handed back per
+    /// pixel for whatever a camera ray hit first (`RenderedFrame::pick`).
+    /// Opaque to the renderer, which only copies them. Hydra puts its rprim's
+    /// prim id and the instance index there, which is what a picking host
+    /// reads out of the `primId` and `instanceId` AOVs.
+    std::int32_t pickId = -1;
+    std::int32_t pickInstance = -1;
 };
 
 /// One object-space Gaussian splat cloud prototype.
@@ -253,6 +261,10 @@ struct SplatInstance {
 
     /// Which cull volumes cull this placement. See `MeshInstance::cullLinks`.
     std::uint32_t cullLinks = 0;
+
+    /// What the host calls this placement. See `MeshInstance::pickId`.
+    std::int32_t pickId = -1;
+    std::int32_t pickInstance = -1;
 };
 
 // --- Cull volumes --------------------------------------------------------------

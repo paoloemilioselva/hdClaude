@@ -45,8 +45,13 @@ void main()
         guideSurface.values[3u * index + 2u] = vec4(0.0);
         guideSpecularRay.values[2u * index] = vec4(0.0);
         guideSpecularRay.values[2u * index + 1u] = vec4(0.0, 0.0, 0.0, 65504.0);
+        guidePick.values[index] = ivec2(-1);
         return;
     }
+
+    // Named for the host before anything below can return: a hit behind the
+    // camera is still what this pixel's ray met first.
+    guidePick.values[index] = instancePicks.values[record.x];
 
     // Cleared for a hit as for a miss, and before anything below can return:
     // `shade` overwrites the surface guides and records a probe for a hit whose

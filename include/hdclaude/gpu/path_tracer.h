@@ -453,6 +453,13 @@ struct FrameResult {
     /// probe met nothing or there was no surface to leave.
     std::vector<float> specularHitDistance;
 
+    /// What the primary ray hit, as the host named it: the `pickId` and
+    /// `pickInstance` of the placement, two integers per pixel of the render
+    /// extent in the same row order as the image; -1 and -1 where the ray hit
+    /// nothing. From the last sample traced, like every guide, so an edge
+    /// pixel names whichever surface that sample's jitter landed on.
+    std::vector<std::int32_t> pick;
+
     bool Valid() const { return width != 0 && height != 0 && !image.empty(); }
 };
 
@@ -792,6 +799,9 @@ class PathTracer {
     /// Which volumes cull each placement, one word each, indexed by the custom
     /// index a ray query reports.
     VulkanBuffer _instanceCullLinks;
+    /// Each placement's `pickId` and `pickInstance`, by custom index, for the
+    /// guides kernel to copy into the pick guide.
+    VulkanBuffer _instancePicks;
     /// From the scene: how many volumes, and which affect each kind of ray.
     std::uint32_t _cullVolumeCount = 0;
     std::uint32_t _cullPrimaryVolumes = 0;
@@ -965,6 +975,7 @@ class PathTracer {
     std::vector<float> _lastDiffuseAlbedo;
     std::vector<float> _lastSpecularAlbedo;
     std::vector<float> _lastSpecularHitDistance;
+    std::vector<std::int32_t> _lastPick;
 
     /// The world-to-clip the previous frame was rendered with, and whether
     /// there was one. Motion is measured against this.
@@ -1040,6 +1051,9 @@ class PathTracer {
         /// Specular probe rays and the distances they met: two vec4 per pixel.
         VulkanBuffer guideSpecularRay;
         VulkanBuffer specularRayReadback;
+        /// The primary hit's pick ids: two ints per pixel.
+        VulkanBuffer guidePick;
+        VulkanBuffer pickReadback;
         VulkanBuffer guideReadback;
         VulkanBuffer motionReadback;
         VulkanBuffer surfaceReadback;

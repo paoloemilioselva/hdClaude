@@ -631,6 +631,18 @@ layout(set = 0, binding = 34, scalar) readonly buffer InstanceCullLinks {
     uint values[];
 } instanceCullLinks;
 
+// --- Picking ----------------------------------------------------------------
+
+// What the host calls each placement, two ints by custom index: Hydra's prim
+// id and instance index. Opaque here; the guides kernel copies them out.
+layout(set = 0, binding = 35, scalar) readonly buffer InstancePicks {
+    ivec2 values[];
+} instancePicks;
+
+// The primary hit's pick ids, one ivec2 per pixel, (-1, -1) for a miss. A guide
+// like depth: the last sample wins.
+layout(set = 0, binding = 36, scalar) buffer GuidePick { ivec2 values[]; } guidePick;
+
 // "Everything" and "nothing", as intervals of t. Beyond any ray's extent, so a
 // half-space that contains a whole ray contains it at both ends.
 const float HDCLAUDE_CULL_FOREVER = 1.0e38;

@@ -196,6 +196,9 @@ void HdClaudeRenderPass::_Execute(
     HdClaudeRenderBuffer* roughnessBuffer = nullptr;
     HdClaudeRenderBuffer* diffuseAlbedoBuffer = nullptr;
     HdClaudeRenderBuffer* specularAlbedoBuffer = nullptr;
+    HdClaudeRenderBuffer* primIdBuffer = nullptr;
+    HdClaudeRenderBuffer* instanceIdBuffer = nullptr;
+    HdClaudeRenderBuffer* elementIdBuffer = nullptr;
     const HdRenderPassAovBindingVector& bindings =
         renderPassState->GetAovBindings();
     for (const HdRenderPassAovBinding& binding : bindings) {
@@ -217,6 +220,12 @@ void HdClaudeRenderPass::_Execute(
             diffuseAlbedoBuffer = buffer;
         } else if (binding.aovName == _tokens->specularAlbedo) {
             specularAlbedoBuffer = buffer;
+        } else if (binding.aovName == HdAovTokens->primId) {
+            primIdBuffer = buffer;
+        } else if (binding.aovName == HdAovTokens->instanceId) {
+            instanceIdBuffer = buffer;
+        } else if (binding.aovName == HdAovTokens->elementId) {
+            elementIdBuffer = buffer;
         }
     }
 
@@ -275,7 +284,8 @@ void HdClaudeRenderPass::_Execute(
     HdClaudeRenderBuffer* extentBuffer = colorBuffer;
     for (HdClaudeRenderBuffer* candidate :
          {depthBuffer, normalBuffer, roughnessBuffer, diffuseAlbedoBuffer,
-          specularAlbedoBuffer}) {
+          specularAlbedoBuffer, primIdBuffer, instanceIdBuffer,
+          elementIdBuffer}) {
         if (extentBuffer == nullptr) {
             extentBuffer = candidate;
         }
@@ -1004,6 +1014,23 @@ void HdClaudeRenderPass::_Execute(
         if (specularAlbedoBuffer != nullptr) {
             specularAlbedoBuffer->WriteData(frame.specularAlbedo, 3, 0);
         }
+        // The picking AOVs. A host such as usdview binds them beside colour
+        // and depth, and reads them back when the user clicks: the prim id
+        // names the rprim through the render index, and the instance id which
+        // of its instances.
+        if (primIdBuffer != nullptr) {
+            primIdBuffer->WriteIds(frame.pick, 2, 0);
+        }
+        if (instanceIdBuffer != nullptr) {
+            instanceIdBuffer->WriteIds(frame.pick, 2, 1);
+        }
+    }
+    // Faces are not tracked through triangulation and refinement, so no pixel
+    // names one. -1, the AOV's clear value, says that; the zero a fresh buffer
+    // holds would name face 0 of whatever was hit.
+    if (elementIdBuffer != nullptr) {
+        const float none = -1.0f;
+        elementIdBuffer->Clear(&none);
     }
     if (depthBuffer != nullptr && !frame.depth.empty()) {
         if (frame.renderWidth == width && frame.renderHeight == height) {
@@ -1013,10 +1040,10 @@ void HdClaudeRenderPass::_Execute(
             if (!warnedDepthExtent) {
                 warnedDepthExtent = true;
                 TF_WARN(
-                    "hdClaude: the depth AOV is not written while "
-                    "reconstruction upscales -- the frame was traced at %ux%u "
-                    "and the buffer is %ux%u. Use the DLAA mode, which traces "
-                    "at the output extent.",
+                    "hdClaude: the depth AOV, and with it the picking AOVs, "
+                    "are not written while reconstruction upscales -- the "
+                    "frame was traced at %ux%u and the buffer is %ux%u. Use "
+                    "the DLAA mode, which traces at the output extent.",
                     frame.renderWidth, frame.renderHeight, width, height);
             }
         }

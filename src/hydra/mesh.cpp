@@ -535,6 +535,7 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     topology.SetSubdivTags(sceneDelegate->GetSubdivTags(id));
 
     HdClaudeMeshEntry entry;
+    entry.primId = GetPrimId();
     entry.material = GetMaterialId();
     entry.visible = sceneDelegate->GetVisible(id);
     entry.prototype.debugName = id.GetString();

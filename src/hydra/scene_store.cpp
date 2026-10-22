@@ -425,6 +425,11 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
         for (std::size_t i = 0; i < mesh.transforms.size(); ++i) {
             hdclaude::MeshInstance instance;
             instance.cullLinks = meshCullLinks;
+            // The index into the flattened instances, the order
+            // HdClaudeInstancer composes them in, which is the order Storm and
+            // UsdImaging number them in; zero for a prim with no instancer.
+            instance.pickId = mesh.primId;
+            instance.pickInstance = static_cast<std::int32_t>(i);
             instance.prototype = prototype;
             instance.transform = mesh.transforms[i];
             if (matched) {
@@ -468,6 +473,8 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
         for (std::size_t i = 0; i < splats.transforms.size(); ++i) {
             hdclaude::SplatInstance instance;
             instance.cullLinks = splatCullLinks;
+            instance.pickId = splats.primId;
+            instance.pickInstance = static_cast<std::int32_t>(i);
             instance.prototype = prototype;
             instance.transform = splats.transforms[i];
             if (matched) {

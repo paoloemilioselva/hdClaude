@@ -97,6 +97,8 @@ std::vector<BindingDescription> KernelBindings()
     bindings.push_back(storage(24, "spectralTables"));
     bindings.push_back(storage(33, "cullVolumes"));
     bindings.push_back(storage(34, "instanceCullLinks"));
+    bindings.push_back(storage(35, "instancePicks"));
+    bindings.push_back(storage(36, "guidePick"));
 
     return bindings;
 }
@@ -1357,6 +1359,43 @@ void PathTracer::SetScene(const Scene& publishedScene,
         }
     }
 
+    // --- Pick ids --------------------------------------------------------------
+    // Two ints a placement, in custom index order like the cull links, for the
+    // guides kernel to copy out for whatever the camera ray hit.
+    {
+        std::vector<std::int32_t> picks;
+        picks.reserve(2 * (scene.instances.size() + scene.splatInstances.size()) +
+                      2);
+        for (const MeshInstance& instance : scene.instances) {
+            picks.push_back(instance.pickId);
+            picks.push_back(instance.pickInstance);
+        }
+        for (const SplatInstance& instance : scene.splatInstances) {
+            picks.push_back(instance.pickId);
+            picks.push_back(instance.pickInstance);
+        }
+        if (picks.empty()) {
+            picks.assign(2, -1);
+        }
+        const VkDeviceSize size = picks.size() * sizeof(std::int32_t);
+
+        BufferDescription staging;
+        staging.size = size;
+        staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        staging.domain = BufferDomain::HostUpload;
+        staging.debugName = "instancePicks.staging";
+        VulkanBuffer upload(_allocator, staging);
+        upload.Write(picks.data(), size);
+
+        _instancePicks = MakeStorage(_allocator, size, "instancePicks");
+        _context.SubmitImmediate([&](VkCommandBuffer command) {
+            VkBufferCopy region{};
+            region.size = size;
+            vkCmdCopyBuffer(command, upload.Handle(), _instancePicks.Handle(), 1,
+                            &region);
+        });
+    }
+
     // --- Textures ------------------------------------------------------------
     // Uploaded at the top of this function, before the displacement pass that
     // samples them.
@@ -1529,6 +1568,8 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
             MakeStorage(_allocator, paths * 48, "guide.surface");
         VulkanBuffer guideSpecularRay =
             MakeStorage(_allocator, paths * 32, "guide.specularRay");
+        // Two ints per pixel: the pick id and pick instance of the primary hit.
+        VulkanBuffer guidePick = MakeStorage(_allocator, paths * 8, "guide.pick");
         // Eight uints: activeCount, nextActiveCount, shadowCount, a pad, the two
         // ray accumulators, and the two hashes -- over what the rays were and over
         // what they hit. Everything past byte 16 is per call rather than per
@@ -1581,6 +1622,11 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
         specularRayReadbackDescription.debugName = "guide.specularRayReadback";
         VulkanBuffer specularRayReadback(_allocator, specularRayReadbackDescription);
 
+        BufferDescription pickReadbackDescription = guideReadbackDescription;
+        pickReadbackDescription.size = paths * 8;
+        pickReadbackDescription.debugName = "guide.pickReadback";
+        VulkanBuffer pickReadback(_allocator, pickReadbackDescription);
+
         BufferDescription readbackDescription;
         readbackDescription.size = paths * 16;
         readbackDescription.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -1616,6 +1662,8 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
         slot.motionReadback = std::move(motionReadback);
         slot.surfaceReadback = std::move(surfaceReadback);
         slot.specularRayReadback = std::move(specularRayReadback);
+        slot.guidePick = std::move(guidePick);
+        slot.pickReadback = std::move(pickReadback);
         }
 
     // The film is shared, so it is built once outside the loop.
@@ -1688,6 +1736,8 @@ void PathTracer::WriteDescriptors(VkDescriptorSet set,
     pipeline.WriteBuffer(set, 24, _spectralTables);
     pipeline.WriteBuffer(set, 33, _cullVolumes);
     pipeline.WriteBuffer(set, 34, _instanceCullLinks);
+    pipeline.WriteBuffer(set, 35, _instancePicks);
+    pipeline.WriteBuffer(set, 36, slot.guidePick);
 }
 
 void PathTracer::SetCullVolumes(const std::vector<CullVolume>& volumes)
@@ -2404,6 +2454,7 @@ FrameHandle PathTracer::BeginFrame(const FrameDescription& description)
     _pendingFrame.diffuseAlbedo = std::move(_lastDiffuseAlbedo);
     _pendingFrame.specularAlbedo = std::move(_lastSpecularAlbedo);
     _pendingFrame.specularHitDistance = std::move(_lastSpecularHitDistance);
+    _pendingFrame.pick = std::move(_lastPick);
 
     if (plan.active) {
         // The traced image is what the backend is *given*, by way of the film
@@ -2957,6 +3008,11 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
         vkCmdCopyBuffer(command, slot.guideSpecularRay.Handle(),
                         slot.specularRayReadback.Handle(), 1, &specularRay);
 
+        VkBufferCopy pick{};
+        pick.size = static_cast<VkDeviceSize>(paths) * 8;
+        vkCmdCopyBuffer(command, slot.guidePick.Handle(),
+                        slot.pickReadback.Handle(), 1, &pick);
+
         VkBufferCopy rays{};
         rays.srcOffset = 16;
         rays.size = 16;
@@ -3001,6 +3057,9 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
         for (std::size_t i = 0; i < pixels; ++i) {
             _lastSpecularHitDistance[i] = probes[i * 8 + 7];
         }
+        _lastPick.assign(pixels * 2, -1);
+        std::memcpy(_lastPick.data(), slot.pickReadback.MappedData(),
+                    _lastPick.size() * sizeof(std::int32_t));
     }
 
     // This frame becomes the next frame's past.

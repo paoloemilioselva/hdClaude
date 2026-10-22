@@ -322,6 +322,7 @@ void HdClaudeParticleField::Sync(HdSceneDelegate* sceneDelegate,
     }
 
     HdClaudeSplatEntry entry;
+    entry.primId = GetPrimId();
     entry.prototype.cloud = hdclaude::BuildSplatCloud(source);
     entry.prototype.debugName = id.GetString();
     entry.reports = entry.prototype.cloud.reports;
