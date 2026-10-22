@@ -1,0 +1,124 @@
+#usda 1.0
+(
+    doc = """Clip volumes, use case 1: seeing into a closed room.
+
+    The camera stands outside the room. A cube clip volume around part of
+    the front wall clips primary rays only, so the camera sees inside while
+    the wall still blocks, shadows and bounces light exactly as before: the
+    interior is lit by its own light alone, as it would be with the wall in
+    place. The pillar is excluded from the clip volume's collection, so it
+    survives inside the clipped region.
+    """
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Xform "Room"
+    {
+        def Cube "Floor"
+        {
+            double3 xformOp:translate = (0, -0.05, 0)
+            float3 xformOp:scale = (3, 0.05, 3)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            color3f[] primvars:displayColor = [(0.6, 0.6, 0.6)]
+        }
+
+        def Cube "Ceiling"
+        {
+            double3 xformOp:translate = (0, 3.05, 0)
+            float3 xformOp:scale = (3, 0.05, 3)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            color3f[] primvars:displayColor = [(0.8, 0.8, 0.8)]
+        }
+
+        def Cube "FrontWall"
+        {
+            double3 xformOp:translate = (0, 1.5, 3.05)
+            float3 xformOp:scale = (3, 1.5, 0.05)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            color3f[] primvars:displayColor = [(0.7, 0.4, 0.3)]
+        }
+
+        def Cube "BackWall"
+        {
+            double3 xformOp:translate = (0, 1.5, -3.05)
+            float3 xformOp:scale = (3, 1.5, 0.05)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            color3f[] primvars:displayColor = [(0.7, 0.7, 0.75)]
+        }
+
+        def Cube "LeftWall"
+        {
+            double3 xformOp:translate = (-3.05, 1.5, 0)
+            float3 xformOp:scale = (0.05, 1.5, 3)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            color3f[] primvars:displayColor = [(0.3, 0.5, 0.7)]
+        }
+
+        def Cube "RightWall"
+        {
+            double3 xformOp:translate = (3.05, 1.5, 0)
+            float3 xformOp:scale = (0.05, 1.5, 3)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            color3f[] primvars:displayColor = [(0.3, 0.7, 0.4)]
+        }
+
+        def Sphere "Ball"
+        {
+            double radius = 0.6
+            double3 xformOp:translate = (-0.8, 0.6, -0.5)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            color3f[] primvars:displayColor = [(0.9, 0.8, 0.2)]
+        }
+
+        def Cylinder "Pillar"
+        {
+            uniform token axis = "Y"
+            double height = 3
+            double radius = 0.15
+            double3 xformOp:translate = (1.2, 1.5, 3.05)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            color3f[] primvars:displayColor = [(0.85, 0.85, 0.85)]
+        }
+
+        def SphereLight "RoomLight"
+        {
+            float inputs:intensity = 40
+            float inputs:radius = 0.2
+            double3 xformOp:translate = (0, 2.6, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+    }
+
+    def DistantLight "Sun"
+    {
+        float inputs:angle = 0.53
+        float inputs:intensity = 3
+        float3 xformOp:rotateXYZ = (-40, 30, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+
+    def CubeClipVolume "Cutaway"
+    {
+        bool clipVolume:affectsPrimaryRays = true
+        bool clipVolume:affectsSecondaryRays = false
+        prepend rel collection:clipLink:excludes = </World/Room/Pillar>
+        double size = 1
+        double3 xformOp:translate = (0, 1.4, 3.05)
+        float3 xformOp:scale = (4, 2.2, 0.6)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+
+    def Camera "Camera"
+    {
+        float focalLength = 24
+        float horizontalAperture = 36
+        float verticalAperture = 24
+        float2 clippingRange = (0.1, 1000)
+        double3 xformOp:translate = (0, 1.6, 9)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}
