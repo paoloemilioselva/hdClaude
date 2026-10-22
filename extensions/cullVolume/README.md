@@ -95,12 +95,20 @@ acceleration structure, so the path tracer only traces the small region. The
 cut is in 3D, so the asset can be turned and reframed freely while the region
 stays where it is.
 
+For example, to work on skin, put an inverted cube around a character's
+hand and iterate on the material while rays only trace that region.
+
 This is a different render, not a faster version of the same one. The region
 is lit as if it were alone: geometry outside it no longer shadows it or
 bounces light into it, and the dome and sun reach it unobstructed. For
 judging a material, that is usually what is wanted. Set elements the shot
 needs, such as a backdrop, can be excluded from the volume's collection so
 they stay.
+
+Because the cut is not capped (semantics rule 8), a translucent material
+lets light leak out where its surface is cut. A subsurface random walk
+that reaches the cut leaves the medium there. Keep the region's boundary a
+few mean free paths away from the part being judged.
 
 See [`examples/lookdev_region.usda`](examples/lookdev_region.usda).
 
@@ -254,6 +262,10 @@ normal of both points toward what is kept. Reusing that convention is cheaper
 for authors and reviewers than defining a new one. The axis is a token, as on
 `UsdGeomPlane`, and any other orientation comes from the transform.
 
+The plane is infinite on purpose. A finite plane would not bound a region,
+so "inside" would mean nothing. A cut that has to stop somewhere is a thin
+`CubeCullVolume` instead.
+
 ### Two booleans, not a list of ray types
 
 Production renderers name ray types differently (camera, shadow, diffuse,
@@ -305,35 +317,42 @@ shapes, not one prim type per shape.
 
 ## Implementing it in a ray tracer
 
-The rule is a test on each candidate hit: *is this hit point inside a volume
-that applies to this ray and this geometry?* The natural place for that test is
-where a ray tracer already decides whether to accept a candidate hit. That is
-the any-hit shader in a ray tracing pipeline, or the candidate loop of a ray
-query, and it is the same place cutout opacity is tested.
+The rules are stated per hit, but they are best implemented per ray, without
+changing the acceleration structure.
 
-- Upload the active volumes as world-to-local transforms plus a shape and
-  the invert flag. Test a point by transforming it into the volume's frame
-  and comparing it against the unit cube, the unit sphere, or the plane.
-- Store each geometry instance's linking as a bitmask over the active volumes,
-  computed on the CPU from `cullLink`. A ray's kind selects the volumes whose
-  flag allows it.
-- Only instances whose world bounds overlap an active volume that links them
-  need to be traced as non-opaque. Everything else stays on the opaque fast
-  path, so a scene with no cull volumes, or with volumes far away, costs
-  nothing.
-- An instance whose world bounds lie entirely in the culled region for every
-  ray kind can be left out of the acceleration structure altogether. This is
-  what makes an inverted region cheaper to render than the whole set. If
-  culled geometry were only rejected hit by hit, rays would still traverse
-  it, and the render would get slower, not faster.
+- **Cull in ray space.** Each shape is convex, so a ray is inside it for at
+  most one interval of `t`. That interval comes from a slab test, a
+  quadratic, or a division, done in the volume's local frame. For geometry
+  linked to every active volume of the ray's kind, rule 4 becomes interval
+  arithmetic. The kept part of the ray is the union of the inverted volumes'
+  intervals (or the whole ray if there are none), minus the union of the
+  others. Trace each kept interval as an ordinary opaque query, nearest first,
+  and stop at the first hit.
+- **What that gives you.** A ray that touches no volume is traced exactly as
+  before. A ray inside an inverted region is clipped to it, so the parts of
+  the BVH outside the region are never visited. That is where the
+  look-development speed-up comes from, even when the kept and culled parts
+  are the same mesh.
+- **Moving a volume is real time.** Its position only enters the per-ray
+  interval computation, so moving or animating it changes no acceleration
+  structure.
+- **Linking exceptions.** Geometry not linked to every volume (an excluded
+  backdrop) can't share the ray-wide intervals. Tag those instances, for
+  example with an instance mask bit, and trace them in one extra any-hit
+  query with an exact per-candidate test. Such instances are rare, and with
+  the default collection there are none.
+- **Optional: prune for memory.** A renderer may also drop instances that are
+  entirely culled for every ray kind, or build clipped copies of geometry.
+  That saves memory on very large sets, but moving a volume then means
+  rebuilding acceleration structures. It belongs behind a renderer setting.
+
+[`docs/cull-volumes.md`](../../docs/cull-volumes.md) describes how hdClaude
+does this.
 
 ## Open questions
 
 - **Granularity of ray kinds.** Is primary/secondary enough for a first
   version, or should shadow rays get their own flag from the start?
-- **Finite planes.** A plane cull volume is infinite. A cut that stops at
-  the edge of a wall is a thin cube instead. Is that enough, or should the
-  plane accept UsdGeomPlane's `width` and `length`?
 - **Viewport display.** The adapter could publish a guide-purpose wireframe as
   a second subprim, as UsdLux light adapters do. Then Storm would show where
   the volumes are without culling anything.
@@ -348,7 +367,7 @@ query, and it is the same place cutout opacity is tested.
 | Schema (`usdCullVolume`, codeless) | Drafted; loads in OpenUSD 26.03 and gives all three concrete types their properties and built-in collection. |
 | Example scenes | `examples/cutaway.usda`, `examples/canopy.usda`, `examples/lookdev_region.usda`, `examples/section.usda`. |
 | UsdImaging adapter + Hydra `cullVolume` prim | Not written. |
-| hdClaude: sprim, linking masks, extend/shadow kernel tests | Not written. |
+| hdClaude: sprim, linking, ray-interval traversal | Designed in [`docs/cull-volumes.md`](../../docs/cull-volumes.md); not written. |
 
 To make the schema visible to USD, add
 `extensions/cullVolume/usdCullVolume` to `PXR_PLUGINPATH_NAME`.

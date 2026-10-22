@@ -15,6 +15,7 @@ Related documents:
 - [Wavefront integrator](wavefront-integrator.md) — queues, kernels, scheduling.
 - [DLSS integration](dlss-integration.md) — guides, resolution, history.
 - [Gaussian splats](gaussian-splats.md) -- the splat schema, and what "properly path traced" means for it.
+- [Cull volumes](cull-volumes.md) -- culling geometry per ray kind inside a region, by clipping rays rather than the BVH.
 - [Lessons from hdCodex](lessons-from-hdcodex.md) — defects inherited as rules.
 - [Debugging a render](debugging-a-render.md) — how a reported image is turned into a measurement.
 - [Implementation notes](implementation-notes.md) — findings that corrected this design.
