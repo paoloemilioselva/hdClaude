@@ -182,15 +182,39 @@ string(REGEX MATCH "[0-9]+" PXR_VERSION "${PXR_VERSION}")
 # Where Houdini looks for it: a package in the user preferences adds the
 # install directory to HOUDINI_PATH, and Houdini puts each HOUDINI_PATH
 # entry's dso/usd_plugins on the USD plugin path.
-if(WIN32)
-  file(TO_CMAKE_PATH "$ENV{USERPROFILE}/Documents" _documents)
-elseif(APPLE)
-  set(_documents "$ENV{HOME}/Library/Preferences/houdini")
+#
+# Houdini's own answer, in its order: $HOUDINI_USER_PREF_DIR, with __HVER__
+# standing for the version, else houdiniX.Y in $HOME -- which on Windows is
+# the Documents known folder, not %USERPROFILE%\Documents. The two differ
+# whenever OneDrive has redirected Documents, and installing into the second
+# puts the package where Houdini never looks.
+set(HDCLAUDE_HOUDINI_USER_DIR "" CACHE PATH
+    "Houdini user preference directory. Empty: the one Houdini itself uses.")
+if(HDCLAUDE_HOUDINI_USER_DIR)
+  set(_user_dir "${HDCLAUDE_HOUDINI_USER_DIR}")
+elseif(DEFINED ENV{HOUDINI_USER_PREF_DIR})
+  string(REPLACE "__HVER__" "${HDCLAUDE_HOUDINI_VERSION}" _user_dir
+         "$ENV{HOUDINI_USER_PREF_DIR}")
 else()
-  set(_documents "$ENV{HOME}")
+  if(WIN32)
+    # "Shell Folders" holds the resolved path; "User Shell Folders" holds it
+    # with %USERPROFILE% unexpanded.
+    cmake_host_system_information(RESULT _documents
+        QUERY WINDOWS_REGISTRY
+        "HKCU/Software/Microsoft/Windows/CurrentVersion/Explorer/Shell Folders"
+        VALUE "Personal")
+    if(NOT _documents)
+      set(_documents "$ENV{USERPROFILE}/Documents")
+    endif()
+  elseif(APPLE)
+    set(_documents "$ENV{HOME}/Library/Preferences/houdini")
+  else()
+    set(_documents "$ENV{HOME}")
+  endif()
+  set(_user_dir "${_documents}/houdini${HDCLAUDE_HOUDINI_VERSION}")
 endif()
-set(HDCLAUDE_HOUDINI_USER_DIR "${_documents}/houdini${HDCLAUDE_HOUDINI_VERSION}"
-    CACHE PATH "Houdini user preference directory ($HOUDINI_USER_PREF_DIR)")
+file(TO_CMAKE_PATH "${_user_dir}" HDCLAUDE_HOUDINI_USER_PREF_DIR)
+message(STATUS "hdClaude: Houdini user preferences at ${HDCLAUDE_HOUDINI_USER_PREF_DIR}")
 
 message(STATUS "hdClaude: Houdini ${HDCLAUDE_HOUDINI_VERSION} at ${_hfs}")
 message(STATUS "hdClaude: its OpenUSD ${PXR_VERSION}, MaterialX ${MaterialX_VERSION}, "

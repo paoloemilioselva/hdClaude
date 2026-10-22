@@ -221,11 +221,18 @@ does not load there.
   and render with fireflies and too much light. displayColor and the fallback
   material render the same as the standalone build. See the 2026-10-22 note
   in `implementation-notes.md`; configure warns about it.
-- **Install.** To `%USERPROFILE%\Documents\houdini22.0\hdClaude`: the plugin
-  tree in `dso/usd_plugins`, `UsdRenderers.json` (the viewport menu entry and
-  what the delegate renders) at its root, and a package,
+- **Install.** To `hdClaude` in Houdini's user preference directory: the
+  plugin tree in `dso/usd_plugins`, `UsdRenderers.json` (the viewport menu
+  entry and what the delegate renders) at its root, and a package,
   `packages\hdClaude.json`, that puts it on `HOUDINI_PATH`. Houdini adds every
   `HOUDINI_PATH` entry's `dso/usd_plugins` to the USD plugin path.
+- **Which user directory.** The one Houdini uses: `HOUDINI_USER_PREF_DIR`
+  if set, else `houdini22.0` in the Documents known folder. That is not
+  necessarily `%USERPROFILE%\Documents`: with OneDrive it is
+  `%USERPROFILE%\OneDrive\Documents`, and an install to the former is never
+  found. `HDCLAUDE_HOUDINI_USER_DIR` overrides it. Configure prints the
+  directory it chose. To check what Houdini loads, run `hconfig -ap` from a
+  shell without `HOME` set: Houdini prefers `$HOME`, and Git Bash sets it.
 - **No tests and no tools.** The test and gallery scripts run against the
   standalone OpenUSD, so the preset turns `BUILD_TESTING` off and skips the
   image tools.

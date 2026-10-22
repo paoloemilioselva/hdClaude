@@ -159,5 +159,5 @@ if(HDCLAUDE_HOUDINI_VERSION)
   install(FILES "${CMAKE_SOURCE_DIR}/resources/houdini/UsdRenderers.json"
       DESTINATION ".")
   install(FILES "${CMAKE_BINARY_DIR}/houdini/hdClaude.json"
-      DESTINATION "${HDCLAUDE_HOUDINI_USER_DIR}/packages")
+      DESTINATION "${HDCLAUDE_HOUDINI_USER_PREF_DIR}/packages")
 endif()

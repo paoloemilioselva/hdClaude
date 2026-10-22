@@ -160,10 +160,16 @@ if(HDCLAUDE_BUILD_HYDRA_PLUGIN OR HDCLAUDE_ENABLE_MATERIALX)
   if(HDCLAUDE_HOUDINI_VERSION)
     include(HoudiniUSD)
     set(HDCLAUDE_PLUGIN_INSTALL_DIR "dso/usd_plugins")
-    if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
-      set(CMAKE_INSTALL_PREFIX "${HDCLAUDE_HOUDINI_USER_DIR}/hdClaude"
+    # The prefix follows the user directory unless someone chose one: a
+    # prefix this derived on an earlier configure is derived again, so a
+    # corrected user directory reaches an existing build tree.
+    set(_houdini_prefix "${HDCLAUDE_HOUDINI_USER_PREF_DIR}/hdClaude")
+    if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT OR
+       CMAKE_INSTALL_PREFIX STREQUAL HDCLAUDE_DERIVED_INSTALL_PREFIX)
+      set(CMAKE_INSTALL_PREFIX "${_houdini_prefix}"
           CACHE PATH "hdClaude install prefix" FORCE)
     endif()
+    set(HDCLAUDE_DERIVED_INSTALL_PREFIX "${_houdini_prefix}" CACHE INTERNAL "")
   else()
     include(OpenUSD)
   endif()
