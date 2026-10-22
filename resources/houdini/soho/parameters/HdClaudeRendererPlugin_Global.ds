@@ -685,6 +685,32 @@
         disablewhen "{ dlssRuntimeDirectory_control == block } { dlssRuntimeDirectory_control == none }"
     }
     parm {
+        name    "depthStyle_control"
+        label   "Depth style"
+        type    string
+        default { "none" }
+        menujoin {
+            [ "import loputils" ]
+            [ "return loputils.createEditPropertiesControlMenu(kwargs, 'string')" ]
+            language python
+        }
+        parmtag { "sidefx::look" "icon" }
+    }
+    parm {
+        name    "depthStyle"
+        label   "Depth style"
+        type    string
+        size    1
+        default { "opengl" }
+        parmtag { "spare_category" "Output" }
+        parmtag { "usdvaluetype" "string" }
+        menu {
+            "opengl" "opengl"
+            "linear" "linear"
+        }
+        disablewhen "{ depthStyle_control == block } { depthStyle_control == none }"
+    }
+    parm {
         name    "device_control"
         label   "Device"
         type    string

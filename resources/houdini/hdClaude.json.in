@@ -1,3 +1,6 @@
 {
-    "hpath": "@CMAKE_INSTALL_PREFIX@"
+    "hpath": "@CMAKE_INSTALL_PREFIX@",
+    "env": [
+        { "HDCLAUDE_DEPTH_STYLE": "linear" }
+    ]
 }

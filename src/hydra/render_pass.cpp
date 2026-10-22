@@ -48,6 +48,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (sunIntensity)
                          (upAxis)
                          (exposure)
+                         (depthStyle)
                          (reconstruction)
                          (reconstructionPreset)
                          (reconstructionModel)
@@ -160,6 +161,9 @@ struct BoundAovs {
     HdClaudeRenderBuffer* color = nullptr;
     HdClaudeRenderBuffer* depth = nullptr;
     TfToken depthName;
+    /// What the depth holds where nothing was hit: 1 for window depth, the
+    /// largest float for a linear distance.
+    float depthMiss = 1.0f;
     HdClaudeRenderBuffer* normal = nullptr;
     HdClaudeRenderBuffer* roughness = nullptr;
     HdClaudeRenderBuffer* diffuseAlbedo = nullptr;
@@ -242,10 +246,10 @@ void WriteFrame(const BoundAovs& aovs, const hdclaude::FrameResult& frame,
             } else if (HdClaudeTraceEnabled()) {
                 // What a host reading depth under its cursor will find: the
                 // centre pixel, and the nearest surface anywhere.
-                float nearest = 1.0f;
+                float nearest = aovs.depthMiss;
                 std::size_t covered = 0;
                 for (float value : frame.depth) {
-                    if (value < 1.0f) {
+                    if (value < aovs.depthMiss) {
                         nearest = std::min(nearest, value);
                         ++covered;
                     }
@@ -253,7 +257,7 @@ void WriteFrame(const BoundAovs& aovs, const hdclaude::FrameResult& frame,
                 const std::size_t centre =
                     static_cast<std::size_t>(height / 2) * width + width / 2;
                 HdClaudeTrace(
-                    "depth <%s> %s: centre %.7f, nearest %.7f, %.1f%% of "
+                    "depth <%s> %s: centre %.7g, nearest %.7g, %.1f%% of "
                     "pixels on a surface%s",
                     aovs.depthName.GetText(),
                     TfEnum::GetName(aovs.depth->GetFormat()).c_str(),
@@ -446,6 +450,22 @@ void HdClaudeRenderPass::_Execute(
     bound.primId = primIdBuffer;
     bound.instanceId = instanceIdBuffer;
     bound.elementId = elementIdBuffer;
+
+    // What the depth AOV holds (the delegate's `depthStyle` setting). A value
+    // that is neither is said once and read as Hydra's own.
+    const std::string depthStyle = _renderDelegate->GetRenderSetting<std::string>(
+        _tokens->depthStyle, std::string("opengl"));
+    const bool linearDepth = depthStyle == "linear";
+    if (!linearDepth && depthStyle != "opengl" &&
+        _reportedDepthStyle != depthStyle) {
+        _reportedDepthStyle = depthStyle;
+        TF_WARN("hdClaude: \"%s\" is not a depth style, so depth is window "
+                "depth (opengl). Use one of: opengl, linear.",
+                depthStyle.c_str());
+    }
+    if (linearDepth) {
+        bound.depthMiss = std::numeric_limits<float>::max();
+    }
 
     hdclaude::PathTracer* tracer = _renderDelegate->PathTracer();
     HdClaudeSceneStore* store = _renderDelegate->SceneStore();
@@ -1200,6 +1220,33 @@ void HdClaudeRenderPass::_Execute(
         }
     }
 
+    // Linear depth from the window depth the tracer measured, through this
+    // execute's projection -- the one the frame was traced with, since a new
+    // projection starts a new frame. Each pixel is taken back to the view at
+    // its own centre, so an off-centre or oblique frustum is followed, and
+    // the distance is along the view axis: -z in view space. Window depth is
+    // what the reconstruction guides need, so it is converted here, on the
+    // way out, rather than in the kernel.
+    if (linearDepth && !frame.depth.empty() &&
+        frame.renderWidth == width && frame.renderHeight == height) {
+        const GfMatrix4d clipToView =
+            renderPassState->GetProjectionMatrix().GetInverse();
+        for (unsigned int y = 0; y < height; ++y) {
+            const double ndcY = 2.0 * (y + 0.5) / height - 1.0;
+            for (unsigned int x = 0; x < width; ++x) {
+                float& value = frame.depth[static_cast<std::size_t>(y) * width + x];
+                if (!(value < 1.0f)) {
+                    value = bound.depthMiss;
+                    continue;
+                }
+                const GfVec4d view =
+                    GfVec4d(2.0 * (x + 0.5) / width - 1.0, ndcY,
+                            2.0 * double(value) - 1.0, 1.0) *
+                    clipToView;
+                value = static_cast<float>(-view[2] / view[3]);
+            }
+        }
+    }
     WriteFrame(bound, frame, width, height, /*onlyEmpty=*/false);
     // Kept, so a buffer the host binds or reallocates after the frame has
     // finished can still be given it.

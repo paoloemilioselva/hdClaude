@@ -5,7 +5,7 @@
         "menupriority": 40,
         "aovsupport": true,
         "needsdepth": false,
-        "depthstyle": "opengl",
+        "depthstyle": "linear",
         "defaultpurposes": [ "render" ],
         "drawmodesupport": false
     }

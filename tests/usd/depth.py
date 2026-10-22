@@ -17,8 +17,9 @@ hdClaude draws them exactly -- for two cameras:
   orthographic   which has no eye: rays start on the near plane and are
                  parallel, and depth is linear in distance
 
-Each camera is probed again after a change a viewer makes to a finished
-frame:
+Each camera is probed again with the `linear` depth style Houdini's viewport
+reads -- the distance along the view axis in scene units -- and after a change
+a viewer makes to a finished frame:
 
   buffers replaced   the perspective frame, after the viewer's AOV is
                      switched away and back, which replaces every buffer;
@@ -59,6 +60,9 @@ PANEL_ROTATION = Gf.Matrix4d().SetRotate(
 MINIMUM_PROBES = 100  # per camera, so the test cannot pass by checking nothing
 # Window depth is a float32 AOV; a few units in its last place near 1.
 TOLERANCE = 1e-6
+# Linear depth, relative: taken back from that float32 window depth, which at
+# 30 units under a 0.05 near plane is good to about 4e-5 of the distance.
+LINEAR_TOLERANCE = 2e-4
 
 
 def make_stage(path):
@@ -163,8 +167,9 @@ def check_camera(stage, camera_path):
     params.enableLighting = True
     root = stage.GetPseudoRoot()
 
-    def probe(label):
-        """Renders until converged and probes that frame's depth."""
+    def probe(label, linear=False):
+        """Renders until converged and probes that frame's depth: window
+        depth, or with `linear` the distance along the view axis."""
         for _ in range(200):
             engine.Render(root, params)
             if engine.IsConverged():
@@ -172,8 +177,8 @@ def check_camera(stage, camera_path):
 
         frustum = UsdGeom.Camera(stage.GetPrimAtPath(camera_path)).GetCamera(
             Usd.TimeCode.Default()).frustum
-        world_to_clip = (frustum.ComputeViewMatrix() *
-                         frustum.ComputeProjectionMatrix())
+        world_to_view = frustum.ComputeViewMatrix()
+        world_to_clip = world_to_view * frustum.ComputeProjectionMatrix()
 
         def surface_at(x, y):
             """Analytic (prim, window depth) at window position x, y in pixels."""
@@ -182,7 +187,10 @@ def check_camera(stage, camera_path):
             t, prim = nearest_hit(ray)
             if prim is None:
                 return None, None
-            clip = world_to_clip.Transform(ray.startPoint + ray.direction * t)
+            point = ray.startPoint + ray.direction * t
+            if linear:
+                return prim, -world_to_view.Transform(point)[2]
+            clip = world_to_clip.Transform(point)
             return prim, (clip[2] + 1.0) * 0.5
 
         failures = checked = 0
@@ -218,8 +226,12 @@ def check_camera(stage, camera_path):
                     continue
                 expected = prims.pop()
                 checked += 1
-                low = min(z for _, z in footprint) - TOLERANCE
-                high = max(z for _, z in footprint) + TOLERANCE
+                # A linear distance is recovered from float32 window depth,
+                # so its error grows with distance; window depth's does not.
+                slack = (LINEAR_TOLERANCE * max(z for _, z in footprint)
+                         if linear else TOLERANCE)
+                low = min(z for _, z in footprint) - slack
+                high = max(z for _, z in footprint) + slack
                 picked = str(result[2])
                 if picked != expected or not low <= depth <= high:
                     failures += 1
@@ -235,7 +247,17 @@ def check_camera(stage, camera_path):
               % ("ok  " if not failures else "FAIL", label, checked, failures))
         return failures
 
+    # Explicitly, not by default: under Houdini's USD, loading Houdini's own
+    # Hydra plugins applies the user's Houdini packages to this process, and
+    # hdClaude's package sets HDCLAUDE_DEPTH_STYLE to linear.
+    engine.SetRendererSetting("depthStyle", "opengl")
     failures = probe(camera_path)
+    # The style the Houdini package selects. The pick decodes the AOV as
+    # window depth whatever it holds, so reprojecting the point it returns
+    # gives back the raw value -- here a distance.
+    engine.SetRendererSetting("depthStyle", "linear")
+    failures += probe(camera_path + ", linear depth", linear=True)
+    engine.SetRendererSetting("depthStyle", "opengl")
     if camera_path == "/persp":
         # Buffers replaced after the frame finished, as a viewer does when its
         # outputs change: the task controller creates new ones, and a

@@ -242,16 +242,20 @@ does not load there.
   `usd_houdini_parameters` test fails when they are stale. Run the script
   after adding or changing a setting; it also refuses a setting it has not
   been told which folder to put in.
-- **Depth.** `UsdRenderers.json` declares `depthstyle` `opengl`: depth in
-  [0, 1] through the host's projection, which is what the `depth` AOV holds
-  for every host. `needsdepth` is false: true would ask Houdini to
-  rasterise depth itself instead of using hdClaude's. The `usd_depth` test
-  decodes it as usdview does, for a perspective and an orthographic camera
-  (Houdini's Top, Front and Side views are orthographic), and after buffers
-  are replaced on a finished frame, which is what put Houdini's tumble pivot
-  on the camera. If the pivot is still wrong, start Houdini with
-  `HDCLAUDE_TRACE=1`: it prints the AOVs Houdini binds and the depth each
-  frame writes.
+- **Depth.** Houdini's viewport reads a delegate's depth as the distance
+  from the camera along its view axis, in scene units, as Karma writes it.
+  So `UsdRenderers.json` declares `depthstyle` `linear`, and the package sets
+  `HDCLAUDE_DEPTH_STYLE=linear` (the `Depth style` setting) so hdClaude
+  writes that. Houdini applies the variable to every Houdini process,
+  husk and hython included. Everywhere else the `depth` AOV stays Hydra's
+  window depth in [0, 1], which usdview's picking needs. `needsdepth` is
+  false: true would ask Houdini to rasterise depth itself instead of using
+  hdClaude's. The `usd_depth` test checks both styles, for a perspective and
+  an orthographic camera (Houdini's Top, Front and Side views are
+  orthographic), and after buffers are replaced on a finished frame. If the
+  grid, the handles or the tumble pivot still sit wrong against hdClaude's
+  surfaces, start Houdini with `HDCLAUDE_TRACE=1`: it prints the camera, the
+  AOVs Houdini binds and the depth each frame writes.
 - **No tests and no tools.** The test and gallery scripts run against the
   standalone OpenUSD, so the preset turns `BUILD_TESTING` off and skips the
   image tools.

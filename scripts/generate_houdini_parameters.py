@@ -53,6 +53,7 @@ FOLDERS = [
     ("Reconstruction", ["reconstruction", "reconstructionModel",
                         "reconstructionPreset", "reconstructionAutoExposure",
                         "dlssRuntimeDirectory"]),
+    ("Output", ["depthStyle"]),
     ("Diagnostics", ["device", "shaderDirectory", "statsReport",
                      "vulkanValidation", "trace", "profileKernels",
                      "poisonPathState", "dumpShaders", "frameLog",
@@ -61,13 +62,16 @@ FOLDERS = [
 
 # Folders shown in the viewport's Display Options. Diagnostics are for a
 # render someone is investigating, set from the environment or a Render
-# Settings LOP, and would bury the controls that matter while looking.
+# Settings LOP, and would bury the controls that matter while looking. Output
+# is what the viewport itself reads: the package sets the depth style to the
+# one UsdRenderers.json declares, and a viewport control could only break it.
 VIEWPORT_FOLDERS = {"Sampling", "Lighting", "Geometry", "Textures",
                     "Reconstruction"}
 
 # The values a string setting accepts, as the delegate parses them.
 MENUS = {
     "upAxis": ["Y", "Z"],
+    "depthStyle": ["opengl", "linear"],
     "curveGeometry": ["implicit", "swept"],
     "textureQuality": ["high", "medium", "low"],
     "splatTransport": ["coverage", "volume"],

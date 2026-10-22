@@ -7792,3 +7792,55 @@ the host's bindings whenever they change (name, format, extent, and whether
 each is an hdClaude buffer), and for every depth write the centre pixel's
 depth, the nearest depth, and whether the write went to a buffer bound
 after the frame finished.
+
+## 2026-10-23 -- Houdini reads a delegate's depth as a distance
+
+The pivot was still landing on the camera after the fixes above. Paolo
+suspected depth "should be in world space metric somehow" and sent viewport
+screenshots of a sphere on a plane, colour and depth, under Karma CPU and
+hdClaude. They settled it:
+
+- Under Karma, the grid shows through in the sky beyond the plane. Under
+  hdClaude it is hidden everywhere, sky included, so Houdini thought every
+  hdClaude pixel was nearer than the grid.
+- The dome light's handle draws dimmed under hdClaude, which is how Houdini
+  draws a handle behind geometry. Under Karma it draws normally.
+- Houdini's depth view of Karma is a gradient with a black sky. Of hdClaude
+  it is near-uniform white, because the values are all 0.9997-1.0.
+
+All three fit Houdini reading 0.9998 as a distance of about one unit, and
+the tumble pivot then sits one unit in front of the eye. None of them fits
+`"opengl"` being honoured: that would make 1.0 the far plane, and the grid
+would show in the sky. hdClaude's values were right for what they claimed
+to be. The trace from Houdini (near 0.00582, centre depth 0.9998102)
+decodes to a surface 30.7 units away, with the camera 31.4 units from the
+origin. Houdini was simply not decoding them that way. Whether Houdini
+ignores `depthstyle` for a delegate that is not Storm, or never read
+hdClaude's `UsdRenderers.json` at all, could not be seen without a licence.
+The menu label cannot tell us: the plugInfo display name is the same text.
+The fix is the same either way.
+
+- A new setting, `depthStyle` / `HDCLAUDE_DEPTH_STYLE`: `opengl` (Hydra's
+  window depth, the default) or `linear` (distance along the view axis, in
+  scene units, 3.4e38 where nothing was hit). The render pass converts on
+  the way out, per pixel, through the inverse of that execute's projection.
+  The kernel's guide stays window depth, because reconstruction needs it.
+  Converting from float32 window depth keeps about z * z * 6e-8 / near of
+  precision: 1.1e-3 at 30 units under a 0.05 near plane. That is the same
+  precision Houdini's own depth buffer has under that projection.
+- The Houdini package sets `HDCLAUDE_DEPTH_STYLE=linear`, and
+  `UsdRenderers.json` now declares `depthstyle` `linear`. The setting is in
+  an Output folder that only the Render Settings LOP shows. A viewport
+  Display Options control could only override the package's value.
+- Houdini applies package variables when its core libraries load, not only
+  at application start-up. In plain Python running Houdini's USD, the
+  variable is absent until `hdHoudini` loads and present after.
+  `tests/usd/depth.py` therefore sets the style it checks explicitly. It now
+  also checks `linear` on both cameras: the pick decodes any AOV value as
+  window depth, so reprojecting the point it returns recovers the raw value.
+
+"Linear" is taken as the distance along the view axis (Karma's `Pz`), not
+the Euclidean distance to the eye. The HDK says "distance to camera", and
+the two differ by up to 8% at the edge of a 45-degree frame. If Houdini
+means the Euclidean one, overlays near the left and right edges will sit
+slightly wrong against surfaces while the centre is right.

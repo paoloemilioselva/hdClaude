@@ -118,6 +118,7 @@ class HDCLAUDE_API HdClaudeRenderPass final : public HdRenderPass {
     std::string _reportedPreset;
     std::string _reportedModel;
     std::string _reportedCurveGeometry;
+    std::string _reportedDepthStyle;
     std::string _reportedTextureQuality;
     std::string _reportedUnavailable;
     /// What the last reconstructed frame was produced by, so a change of

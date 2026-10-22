@@ -44,6 +44,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (sunIntensity)
                          (upAxis)
                          (exposure)
+                         (depthStyle)
                          (reconstruction)
                          (reconstructionPreset)
                          (reconstructionModel)
@@ -124,6 +125,7 @@ const std::vector<std::pair<TfToken, std::string>>& HdClaudeEnvironmentSettings(
         {_tokens->reconstructionModel, "HDCLAUDE_RECONSTRUCTION_MODEL"},
         {_tokens->reconstructionAutoExposure, "HDCLAUDE_DLSS_AUTO_EXPOSURE"},
         {_tokens->upAxis, "HDCLAUDE_UP_AXIS"},
+        {_tokens->depthStyle, "HDCLAUDE_DEPTH_STYLE"},
         // The twelve the audit found.
         {_tokens->device, "HDCLAUDE_DEVICE"},
         {_tokens->shaderDirectory, "HDCLAUDE_SHADER_DIR"},
@@ -946,6 +948,20 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         // Accepted: high (authored), medium (1024), low (256).
         {"Texture quality", _tokens->textureQuality,
          VtValue(std::string(TfGetenv("HDCLAUDE_TEXTURE_QUALITY", "high")))},
+
+        // What the depth AOV holds, which is a question of who reads it.
+        //
+        // `opengl` is Hydra's: window depth in [0, 1] through the host's
+        // projection, which usdview's picking decodes and Storm writes.
+        // `linear` is the distance from the camera along its view axis, in
+        // scene units, 3.4e38 where nothing was hit: what Houdini's viewport
+        // reads from a delegate that is not Storm, as it does from Karma. The
+        // Houdini package sets it, through HDCLAUDE_DEPTH_STYLE, to match the
+        // `depthstyle` its UsdRenderers.json declares.
+        //
+        // Accepted: opengl, linear. OpenGL is the default, Hydra's own.
+        {"Depth style", _tokens->depthStyle,
+         VtValue(std::string(TfGetenv("HDCLAUDE_DEPTH_STYLE", "opengl")))},
 
         // Whether a light's own shape is rendered.
         //
