@@ -154,6 +154,9 @@ install(DIRECTORY "${CMAKE_SOURCE_DIR}/mtlx/"
 # viewport menu and to know what it renders.
 # ---------------------------------------------------------------------------
 if(HDCLAUDE_HOUDINI_VERSION)
+  # Where the package finds the plugin. scripts/package_houdini.py writes the
+  # zip's package from the same template with $HOUDINI_USER_PREF_DIR/hdClaude.
+  set(HDCLAUDE_PACKAGE_ROOT "${CMAKE_INSTALL_PREFIX}")
   configure_file("${CMAKE_SOURCE_DIR}/resources/houdini/hdClaude.json.in"
                  "${CMAKE_BINARY_DIR}/houdini/hdClaude.json" @ONLY)
   install(FILES "${CMAKE_SOURCE_DIR}/resources/houdini/UsdRenderers.json"
@@ -163,6 +166,10 @@ if(HDCLAUDE_HOUDINI_VERSION)
   # usd_houdini_parameters test (scripts/generate_houdini_parameters.py).
   install(DIRECTORY "${CMAKE_SOURCE_DIR}/resources/houdini/soho"
       DESTINATION ".")
+  # A component of its own, because it is the one file installed outside the
+  # prefix: scripts/package_houdini.py stages the rest without touching this
+  # machine's preferences, and writes a package of its own for the zip.
   install(FILES "${CMAKE_BINARY_DIR}/houdini/hdClaude.json"
-      DESTINATION "${HDCLAUDE_HOUDINI_USER_PREF_DIR}/packages")
+      DESTINATION "${HDCLAUDE_HOUDINI_USER_PREF_DIR}/packages"
+      COMPONENT HoudiniUserPackage)
 endif()

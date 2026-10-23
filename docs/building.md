@@ -255,9 +255,24 @@ does not load there.
   grid, the handles or the tumble pivot still sit wrong against hdClaude's
   surfaces, start Houdini with `HDCLAUDE_TRACE=1`: it prints the camera, the
   AOVs Houdini binds and the depth each frame writes.
+- **Shader cache.** The package sets `HDCLAUDE_SHADER_CACHE` to
+  `shader-cache` inside the install. Without it, the cache would land in
+  whatever directory Houdini was started from, which is often not writable.
 - **No tests and no tools.** The test and gallery scripts run against the
   standalone OpenUSD, so the preset turns `BUILD_TESTING` off and skips the
   image tools.
+- **A zip for other people.** `python scripts/package_houdini.py`, after
+  building the preset, writes
+  `build/dist/hdClaude-<version>-houdini<build>-windows-x64.zip`. It holds
+  the install, the licences of everything compiled into the plugin, a
+  package that finds the plugin as `$HOUDINI_USER_PREF_DIR/hdClaude`, and a
+  `README.txt` (from `resources/houdini/README.txt.in`) with the
+  requirements and install steps. Users extract it into their preferences
+  directory. The install is staged with CMake's default component only:
+  this machine's package file is a separate component, so packaging never
+  touches it. The plugin reads Houdini's MaterialX libraries from the path
+  it was built against, so the README asks for that exact Houdini build at
+  its default location.
 
 Another Houdini version is a copy of the preset with a different
 `HDCLAUDE_HOUDINI_VERSION`.

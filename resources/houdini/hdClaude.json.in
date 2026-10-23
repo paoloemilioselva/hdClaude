@@ -1,6 +1,8 @@
 {
-    "hpath": "@CMAKE_INSTALL_PREFIX@",
     "env": [
-        { "HDCLAUDE_DEPTH_STYLE": "linear" }
-    ]
+        { "HDCLAUDE_ROOT": "@HDCLAUDE_PACKAGE_ROOT@" },
+        { "HDCLAUDE_DEPTH_STYLE": "linear" },
+        { "HDCLAUDE_SHADER_CACHE": "$HDCLAUDE_ROOT/shader-cache" }
+    ],
+    "hpath": "$HDCLAUDE_ROOT"
 }

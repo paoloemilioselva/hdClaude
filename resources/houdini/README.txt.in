@@ -1,0 +1,95 @@
+hdClaude @VERSION@ for Houdini @HOUDINI_VERSION@ (Windows x64)
+=====================================================
+
+hdClaude is a spectral GPU path tracer for Solaris, written as an OpenUSD
+Hydra render delegate. It renders through Vulkan ray queries and shades
+MaterialX materials (standard_surface, open_pbr_surface, UsdPreviewSurface).
+
+Source, documentation and issues:
+  https://github.com/paoloemilioselva/hdClaude
+
+
+Requirements
+------------
+
+- Windows 10 or 11, 64-bit.
+
+- Houdini @HOUDINI_VERSION@, installed at its default location:
+
+    @HOUDINI_ROOT@
+
+  Download it from https://www.sidefx.com/download/ (choose the exact build
+  @HOUDINI_VERSION@, under "All builds" if it is no longer the current one).
+  The plugin reads Houdini's MaterialX libraries from that directory. With a
+  different build, or Houdini installed elsewhere, the plugin loads but no
+  material compiles.
+
+- A GPU and driver with Vulkan 1.3 and these extensions:
+    VK_KHR_ray_query
+    VK_KHR_acceleration_structure
+    VK_KHR_buffer_device_address
+    VK_KHR_deferred_host_operations
+    descriptor indexing
+  The Vulkan runtime comes with the GPU driver; no Vulkan SDK is needed.
+  Use a current driver from your GPU vendor. Developed and tested on an
+  NVIDIA GeForce RTX 5060 Ti.
+
+
+Install
+-------
+
+1. Close Houdini.
+
+2. Extract this zip into your Houdini user preferences directory, the
+   houdini22.0 folder in your Documents:
+
+     %USERPROFILE%\Documents\houdini22.0
+
+   If OneDrive manages your Documents folder, it is instead:
+
+     %USERPROFILE%\OneDrive\Documents\houdini22.0
+
+   If you set HOUDINI_USER_PREF_DIR, it is that directory.
+
+   Afterwards that directory contains:
+
+     hdClaude\                  the plugin
+     packages\hdClaude.json     the package that tells Houdini to load it
+
+   The package finds the plugin as $HOUDINI_USER_PREF_DIR/hdClaude, so both
+   must be in the same preferences directory.
+
+3. Start Houdini. In a Solaris viewport, choose "Claude GPU Path Tracer" from
+   the renderer menu.
+
+To check the package was found, run this from a Houdini command line:
+
+    hconfig -ap
+
+HOUDINI_PATH should list the hdClaude directory, and HDCLAUDE_DEPTH_STYLE
+should be "linear".
+
+
+Settings
+--------
+
+The viewport's Display Options and the Render Settings LOP show hdClaude's
+settings. Each is also an HDCLAUDE_* environment variable; see
+docs/building.md in the repository.
+
+Compiled shaders are cached on disk, so the first render of a new material
+takes longer than the ones after it.
+
+
+Uninstall
+---------
+
+Delete hdClaude\ and packages\hdClaude.json from the preferences directory.
+
+
+Licence
+-------
+
+hdClaude is MIT licensed; see hdClaude\licenses\hdClaude.txt. It includes
+glslang, volk, the Vulkan Memory Allocator and the Vulkan headers, whose
+licences are in the same directory.
