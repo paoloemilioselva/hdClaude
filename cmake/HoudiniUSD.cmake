@@ -149,17 +149,17 @@ if(HDCLAUDE_ENABLE_MATERIALX)
        REGEX "#define MATERIALX_(MAJOR|MINOR|BUILD)_VERSION")
   string(REGEX MATCHALL "[0-9]+" _mx_version "${_mx_version}")
   list(JOIN _mx_version "." MaterialX_VERSION)
-  # Validated against 1.39.3 only. Later 1.39 releases generate and compile,
-  # but compose their stock surface shaders from combinators whose rules
-  # hdClaude's overrides do not follow yet (implementation-notes.md,
-  # 2026-10-22), so a render is not to be trusted. Said at every configure.
-  if(NOT MaterialX_VERSION VERSION_EQUAL "1.39.3")
+  # Validated against 1.39.3 (OpenUSD 26.03) and 1.39.5 (Houdini 22.0): the
+  # shader balls render the same under both (implementation-notes.md,
+  # 2026-10-23). Any other release is untested, and said so at every configure.
+  if(NOT MaterialX_VERSION VERSION_EQUAL "1.39.3" AND
+     NOT MaterialX_VERSION VERSION_EQUAL "1.39.5")
     message(WARNING
-        "hdClaude's genglsl_pt target is validated against MaterialX 1.39.3; "
-        "Houdini ${HDCLAUDE_HOUDINI_VERSION} has ${MaterialX_VERSION}. Materials "
-        "compile, but standard_surface and open_pbr_surface do not shade "
-        "correctly yet: see docs/implementation-notes.md, 2026-10-22, "
-        "\"Building against Houdini 22.0's USD\".")
+        "hdClaude's genglsl_pt target is validated against MaterialX 1.39.3 "
+        "and 1.39.5; Houdini ${HDCLAUDE_HOUDINI_VERSION} has "
+        "${MaterialX_VERSION}. Materials may compile and still not shade as "
+        "they do under those: see docs/implementation-notes.md, 2026-10-23, "
+        "\"MaterialX 1.39.5 rewrote the graph before hdClaude saw it\".")
   endif()
 
   # Compiled into the plugin, as with a standalone USD: the data libraries of

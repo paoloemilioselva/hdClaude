@@ -214,13 +214,12 @@ does not load there.
   and OpenSubdiv is Houdini's static `libosdCPU_md`.
 - **MaterialX.** Houdini 22.0 ships 1.39.5, where the hardware nodes moved to
   `MaterialXGenHw` and the stock GLSL library gained `AIRY_FRESNEL_ITERATIONS`
-  and `mx_ggx_VNDF_reflection_PDF`. hdClaude builds against both 1.39.3 and
-  1.39.5, and every material compiles. **It does not yet shade correctly
-  against 1.39.5:** `standard_surface` and `open_pbr_surface` are built
-  there from BSDF combinators whose rules hdClaude's overrides do not follow,
-  and render with fireflies and too much light. displayColor and the fallback
-  material render the same as the standalone build. See the 2026-10-22 note
-  in `implementation-notes.md`; configure warns about it.
+  and `mx_ggx_VNDF_reflection_PDF`. Its hardware generators also rewrite
+  every BSDF `mix` into `add` and `multiply` by default, which hdClaude's
+  generator turns off. hdClaude builds against both 1.39.3 and 1.39.5, and
+  the four shader balls render the same under both. See the 2026-10-22 and
+  2026-10-23 notes in `implementation-notes.md`. Configure warns for any
+  other MaterialX.
 - **Install.** To `hdClaude` in Houdini's user preference directory: the
   plugin tree in `dso/usd_plugins`, `UsdRenderers.json` (the viewport menu
   entry and what the delegate renders) at its root, and a package,

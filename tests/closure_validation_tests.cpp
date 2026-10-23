@@ -1266,6 +1266,82 @@ int main()
             }
         }
 
+        // --- mix, and the same mixture written with add and multiply --------
+        //
+        // `mix(fg, bg, w)` is by definition `add(multiply(fg, w),
+        // multiply(bg, 1 - w))`, and MaterialX 1.39.5's hardware generators
+        // rewrite one into the other (pathtracer_generator.cpp,
+        // KeepAuthoredBsdfGraph). An author can write the second form too, so
+        // the two must return the same light.
+        {
+            using Lobe = std::function<mx::NodePtr(mx::DocumentPtr, const char*)>;
+            const Lobe diffuse = [](mx::DocumentPtr doc, const char* name) {
+                mx::NodePtr n = AddNode(doc, "oren_nayar_diffuse_bsdf", name, "BSDF");
+                SetValue(n, "weight", 1.0f);
+                SetValue(n, "color", mx::Color3(0.8f, 0.8f, 0.8f));
+                return n;
+            };
+            const Lobe conductor = [](mx::DocumentPtr doc, const char* name) {
+                mx::NodePtr n = AddNode(doc, "conductor_bsdf", name, "BSDF");
+                SetValue(n, "weight", 1.0f);
+                SetValue(n, "roughness", mx::Vector2(0.4f, 0.4f));
+                return n;
+            };
+            const Lobe glass = [](mx::DocumentPtr doc, const char* name) {
+                mx::NodePtr n = AddNode(doc, "dielectric_bsdf", name, "BSDF");
+                SetValue(n, "weight", 1.0f);
+                SetValue(n, "ior", 1.5f);
+                SetValue(n, "roughness", mx::Vector2(0.0f, 0.0f));
+                n->setInputValue("scatter_mode", std::string("RT"), "string");
+                return n;
+            };
+            struct Pair {
+                const char* label;
+                Lobe fg;
+                Lobe bg;
+                float weight;
+            };
+            const Pair pairs[] = {
+                {"conductor over diffuse, w 0.3", conductor, diffuse, 0.3f},
+                {"conductor over diffuse, w 0", conductor, diffuse, 0.0f},
+                {"smooth glass over diffuse, w 0.3", glass, diffuse, 0.3f},
+                {"smooth glass over conductor, w 0", glass, conductor, 0.0f},
+            };
+            for (const Pair& p : pairs) {
+                double albedo[2] = {};
+                for (int rewritten = 0; rewritten < 2; ++rewritten) {
+                    mx::DocumentPtr doc = validator.NewDocument();
+                    mx::NodePtr fg = p.fg(doc, "pFg");
+                    mx::NodePtr bg = p.bg(doc, "pBg");
+                    mx::NodePtr out;
+                    if (!rewritten) {
+                        out = AddNode(doc, "mix", "pMix", "BSDF");
+                        Connect(out, "fg", fg);
+                        Connect(out, "bg", bg);
+                        SetValue(out, "mix", p.weight);
+                    } else {
+                        mx::NodePtr mf = AddNode(doc, "multiply", "pMulFg", "BSDF");
+                        Connect(mf, "in1", fg);
+                        SetValue(mf, "in2", p.weight);
+                        mx::NodePtr mb = AddNode(doc, "multiply", "pMulBg", "BSDF");
+                        Connect(mb, "in1", bg);
+                        SetValue(mb, "in2", 1.0f - p.weight);
+                        out = AddNode(doc, "add", "pAdd", "BSDF");
+                        Connect(out, "in1", mf);
+                        Connect(out, "in2", mb);
+                    }
+                    const Measurement m = validator.Measure(
+                        WrapInMaterial(doc, out), "vPremul", 0.6f, kClosureBySide);
+                    char label[96];
+                    std::snprintf(label, sizeof(label), "%s %s", p.label,
+                                  rewritten ? "(add)" : "(mix)");
+                    CheckClosure(label, m, kEnergyOnly);
+                    albedo[rewritten] = m.albedo;
+                }
+                CHECK_NEAR(albedo[1], albedo[0], 0.01);
+            }
+        }
+
         // --- Chi-squared: sampling against the reported density --------------
         //
         // The last of the five acceptance items (materialx-codegen.md 8). The

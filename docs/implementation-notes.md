@@ -7643,6 +7643,10 @@ Not fixed. It is a port of the combinators, and of whatever else the 1.39.5
 graphs assume, validated by the furnace and closure tests against 1.39.5. The
 configure step for a Houdini build warns about it until that is done.
 
+*Superseded the next day.* The diagnosis above is wrong. The graphs are the
+same in both versions; MaterialX 1.39.5's generator rewrites them. See
+2026-10-23, "MaterialX 1.39.5 rewrote the graph before hdClaude saw it".
+
 **Verifying without a licence.** husk refuses to run without one. Houdini's
 own `python313\python.exe` doesn't check for one, and can run Houdini's USD
 and the installed plugin through `UsdImagingGL` with:
@@ -7847,3 +7851,80 @@ slightly wrong against surfaces while the centre is right.
 
 Confirmed in Houdini 22.0 on 2026-10-23: with the package's `linear` depth,
 Paolo reports the viewport working as expected, tumble pivot included.
+
+## 2026-10-23 -- MaterialX 1.39.5 rewrote the graph before hdClaude saw it
+
+**Expected.** The 2026-10-22 entry blamed the stock surface graphs. It said
+1.39.5 composes `standard_surface` and `open_pbr_surface` from `add_bsdf` and
+`multiply_bsdf` built for that version's throughput rules, so hdClaude would
+need both rule sets, chosen by the MaterialX version it was compiled
+against.
+
+**Actually true.** The graphs barely changed. Diffing
+`C:\dev\usd-26.03\libraries` against Houdini 22.0's
+`houdini\materialx\libraries`:
+
+- `standard_surface.mtlx` is byte-identical.
+- `open_pbr_surface.mtlx` moves from OpenPBR 1.1 to 1.1.1: subsurface colour
+  clamped rather than floored, the metal edge colour no longer scaled by
+  `specular_weight`, emission luminance floored at zero. None of that adds a
+  combinator.
+- The combinator throughput rules did change, in 1.39.4 (`add` to
+  `max(t1 + t2 - 1, 0)`, `layer` to `t1 * t2`, `multiply` unscaled). 1.39.4
+  and 1.39.5 are identical there, and Houdini's copies match upstream
+  v1.39.5. But hdClaude ships its own combinators to both builds, so the
+  stock rules never reach a render.
+
+The `add` and `multiply` nodes come from the generator.
+`HwShaderGenerator::applyDefaultOptions` turns on
+`GenOptions::premultipliedBsdfAdd` from 1.39.5. Before emitting code,
+`PremultipliedBsdfAddRefactor` (`ShaderGraphRefactor.cpp`) replaces every BSDF
+`mix` whose weight is connected with `add` of the two sides. It folds the mix
+weight into each side's own `weight` input where the node has one, and wraps
+the side in `multiply` where it does not. That lets a rasteriser branch over a
+zero-weight lobe. `GlslShaderGenerator` inherits it, and so did hdClaude's
+generator.
+
+**Changed.** `PathTracerShaderGenerator::generate` turns
+`premultipliedBsdfAdd` and `distributeLayerOverBsdfMix` off with the other
+options it forces. A `requires` check inside a template does it, because
+1.39.3's `GenOptions` has neither field. No version guard or second set of
+combinators is needed. The four shader balls through Houdini's USD (480 px,
+64 spp, reconstruction off, subdivision 2), against the standalone build:
+
+| | before | after | worst 16 px block |
+|---|---|---|---|
+| gold | 480% of the light | 99.6% | z 0.37 |
+| glass | 983% | 100.5% | z 0.75 |
+| bubblegum | 928% | 100.0% | z 0.17 |
+| honey | 684% | 100.1% | z 0.64 |
+
+`hdClaudeImageDiff --energy` and `--expectation`, z limit 6.
+
+**Why the rewrite was so much brighter.** On paper the rewrite is harmless.
+`mix(fg, bg, w)` is by definition `add(multiply(fg, w), multiply(bg, 1 - w))`.
+`closure_validation` now measures both forms for diffuse, conductor and
+smooth glass, at w 0.3 and 0, and finds the same albedo, so `add` and
+`multiply` are not biased in themselves. What breaks is `throughput`, under a
+`layer`. open_pbr's `dielectric_base` is
+`layer(mix(reflection_tf, reflection, thin_film_weight), base)`. With no thin
+film, the rewrite makes its top `add(reflection_tf, reflection)` with the
+first leaf's `weight` at 0. That leaf returns early and keeps the default
+throughput of 1. hdClaude's `add` sums throughput, the 1.39.3 rule, so the
+layer passes `1 + t` of the light to everything beneath the specular. A
+measurement on the 26.03 build, not kept as a test:
+
+    layer(dielectric, diffuse)                      albedo 1.003
+    layer(mix(dielectric w0, dielectric, 0), diffuse)  albedo 1.003
+    layer(add(dielectric w0, dielectric), diffuse)     albedo 2.003
+
+**Still open.** That last line is an hdClaude bug independent of version. An
+authored `layer` whose top is an `add`, or a `multiply` (1.39.3's rule
+scales its throughput, so weight 0 blocks the base completely), gets the
+wrong energy in either build. No stock graph has such a top (open_pbr's
+layer tops are leaves or that one `mix`; standard_surface's are all leaves),
+so no gallery scene is affected. Upstream's 1.39.4 rules are not a drop-in
+answer either. `t1 + t2 - 1` assumes each throughput is `1 - albedo`, but
+the stock `conductor_bsdf` (and hdClaude's) reports 0 at any weight, 0
+included, so an added conductor of weight 0 would block the base. Fixing it
+means deciding what a combinator's throughput is.

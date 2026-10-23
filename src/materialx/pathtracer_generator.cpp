@@ -52,6 +52,31 @@ std::optional<unsigned int> AiryFresnelIterations(const Options& options)
     }
 }
 
+/// Turns off the BSDF graph rewrites, on a MaterialX that has them.
+///
+/// From 1.39.5 HwShaderGenerator::applyDefaultOptions enables
+/// `premultipliedBsdfAdd`, which replaces every `mix` of BSDFs whose weight is
+/// connected with `add(multiply(fg, w), multiply(bg, 1 - w))`, so that a
+/// rasteriser can branch over a zero-weight lobe. The response is the same, but
+/// the throughput a `layer` reads from its top is not: hdClaude's `add` sums
+/// it, and a leaf folded to weight zero reports one, so open_pbr's specular
+/// layer passed its base twice the light (implementation-notes.md,
+/// 2026-10-23). `mix` also selects a lobe by its authored weight, where `add`
+/// knows no weights and selects evenly. `distributeLayerOverBsdfMix`, off by
+/// default, rewrites the graph too. The closures are written against the
+/// graph as authored, as 1.39.3 emits it. A template, so a MaterialX without
+/// the members is a discarded branch.
+template <typename Options>
+void KeepAuthoredBsdfGraph(Options& options)
+{
+    if constexpr (requires { options.premultipliedBsdfAdd; }) {
+        options.premultipliedBsdfAdd = false;
+    }
+    if constexpr (requires { options.distributeLayerOverBsdfMix; }) {
+        options.distributeLayerOverBsdfMix = false;
+    }
+}
+
 /// Whether this graph produces a displacement rather than a surface.
 ///
 /// Asked of the output socket's type rather than of the node's classification:
@@ -381,6 +406,9 @@ ShaderPtr PathTracerShaderGenerator::generate(const string& name,
     options.hwWriteAlbedoTable = false;
     options.hwWriteEnvPrefilter = false;
     options.hwWriteDepthMoments = false;
+
+    // The graph as authored; see KeepAuthoredBsdfGraph.
+    KeepAuthoredBsdfGraph(options);
 
     return VkShaderGenerator::generate(name, element, context);
 }
