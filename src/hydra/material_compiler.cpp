@@ -15,6 +15,8 @@
 #include <MaterialXFormat/XmlIo.h>
 
 #include "pxr/base/gf/vec3f.h"
+#include "pxr/base/plug/plugin.h"
+#include "pxr/base/plug/registry.h"
 #include "pxr/usd/ar/resolver.h"
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/tf/getenv.h"
@@ -34,6 +36,28 @@ PXR_NAMESPACE_OPEN_SCOPE
 namespace mx = MaterialX;
 
 namespace {
+
+/// Where hdClaude's own MaterialX tree (the genglsl_pt target) lives at run
+/// time: the plugin resource directory, so an installed hdClaude is
+/// self-contained, else the build-tree source directory compiled in.
+///
+/// Never only the compiled-in one. That names the machine the plugin was built
+/// on, and anywhere else the genglsl_pt implementations are silently missing,
+/// so every material fails to find one.
+mx::FilePath ResolveMtlxLibraryDirectory()
+{
+    if (PlugPluginPtr plugin =
+            PlugRegistry::GetInstance().GetPluginWithName("hdClaude")) {
+        const std::filesystem::path resources =
+            std::filesystem::path(plugin->GetResourcePath()) / "mtlx";
+        std::error_code code;
+        if (std::filesystem::exists(resources / "targets" / "genglsl_pt.mtlx",
+                                    code)) {
+            return mx::FilePath(resources.string());
+        }
+    }
+    return mx::FilePath(HDCLAUDE_MTLX_LIBRARY_DIR);
+}
 
 /// What a material network compiles from, as a hex digest.
 ///
@@ -740,8 +764,11 @@ HdClaudeMaterialCompiler::HdClaudeMaterialCompiler(std::string shadeKernel,
     : _shadeKernel(std::move(shadeKernel)),
       _displaceKernel(std::move(displaceKernel))
 {
+    const mx::FilePath stdlibDir(HDCLAUDE_MATERIALX_STDLIB_DIR);
+    const mx::FilePath mtlxDir = ResolveMtlxLibraryDirectory();
+    _sourceSearchPath = hdclaude::MaterialXSourceSearchPath(stdlibDir, mtlxDir);
     try {
-        _libraries = hdclaude::LoadDefaultMaterialXLibraries();
+        _libraries = hdclaude::LoadMaterialXLibraries(stdlibDir, mtlxDir);
     } catch (const std::exception& error) {
         TF_RUNTIME_ERROR("hdClaude: could not load the MaterialX libraries: %s",
                          error.what());
@@ -785,8 +812,7 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
         mx::ShaderGeneratorPtr generator =
             hdclaude::PathTracerShaderGenerator::create();
         mx::GenContext context(generator);
-        context.registerSourceCodeSearchPath(
-            hdclaude::DefaultMaterialXSourceSearchPath());
+        context.registerSourceCodeSearchPath(_sourceSearchPath);
         // Values are baked in rather than driven through a uniform block. The
         // block would be the better long-term answer -- it lets a parameter
         // change avoid a recompile -- but it needs std140 offsets computed from
@@ -918,8 +944,7 @@ bool HdClaudeMaterialCompiler::CompileDisplacement(
         mx::ShaderGeneratorPtr generator =
             hdclaude::PathTracerShaderGenerator::create();
         mx::GenContext context(generator);
-        context.registerSourceCodeSearchPath(
-            hdclaude::DefaultMaterialXSourceSearchPath());
+        context.registerSourceCodeSearchPath(_sourceSearchPath);
         context.getOptions().shaderInterfaceType = mx::SHADER_INTERFACE_REDUCED;
 
         // Its own scan and its own texture order. The two programs generate
