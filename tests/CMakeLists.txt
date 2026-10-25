@@ -128,18 +128,20 @@ if(HDCLAUDE_ENABLE_MATERIALX)
   endif()
 
   # The Hydra adapter classes that stand alone -- a render buffer needs only an
-  # id -- compiled from the plugin's own sources, since nothing links against
-  # the plugin module. Tests the source tree rather than the install.
+  # id, an instancer only a scene delegate -- compiled from the plugin's own
+  # sources, since nothing links against the plugin module. Tests the source
+  # tree rather than the install.
   if(HDCLAUDE_BUILD_HYDRA_PLUGIN)
     add_executable(hdClaudeHydraTests
         hydra_tests.cpp
+        ${CMAKE_SOURCE_DIR}/src/hydra/instancer.cpp
         ${CMAKE_SOURCE_DIR}/src/hydra/render_buffer.cpp)
     target_include_directories(hdClaudeHydraTests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_SOURCE_DIR}/src/hydra
         ${CMAKE_SOURCE_DIR}/include)
     target_link_libraries(hdClaudeHydraTests PRIVATE
-        hdClaudeProjectOptions gf hd sdf tf)
+        hdClaudeProjectOptions hdClaude::Core gf hd sdf tf vt)
     if(MSVC)
       # The plugin's own suppressions, for the same OpenUSD headers.
       target_compile_options(hdClaudeHydraTests PRIVATE

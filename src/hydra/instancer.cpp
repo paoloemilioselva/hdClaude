@@ -40,13 +40,36 @@ void HdClaudeInstancer::_SyncPrimvars(HdSceneDelegate* delegate,
                                       HdDirtyBits dirtyBits)
 {
     const SdfPath& id = GetId();
-    for (const HdPrimvarDescriptor& descriptor :
-         delegate->GetPrimvarDescriptors(id, HdInterpolationInstance)) {
+    const HdPrimvarDescriptorVector descriptors =
+        delegate->GetPrimvarDescriptors(id, HdInterpolationInstance);
+
+    // A primvar the instancer no longer has is forgotten, not kept: removing
+    // an instance's scale must stop scaling it, and only the descriptors say
+    // it is gone -- nothing below is ever asked about it again.
+    // Gathered first: TfHashMap's erase returns no iterator to continue from.
+    std::vector<TfToken> gone;
+    for (const auto& [name, value] : _primvars) {
+        if (std::none_of(descriptors.begin(), descriptors.end(),
+                         [&](const HdPrimvarDescriptor& descriptor) {
+                             return descriptor.name == name;
+                         })) {
+            gone.push_back(name);
+        }
+    }
+    for (const TfToken& name : gone) {
+        _primvars.erase(name);
+    }
+
+    for (const HdPrimvarDescriptor& descriptor : descriptors) {
         if (!HdChangeTracker::IsPrimvarDirty(dirtyBits, id, descriptor.name)) {
             continue;
         }
+        // Empty is how a blocked primvar arrives, and it means none, not the
+        // value it had before.
         const VtValue value = delegate->Get(id, descriptor.name);
-        if (!value.IsEmpty()) {
+        if (value.IsEmpty()) {
+            _primvars.erase(descriptor.name);
+        } else {
             _primvars[descriptor.name] = value;
         }
     }

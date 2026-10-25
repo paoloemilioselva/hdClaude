@@ -181,12 +181,16 @@ do not exercise this transition.
 
 **To do:**
 
-- [ ] Remove cached entries whose descriptors have disappeared during a relevant
+- [x] Remove cached entries whose descriptors have disappeared during a relevant
   primvar update.
-- [ ] Erase an existing entry when a dirty primvar resolves to an empty value.
-- [ ] Preserve unchanged entries during incremental updates.
-- [ ] Test author → render → remove/block → render against a newly created stage
+- [x] Erase an existing entry when a dirty primvar resolves to an empty value.
+- [x] Preserve unchanged entries during incremental updates.
+- [x] Test author → render → remove/block → render against a newly created stage
   with the same final authored state. Cover scale, rotation, and transforms.
+  Done at the adapter, in the `hydra` suite: an instancer synced, edited and
+  synced again must compute what a new instancer computes from the final
+  primvars, for each of the three removed and blocked. The old source fails
+  all six.
 
 ### R4 — P2: the core-only build driver still requires OpenUSD setup
 
@@ -308,7 +312,8 @@ Keep the existing numerical and validation suites. Complement them with focused
 tests around the boundaries identified here:
 
 - [x] Direct render-buffer format and clear/write tests.
-- [ ] Instancer attribute removal and reauthoring in one engine.
+- [x] Instancer attribute removal and reauthoring in one engine (at the
+  adapter, R3).
 - [ ] Motion followed by several stationary frames.
 - [ ] Purpose/collection changes and comparison with a fresh engine.
 - [ ] A documented clean-machine core-only build job.

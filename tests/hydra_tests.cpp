@@ -4,12 +4,22 @@
 
 #include "test_support.h"
 
+#include "instancer.h"
 #include "render_buffer.h"
 
 #include "pxr/base/gf/half.h"
+#include "pxr/base/gf/matrix4d.h"
+#include "pxr/base/gf/quath.h"
+#include "pxr/base/gf/rotation.h"
+#include "pxr/base/gf/vec3f.h"
 #include "pxr/base/gf/vec3i.h"
+#include "pxr/imaging/hd/changeTracker.h"
+#include "pxr/imaging/hd/sceneDelegate.h"
+#include "pxr/imaging/hd/tokens.h"
 
+#include <cmath>
 #include <cstring>
+#include <map>
 #include <vector>
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -155,6 +165,154 @@ void TestReallocationDiscardsTheFrame()
     CHECK_NEAR(HalfAt(buffer, 1), 3.5f, 1e-3);
 }
 
+
+// ---------------------------------------------------------------------------
+// Instancer
+// ---------------------------------------------------------------------------
+
+/// A scene delegate holding one instancer's primvars and nothing else. No
+/// render index: a primvar sync of an instancer with no parent never asks
+/// for one.
+class InstancerDelegate final : public HdSceneDelegate {
+  public:
+    InstancerDelegate() : HdSceneDelegate(nullptr, SdfPath("/delegate")) {}
+
+    /// The authored primvars. An entry holding an empty value is a blocked
+    /// primvar: still described, resolving to nothing.
+    std::map<TfToken, VtValue> primvars;
+
+    HdPrimvarDescriptorVector GetPrimvarDescriptors(
+        const SdfPath& /*id*/, HdInterpolation interpolation) override
+    {
+        HdPrimvarDescriptorVector descriptors;
+        if (interpolation == HdInterpolationInstance) {
+            for (const auto& [name, value] : primvars) {
+                descriptors.emplace_back(name, interpolation);
+            }
+        }
+        return descriptors;
+    }
+    VtValue Get(const SdfPath& /*id*/, const TfToken& key) override
+    {
+        const auto found = primvars.find(key);
+        return found == primvars.end() ? VtValue() : found->second;
+    }
+    GfMatrix4d GetInstancerTransform(const SdfPath& /*id*/) override
+    {
+        return GfMatrix4d(1.0);
+    }
+    VtIntArray GetInstanceIndices(const SdfPath& /*instancerId*/,
+                                  const SdfPath& /*prototypeId*/) override
+    {
+        return VtIntArray{0, 1};
+    }
+};
+
+const SdfPath kInstancer("/instancer");
+const SdfPath kPrototype("/instancer/prototype");
+
+VtMatrix4dArray SyncedTransforms(HdClaudeInstancer& instancer,
+                                 InstancerDelegate& delegate)
+{
+    HdDirtyBits bits = HdChangeTracker::DirtyPrimvar;
+    instancer.Sync(&delegate, nullptr, &bits);
+    return instancer.ComputeInstanceTransforms(kPrototype);
+}
+
+/// What an instancer created fresh with `delegate`'s primvars computes: the
+/// transforms an edit that reaches the same state must agree with.
+VtMatrix4dArray FreshTransforms(InstancerDelegate& delegate)
+{
+    HdClaudeInstancer fresh(&delegate, kInstancer);
+    return SyncedTransforms(fresh, delegate);
+}
+
+bool SameTransforms(const VtMatrix4dArray& a, const VtMatrix4dArray& b)
+{
+    if (a.size() != b.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < a.size(); ++i) {
+        for (int r = 0; r < 4; ++r) {
+            for (int c = 0; c < 4; ++c) {
+                if (std::fabs(a[i][r][c] - b[i][r][c]) > 1e-9) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+void Author(InstancerDelegate& delegate)
+{
+    delegate.primvars[HdInstancerTokens->instanceTranslations] =
+        VtValue(VtVec3fArray{GfVec3f(1, 2, 3), GfVec3f(-4, 0, 1)});
+    delegate.primvars[HdInstancerTokens->instanceRotations] =
+        VtValue(VtQuathArray{
+            GfQuath(1, 0, 0, 0),
+            GfQuath(GfRotation(GfVec3d(0, 1, 0), 60).GetQuat())});
+    delegate.primvars[HdInstancerTokens->instanceScales] =
+        VtValue(VtVec3fArray{GfVec3f(2, 2, 2), GfVec3f(0.5f, 1, 3)});
+    GfMatrix4d sheared(1.0);
+    sheared[1][0] = 0.25;
+    delegate.primvars[HdInstancerTokens->instanceTransforms] =
+        VtValue(VtMatrix4dArray{GfMatrix4d(1.0), sheared});
+}
+
+/// Each instance primvar removed, and separately blocked, after a frame was
+/// computed with it: the edited instancer must agree with a new one built
+/// from the final state, and must differ from what it computed before, or
+/// the comparison saw nothing.
+void TestInstancerForgetsRemovedPrimvars()
+{
+    for (const TfToken& name : {HdInstancerTokens->instanceScales,
+                                HdInstancerTokens->instanceRotations,
+                                HdInstancerTokens->instanceTransforms}) {
+        for (const bool block : {false, true}) {
+            InstancerDelegate delegate;
+            Author(delegate);
+            HdClaudeInstancer instancer(&delegate, kInstancer);
+            const VtMatrix4dArray before = SyncedTransforms(instancer, delegate);
+
+            if (block) {
+                delegate.primvars[name] = VtValue();
+            } else {
+                delegate.primvars.erase(name);
+            }
+            const VtMatrix4dArray after = SyncedTransforms(instancer, delegate);
+            const VtMatrix4dArray expected = FreshTransforms(delegate);
+            hdclaude_test::Report(SameTransforms(after, expected),
+                                  "edited instancer == fresh instancer",
+                                  __FILE__, __LINE__,
+                                  name.GetString() +
+                                      (block ? " blocked" : " removed"));
+            CHECK(!SameTransforms(before, expected));
+        }
+    }
+}
+
+/// Reauthored after removal, and left alone by a sync that dirtied nothing
+/// of its primvars: the unchanged entries survive.
+void TestInstancerKeepsWhatIsStillAuthored()
+{
+    InstancerDelegate delegate;
+    Author(delegate);
+    HdClaudeInstancer instancer(&delegate, kInstancer);
+    const VtMatrix4dArray authored = SyncedTransforms(instancer, delegate);
+
+    const VtValue scales = delegate.primvars[HdInstancerTokens->instanceScales];
+    delegate.primvars.erase(HdInstancerTokens->instanceScales);
+    SyncedTransforms(instancer, delegate);
+    delegate.primvars[HdInstancerTokens->instanceScales] = scales;
+    CHECK(SameTransforms(SyncedTransforms(instancer, delegate), authored));
+
+    HdDirtyBits clean = HdChangeTracker::Clean;
+    instancer.Sync(&delegate, nullptr, &clean);
+    CHECK(SameTransforms(instancer.ComputeInstanceTransforms(kPrototype),
+                         authored));
+}
+
 }  // namespace
 
 int main()
@@ -166,5 +324,7 @@ int main()
     TestClearFillsFloat16();
     TestClearOfAFormatItCannotFillHoldsNoFrame();
     TestReallocationDiscardsTheFrame();
+    TestInstancerForgetsRemovedPrimvars();
+    TestInstancerKeepsWhatIsStillAuthored();
     return hdclaude_test::Summarize("hydra");
 }
