@@ -127,8 +127,31 @@ if(HDCLAUDE_ENABLE_MATERIALX)
     add_dependencies(hdClaudeRenderTests hdClaudeValidationLayers)
   endif()
 
-  # Phase 3 and 8: instanced geometry renders where USD places it. The only
-  # test that reaches the Hydra adapters, so it runs a script in the OpenUSD
+  # The Hydra adapter classes that stand alone -- a render buffer needs only an
+  # id -- compiled from the plugin's own sources, since nothing links against
+  # the plugin module. Tests the source tree rather than the install.
+  if(HDCLAUDE_BUILD_HYDRA_PLUGIN)
+    add_executable(hdClaudeHydraTests
+        hydra_tests.cpp
+        ${CMAKE_SOURCE_DIR}/src/hydra/render_buffer.cpp)
+    target_include_directories(hdClaudeHydraTests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/src/hydra
+        ${CMAKE_SOURCE_DIR}/include)
+    target_link_libraries(hdClaudeHydraTests PRIVATE
+        hdClaudeProjectOptions gf hd sdf tf)
+    if(MSVC)
+      # The plugin's own suppressions, for the same OpenUSD headers.
+      target_compile_options(hdClaudeHydraTests PRIVATE
+          /wd4244 /wd4267 /wd4275 /wd4251)
+    endif()
+    add_test(NAME hydra COMMAND hdClaudeHydraTests)
+    set_tests_properties(hydra PROPERTIES
+        ENVIRONMENT_MODIFICATION "${_usd_path_modification}")
+  endif()
+
+  # Phase 3 and 8: instanced geometry renders where USD places it. The
+  # scripted tests that reach the Hydra adapters, so each runs a script in the OpenUSD
   # environment and renders through the installed plugin -- build and install
   # (compile.py) before trusting it. Each script runs through the platform's
   # wrapper, which sources setup_usd_env first.

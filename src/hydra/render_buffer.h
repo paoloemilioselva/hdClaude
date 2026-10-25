@@ -41,7 +41,10 @@ class HdClaudeRenderBuffer final : public HdRenderBuffer {
     void SetConverged(bool converged) { _converged = converged; }
 
     /// Fill from the renderer's linear RGBA float output.
-    void Write(const std::vector<float>& linearRgba);
+    ///
+    /// Returns false, writing nothing, for a format it cannot fill -- the
+    /// buffer then still holds no frame -- so the caller can say so.
+    bool Write(const std::vector<float>& linearRgba);
 
     /// One value per pixel, for a single-channel AOV such as depth.
     ///

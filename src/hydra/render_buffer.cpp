@@ -1,5 +1,6 @@
 #include "render_buffer.h"
 
+#include "pxr/base/gf/half.h"
 #include "pxr/base/gf/vec3i.h"
 #include "pxr/base/tf/diagnostic.h"
 
@@ -58,7 +59,6 @@ void HdClaudeRenderBuffer::Clear(const float* value)
     if (_data.empty() || value == nullptr) {
         return;
     }
-    _written = true;
     const size_t componentCount = HdGetComponentCount(_format);
     const HdFormat component = HdGetComponentFormat(_format);
     const size_t pixelSize = HdDataSizeOfFormat(_format);
@@ -73,6 +73,12 @@ void HdClaudeRenderBuffer::Clear(const float* value)
                 std::memcpy(pixel.data() + c * sizeof(float), &value[c],
                             sizeof(float));
                 break;
+            case HdFormatFloat16: {
+                const GfHalf half(value[c]);
+                std::memcpy(pixel.data() + c * sizeof(GfHalf), &half,
+                            sizeof(GfHalf));
+                break;
+            }
             case HdFormatInt32: {
                 const int32_t asInt = static_cast<int32_t>(value[c]);
                 std::memcpy(pixel.data() + c * sizeof(int32_t), &asInt,
@@ -87,10 +93,12 @@ void HdClaudeRenderBuffer::Clear(const float* value)
             }
             default:
                 // A format hdClaude does not compose is left at zero rather
-                // than filled with reinterpreted bytes.
+                // than filled with reinterpreted bytes -- and still holds no
+                // frame, so it is not mistaken for one that was cleared.
                 return;
         }
     }
+    _written = true;
     for (size_t i = 0; i < pixels; ++i) {
         std::memcpy(_data.data() + i * pixelSize, pixel.data(), pixelSize);
     }
@@ -192,15 +200,21 @@ void HdClaudeRenderBuffer::WriteIds(const std::vector<std::int32_t>& values,
     }
 }
 
-void HdClaudeRenderBuffer::Write(const std::vector<float>& linearRgba)
+bool HdClaudeRenderBuffer::Write(const std::vector<float>& linearRgba)
 {
     const size_t pixels = static_cast<size_t>(_width) * _height;
     if (pixels == 0 || linearRgba.size() < pixels * 4) {
-        return;
+        return true;
     }
     const size_t componentCount =
         std::min<size_t>(4, HdGetComponentCount(_format));
     const HdFormat component = HdGetComponentFormat(_format);
+    if (component != HdFormatFloat32 && component != HdFormatFloat16 &&
+        component != HdFormatUNorm8 && component != HdFormatInt32) {
+        // Checked before anything is written, so the buffer is left at its
+        // allocation and still reports that it holds no frame.
+        return false;
+    }
     _written = true;
     const size_t pixelSize = HdDataSizeOfFormat(_format);
 
@@ -213,15 +227,26 @@ void HdClaudeRenderBuffer::Write(const std::vector<float>& linearRgba)
                     std::memcpy(destination + c * sizeof(float), &value,
                                 sizeof(float));
                     break;
+                case HdFormatFloat16: {
+                    // Linear, like Float32: a half-float AOV keeps the range
+                    // above one for the host's display transform.
+                    const GfHalf half(value);
+                    std::memcpy(destination + c * sizeof(GfHalf), &half,
+                                sizeof(GfHalf));
+                    break;
+                }
                 case HdFormatUNorm8: {
                     // The renderer's output is linear. A UNorm8 AOV is what an
                     // 8-bit viewport asks for, and clamping without encoding
                     // would hand it a dark image, so the sRGB transfer function
                     // is applied here -- the same one the EXR path leaves off
-                    // because EXR is linear by definition.
+                    // because EXR is linear by definition. To colour only:
+                    // alpha is a coverage, not a light level, and sRGB has no
+                    // transfer for it.
                     const float clamped = std::clamp(value, 0.0f, 1.0f);
                     const float encoded =
-                        clamped <= 0.0031308f
+                        c == 3 ? clamped
+                        : clamped <= 0.0031308f
                             ? clamped * 12.92f
                             : 1.055f * std::pow(clamped, 1.0f / 2.4f) - 0.055f;
                     destination[c] = static_cast<char>(
@@ -235,10 +260,11 @@ void HdClaudeRenderBuffer::Write(const std::vector<float>& linearRgba)
                     break;
                 }
                 default:
-                    return;
+                    break;
             }
         }
     }
+    return true;
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

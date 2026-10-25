@@ -183,8 +183,14 @@ void WriteFrame(const BoundAovs& aovs, const hdclaude::FrameResult& frame,
         return buffer != nullptr && (!onlyEmpty || buffer->HoldsNoFrame());
     };
     const std::vector<float>& image = frame.image;
-    if (wants(aovs.color)) {
-        aovs.color->Write(image);
+    if (wants(aovs.color) && !aovs.color->Write(image)) {
+        static bool warnedColorFormat = false;
+        if (!warnedColorFormat) {
+            warnedColorFormat = true;
+            TF_WARN("hdClaude: the color AOV is bound as %s, which hdClaude "
+                    "cannot write; it keeps its allocation.",
+                    TfEnum::GetName(aovs.color->GetFormat()).c_str());
+        }
     }
     // Depth only when a host asked for it, and untouched on the way: it is a
     // geometric measurement rather than a picture, so no exposure and no

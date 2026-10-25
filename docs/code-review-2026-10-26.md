@@ -146,17 +146,23 @@ inconsistent with the rest of this class.
 
 **To do:**
 
-- [ ] Add half-float conversion to the color writer and supported clear paths.
-- [ ] Make unsupported output formats fail explicitly or emit a diagnostic.
-- [ ] Set `_written` only after a supported write actually succeeds.
-- [ ] Test Float32Vec4 and Float16Vec4 with fractional values and values above 1.
-- [ ] Test clear, write, reallocation, and late AOV binding behavior directly.
+- [x] Add half-float conversion to the color writer and supported clear paths.
+- [x] Make unsupported output formats fail explicitly or emit a diagnostic.
+  `Write` returns false and the render pass warns once, as for depth.
+- [x] Set `_written` only after a supported write actually succeeds (`Clear`
+  too).
+- [x] Test Float32Vec4 and Float16Vec4 with fractional values and values above 1.
+- [x] Test clear, write, reallocation, and late AOV binding behavior directly.
+  The new `hydra` suite (`tests/hydra_tests.cpp`) covers clear, write and
+  reallocation, and fails 47 of its 101 checks against the old source. Late
+  binding is the render pass's, and stays covered by `usd_depth`'s
+  buffers-replaced case.
 
 Related **P3** issue: the UNorm8 branch applies the sRGB transfer function to all
 components, including alpha (lines 209–228). An input alpha of 0.5 would become
 approximately 188/255 rather than 128/255. Encode RGB only. This is currently
 latent for ordinary frames because the film accumulates opaque alpha; do not
-describe it as an observed transparency regression.
+describe it as an observed transparency regression. **Fixed with R2.**
 
 ### R3 — P2: removed instancer primvars retain their previous values
 
@@ -301,7 +307,7 @@ avoid this CPU work.
 Keep the existing numerical and validation suites. Complement them with focused
 tests around the boundaries identified here:
 
-- [ ] Direct render-buffer format and clear/write tests.
+- [x] Direct render-buffer format and clear/write tests.
 - [ ] Instancer attribute removal and reauthoring in one engine.
 - [ ] Motion followed by several stationary frames.
 - [ ] Purpose/collection changes and comparison with a fresh engine.
