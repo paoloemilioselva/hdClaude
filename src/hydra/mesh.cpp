@@ -438,6 +438,63 @@ hdclaude::TessellationChoice HdClaudeChooseMeshTessellation(
     return hdclaude::ChooseTessellation(view, request, limits);
 }
 
+/// Where a mesh's placements put it in the world: one for a mesh with no
+/// instancer, one per instance for one with. False when an instancer places
+/// it nowhere, which draws nothing.
+///
+/// The placements come from hdClaude's own instancer, which composes them
+/// from the instancer's primvars. `HdRprim::GetInstancerTransforms` looks
+/// like the call for this and is not: it returns one matrix per instancer in
+/// the parent chain -- the instancer's own transform -- so reading it as the
+/// per-instance list draws a point-instanced prototype exactly once, which
+/// is how the OpenChessSet lost most of its pieces.
+///
+/// An instanced rprim's own transform is *not* its world transform: it
+/// places the mesh within the prototype, and the instancer places the
+/// prototype. Both are needed. Dropping the first collapses every mesh of a
+/// model onto that model's origin, which is a failure that reads as missing
+/// geometry rather than as misplaced geometry -- an asset whose parts are
+/// authored a couple of hundred units from its root ends up scattered
+/// around the room or inside a wall. Pixar's Kitchen Set is 1462 meshes of
+/// which 1460 are placed this way, so it lost its refrigerator, its stove,
+/// its table and its chairs while still reporting every instance present.
+///
+/// Local first, then the placement: USD composes a row vector's transforms
+/// left to right, so `mesh * instance` is the mesh taken into the
+/// prototype and the prototype into the world.
+bool Placements(HdSceneDelegate* sceneDelegate, const SdfPath& id,
+                const SdfPath& instancerId,
+                std::vector<hdclaude::Transform3x4>* out)
+{
+    out->clear();
+    const GfMatrix4d meshTransform = sceneDelegate->GetTransform(id);
+    if (instancerId.IsEmpty()) {
+        out->push_back(ToTransform(meshTransform));
+        return true;
+    }
+    VtMatrix4dArray transforms;
+    HdInstancer* instancer =
+        sceneDelegate->GetRenderIndex().GetInstancer(instancerId);
+    if (auto* claudeInstancer = dynamic_cast<HdClaudeInstancer*>(instancer)) {
+        transforms = claudeInstancer->ComputeInstanceTransforms(id);
+    }
+    out->reserve(transforms.size());
+    for (const GfMatrix4d& matrix : transforms) {
+        out->push_back(ToTransform(meshTransform * matrix));
+    }
+    return !out->empty();
+}
+
+/// What a placement-only sync may find dirty. Anything else -- points,
+/// topology, primvars, normals, subdivision tags, display style -- changes the
+/// prototype, and takes the full sync.
+constexpr HdDirtyBits kPlacementBits =
+    HdChangeTracker::DirtyTransform | HdChangeTracker::DirtyVisibility |
+    HdChangeTracker::DirtyInstancer | HdChangeTracker::DirtyInstanceIndex |
+    HdChangeTracker::DirtyCategories | HdChangeTracker::DirtyMaterialId |
+    HdChangeTracker::DirtyPrimID | HdChangeTracker::DirtyExtent |
+    HdChangeTracker::Varying;
+
 }  // namespace
 
 HdClaudeMesh::HdClaudeMesh(const SdfPath& id) : HdMesh(id) {}
@@ -475,6 +532,46 @@ void HdClaudeMesh::Finalize(HdRenderParam* renderParam)
     }
 }
 
+bool HdClaudeMesh::_SyncPlacementOnly(HdSceneDelegate* sceneDelegate,
+                                      HdRenderParam* renderParam,
+                                      HdDirtyBits dirtyBits)
+{
+    // A transform dragged in a viewport dirties this every frame, and the full
+    // sync below reads the topology and points again, refines and triangulates
+    // them, and generates normals -- all to publish the prototype it published
+    // last time. A prototype the GPU recognises by its fingerprint costs no
+    // rebuild there, but nothing spared the CPU the work of producing it.
+    if ((dirtyBits & ~kPlacementBits) != 0 || _refinementFollowsPlacement) {
+        return false;
+    }
+    auto* param = static_cast<HdClaudeRenderParam*>(renderParam);
+    const SdfPath& id = GetId();
+
+    std::vector<hdclaude::Transform3x4> transforms;
+    if (!Placements(sceneDelegate, id, GetInstancerId(), &transforms)) {
+        param->SceneStore()->RemoveMesh(id);
+        return true;
+    }
+    SdfPath material = GetMaterialId();
+    if (material.IsEmpty()) {
+        material = HdClaudeDisplayColorMaterialPath();
+    }
+    std::vector<std::vector<TfToken>> categories = HdClaudeRprimCategories(
+        sceneDelegate, id, GetInstancerId(), transforms.size());
+    const std::size_t instances = transforms.size();
+    // Nothing held -- the mesh was dropped as empty, or its instancer had
+    // placed it nowhere -- means there is no prototype to keep, and the full
+    // sync is what makes one.
+    if (!param->SceneStore()->UpdateMeshPlacement(
+            id, std::move(transforms), sceneDelegate->GetVisible(id),
+            std::move(material), std::move(categories), GetPrimId())) {
+        return false;
+    }
+    HdClaudeTrace("mesh <%s>: placement only, %zu instances", id.GetText(),
+                  instances);
+    return true;
+}
+
 void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
                         HdRenderParam* renderParam, HdDirtyBits* dirtyBits,
                         const TfToken& /*reprToken*/)
@@ -504,6 +601,11 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     // material's own Sync lands and bumps the revision.
     if (HdChangeTracker::IsDirty(*dirtyBits)) {
         SetMaterialId(sceneDelegate->GetMaterialId(id));
+    }
+
+    if (_SyncPlacementOnly(sceneDelegate, renderParam, *dirtyBits)) {
+        *dirtyBits = HdChangeTracker::Clean;
+        return;
     }
 
     HdMeshTopology topology = GetMeshTopology(sceneDelegate);
@@ -590,49 +692,13 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     // --- Instancing ------------------------------------------------------------
     // One prototype, many placements: the acceleration structure is built once
     // and instanced, which is the whole reason geometry stays object-space.
-    //
-    // The placements come from hdClaude's own instancer, which composes them
-    // from the instancer's primvars. `HdRprim::GetInstancerTransforms` looks
-    // like the call for this and is not: it returns one matrix per instancer in
-    // the parent chain -- the instancer's own transform -- so reading it as the
-    // per-instance list draws a point-instanced prototype exactly once, which
-    // is how the OpenChessSet lost most of its pieces.
-    //
-    // An instanced rprim's own transform is *not* its world transform: it
-    // places the mesh within the prototype, and the instancer places the
-    // prototype. Both are needed. Dropping the first collapses every mesh of a
-    // model onto that model's origin, which is a failure that reads as missing
-    // geometry rather than as misplaced geometry -- an asset whose parts are
-    // authored a couple of hundred units from its root ends up scattered
-    // around the room or inside a wall. Pixar's Kitchen Set is 1462 meshes of
-    // which 1460 are placed this way, so it lost its refrigerator, its stove,
-    // its table and its chairs while still reporting every instance present.
-    //
-    // Local first, then the placement: USD composes a row vector's transforms
-    // left to right, so `mesh * instance` is the mesh taken into the
-    // prototype and the prototype into the world.
-    const GfMatrix4d meshTransform = sceneDelegate->GetTransform(id);
-    if (GetInstancerId().IsEmpty()) {
-        entry.transforms.push_back(ToTransform(meshTransform));
-    } else {
-        VtMatrix4dArray transforms;
-        HdInstancer* instancer =
-            sceneDelegate->GetRenderIndex().GetInstancer(GetInstancerId());
-        if (auto* claudeInstancer = dynamic_cast<HdClaudeInstancer*>(instancer)) {
-            transforms = claudeInstancer->ComputeInstanceTransforms(id);
-        }
-        entry.transforms.reserve(transforms.size());
-        for (const GfMatrix4d& matrix : transforms) {
-            entry.transforms.push_back(ToTransform(meshTransform * matrix));
-        }
-        if (entry.transforms.empty()) {
-            // An instancer with no instances draws nothing. Publishing the
-            // prim at the origin instead would put a copy on screen that the
-            // stage does not contain.
-            param->SceneStore()->RemoveMesh(id);
-            *dirtyBits = HdChangeTracker::Clean;
-            return;
-        }
+    if (!Placements(sceneDelegate, id, GetInstancerId(), &entry.transforms)) {
+        // An instancer with no instances draws nothing. Publishing the prim
+        // at the origin instead would put a copy on screen that the stage
+        // does not contain.
+        param->SceneStore()->RemoveMesh(id);
+        *dirtyBits = HdChangeTracker::Clean;
+        return;
     }
 
     // --- Subdivision or triangulation ------------------------------------------
@@ -737,6 +803,8 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     const bool wantsSubdivision = HdClaudeWantsSubdivision(topology);
     const bool perFace = tessellation.perFace && wantsSubdivision &&
                          tessellation.level > 0;
+    _refinementFollowsPlacement =
+        wantsSubdivision && (tessellation.adaptive || perFace);
 
     if (perFace || (subdivisionLevel > 0 && wantsSubdivision)) {
         // Timed here rather than inside the refiner, because what a caller

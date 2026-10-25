@@ -319,12 +319,24 @@ points, primvars, and enters the refinement/triangulation path without a fast pa
 for a transform-only or visibility-only edit. GPU fingerprint reuse does not
 avoid this CPU work.
 
-- [ ] Cache the generated prototype and update only placements/visibility when
-  those are the only dirty inputs.
-- [ ] Preserve rebuilds when adaptive tessellation genuinely depends on the
-  changed placement or when a geometry-affecting setting changes.
-- [ ] Benchmark repeated transform edits on a subdivided mesh and compare the
-  resulting geometry and image against the current path.
+- [x] Cache the generated prototype and update only placements/visibility when
+  those are the only dirty inputs. The store already holds the prototype;
+  `HdClaudeMesh::_SyncPlacementOnly` replaces only the placements, visibility,
+  binding, categories and prim id through `UpdateMeshPlacement` when nothing
+  outside transform, visibility, instancer, instance index, categories,
+  material id, prim id and extent is dirty.
+- [x] Preserve rebuilds when adaptive tessellation genuinely depends on the
+  changed placement or when a geometry-affecting setting changes. A
+  subdivision surface refined adaptively or per face takes the full sync; a
+  setting change dirties topology and points, which do too.
+- [x] Benchmark repeated transform edits on a subdivided mesh and compare the
+  resulting geometry and image against the current path. A 200x200-quad
+  Catmull-Clark grid at level 2: 73.8 ms a transform edit, refining nothing,
+  against 274.6 ms for an edit that re-sets the points and takes the full
+  sync a transform edit used to take. The new `usd_incremental_sync` compares
+  the geometry, by picking 160 probes against a fresh engine, after a move,
+  a hide, a show and a reshape; the old plugin fails its move check by
+  refining again.
 
 ### P3 — Add tests for state transitions and host buffer formats
 

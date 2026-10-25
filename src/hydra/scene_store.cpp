@@ -17,6 +17,26 @@ void HdClaudeSceneStore::PublishMesh(const SdfPath& id, HdClaudeMeshEntry entry)
     ++_revision;
 }
 
+bool HdClaudeSceneStore::UpdateMeshPlacement(
+    const SdfPath& id, std::vector<hdclaude::Transform3x4> transforms,
+    bool visible, SdfPath material,
+    std::vector<std::vector<TfToken>> instanceCategories, int primId)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    const auto found = _meshes.find(id);
+    if (found == _meshes.end()) {
+        return false;
+    }
+    HdClaudeMeshEntry& entry = found->second;
+    entry.transforms = std::move(transforms);
+    entry.visible = visible;
+    entry.material = std::move(material);
+    entry.instanceCategories = std::move(instanceCategories);
+    entry.primId = primId;
+    ++_revision;
+    return true;
+}
+
 void HdClaudeSceneStore::RemoveMesh(const SdfPath& id)
 {
     std::lock_guard<std::mutex> lock(_mutex);

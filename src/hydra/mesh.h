@@ -26,6 +26,16 @@ class HdClaudeMesh final : public HdMesh {
     HdDirtyBits _PropagateDirtyBits(HdDirtyBits bits) const override;
 
   private:
+    /// Republish only the placements when nothing else is dirty. True when it
+    /// did, and the full sync is skipped.
+    bool _SyncPlacementOnly(HdSceneDelegate* sceneDelegate,
+                            HdRenderParam* renderParam, HdDirtyBits dirtyBits);
+
+    /// Whether the last full sync refined this mesh to a level its placements
+    /// decided -- adaptive or per-face refinement of a subdivision surface --
+    /// so that moving it changes its geometry and a placement-only sync
+    /// would keep a refinement chosen for where it was.
+    bool _refinementFollowsPlacement = true;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

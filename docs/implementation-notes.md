@@ -7983,3 +7983,32 @@ its distribution are kept while the dome is the same image.
 4,831,838,208 bytes. The second uploaded 0 bytes, kept 72, and took 497 ms
 against 3,580 ms. The new render stats `texturesUploaded`,
 `textureBytesUploaded` and `texturesReused` describe the last publication.
+
+## 2026-10-26 -- A transform edit regenerated the mesh
+
+**Found by review** (docs/code-review-2026-10-26.md, performance P2).
+`HdClaudeMesh::Sync` read no dirty bit. Every sync read the topology and
+points again, refined or triangulated them, generated normals and published
+the whole entry. A transform dragged in a viewport therefore re-refined the
+mesh it moved on every frame of the drag. The GPU recognised the prototype by
+its fingerprint and rebuilt nothing, but the CPU had already done the work of
+producing it.
+
+**Placement only.** When nothing outside transform, visibility, instancer,
+instance index, categories, material binding, prim id and extent is dirty,
+the mesh republishes its placements through
+`HdClaudeSceneStore::UpdateMeshPlacement` and leaves the prototype the store
+holds. Two cases still take the full sync. One is a subdivision surface
+refined adaptively or per face, whose level its placement decides. The other
+is a mesh the store holds nothing for: one dropped as empty, or placed
+nowhere by its instancer. Settings that change geometry already dirty
+topology and points, so they take the full sync too.
+
+**Measured.** A 200x200-quad Catmull-Clark grid at level 2, rendered after
+each of ten edits: a transform edit took 73.8 ms and refined nothing, against
+274.6 ms for an edit that re-sets the points, which is the full sync a
+transform edit used to take. `usd_incremental_sync` edits a live stage (a
+move, a hide, a show, and a change to the points) and after each one picks
+160 probes against a fresh engine on the same stage. All agree. The move,
+hide and show refine nothing, and the change to the points refines the mesh.
+The plugin from before this fails the move check by refining again.

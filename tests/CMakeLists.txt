@@ -165,6 +165,7 @@ if(HDCLAUDE_ENABLE_MATERIALX)
             "usd_implicit_surfaces|implicit_surfaces"
             "usd_texture_quality|texture_quality"
             "usd_picking|picking"
+            "usd_incremental_sync|incremental_sync"
             "usd_depth|depth"
             "usd_houdini_parameters|houdini_parameters")
       string(REPLACE "|" ";" _usd_test "${_usd_test}")

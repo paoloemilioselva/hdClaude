@@ -194,6 +194,16 @@ class HdClaudeSceneStore {
     void PublishMesh(const SdfPath& id, HdClaudeMeshEntry entry);
     void RemoveMesh(const SdfPath& id);
 
+    /// Where an already published mesh is and how it is bound, leaving its
+    /// prototype as it was. What a transform, visibility, instancing or
+    /// binding edit changes, without regenerating geometry nothing touched.
+    /// False, changing nothing, when no entry is held for `id`.
+    bool UpdateMeshPlacement(const SdfPath& id,
+                             std::vector<hdclaude::Transform3x4> transforms,
+                             bool visible, SdfPath material,
+                             std::vector<std::vector<TfToken>> instanceCategories,
+                             int primId);
+
     void PublishSplats(const SdfPath& id, HdClaudeSplatEntry entry);
     void RemoveSplats(const SdfPath& id);
 
