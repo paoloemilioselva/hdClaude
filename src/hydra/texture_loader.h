@@ -12,6 +12,7 @@
 #include "pxr/pxr.h"
 
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -94,7 +95,15 @@ class HdClaudeTexturePool {
                                           AcquireReport* report = nullptr);
 
     /// Every loaded image, indexed by the slot Acquire returned.
-    const std::vector<hdclaude::TextureImage>& Images() const { return _images; }
+    ///
+    /// Shared and immutable: a snapshot copies the pointers, and an image
+    /// decoded again -- under a new cap -- is a new image in the same slot,
+    /// so the renderer can tell a slot that changed from one that did not.
+    const std::vector<std::shared_ptr<const hdclaude::TextureImage>>& Images()
+        const
+    {
+        return _images;
+    }
 
     /// Paths that could not be loaded, for render stats.
     const std::vector<std::string>& Failures() const { return _failures; }
@@ -109,7 +118,7 @@ class HdClaudeTexturePool {
     /// What each slot was loaded from, so a changed cap can re-decode it into
     /// the same slot.
     std::vector<Key> _sources;
-    std::vector<hdclaude::TextureImage> _images;
+    std::vector<std::shared_ptr<const hdclaude::TextureImage>> _images;
     std::vector<std::string> _failures;
     std::uint32_t _maxEdge = 0;
 };

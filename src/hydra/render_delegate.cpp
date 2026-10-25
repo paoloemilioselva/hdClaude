@@ -286,6 +286,15 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
                 << "blasReused "
                 << stages.blasReused.load(std::memory_order_relaxed)
                 << '\n'
+                << "texturesUploaded "
+                << stages.texturesUploaded.load(std::memory_order_relaxed)
+                << '\n'
+                << "textureBytesUploaded "
+                << stages.textureBytesUploaded.load(std::memory_order_relaxed)
+                << '\n'
+                << "texturesReused "
+                << stages.texturesReused.load(std::memory_order_relaxed)
+                << '\n'
                 << "cameraRays "
                 << stages.cameraRays.load(std::memory_order_relaxed) << '\n'
                 << "tracedRays "
@@ -1130,6 +1139,12 @@ VtDictionary HdClaudeRenderDelegate::GetRenderStats() const
         VtValue(double(_stageStats.blasReused.load(std::memory_order_relaxed)));
     stats["blasRefit"] =
         VtValue(double(_stageStats.blasRefit.load(std::memory_order_relaxed)));
+    stats["texturesUploaded"] = VtValue(
+        double(_stageStats.texturesUploaded.load(std::memory_order_relaxed)));
+    stats["textureBytesUploaded"] = VtValue(double(
+        _stageStats.textureBytesUploaded.load(std::memory_order_relaxed)));
+    stats["texturesReused"] = VtValue(
+        double(_stageStats.texturesReused.load(std::memory_order_relaxed)));
     stats["cameraRays"] =
         VtValue(double(_stageStats.cameraRays.load(std::memory_order_relaxed)));
     stats["tracedRays"] =

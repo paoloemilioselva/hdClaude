@@ -758,20 +758,38 @@ VulkanImage PathTracer::UploadTexture(const TextureImage& texture)
     return image;
 }
 
-void PathTracer::UploadTextures(const std::vector<TextureImage>& textures)
+void PathTracer::UploadTextures(
+    const std::vector<std::shared_ptr<const TextureImage>>& textures)
 {
-    _texturePool.clear();
-    _texturePool.reserve(textures.size());
-    for (const TextureImage& texture : textures) {
-        if (!texture.Valid()) {
+    // A slot holding the image it held last time keeps its GPU copy. Without
+    // this every publication -- a transform dragged, a light changed --
+    // uploaded every texture in the scene again, each through its own staging
+    // buffer and its own synchronous submission.
+    std::vector<VulkanImage> pool;
+    pool.reserve(textures.size());
+    for (std::size_t slot = 0; slot < textures.size(); ++slot) {
+        const std::shared_ptr<const TextureImage>& texture = textures[slot];
+        if (slot < _uploadedTextures.size() && slot < _texturePool.size() &&
+            texture == _uploadedTextures[slot]) {
+            pool.push_back(std::move(_texturePool[slot]));
+            if (pool.back().Valid()) {
+                ++_texturesReused;
+            }
+            continue;
+        }
+        if (!texture || !texture->Valid()) {
             // A texture that failed to decode still occupies its pool slot, so
             // every material's slot table keeps pointing at the right
             // neighbours. The slot resolves to the placeholder.
-            _texturePool.push_back(VulkanImage());
+            pool.push_back(VulkanImage());
             continue;
         }
-        _texturePool.push_back(UploadTexture(texture));
+        pool.push_back(UploadTexture(*texture));
+        ++_texturesUploaded;
+        _textureBytesUploaded += texture->texels.size();
     }
+    _texturePool = std::move(pool);
+    _uploadedTextures = textures;
 }
 
 std::vector<VkDescriptorImageInfo> PathTracer::TextureBindingsFor(
@@ -1028,6 +1046,9 @@ void PathTracer::SetScene(const Scene& publishedScene,
     // Textures first, because a displacement reads them: a height map is the
     // usual way a displacement varies, and the pass below samples the same
     // pool the shade kernel does.
+    _texturesUploaded = 0;
+    _textureBytesUploaded = 0;
+    _texturesReused = 0;
     UploadTextures(publishedScene.textures);
 
     // Then the displacement, before anything is built over the geometry. A
@@ -1420,14 +1441,28 @@ void PathTracer::SetScene(const Scene& publishedScene,
     // samples them.
 
     // The dome map is bound separately from the array, so it is remembered
-    // here rather than resolved per frame.
-    _domeTexture = VulkanImage();
+    // here rather than resolved per frame -- and, with its sampling
+    // distribution below, kept while the published dome is the same image.
+    // An HDR sky is the largest image most scenes have, and the distribution
+    // over it the most expensive thing built here that is not geometry.
+    std::shared_ptr<const TextureImage> dome;
     if (scene.domeTexture >= 0 &&
-        static_cast<std::size_t>(scene.domeTexture) < scene.textures.size()) {
-        const TextureImage& dome = scene.textures[scene.domeTexture];
-        if (dome.Valid()) {
-            _domeTexture = UploadTexture(dome);
+        static_cast<std::size_t>(scene.domeTexture) < scene.textures.size() &&
+        scene.textures[scene.domeTexture] &&
+        scene.textures[scene.domeTexture]->Valid()) {
+        dome = scene.textures[scene.domeTexture];
+    }
+    const bool domeChanged = dome != _uploadedDome;
+    if (domeChanged) {
+        _domeTexture = VulkanImage();
+        if (dome) {
+            _domeTexture = UploadTexture(*dome);
+            ++_texturesUploaded;
+            _textureBytesUploaded += dome->texels.size();
         }
+        _uploadedDome = dome;
+    } else if (dome) {
+        ++_texturesReused;
     }
     std::memcpy(_domeWorldToLight, scene.domeWorldToLight,
                 sizeof(_domeWorldToLight));
@@ -1441,11 +1476,10 @@ void PathTracer::SetScene(const Scene& publishedScene,
     // Built from the dome map, if there is one with any light in it. A constant
     // environment needs none: uniform sphere sampling is already its exact
     // density, and building a distribution over one texel would say nothing.
-    {
+    if (domeChanged || !_environmentDistribution.Valid()) {
         EnvironmentDistribution distribution;
         if (_domeTexture.Valid()) {
-            distribution = BuildEnvironmentDistribution(
-                scene.textures[static_cast<std::size_t>(scene.domeTexture)]);
+            distribution = BuildEnvironmentDistribution(*dome);
         }
 
         const std::vector<float> fallback{0.0f};

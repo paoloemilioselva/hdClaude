@@ -3414,8 +3414,8 @@ int main()
             Scene scene;
             scene.prototypes.push_back(MakeQuad());
             scene.instances.push_back({0, Transform3x4{}, 0, true});
-            scene.textures.push_back(
-                MakeDome(64, 32, [](float, float) { return true; }));
+            scene.textures.push_back(std::make_shared<const TextureImage>(
+                MakeDome(64, 32, [](float, float) { return true; })));
             scene.domeTexture = 0;
             scene.hasDomeLight = true;
             tracer.SetScene(scene, {materials[0]});   // albedo 0.8, grey
@@ -3461,8 +3461,8 @@ int main()
             Scene scene;
             scene.prototypes.push_back(MakeQuad());
             scene.instances.push_back({0, Transform3x4{}, 0, true});
-            scene.textures.push_back(
-                MakeDome(64, 32, [](float u, float) { return u < 0.5f; }));
+            scene.textures.push_back(std::make_shared<const TextureImage>(
+                MakeDome(64, 32, [](float u, float) { return u < 0.5f; })));
             scene.domeTexture = 0;
             scene.hasDomeLight = true;
             tracer.SetScene(scene, {materials[0]});
@@ -3497,6 +3497,34 @@ int main()
             CHECK_NEAR(centre.r, 0.4, 0.04);
             CHECK_NEAR(centre.g, 0.4, 0.04);
             CHECK_NEAR(centre.b, 0.4, 0.04);
+
+            // Published again holding the same image, as a transform edit
+            // republishes: nothing is uploaded -- not the pool slot, not the
+            // dome map, not its distribution -- and the sky is the same sky.
+            tracer.SetScene(scene, {materials[0]});
+            CHECK_EQ(tracer.TexturesUploaded(), 0u);
+            CHECK_EQ(tracer.TextureBytesUploaded(), std::uint64_t(0));
+            CHECK_EQ(tracer.TexturesReused(), 2u);
+            const Pixel kept =
+                Window(tracer.Render(kWidth, kHeight, LookDownZ(4.0f), half),
+                       0.5f, 0.5f, 12);
+            CHECK_NEAR(kept.r, 0.4, 0.04);
+
+            // A new image in the slot, as a changed texture quality decodes
+            // one, is uploaded, and a dome kept by mistake would still light
+            // half the sky: the whole sky reads the furnace's 0.8.
+            scene.textures[0] = std::make_shared<const TextureImage>(
+                MakeDome(64, 32, [](float, float) { return true; }));
+            tracer.SetScene(scene, {materials[0]});
+            CHECK_EQ(tracer.TexturesUploaded(), 2u);
+            CHECK_EQ(tracer.TexturesReused(), 0u);
+            const Pixel replaced =
+                Window(tracer.Render(kWidth, kHeight, LookDownZ(4.0f), half),
+                       0.5f, 0.5f, 12);
+            CHECK_NEAR(replaced.r, 0.8, 0.05);
+            std::printf("  half sky republished: kept %.4f, replaced by a "
+                        "whole sky %.4f (expected 0.40, 0.80)\n",
+                        kept.r, replaced.r);
         }
 
         // --- A colour temperature tints and does not brighten -----------------
@@ -3817,7 +3845,8 @@ int main()
             Scene scene;
             scene.prototypes.push_back(quad);
             scene.instances.push_back({0, Transform3x4{}, 0, true});
-            scene.textures.push_back(MakeOrientationTexture());
+            scene.textures.push_back(
+                std::make_shared<const TextureImage>(MakeOrientationTexture()));
             tracer.SetScene(scene, {imageMaterial});
 
             const std::vector<float> image =
@@ -3882,9 +3911,12 @@ int main()
             Scene scene;
             scene.prototypes.push_back(quad);
             scene.instances.push_back({0, Transform3x4{}, 0, true});
-            scene.textures.push_back(MakeTileTexture(255, 0, 0, "tile.1001"));
-            scene.textures.push_back(MakeTileTexture(0, 255, 0, "tile.1002"));
-            scene.textures.push_back(MakeTileTexture(0, 0, 255, "tile.1012"));
+            scene.textures.push_back(std::make_shared<const TextureImage>(
+                MakeTileTexture(255, 0, 0, "tile.1001")));
+            scene.textures.push_back(std::make_shared<const TextureImage>(
+                MakeTileTexture(0, 255, 0, "tile.1002")));
+            scene.textures.push_back(std::make_shared<const TextureImage>(
+                MakeTileTexture(0, 0, 255, "tile.1012")));
             tracer.SetScene(scene, {udimMaterial});
 
             const std::vector<float> image =

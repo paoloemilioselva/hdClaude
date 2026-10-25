@@ -71,6 +71,12 @@ struct HdClaudeStageStats {
     std::atomic<std::uint64_t> blasBuilt{0};
     std::atomic<std::uint64_t> blasReused{0};
     std::atomic<std::uint64_t> blasRefit{0};
+    /// Images the last publication uploaded, the bytes they took, and images
+    /// it kept because they were the ones already on the device. See
+    /// PathTracer::TexturesUploaded.
+    std::atomic<std::uint64_t> texturesUploaded{0};
+    std::atomic<std::uint64_t> textureBytesUploaded{0};
+    std::atomic<std::uint64_t> texturesReused{0};
 
     std::atomic<std::uint64_t> cameraRays{0};
     /// One per active path per bounce, and one per shadow ray shading asked
@@ -161,6 +167,9 @@ struct HdClaudeStageStats {
         blasBuilt.store(0, std::memory_order_relaxed);
         blasReused.store(0, std::memory_order_relaxed);
         blasRefit.store(0, std::memory_order_relaxed);
+        texturesUploaded.store(0, std::memory_order_relaxed);
+        textureBytesUploaded.store(0, std::memory_order_relaxed);
+        texturesReused.store(0, std::memory_order_relaxed);
         cameraRays.store(0, std::memory_order_relaxed);
         tracedRays.store(0, std::memory_order_relaxed);
         shadowRays.store(0, std::memory_order_relaxed);

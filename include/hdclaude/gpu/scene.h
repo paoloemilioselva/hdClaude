@@ -16,6 +16,7 @@
 #include "hdclaude/core/gaussian_splats.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -540,7 +541,14 @@ struct Scene {
     std::vector<SplatInstance> splatInstances;
 
     /// Textures, indexed by the array index a generated material refers to.
-    std::vector<TextureImage> textures;
+    ///
+    /// Shared and immutable, so a snapshot copies pointers rather than
+    /// texels, and so the pointer *is* the image's identity: whoever decodes
+    /// a slot again puts a new image there rather than changing the old one.
+    /// The renderer keeps the GPU copy of every slot whose pointer is the one
+    /// it uploaded last time, which is what lets an edit that touches no
+    /// image upload none. Never null.
+    std::vector<std::shared_ptr<const TextureImage>> textures;
 
     /// Radiance returned by a ray that leaves the scene. A dome light sets
     /// this; without one it is the stand-in sky.

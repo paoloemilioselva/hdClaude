@@ -292,13 +292,25 @@ synchronous submission for each texture. The CPU scene snapshot also copies
 
 This is a concrete unnecessary-work path, not a measured speedup estimate.
 
-- [ ] Give texture slots content/generation identities and reuse unchanged GPU
-  images and descriptors.
-- [ ] Keep texture-quality changes and failed/reloaded assets correctly invalidating.
-- [ ] Measure a transform-only edit in a texture-heavy scene: unchanged textures
-  should upload zero bytes after initial publication.
-- [ ] Consider immutable/shared CPU image ownership to avoid copying the whole
-  decoded texture pool on each snapshot.
+- [x] Give texture slots content/generation identities and reuse unchanged GPU
+  images and descriptors. The identity is the image itself: the pool holds
+  `shared_ptr<const TextureImage>` and re-decodes into a new one, and the
+  tracer keeps the GPU copy of each slot whose pointer it uploaded last time.
+  The dome map and its sampling distribution are kept the same way.
+- [x] Keep texture-quality changes and failed/reloaded assets correctly invalidating.
+  `SetMaxEdge` puts a new image in every slot, failed ones included. In
+  `render`, a half-sky dome republished unchanged uploads nothing and still
+  reads 0.40; replaced by a whole sky it uploads two images and reads 0.80.
+  `usd_texture_quality` passes.
+- [x] Measure a transform-only edit in a texture-heavy scene: unchanged textures
+  should upload zero bytes after initial publication. Intel Sponza republished
+  at frame 2 (`HDCLAUDE_REPUBLISH_AT`): 72 textures and 4,831,838,208 bytes on
+  the first publication, 0 bytes and 72 kept on the second, which took 497 ms
+  against 3,580 ms. `texturesUploaded`, `textureBytesUploaded` and
+  `texturesReused` are now render stats.
+- [x] Consider immutable/shared CPU image ownership to avoid copying the whole
+  decoded texture pool on each snapshot. Done with the item above: a snapshot
+  copies pointers.
 
 ### P2 — Separate placement edits from mesh regeneration
 

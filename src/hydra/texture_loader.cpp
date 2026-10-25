@@ -519,7 +519,7 @@ std::vector<std::uint32_t> HdClaudeTexturePool::AcquireAll(
             const auto slot = static_cast<std::uint32_t>(_images.size());
             _slots[key] = slot;
             _sources.push_back(key);
-            _images.emplace_back();
+            _images.push_back(std::make_shared<const hdclaude::TextureImage>());
             slots.push_back(slot);
             decodes.push_back({slot, std::move(key), {}, {}, false});
         }
@@ -566,7 +566,8 @@ std::vector<std::uint32_t> HdClaudeTexturePool::AcquireAll(
             ++report->decoded;
             report->bytes += decode.image.texels.size();
         }
-        _images[decode.slot] = std::move(decode.image);
+        _images[decode.slot] =
+            std::make_shared<const hdclaude::TextureImage>(std::move(decode.image));
     }
     return slots;
 }
@@ -607,14 +608,14 @@ bool HdClaudeTexturePool::SetMaxEdge(std::uint32_t maxEdge)
         }
         hdclaude::TextureImage image;
         std::string error;
-        if (HdClaudeLoadTexture(path, &image, &error, _sources[slot].second,
-                                _maxEdge)) {
-            _images[slot] = std::move(image);
-        } else {
-            _images[slot] = hdclaude::TextureImage();
-            _images[slot].debugName = path;
+        if (!HdClaudeLoadTexture(path, &image, &error, _sources[slot].second,
+                                 _maxEdge)) {
+            image = hdclaude::TextureImage();
+            image.debugName = path;
             _failures.push_back(path + ": " + error);
         }
+        _images[slot] =
+            std::make_shared<const hdclaude::TextureImage>(std::move(image));
     }
     HdClaudeTrace("texture quality changed: %zu images reloaded with a cap of "
                   "%u", _images.size(), _maxEdge);

@@ -7958,3 +7958,28 @@ and 9.4e-07 on the two frames after. With the tracer's copy disabled, those
 two frames report 3.20 px. Splat placements share the table and the copy.
 The store's commit rule has no test of its own, because its failure paths
 need a publication that throws.
+
+## 2026-10-26 -- Every edit uploaded every texture
+
+**Found by review** (docs/code-review-2026-10-26.md, performance P1). Each
+publication copied the texture pool's decoded images into the snapshot, by
+value, and `PathTracer::SetScene` then emptied its GPU pool and uploaded every
+image again, each through its own staging buffer and its own synchronous
+submission. It also uploaded the dome map a second time and rebuilt its
+sampling distribution. A transform dragged in the viewport paid for all of it
+on every publication.
+
+**An image's identity is the image.** `Scene::textures` and the pool now hold
+`shared_ptr<const TextureImage>`. The images are immutable: the pool never
+changes one in place, and a slot decoded again under a new cap gets a new
+image. So a snapshot copies pointers, and the tracer keeps the GPU copy of
+every slot whose pointer is the one it uploaded last time. It holds those
+pointers rather than only comparing them, so a freed image's address can
+never be reused by a new image that would then pass for it. The dome map and
+its distribution are kept while the dome is the same image.
+
+**Measured.** Intel Sponza, 320 px, republished at frame 2 with
+`HDCLAUDE_REPUBLISH_AT`: the first publication uploaded 72 textures,
+4,831,838,208 bytes. The second uploaded 0 bytes, kept 72, and took 497 ms
+against 3,580 ms. The new render stats `texturesUploaded`,
+`textureBytesUploaded` and `texturesReused` describe the last publication.

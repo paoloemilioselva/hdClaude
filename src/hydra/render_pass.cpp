@@ -929,10 +929,20 @@ void HdClaudeRenderPass::_Execute(
                                     std::memory_order_relaxed);
             stages.blasRefit.store(tracer->BlasRefit(),
                                    std::memory_order_relaxed);
+            stages.texturesUploaded.store(tracer->TexturesUploaded(),
+                                          std::memory_order_relaxed);
+            stages.textureBytesUploaded.store(tracer->TextureBytesUploaded(),
+                                              std::memory_order_relaxed);
+            stages.texturesReused.store(tracer->TexturesReused(),
+                                        std::memory_order_relaxed);
             HdClaudeTrace(
-                "scene published; %u prototype(s) displaced, %u reused",
+                "scene published; %u prototype(s) displaced, %u reused; "
+                "%u texture(s) uploaded (%llu bytes), %u kept",
                 tracer->LastDisplacedCount(),
-                tracer->LastDisplacementReusedCount());
+                tracer->LastDisplacementReusedCount(),
+                tracer->TexturesUploaded(),
+                static_cast<unsigned long long>(tracer->TextureBytesUploaded()),
+                tracer->TexturesReused());
             _uploadedRevision = framing.sceneRevision;
             _hasUploaded = true;
             // A published scene renumbers the volumes with it, so they are

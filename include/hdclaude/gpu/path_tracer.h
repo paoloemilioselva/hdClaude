@@ -654,6 +654,14 @@ class PathTracer {
         return _accelerator ? _accelerator->LastReusedCount() : 0;
     }
 
+    /// What the last SetScene did with the texture pool and the dome map:
+    /// images uploaded, the bytes that took, and images kept from the scene
+    /// before because they were the same images. A transform or light edit
+    /// should upload none.
+    std::uint32_t TexturesUploaded() const { return _texturesUploaded; }
+    std::uint64_t TextureBytesUploaded() const { return _textureBytesUploaded; }
+    std::uint32_t TexturesReused() const { return _texturesReused; }
+
     /// How many kept their tree and moved its bounds to follow new vertices.
     ///
     /// The number that says whether a deforming scene is paying to be rebuilt
@@ -734,7 +742,8 @@ class PathTracer {
                              const RenderSettings& settings);
 
     void EnsureResolution(std::uint32_t width, std::uint32_t height);
-    void UploadTextures(const std::vector<TextureImage>& textures);
+    void UploadTextures(
+        const std::vector<std::shared_ptr<const TextureImage>>& textures);
     /// Sample the colour matching functions and the illuminant, fit the
     /// chromaticity table, and upload all of it. Once, at construction: none of
     /// it depends on the scene.
@@ -821,8 +830,18 @@ class PathTracer {
     // The scene's texture pool: each distinct image once, referred to by a
     // material's textureSlots.
     std::vector<VulkanImage> _texturePool;
+    /// The image each `_texturePool` entry was uploaded from. Held, not just
+    /// compared: an image kept alive here cannot be freed and its address
+    /// handed to a different image that would then pass for it.
+    std::vector<std::shared_ptr<const TextureImage>> _uploadedTextures;
     VulkanImage _placeholderTexture;
     VulkanImage _domeTexture;
+    /// The image `_domeTexture` and the environment distribution were built
+    /// from, for the same reason.
+    std::shared_ptr<const TextureImage> _uploadedDome;
+    std::uint32_t _texturesUploaded = 0;
+    std::uint64_t _textureBytesUploaded = 0;
+    std::uint32_t _texturesReused = 0;
     float _domeWorldToLight[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     float _domeLightToWorld[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     /// Whether the published scene supplied its own environment. The
