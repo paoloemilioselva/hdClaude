@@ -1102,6 +1102,13 @@ void HdClaudeRenderPass::_Execute(
         std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - start)
             .count();
+    // A frame of the published scene now exists -- the tracer has advanced
+    // its own history to it, whether or not the frame is still wanted -- so
+    // its placements are the past the next publication's motion is measured
+    // from.
+    if (frame.Valid()) {
+        store->CommitHistory();
+    }
 
     // What the frame is a frame *of*, taken from the frame and not from
     // whatever the current extents happen to be.

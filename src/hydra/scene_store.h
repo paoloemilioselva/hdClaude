@@ -251,10 +251,20 @@ class HdClaudeSceneStore {
     ///
     /// Material index 0 is always the fallback, so a mesh with no usable
     /// material still renders as something rather than being dropped.
-    /// Not const: taking a snapshot records it as the next one's past, which
-    /// is what lets an instance say where it was. A snapshot is a point in a
-    /// sequence rather than a pure view of the store.
+    /// Not const: taking a snapshot records it as the candidate for the next
+    /// one's past, which is what lets an instance say where it was. A
+    /// snapshot is a point in a sequence rather than a pure view of the store.
     hdclaude::Scene Snapshot(std::vector<hdclaude::CompiledMaterial>& materials);
+
+    /// The last snapshot has been rendered: its placements become the past
+    /// the next snapshot's motion is measured from.
+    ///
+    /// Separate from `Snapshot` because a snapshot can fail to publish, or
+    /// publish and then fail to render, and neither was ever seen. Motion
+    /// measured from it would be measured from a frame no host showed. Called
+    /// after every completed frame; only the first after a snapshot does
+    /// anything.
+    void CommitHistory();
 
     /// Materials that did not compile as authored, for render stats.
     std::vector<std::string> FallbackReports() const;
@@ -267,11 +277,17 @@ class HdClaudeSceneStore {
     mutable std::mutex _mutex;
     std::map<SdfPath, HdClaudeMeshEntry> _meshes;
     std::map<SdfPath, HdClaudeSplatEntry> _splats;
-    /// Where each splat cloud's instances were on the previous snapshot, for
-    /// the same reason `_previousTransforms` holds it for meshes.
+    /// Where each splat cloud's instances were on the last rendered snapshot,
+    /// for the same reason `_previousTransforms` holds it for meshes.
     std::map<SdfPath, std::vector<hdclaude::Transform3x4>> _previousSplatTransforms;
 
-    /// Where each mesh's instances were on the previous snapshot.
+    /// The last snapshot's placements, waiting for a frame of it to complete.
+    std::map<SdfPath, std::vector<hdclaude::Transform3x4>> _pendingTransforms;
+    std::map<SdfPath, std::vector<hdclaude::Transform3x4>> _pendingSplatTransforms;
+    bool _historyPending = false;
+
+    /// Where each mesh's instances were on the last snapshot that was
+    /// rendered.
     ///
     /// Kept here rather than on the entry because it is a property of the
     /// *sequence of snapshots* rather than of a mesh: an rprim republishes

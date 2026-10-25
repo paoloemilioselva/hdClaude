@@ -7928,3 +7928,33 @@ answer either. `t1 + t2 - 1` assumes each throughput is `1 - albedo`, but
 the stock `conductor_bsdf` (and hdClaude's) reports 0 at any weight, 0
 included, so an added conductor of weight 0 would block the base. Fixing it
 means deciding what a combinator's throughput is.
+
+## 2026-10-26 -- An instance moved once went on moving
+
+**Found by review** (docs/code-review-2026-10-26.md, R1), not by an image.
+The motion guide reads each instance's `previousObjectToWorld`, and that was
+written only when a scene was published. The camera's history advances every
+frame. So after one interactive move from A to B, every frame until the next
+publication reported the A-to-B displacement, with the object and the camera
+both still. Reconstruction was told a resting object was moving.
+
+**What history means now.** A published history is the motion *into* the
+first frame rendered with it, and no further:
+
+- The tracer notes which instance-table entries have a previous placement
+  that differs from the current one. When a frame completes, where the camera
+  history advances, it copies `objectToWorld` over `previousObjectToWorld`
+  for exactly those entries, device to device, once per publication.
+- The scene store no longer treats a snapshot as the next one's past when it
+  is taken. `Snapshot` stages its placements, and `CommitHistory` makes them
+  the past after a frame completes. A snapshot that fails to publish, or
+  publishes and then fails to render, was never seen, so it advances nothing,
+  and the next publication's motion is measured from the last frame a host
+  actually got.
+
+**Checked.** `render` has a fixed-camera case: an instance moved by the
+camera test's step reports -3.200 px into the first frame (-3.200 expected)
+and 9.4e-07 on the two frames after. With the tracer's copy disabled, those
+two frames report 3.20 px. Splat placements share the table and the copy.
+The store's commit rule has no test of its own, because its failure paths
+need a publication that throws.

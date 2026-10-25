@@ -568,19 +568,34 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
     }
 
     scene.revision = _revision;
-    // This snapshot becomes the next one's past. Recorded for every mesh
+    // This snapshot becomes the next one's past once a frame of it has been
+    // rendered (CommitHistory), and not before. Recorded for every mesh
     // currently held, and only for those: a mesh that has gone should not
     // leave a history behind for a later mesh at the same path to inherit.
-    _previousTransforms.clear();
+    _pendingTransforms.clear();
     for (const auto& [path, mesh] : _meshes) {
-        _previousTransforms[path] = mesh.transforms;
+        _pendingTransforms[path] = mesh.transforms;
     }
-    _previousSplatTransforms.clear();
+    _pendingSplatTransforms.clear();
     for (const auto& [path, splats] : _splats) {
-        _previousSplatTransforms[path] = splats.transforms;
+        _pendingSplatTransforms[path] = splats.transforms;
     }
+    _historyPending = true;
 
     return scene;
+}
+
+void HdClaudeSceneStore::CommitHistory()
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (!_historyPending) {
+        return;
+    }
+    _previousTransforms = std::move(_pendingTransforms);
+    _previousSplatTransforms = std::move(_pendingSplatTransforms);
+    _pendingTransforms.clear();
+    _pendingSplatTransforms.clear();
+    _historyPending = false;
 }
 
 std::vector<std::string> HdClaudeSceneStore::FallbackReports() const

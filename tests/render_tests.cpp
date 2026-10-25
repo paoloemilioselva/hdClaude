@@ -4112,6 +4112,47 @@ int main()
                 std::printf("  motion: still %.2e, stepped %.3f px, expected "
                             "%.3f\n",
                             worstStill, measuredX, expectedX);
+
+                // An instance moved by the same step, under the camera that
+                // has stopped: the move is the motion into the first frame
+                // that sees it, and the frames after see it where it is. A
+                // history held until the next publication reports the move
+                // on every one of them, which is what reconstruction was
+                // given after a single interactive edit.
+                Scene shifted;
+                shifted.prototypes.push_back(MakeQuad());
+                MeshInstance instance{0, Transform3x4{}, 0, true};
+                instance.transform.m[3] = step;
+                instance.hasPreviousTransform = true;  // from the identity
+                shifted.instances.push_back(instance);
+                tracer.SetScene(shifted, {materials[0]});
+
+                hdclaude::FrameDescription stopped = moved;
+                stopped.sceneRevision = description.sceneRevision + 1;
+                const hdclaude::FrameResult moving =
+                    tracer.EndFrame(tracer.BeginFrame(stopped));
+                // The surface moved right, so its history lies to the left.
+                const double movingX = moving.motion[centre * 2 + 0];
+                CHECK(std::abs(movingX + expectedX) < 0.05 * expectedX + 0.05);
+                CHECK(std::abs(moving.motion[centre * 2 + 1]) < 1e-2);
+
+                stopped.settings.firstSample = stopped.settings.samplesPerPixel;
+                stopped.settings.resetAccumulation = false;
+                double worstStopped = 0.0;
+                for (int frame = 0; frame < 2; ++frame) {
+                    const hdclaude::FrameResult resting =
+                        tracer.EndFrame(tracer.BeginFrame(stopped));
+                    for (const float value : resting.motion) {
+                        worstStopped =
+                            std::max(worstStopped, std::abs(double(value)));
+                    }
+                    stopped.settings.firstSample +=
+                        stopped.settings.samplesPerPixel;
+                }
+                CHECK(worstStopped < 1e-3);
+                std::printf("  object motion: moving %.3f px, expected %.3f; "
+                            "at rest %.2e\n",
+                            movingX, -expectedX, worstStopped);
             }
 
             // --- The frame's jitter -----------------------------------------

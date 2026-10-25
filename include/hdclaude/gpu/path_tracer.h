@@ -988,6 +988,16 @@ class PathTracer {
                                       0, 0, 1, 0, 0, 0, 0, 1};
     bool _hasPreviousClip = false;
 
+    /// The instance-table entries whose previous placement differs from
+    /// their current one, as the last published scene supplied them.
+    ///
+    /// A published history is the motion *into* the first frame rendered
+    /// with it, and no further: the frame after that sees the instance where
+    /// it already was. So once a frame has completed, each of these has its
+    /// current placement copied over its previous one on the device, as the
+    /// camera's history is advanced, and the list is emptied.
+    std::vector<std::uint32_t> _instancesWithHistory;
+
     /// Whether a reference render has already been told that the fixed
     /// sub-pixel offset it asked for is not something a reference render has.
     /// Said once rather than once a frame, because a host that does it does it

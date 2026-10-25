@@ -119,15 +119,23 @@ but requires a reconstruction-enabled reproduction to quantify.
 
 **To do:**
 
-- [ ] Make previous placement state correspond to the last successfully rendered
+- [x] Make previous placement state correspond to the last successfully rendered
   frame, rather than the last scene publication.
-- [ ] Advance or disable the object-motion contribution after its first consumed
-  frame without rebuilding BLAS/TLAS or reuploading all textures.
-- [ ] Define behavior for a failed frame and for a scene publication that is never
-  rendered, so neither accidentally advances history.
-- [ ] Add a fixed-camera, fixed-jitter three-frame test: A, move to B, remain at B.
+- [x] Advance or disable the object-motion contribution after its first consumed
+  frame without rebuilding BLAS/TLAS or reuploading all textures. One
+  device-to-device copy of the moved entries' placements, when the camera
+  history advances.
+- [x] Define behavior for a failed frame and for a scene publication that is never
+  rendered, so neither accidentally advances history. The store stages a
+  snapshot's placements and commits them only after a frame completes
+  (`HdClaudeSceneStore::CommitHistory`); the tracer advances only after its
+  readback. Not covered by a test, as it needs a publication that throws.
+- [x] Add a fixed-camera, fixed-jitter three-frame test: A, move to B, remain at B.
   Require the expected displacement on the moving frame and approximately zero
-  motion on the stationary frame. Cover meshes and splats.
+  motion on the stationary frame. Cover meshes and splats. In `render`: -3.200 px
+  moving (-3.200 expected), 9.4e-07 at rest, and 3.20 px at rest with the copy
+  disabled. Meshes only; splats share the table and the copy, and are not
+  tested separately.
 
 ### R2 — P2: half-float color buffers are accepted but never written
 
@@ -314,7 +322,7 @@ tests around the boundaries identified here:
 - [x] Direct render-buffer format and clear/write tests.
 - [x] Instancer attribute removal and reauthoring in one engine (at the
   adapter, R3).
-- [ ] Motion followed by several stationary frames.
+- [x] Motion followed by several stationary frames (R1).
 - [ ] Purpose/collection changes and comparison with a fresh engine.
 - [ ] A documented clean-machine core-only build job.
 - [ ] Ensure USD integration jobs load the exact plugin just built; the current

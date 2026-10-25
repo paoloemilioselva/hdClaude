@@ -9,6 +9,7 @@
 #include "hdclaude/core/spectrum.h"
 
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -1225,6 +1226,14 @@ void PathTracer::SetScene(const Scene& publishedScene,
     _splatInstanceCount =
         static_cast<std::uint32_t>(scene.splatInstances.size());
     _instanceCount = static_cast<std::uint32_t>(table.size());
+
+    _instancesWithHistory.clear();
+    for (std::size_t i = 0; i < table.size(); ++i) {
+        if (std::memcmp(table[i].previousObjectToWorld, table[i].objectToWorld,
+                        sizeof(table[i].objectToWorld)) != 0) {
+            _instancesWithHistory.push_back(static_cast<std::uint32_t>(i));
+        }
+    }
 
     if (!table.empty()) {
         const VkDeviceSize size = table.size() * sizeof(InstanceGeometry);
@@ -3089,6 +3098,32 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     std::memcpy(_previousWorldToClip, camera.worldToClip,
                 sizeof(_previousWorldToClip));
     _hasPreviousClip = true;
+
+    // And so do the instances' placements. Without this an instance moved
+    // once goes on reporting that move on every frame until the next
+    // publication, however still it and the camera are. Device to device,
+    // touching only the entries that moved, and once per publication.
+    if (!_instancesWithHistory.empty() && _instanceTable.Valid()) {
+        std::vector<VkBufferCopy> regions;
+        regions.reserve(_instancesWithHistory.size());
+        for (const std::uint32_t index : _instancesWithHistory) {
+            const VkDeviceSize entry =
+                static_cast<VkDeviceSize>(index) * sizeof(InstanceGeometry);
+            VkBufferCopy region{};
+            region.srcOffset = entry + offsetof(InstanceGeometry, objectToWorld);
+            region.dstOffset =
+                entry + offsetof(InstanceGeometry, previousObjectToWorld);
+            region.size = sizeof(InstanceGeometry::objectToWorld);
+            regions.push_back(region);
+        }
+        _context.SubmitImmediate([&](VkCommandBuffer command) {
+            vkCmdCopyBuffer(command, _instanceTable.Handle(),
+                            _instanceTable.Handle(),
+                            static_cast<std::uint32_t>(regions.size()),
+                            regions.data());
+        });
+        _instancesWithHistory.clear();
+    }
 
     std::vector<float> image(static_cast<std::size_t>(paths) * 4);
     std::memcpy(image.data(), slot.readback.MappedData(), image.size() * sizeof(float));
