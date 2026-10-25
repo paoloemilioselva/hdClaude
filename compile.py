@@ -137,7 +137,15 @@ def main(arguments):
     # installs into the Houdini user directory, so the standalone OpenUSD
     # environment is neither needed nor passed on.
     houdini = preset.lower().startswith("houdini-")
-    environment = os.environ.copy() if houdini else usd_environment()
+    # Nor for core-only, which builds the dependency-free core and its tests:
+    # the OpenUSD setup stops when there is no OpenUSD, or when the Python is
+    # not the one it was built against, and neither is anything core-only
+    # uses.
+    core_only = preset.lower() == "core-only"
+    if houdini or core_only:
+        environment = os.environ.copy()
+    else:
+        environment = usd_environment()
 
     if preset.lower() == "clean":
         log("Removing build tree.")
@@ -147,7 +155,7 @@ def main(arguments):
     environment = toolchain_environment(environment)
 
     log(f'Configuring preset "{preset}"...')
-    if houdini:
+    if houdini or core_only:
         run(["cmake", "--preset", preset], environment)
     else:
         # Passed even when empty, so unsetting MATERIALX_ROOT reaches the cache

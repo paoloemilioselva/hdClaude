@@ -217,11 +217,18 @@ MaterialX, and Vulkan subsystems.
 
 **To do:**
 
-- [ ] Give core-only a toolchain-only environment path.
-- [ ] Pass USD and plugin-install configuration only to presets that need it.
-- [ ] Test the documented core-only command with a supported C++ toolchain and
+- [x] Give core-only a toolchain-only environment path.
+- [x] Pass USD and plugin-install configuration only to presets that need it.
+- [x] Test the documented core-only command with a supported C++ toolchain and
   build-driver Python, but no OpenUSD installation or USD environment variables.
+  With `USDROOT` naming a directory that does not exist, `MATERIALX_ROOT`
+  unset, nothing of OpenUSD on PATH and an empty `build/core-only`: the old
+  driver stops at "USDROOT does not look like an OpenUSD install", and the new
+  one configures, builds, and `core` passes. On a machine with OpenUSD, so
+  not a clean machine, and not run as a job.
 - [ ] Verify the same behavior through `python3 compile.py core-only` on Linux.
+  The change is in the platform-independent part of the driver, but it has not
+  been run on Linux.
 
 ### R5 — P3 (was P2): a corrupt cache header controls allocation before validation
 
