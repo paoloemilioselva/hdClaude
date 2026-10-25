@@ -15,7 +15,10 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <vector>
@@ -113,6 +116,75 @@ void TestShaderCacheRoundTrip()
         CHECK(*found == MakeSpirv());
     }
     CHECK_EQ(cache.HitCount(), std::uint64_t(1));
+
+    std::filesystem::remove_all(directory, error);
+}
+
+void TestShaderCacheMissesOnDamagedEntries()
+{
+    // A damaged entry is a miss and then a recompile, never a failure -- and
+    // never an allocation sized by whatever the damage left in the header.
+    const std::filesystem::path directory =
+        std::filesystem::temp_directory_path() / "hdclaude-cache-damage-test";
+    std::error_code error;
+    std::filesystem::remove_all(directory, error);
+
+    ShaderCache cache(directory);
+    const ShaderCacheKey key = MakeKey();
+    CHECK(cache.Store(key, MakeSpirv()));
+    // The one entry the directory holds.
+    std::filesystem::path path;
+    for (const auto& file :
+         std::filesystem::recursive_directory_iterator(directory)) {
+        if (file.is_regular_file() && file.path().extension() == ".spv") {
+            path = file.path();
+        }
+    }
+    CHECK(!path.empty());
+
+    std::vector<char> entry;
+    {
+        std::ifstream in(path, std::ios::binary);
+        entry.assign(std::istreambuf_iterator<char>(in),
+                     std::istreambuf_iterator<char>());
+    }
+    // magic[8], formatVersion, wordCount.
+    constexpr std::size_t kWordCountOffset = 12;
+    CHECK(entry.size() > kWordCountOffset + sizeof(std::uint32_t));
+
+    const auto write = [&](const std::vector<char>& bytes) {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    };
+
+    // The largest count a header can hold, over a payload of one word. Read
+    // as it stands, that is a 16 GB vector before the read can fail.
+    std::vector<char> huge(entry.begin(),
+                           entry.begin() + kWordCountOffset + 8);
+    const std::uint32_t largest = 0xFFFFFFFFu;
+    std::memcpy(huge.data() + kWordCountOffset, &largest, sizeof(largest));
+    write(huge);
+    bool threw = false;
+    try {
+        CHECK(!cache.Find(key).has_value());
+    } catch (...) {
+        threw = true;
+    }
+    CHECK(!threw);
+
+    // Truncated by one word, and lengthened by one: neither is an entry.
+    write(std::vector<char>(entry.begin(), entry.end() - 4));
+    CHECK(!cache.Find(key).has_value());
+    std::vector<char> longer = entry;
+    longer.insert(longer.end(), 4, '\0');
+    write(longer);
+    CHECK(!cache.Find(key).has_value());
+    CHECK_EQ(cache.HitCount(), std::uint64_t(0));
+
+    // And a store over the damage recovers it.
+    CHECK(cache.Store(key, MakeSpirv()));
+    const auto found = cache.Find(key);
+    CHECK(found.has_value() && *found == MakeSpirv());
 
     std::filesystem::remove_all(directory, error);
 }
@@ -2903,6 +2975,7 @@ int main()
     TestSha256KnownVectors();
     TestSha256FieldsAreUnambiguous();
     TestShaderCacheRoundTrip();
+    TestShaderCacheMissesOnDamagedEntries();
     TestShaderCacheMissesOnEveryKeyComponent();
     TestWavelengthSamplingIsConsistent();
     TestWavelengthDensityIntegratesToOne();

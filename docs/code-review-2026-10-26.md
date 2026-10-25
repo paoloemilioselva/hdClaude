@@ -239,12 +239,22 @@ rather than a rendering failure.
 
 **To do:**
 
-- [ ] Validate payload length and checked size arithmetic before allocating.
-- [ ] Establish a reasonable maximum cached module size, or another explicit
-  allocation limit consistent with supported materials.
-- [ ] Treat malformed entries as misses and allow recompilation.
-- [ ] Add a small-file/huge-count regression case that proves rejection occurs
-  without a large allocation; retain existing truncated-entry coverage.
+- [x] Validate payload length and checked size arithmetic before allocating. The
+  file must be exactly its header and `wordCount` words, computed in 64 bits,
+  before the vector is made.
+- [x] Establish a reasonable maximum cached module size, or another explicit
+  allocation limit consistent with supported materials. The entry's own size on
+  disk is the limit: nothing larger than the file is allocated, so no separate
+  cap is needed.
+- [x] Treat malformed entries as misses and allow recompilation.
+- [x] Add a small-file/huge-count regression case that proves rejection occurs
+  without a large allocation; retain existing truncated-entry coverage. There
+  was no truncated-entry test; `core` now damages a stored entry three ways
+  (the largest count over one word, one word short, one word long) and then
+  stores over it to recover. On this Windows machine the old code did not
+  throw: it committed the 16 GB, which took the suite from about 1.3 s to
+  8.5 s, and then missed. The check it fails is the lengthened entry, which
+  it read as a hit.
 
 ## Integration issue requiring reproduction
 

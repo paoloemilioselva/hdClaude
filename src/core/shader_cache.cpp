@@ -101,6 +101,20 @@ std::optional<std::vector<std::uint32_t>> ShaderCache::Find(
         return std::nullopt;
     }
 
+    // The count is checked against the file before anything is allocated
+    // from it. A damaged count is a 32-bit number read from disk, and
+    // believing it could ask for 16 GB to read a file of a few bytes -- an
+    // allocation failure where the contract promises a miss. An entry is
+    // exactly its header and its words, so anything else is damaged.
+    std::error_code sizeError;
+    const std::uintmax_t fileSize = std::filesystem::file_size(path, sizeError);
+    if (sizeError ||
+        fileSize != sizeof(header) + static_cast<std::uintmax_t>(header.wordCount) *
+                                         sizeof(std::uint32_t)) {
+        ++_misses;
+        return std::nullopt;
+    }
+
     std::vector<std::uint32_t> spirv(header.wordCount);
     file.read(reinterpret_cast<char*>(spirv.data()),
               static_cast<std::streamsize>(spirv.size() * sizeof(std::uint32_t)));
