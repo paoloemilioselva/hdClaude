@@ -6,6 +6,7 @@
 
 #include "pxr/imaging/hd/renderPass.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -46,6 +47,11 @@ class HDCLAUDE_API HdClaudeRenderPass final : public HdRenderPass {
         /// volumes without publishing the scene.
         std::uint64_t cullRevision = 0;
         unsigned int settingsVersion = 0;
+        /// What the pass draws -- its render tags, its collection, and the
+        /// render index's render-tag version -- as one key. A purpose turned
+        /// on or off changes what is drawn while no prim republishes, so it
+        /// is a reason of its own to publish and restart.
+        std::size_t selection = 0;
 
         bool operator==(const Framing& other) const;
         bool operator!=(const Framing& other) const { return !(*this == other); }
@@ -103,6 +109,8 @@ class HDCLAUDE_API HdClaudeRenderPass final : public HdRenderPass {
     /// after a successful upload, so a failed one is retried.
     std::uint64_t _uploadedRevision = 0;
     bool _hasUploaded = false;
+    /// The selection key the uploaded scene was snapshotted with.
+    std::size_t _uploadedSelection = 0;
 
     /// The environment radiance the published scene carries, remembered
     /// because the snapshot is only taken when the revision changes while the

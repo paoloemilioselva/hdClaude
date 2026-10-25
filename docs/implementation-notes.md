@@ -8012,3 +8012,34 @@ move, a hide, a show, and a change to the points) and after each one picks
 160 probes against a fresh engine on the same stage. All agree. The move,
 hide and show refine nothing, and the change to the points refines the mesh.
 The plugin from before this fails the move check by refining again.
+
+## 2026-10-26 -- A purpose turned off stayed on screen
+
+**Found by review** (docs/code-review-2026-10-26.md, I1), and reproduced
+before it was fixed. One `UsdImagingGL.Engine` drew four cubes: default,
+render, proxy and guide purposes. With proxy and guide then turned off, and
+render after them, the same engine still picked all four. A fresh engine with
+the final settings drew only the default one.
+
+**Why.** Hydra syncs only the rprims a render pass includes, by render tag and
+by collection. A prim a later toggle excludes is never synced again, so
+nothing tells the delegate to drop it, and its last publication stays in the
+scene store. `_Execute` ignored its `renderTags`, and the store drew
+everything it held. Batch renders never showed this, because `usdrecord
+--purposes render` excludes proxies from the first sync, so they were never
+published.
+
+**The fix.** `HdClaudeDrawSelection` says what a pass draws. An rprim is drawn
+if its id is under the collection's roots and outside its exclusions, and its
+render tag is one of the pass's tags. The tag comes from the render index,
+which Hydra keeps current even for a prim it no longer syncs. A cull volume is
+active if its purpose's tag is one of the pass's tags, so the purpose rule
+`cull_volume.cpp` hard-coded now follows the same selection. The pass's tags,
+its collection and the change tracker's render-tag version form one key in
+`Framing`, so a change republishes the scene and restarts the film.
+
+**Checked.** `usd_purposes` takes one engine through every purpose, proxy and
+guide off, render off, every purpose again, and a narrower root. After each
+step its picks agree with a fresh engine and with the expected prims.
+Turning a purpose back on brings its prims back from what the store kept,
+since Hydra had nothing to re-sync.

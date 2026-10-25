@@ -20,6 +20,7 @@
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/tf/enum.h"
 #include "pxr/base/tf/getenv.h"
+#include "pxr/base/tf/hash.h"
 #include "pxr/imaging/hd/aov.h"
 #include "pxr/imaging/hd/changeTracker.h"
 #include "pxr/imaging/hd/renderIndex.h"
@@ -289,6 +290,56 @@ void WriteFrame(const BoundAovs& aovs, const hdclaude::FrameResult& frame,
     }
 }
 
+/// The render tag a cull volume's purpose corresponds to. The default
+/// purpose is drawn under the `geometry` tag, whichever way it is spelled.
+TfToken RenderTagOfPurpose(const TfToken& purpose)
+{
+    static const TfToken kDefault("default");
+    return purpose.IsEmpty() || purpose == kDefault ? HdRenderTagTokens->geometry
+                                                    : purpose;
+}
+
+/// What a pass with these render tags and this collection draws.
+///
+/// An rprim is drawn when its id is under one of the collection's roots and
+/// none of its exclusions, and its render tag -- the render index's, which
+/// Hydra keeps current even for a prim it no longer syncs -- is one of the
+/// pass's tags. No tags is no filtering, as it is for Hydra's own tasks.
+HdClaudeDrawSelection DrawSelection(HdRenderIndex* index,
+                                    const HdRprimCollection& collection,
+                                    TfTokenVector tags, std::size_t* key)
+{
+    std::sort(tags.begin(), tags.end());
+    const SdfPathVector roots = collection.GetRootPaths();
+    const SdfPathVector excludes = collection.GetExcludePaths();
+    *key = TfHash::Combine(
+        tags, roots, excludes,
+        index ? index->GetChangeTracker().GetRenderTagVersion() : 0u);
+
+    HdClaudeDrawSelection selection;
+    selection.includesRprim = [index, tags, roots, excludes](const SdfPath& id) {
+        const auto under = [&id](const SdfPath& prefix) {
+            return id.HasPrefix(prefix);
+        };
+        if (!roots.empty() && std::none_of(roots.begin(), roots.end(), under)) {
+            return false;
+        }
+        if (std::any_of(excludes.begin(), excludes.end(), under)) {
+            return false;
+        }
+        if (tags.empty() || index == nullptr) {
+            return true;
+        }
+        return std::binary_search(tags.begin(), tags.end(),
+                                  index->GetRenderTag(id));
+    };
+    selection.includesPurpose = [tags](const TfToken& purpose) {
+        return tags.empty() || std::binary_search(tags.begin(), tags.end(),
+                                                  RenderTagOfPurpose(purpose));
+    };
+    return selection;
+}
+
 }  // namespace
 
 bool HdClaudeRenderPass::Framing::operator==(const Framing& other) const
@@ -297,6 +348,7 @@ bool HdClaudeRenderPass::Framing::operator==(const Framing& other) const
            sceneRevision == other.sceneRevision &&
            cullRevision == other.cullRevision &&
            settingsVersion == other.settingsVersion &&
+           selection == other.selection &&
            std::memcmp(camera.cameraToWorld, other.camera.cameraToWorld,
                        sizeof(camera.cameraToWorld)) == 0 &&
            // The whole projection, and not only the field of view it
@@ -323,7 +375,7 @@ bool HdClaudeRenderPass::IsConverged() const { return _converged; }
 
 void HdClaudeRenderPass::_Execute(
     const HdRenderPassStateSharedPtr& renderPassState,
-    const TfTokenVector& /*renderTags*/)
+    const TfTokenVector& renderTags)
 {
     if (!_renderDelegate || !renderPassState) {
         return;
@@ -774,6 +826,11 @@ void HdClaudeRenderPass::_Execute(
     framing.sceneRevision = store->Revision();
     framing.cullRevision = store->CullRevision();
     framing.settingsVersion = settingsVersion;
+    // Hydra syncs only what this pass includes, and keeps what it excluded
+    // since: so what the store holds is drawn only as far as the pass's render
+    // tags and collection still include it (HdClaudeDrawSelection).
+    const HdClaudeDrawSelection selection = DrawSelection(
+        GetRenderIndex(), GetRprimCollection(), renderTags, &framing.selection);
 
     // --- Tessellation ---------------------------------------------------------
     //
@@ -876,7 +933,8 @@ void HdClaudeRenderPass::_Execute(
         _frameLogIndex == static_cast<std::uint64_t>(republishAt)) {
         _hasUploaded = false;
     }
-    if (!_hasUploaded || _uploadedRevision != framing.sceneRevision) {
+    if (!_hasUploaded || _uploadedRevision != framing.sceneRevision ||
+        _uploadedSelection != framing.selection) {
         // Ingestion and publication are timed separately because they fail and
         // scale for different reasons: the first is a traversal on the host and
         // the second is an upload and an acceleration structure build. A single
@@ -884,7 +942,7 @@ void HdClaudeRenderPass::_Execute(
         // saying which half.
         const auto ingestStart = std::chrono::steady_clock::now();
         std::vector<hdclaude::CompiledMaterial> materials;
-        hdclaude::Scene scene = store->Snapshot(materials);
+        hdclaude::Scene scene = store->Snapshot(materials, selection);
 
         // The texture pool is the delegate's, not the store's: it is filled
         // as bound materials are compiled and is shared by every material that
@@ -944,6 +1002,7 @@ void HdClaudeRenderPass::_Execute(
                 static_cast<unsigned long long>(tracer->TextureBytesUploaded()),
                 tracer->TexturesReused());
             _uploadedRevision = framing.sceneRevision;
+            _uploadedSelection = framing.selection;
             _hasUploaded = true;
             // A published scene renumbers the volumes with it, so they are
             // uploaded again below whatever their own revision says.
@@ -966,7 +1025,8 @@ void HdClaudeRenderPass::_Execute(
     // Their placement and shape, on their own: moving a volume uploads these
     // and nothing else (docs/cull-volumes.md 3.2).
     if (_hasUploaded && _uploadedCullRevision != framing.cullRevision) {
-        const std::vector<hdclaude::CullVolume> volumes = store->CullVolumes();
+        const std::vector<hdclaude::CullVolume> volumes =
+            store->CullVolumes(selection);
         try {
             tracer->SetCullVolumes(volumes);
             _uploadedCullRevision = framing.cullRevision;

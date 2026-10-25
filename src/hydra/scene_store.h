@@ -20,6 +20,7 @@
 #include "pxr/usd/sdf/pathExpression.h"
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <set>
 #include <mutex>
@@ -171,8 +172,11 @@ struct HdClaudeCullVolumeEntry {
     /// World-to-unit transform, shape, axis and flags, as the kernels read it.
     /// `CullShape::None` when the volume is invalid as authored.
     hdclaude::CullVolume volume;
-    /// Visible, and of a purpose this render includes.
-    bool active = true;
+    /// Visible. Whether it is of a purpose a render draws is the render's to
+    /// say (HdClaudeDrawSelection), so it is kept beside rather than folded in.
+    bool visible = true;
+    /// The authored purpose, empty for the default one.
+    TfToken purpose;
     /// The `cullLink` collection's membership expression. An empty one
     /// matches nothing, as it does in USD: it is what a collection that
     /// includes nothing resolves to.
@@ -184,6 +188,26 @@ struct HdClaudeCullVolumeEntry {
     /// Why the volume is ignored, if it is. Reported by the prim when it
     /// changes.
     std::string report;
+};
+
+/// What one render pass draws of what the store holds.
+///
+/// Hydra syncs only the prims a pass's render tags and collection include, so
+/// a prim a later toggle excludes -- a purpose turned off in a viewer's menu --
+/// is simply never synced again, and its last publication stays in the store.
+/// Drawing what the store holds would go on drawing it. The pass says instead
+/// which rprims it includes, by id, and which cull-volume purposes; empty
+/// functions include every rprim, and every volume but a guide or a proxy,
+/// which is what hdClaude drew before a pass said.
+struct HdClaudeDrawSelection {
+    std::function<bool(const SdfPath& rprim)> includesRprim;
+    std::function<bool(const TfToken& purpose)> includesPurpose;
+
+    bool IncludesRprim(const SdfPath& id) const
+    {
+        return !includesRprim || includesRprim(id);
+    }
+    bool IncludesPurpose(const TfToken& purpose) const;
 };
 
 /// Thread-safe accumulator and snapshot source.
@@ -255,7 +279,10 @@ class HdClaudeSceneStore {
 
     /// The active cull volumes, in the order their bits are numbered in every
     /// snapshot's `cullLinks`: by path, the first kMaxCullVolumes of them.
-    std::vector<hdclaude::CullVolume> CullVolumes() const;
+    /// Active is visible and of a purpose `selection` includes, and it has to
+    /// be the selection the snapshot was taken with, or the bits disagree.
+    std::vector<hdclaude::CullVolume> CullVolumes(
+        const HdClaudeDrawSelection& selection = {}) const;
 
     /// Build a coherent scene and the material table its indices refer to.
     ///
@@ -264,7 +291,8 @@ class HdClaudeSceneStore {
     /// Not const: taking a snapshot records it as the candidate for the next
     /// one's past, which is what lets an instance say where it was. A
     /// snapshot is a point in a sequence rather than a pure view of the store.
-    hdclaude::Scene Snapshot(std::vector<hdclaude::CompiledMaterial>& materials);
+    hdclaude::Scene Snapshot(std::vector<hdclaude::CompiledMaterial>& materials,
+                             const HdClaudeDrawSelection& selection = {});
 
     /// The last snapshot has been rendered: its placements become the past
     /// the next snapshot's motion is measured from.
@@ -330,7 +358,8 @@ class HdClaudeSceneStore {
     std::uint64_t _revision = 1;
 
     /// The active volumes' paths in bit order. Called with the lock held.
-    std::vector<SdfPath> _ActiveCullVolumes() const;
+    std::vector<SdfPath> _ActiveCullVolumes(
+        const HdClaudeDrawSelection& selection) const;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

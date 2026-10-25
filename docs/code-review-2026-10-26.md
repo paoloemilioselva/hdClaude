@@ -268,6 +268,9 @@ rather than a rendering failure.
 ### I1 — Potential P1: render-purpose and collection changes may leave stale geometry
 
 **Status:** suspected integration defect, not a confirmed end-to-end failure.
+**Reproduced and fixed 2026-10-26.** In one engine, render and proxy geometry
+stayed drawn and pickable after both purposes were turned off, where a fresh
+engine drew only the default purpose.
 
 Relevant code:
 
@@ -288,13 +291,23 @@ selecting the implementation fix.
 
 **To do:**
 
-- [ ] Render default, render, proxy, and guide objects in one engine, then toggle
-  the included purposes without recreating the delegate.
-- [ ] Compare each result and picking AOV against a fresh engine configured with
-  that final purpose selection.
-- [ ] Change collection roots/exclusions in the same session and test similarly.
-- [ ] If the issue reproduces, carry active selection into scene filtering and
+- [x] Render default, render, proxy, and guide objects in one engine, then toggle
+  the included purposes without recreating the delegate. `usd_purposes`.
+- [x] Compare each result and picking AOV against a fresh engine configured with
+  that final purpose selection. By picking, after every purpose, proxy and
+  guide off, render off, and every purpose again (which has to come back from
+  what the delegate kept, since nothing re-synced it).
+- [x] Change collection roots/exclusions in the same session and test similarly.
+  Roots, by rendering from `/World/Left`. Exclusions are honoured the same way
+  but not tested: `UsdImagingGL.Engine` offers no way to set one.
+- [x] If the issue reproduces, carry active selection into scene filtering and
   frame invalidation; align cull-volume activation with the same selection.
+  `HdClaudeDrawSelection`: the render pass includes an rprim by collection
+  and by the render index's current tag for it, and a cull volume by its
+  purpose's tag. The pass's tags, collection and the change tracker's
+  render-tag version form a key in `Framing`, so a change republishes and
+  restarts. A guide or proxy cull volume following the toggle has no test of
+  its own.
 
 ## Performance and maintenance improvements
 
@@ -364,7 +377,7 @@ tests around the boundaries identified here:
 - [x] Instancer attribute removal and reauthoring in one engine (at the
   adapter, R3).
 - [x] Motion followed by several stationary frames (R1).
-- [ ] Purpose/collection changes and comparison with a fresh engine.
+- [x] Purpose/collection changes and comparison with a fresh engine (I1).
 - [ ] A documented clean-machine core-only build job.
 - [ ] Ensure USD integration jobs load the exact plugin just built; the current
   tests intentionally use the installed plugin, as documented in

@@ -5,6 +5,7 @@
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/tf/stringUtils.h"
 #include "pxr/imaging/hd/collectionExpressionEvaluator.h"
+#include "pxr/imaging/hd/tokens.h"
 
 #include <algorithm>
 
@@ -146,7 +147,8 @@ void HdClaudeSceneStore::PublishCullVolume(const SdfPath& id,
         hdclaude::kCullAffectsPrimary | hdclaude::kCullAffectsSecondary;
     const bool structural =
         existing == _cullVolumes.end() ||
-        existing->second.active != entry.active ||
+        existing->second.visible != entry.visible ||
+        existing->second.purpose != entry.purpose ||
         (existing->second.volume.flags & kKinds) != (entry.volume.flags & kKinds) ||
         existing->second.linksEverything != entry.linksEverything ||
         existing->second.cullLink.GetText() != entry.cullLink.GetText();
@@ -188,25 +190,37 @@ std::uint64_t HdClaudeSceneStore::CullRevision() const
     return _cullRevision;
 }
 
-std::vector<SdfPath> HdClaudeSceneStore::_ActiveCullVolumes() const
+bool HdClaudeDrawSelection::IncludesPurpose(const TfToken& purpose) const
+{
+    if (includesPurpose) {
+        return includesPurpose(purpose);
+    }
+    return purpose != HdRenderTagTokens->guide &&
+           purpose != HdRenderTagTokens->proxy;
+}
+
+std::vector<SdfPath> HdClaudeSceneStore::_ActiveCullVolumes(
+    const HdClaudeDrawSelection& selection) const
 {
     std::vector<SdfPath> active;
     if (!_cullVolumesEnabled) {
         return active;
     }
     for (const auto& [path, volume] : _cullVolumes) {
-        if (volume.active && active.size() < hdclaude::kMaxCullVolumes) {
+        if (volume.visible && selection.IncludesPurpose(volume.purpose) &&
+            active.size() < hdclaude::kMaxCullVolumes) {
             active.push_back(path);
         }
     }
     return active;
 }
 
-std::vector<hdclaude::CullVolume> HdClaudeSceneStore::CullVolumes() const
+std::vector<hdclaude::CullVolume> HdClaudeSceneStore::CullVolumes(
+    const HdClaudeDrawSelection& selection) const
 {
     std::lock_guard<std::mutex> lock(_mutex);
     std::vector<hdclaude::CullVolume> volumes;
-    for (const SdfPath& path : _ActiveCullVolumes()) {
+    for (const SdfPath& path : _ActiveCullVolumes(selection)) {
         volumes.push_back(_cullVolumes.at(path).volume);
     }
     return volumes;
@@ -239,7 +253,8 @@ bool HdClaudeSceneStore::HasFallbackMaterial() const
 }
 
 hdclaude::Scene HdClaudeSceneStore::Snapshot(
-    std::vector<hdclaude::CompiledMaterial>& materials)
+    std::vector<hdclaude::CompiledMaterial>& materials,
+    const HdClaudeDrawSelection& selection)
 {
     std::lock_guard<std::mutex> lock(_mutex);
 
@@ -255,7 +270,8 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
     // links, as one bit per volume. The bits are numbered as CullVolumes()
     // numbers the volumes, so the kernels' per-placement links and the volume
     // table agree.
-    const std::vector<SdfPath> activeCullVolumes = _ActiveCullVolumes();
+    const std::vector<SdfPath> activeCullVolumes =
+        _ActiveCullVolumes(selection);
     std::vector<HdCollectionExpressionEvaluator> cullLinks;
     std::uint32_t cullLinksEverything = 0;
     for (std::size_t bit = 0; bit < activeCullVolumes.size(); ++bit) {
@@ -295,7 +311,8 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
         if (_cullVolumesEnabled) {
             std::size_t active = 0;
             for (const auto& [path, volume] : _cullVolumes) {
-                if (volume.active && ++active > hdclaude::kMaxCullVolumes) {
+                if (volume.visible && selection.IncludesPurpose(volume.purpose) &&
+                    ++active > hdclaude::kMaxCullVolumes) {
                     ignored.push_back(path.GetString());
                 }
             }
@@ -361,7 +378,7 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
     scene.prototypes.reserve(_meshes.size());
     for (const auto& [path, mesh] : _meshes) {
         if ((mesh.prototype.indices.empty() && mesh.prototype.segments.empty()) ||
-            !mesh.visible) {
+            !mesh.visible || !selection.IncludesRprim(path)) {
             continue;
         }
         auto resolve = [&](const SdfPath& binding) -> std::uint32_t {
@@ -478,7 +495,8 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
     // so nothing above resolves a binding for them.
     scene.splatPrototypes.reserve(_splats.size());
     for (const auto& [path, splats] : _splats) {
-        if (!splats.prototype.cloud.Valid() || !splats.visible) {
+        if (!splats.prototype.cloud.Valid() || !splats.visible ||
+            !selection.IncludesRprim(path)) {
             continue;
         }
         const auto prototype =

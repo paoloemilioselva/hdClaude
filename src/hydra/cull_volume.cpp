@@ -107,17 +107,15 @@ void HdClaudeCullVolume::Sync(HdSceneDelegate* sceneDelegate,
 
     // --- Active ---------------------------------------------------------------
     //
-    // Visible, and of a purpose this render includes. hdClaude renders the
-    // render purpose and the default one (render_claude.bat), so a guide or a
-    // proxy volume is inactive, as a guide or proxy gprim is not drawn.
-    TfToken purpose;
+    // Visible, and of a purpose the render draws. Which purposes those are is
+    // the render pass's to say, from its render tags, as it says it for the
+    // geometry (HdClaudeDrawSelection); a guide or proxy volume is active
+    // exactly when guide or proxy gprims are drawn.
     if (HdTokenDataSourceHandle source =
             HdPurposeSchema::GetFromParent(prim).GetPurpose()) {
-        purpose = source->GetTypedValue(0.0f);
+        entry.purpose = source->GetTypedValue(0.0f);
     }
-    const bool purposeIncluded = purpose != HdRenderTagTokens->guide &&
-                                 purpose != HdRenderTagTokens->proxy;
-    entry.active = sceneDelegate->GetVisible(id) && purposeIncluded;
+    entry.visible = sceneDelegate->GetVisible(id);
 
     // --- Behaviour -------------------------------------------------------------
     bool affectsPrimary = true;
