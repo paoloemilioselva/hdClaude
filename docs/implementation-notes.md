@@ -7658,6 +7658,18 @@ and the installed plugin through `UsdImagingGL` with:
 
 `tests/usd/picking.py` passes 9 of 9 there.
 
+*Added 2026-10-26.* `$HFS\bin` must also be on `PATH`, not only registered:
+Plug loads plugins with a plain `LoadLibrary`, which ignores
+`os.add_dll_directory`, so `USD_NC.dll` fails to load and every stage fails
+to open. The suites that measure images need one more step:
+`hdClaudeImageDiff` is built against the standalone OpenUSD and reads EXRs
+through its Hio. Set `HDCLAUDE_IMAGE_DIFF` to a wrapper that puts that
+OpenUSD's `bin` and `lib` on `PATH` and its plugin directories on
+`PXR_PLUGINPATH_NAME` for the tool's own process. Without the wrapper the
+tool exits with 0xC0000135 or "Could not open image". The scripts then report
+empty measurements, and that looks like a render failure. Set that way, all
+nine `tests/usd` render suites pass against the Houdini build.
+
 The last plugin directory is easy to miss, and leaving it out looks like a
 Houdini bug. SideFX removed the stock `UsdImagingCameraAdapter` registration
 from Houdini's `usdImaging` plugin and registers its own `HD_CameraAdapter` in
