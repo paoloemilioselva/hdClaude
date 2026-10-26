@@ -15,7 +15,9 @@ every texture -- filtering sRGB-encoded values without decoding them does
 exactly that.
 
 Usage: python texture_quality.py <output directory>
-Runs in the OpenUSD environment with the hdClaude plugin installed.
+Runs in the OpenUSD environment, and
+tests the plugin HDCLAUDE_PLUGIN_DIR names -- the build tree's, under
+ctest -- or else what compile.py last installed.
 """
 
 import os

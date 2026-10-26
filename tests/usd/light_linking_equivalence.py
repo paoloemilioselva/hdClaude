@@ -8,7 +8,7 @@ hdClaude, and ALab's sun and sky were blocked for as long as that went unseen by
 the 3.5 km skydome their shadow links exclude. Nothing errored.
 
 Each check is a pair of stages that the specification says must render the
-same, rendered through the installed plugin, plus a stage that must *not* match
+same, rendered through the plugin, plus a stage that must *not* match
 -- because a comparison that cannot fail is not evidence.
 
   shadow link   An enclosure, like ALab's skydome, and a native instance that
@@ -26,8 +26,9 @@ same, rendered through the installed plugin, plus a stage that must *not* match
                 An unturned `DomeLight` must not.
 
 Usage: python light_linking_equivalence.py <output directory>
-Runs in the OpenUSD environment with the hdClaude plugin installed, like
-instancing_equivalence.py, and tests what compile.py last installed.
+Runs in the OpenUSD environment, like instancing_equivalence.py, and
+tests the plugin HDCLAUDE_PLUGIN_DIR names -- the build tree's, under
+ctest -- or else what compile.py last installed.
 """
 
 import os

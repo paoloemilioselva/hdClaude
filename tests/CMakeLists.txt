@@ -153,10 +153,20 @@ if(HDCLAUDE_ENABLE_MATERIALX)
   endif()
 
   # Phase 3 and 8: instanced geometry renders where USD places it. The
-  # scripted tests that reach the Hydra adapters, so each runs a script in the OpenUSD
-  # environment and renders through the installed plugin -- build and install
-  # (compile.py) before trusting it. Each script runs through the platform's
-  # wrapper, which sources setup_usd_env first.
+  # scripted tests that reach the Hydra adapters, so each runs a script in the
+  # OpenUSD environment, through the platform's wrapper, which sources
+  # setup_usd_env first.
+  #
+  # Against the plugin this build assembled in plugin/usd, not the installed
+  # one: HDCLAUDE_PLUGIN_DIR takes the install's place on the plugin path. An
+  # install that failed -- a viewer holding the DLL is enough -- left these
+  # testing whatever was installed before, and passing for it. Not for a
+  # Houdini build, whose plugin is for Houdini's USD and not this one.
+  set(_usd_test_env "HDCLAUDE_IMAGE_DIFF=$<TARGET_FILE:hdClaudeImageDiff>")
+  if(NOT HDCLAUDE_HOUDINI_VERSION)
+    list(APPEND _usd_test_env
+         "HDCLAUDE_PLUGIN_DIR=${CMAKE_BINARY_DIR}/plugin/usd")
+  endif()
   if(TARGET hdClaudeImageDiff)
     foreach(_usd_test
             "usd_instancing|instancing_equivalence"
@@ -181,7 +191,7 @@ if(HDCLAUDE_ENABLE_MATERIALX)
       add_test(NAME ${_name}
           COMMAND ${_command} "${CMAKE_CURRENT_BINARY_DIR}/${_name}")
       set_tests_properties(${_name} PROPERTIES
-          ENVIRONMENT "HDCLAUDE_IMAGE_DIFF=$<TARGET_FILE:hdClaudeImageDiff>")
+          ENVIRONMENT "${_usd_test_env}")
     endforeach()
   endif()
 

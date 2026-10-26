@@ -18,8 +18,9 @@ after each its picks are compared with a new engine given the same selection:
   left root          only the prims under /World/Left, by collection
 
 Usage: python purposes.py <output directory>
-Runs in the OpenUSD environment with the hdClaude plugin installed, like
-picking.py, and tests what compile.py last installed.
+Runs in the OpenUSD environment, like picking.py, and
+tests the plugin HDCLAUDE_PLUGIN_DIR names -- the build tree's, under
+ctest -- or else what compile.py last installed.
 """
 
 import os

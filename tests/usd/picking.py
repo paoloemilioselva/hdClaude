@@ -4,7 +4,7 @@ usdview picks through `UsdImagingGLEngine::TestIntersection`, which for a
 renderer other than Storm reads the `primId`, `instanceId` and `depth` AOVs
 the last frame left behind (HdxPickFromRenderBufferTask) and maps the prim id
 back to a path through the render index. This drives that same call, through
-the installed plugin, at the projected centre of each object:
+the plugin, at the projected centre of each object:
 
   prim          A cube and a sphere pick as themselves.
   instance      Each of a point instancer's three placements picks as the
@@ -18,8 +18,9 @@ The camera's frustum is off-centre, so every one of these also checks that
 camera rays follow the host's projection.
 
 Usage: python picking.py <output directory>
-Runs in the OpenUSD environment with the hdClaude plugin installed, like
-cull_volume_equivalence.py, and tests what compile.py last installed. Needs
+Runs in the OpenUSD environment, like cull_volume_equivalence.py, and
+tests the plugin HDCLAUDE_PLUGIN_DIR names -- the build tree's, under
+ctest -- or else what compile.py last installed. Needs
 an OpenGL context, which it makes the way usdrecord does.
 """
 

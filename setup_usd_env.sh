@@ -108,8 +108,11 @@ _hdclaude_env() {
   #     Plugin discovery is a union, and both trees are required for
   #     usdview/usdrecord to find the delegate. Linux resolves shared
   #     libraries through LD_LIBRARY_PATH where Windows uses PATH.
+  #     HDCLAUDE_PLUGIN_DIR, when set, takes the install's plugin directory's
+  #     place: it is how ctest loads the plugin the build just assembled
+  #     rather than whatever was last installed (tests/CMakeLists.txt).
   # -------------------------------------------------------------------------
-  export PXR_PLUGINPATH_NAME="$USDROOT:$USDROOT/plugin/usd:$USDEXTRA/plugin/usd"
+  export PXR_PLUGINPATH_NAME="$USDROOT:$USDROOT/plugin/usd:${HDCLAUDE_PLUGIN_DIR:-$USDEXTRA/plugin/usd}"
   export PYTHONPATH="$USDROOT/lib/python:$USDEXTRA/lib/python${PYTHONPATH:+:$PYTHONPATH}"
   export PATH="$USDROOT/bin:$USDEXTRA/bin:$PATH"
   export LD_LIBRARY_PATH="$USDROOT/lib:$USDEXTRA/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"

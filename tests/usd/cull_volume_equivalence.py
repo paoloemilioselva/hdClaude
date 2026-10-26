@@ -1,7 +1,7 @@
 """Cull volumes render as extensions/cullVolume/README.md specifies.
 
 Each check is a pair of stages that the specification says must render the
-same, rendered through the installed plugin -- the usdCullVolume schema, its
+same, rendered through the plugin -- the usdCullVolume schema, its
 UsdImaging adapter and hdClaude together -- plus pairs that must *not* match,
 because a comparison that cannot fail is not evidence.
 
@@ -26,8 +26,9 @@ rule 2), and a test must not depend on which.
                 and culling secondary rays only must remove the shadow.
 
 Usage: python cull_volume_equivalence.py <output directory>
-Runs in the OpenUSD environment with the hdClaude plugin installed, like
-light_linking_equivalence.py, and tests what compile.py last installed.
+Runs in the OpenUSD environment, like light_linking_equivalence.py, and
+tests the plugin HDCLAUDE_PLUGIN_DIR names -- the build tree's, under
+ctest -- or else what compile.py last installed.
 """
 
 import os

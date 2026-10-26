@@ -18,7 +18,9 @@ dome alone: every centre patch then reads the background and every one of these
 fails.
 
 Usage: python implicit_surfaces.py <output directory>
-Runs in the OpenUSD environment against what compile.py last installed.
+Runs in the OpenUSD environment, and
+tests the plugin HDCLAUDE_PLUGIN_DIR names -- the build tree's, under
+ctest -- or else what compile.py last installed.
 """
 
 import os

@@ -379,9 +379,15 @@ tests around the boundaries identified here:
 - [x] Motion followed by several stationary frames (R1).
 - [x] Purpose/collection changes and comparison with a fresh engine (I1).
 - [ ] A documented clean-machine core-only build job.
-- [ ] Ensure USD integration jobs load the exact plugin just built; the current
+- [x] Ensure USD integration jobs load the exact plugin just built; the current
   tests intentionally use the installed plugin, as documented in
   [tests/CMakeLists.txt](../tests/CMakeLists.txt), lines 130–134.
+  `setup_usd_env` puts `HDCLAUDE_PLUGIN_DIR` in place of the install's
+  plugin directory when it is set, and ctest sets it to the build tree's
+  `plugin/usd` (not for a Houdini build). Plug then resolves
+  `build/dev/plugin/usd/hdClaude.dll` rather than the install's, and all
+  eleven Hydra and USD suites pass that way. Run by hand, the scripts still
+  use the install.
 
 ### P4 — Revalidate the already documented transport deficits
 
@@ -397,6 +403,27 @@ These are existing roadmap items, not newly reproduced findings:
   justified bounds, while retaining the physical target separately.
 - [ ] Track improvements to the dielectric compensation fit/table independently
   from Hydra integration fixes so image changes have a clear cause.
+
+## Gallery run after the fixes
+
+The full gallery was run on 2026-10-26 after the commits above, and stopped at
+its second scene. Neither finding is caused by them; both need a decision
+from whoever owns the gallery.
+
+- **OpenChessSet fails its committed baseline (2026-09-17)** on the worst
+  pixel: 0.627 against a limit of 0.3, with rms 0.0049 and 0.60% of pixels
+  failing, both inside their limits. The build from before this review
+  (dab68b7, built in a separate worktree) fails it the same way (worst 0.639,
+  0.60%), and its linear EXR matches the current build's to rms 2.8e-5. The
+  baseline went stale before this work and was not re-accepted here. Its
+  tracedRays also differ from run to run in either build, by about thirty
+  rays: the intermittent nondeterminism `render_gallery.ps1` describes.
+- **Intel Sponza traced for 2,269 s against 16 s committed**, with the same
+  rays, the same hashes and an identical image. At 64 spp the pre-review and
+  current builds both take 142 s and agree hash for hash. Other applications
+  held 12.6 GB of the GPU's 16.3 GB throughout, against Sponza's 5.9 GB peak.
+  The timing measured this machine's memory pressure, not the renderer, so the
+  rewritten `gallery.md` and `intel_sponza.stats` were discarded.
 
 ## Suggested implementation order
 

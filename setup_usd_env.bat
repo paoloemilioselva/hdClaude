@@ -109,8 +109,14 @@ REM 3. OpenUSD runtime paths.
 REM     The hdClaude install prefix is placed ahead of nothing and behind
 REM     nothing that matters: plugin discovery is a union, and both trees are
 REM     required for usdview/usdrecord to find the delegate.
+REM     HDCLAUDE_PLUGIN_DIR, when set, takes the install's plugin directory's
+REM     place: it is how ctest loads the plugin the build just assembled
+REM     rather than whatever was last installed (tests\CMakeLists.txt).
 REM ---------------------------------------------------------------------------
-SET "PXR_PLUGINPATH_NAME=%USDROOT%;%USDROOT%\plugin\usd;%USDEXTRA%\plugin\usd"
+SET "_HDCLAUDE_PLUGINS=%USDEXTRA%\plugin\usd"
+IF DEFINED HDCLAUDE_PLUGIN_DIR SET "_HDCLAUDE_PLUGINS=%HDCLAUDE_PLUGIN_DIR%"
+SET "PXR_PLUGINPATH_NAME=%USDROOT%;%USDROOT%\plugin\usd;%_HDCLAUDE_PLUGINS%"
+SET "_HDCLAUDE_PLUGINS="
 SET "PYTHONPATH=%USDROOT%\lib\python;%USDEXTRA%\lib\python;%PYTHONPATH%"
 SET "PATH=%USDROOT%\bin;%USDEXTRA%\bin;%USDROOT%\lib;%USDEXTRA%\lib;%PATH%"
 

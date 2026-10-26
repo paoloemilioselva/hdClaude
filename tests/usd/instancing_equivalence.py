@@ -23,10 +23,11 @@ instance alone as the Kitchen Set defect did. It must *disagree*, which is what
 shows the comparison is able to see the defect it exists for.
 
 Usage: python instancing_equivalence.py <output directory>
-Runs in the OpenUSD environment, with the hdClaude plugin installed and
-render_claude.bat (or .sh) reachable, and hdClaudeImageDiff on PATH or named by
-HDCLAUDE_IMAGE_DIFF. It renders through the *installed* plugin, so it tests
-what compile.py last installed.
+Runs in the OpenUSD environment, with render_claude.bat (or .sh) reachable,
+and hdClaudeImageDiff on PATH or named by HDCLAUDE_IMAGE_DIFF. It renders
+through usdrecord, which inherits HDCLAUDE_PLUGIN_DIR, so it
+tests the plugin HDCLAUDE_PLUGIN_DIR names -- the build tree's, under
+ctest -- or else what compile.py last installed.
 """
 
 import os
