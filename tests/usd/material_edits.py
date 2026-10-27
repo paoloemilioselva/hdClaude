@@ -18,6 +18,11 @@ before, which the edit must change:
                      graph's own interface input edited
   multi-output       an input moved between two outputs of one node
   constant           base_color disconnected and given a value
+  doubled            a second PointInstancer whose material computes
+                     `inputs:diffColor * 2.0` on the Material prim and feeds
+                     it to a standard_surface's base_color -- the layout a
+                     Linux session reported as not updating -- with only the
+                     Material's input value edited
 
 Rewiring the Material's own surface output to another shader is the one edit
 that is not checked: OpenUSD 26.03's UsdImaging invalidates a Material for its
@@ -48,9 +53,11 @@ CUBE_INDICES = [0, 3, 2, 1, 4, 5, 6, 7, 0, 1, 5, 4,
                 2, 3, 7, 6, 1, 2, 6, 5, 3, 0, 4, 7]
 
 # Where each surface is in the 240x160 frame: the plain cube in the middle of
-# the bottom half, and the second of the instancer's four along the top.
+# the bottom half, the second of the instancer's four along the top, and the
+# right-hand one of the doubled instancer's pair at the bottom right.
 PLAIN = (110, 105, 130, 125)
 INSTANCE = (70, 40, 90, 60)
+DOUBLED = (178, 112, 192, 126)
 
 
 def cube(stage, path, scale):
@@ -153,6 +160,34 @@ def make_stage(path, directory):
     plain.AddTranslateOp().Set(Gf.Vec3d(0.0, -1.5, 0.0))
     for prim in (box.GetPrim(), plain.GetPrim()):
         UsdShade.MaterialBindingAPI.Apply(prim).Bind(material)
+
+    # The doubled material: an interface input on the Material prim, through
+    # a multiply by 2.0, into a standard_surface's base_color.
+    doubled = UsdShade.Material.Define(stage, "/World/Looks/Doubled")
+    diff_color = doubled.CreateInput("diffColor", Sdf.ValueTypeNames.Color3f)
+    diff_color.Set(Gf.Vec3f(0.4, 0.05, 0.05))
+    twice = shader(stage, "/World/Looks/Doubled/Twice", "ND_multiply_color3FA")
+    twice.CreateInput("in1", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+        diff_color)
+    twice.CreateInput("in2", Sdf.ValueTypeNames.Float).Set(2.0)
+    twice.CreateOutput("out", Sdf.ValueTypeNames.Color3f)
+    doubled_surface = shader(stage, "/World/Looks/Doubled/Surface",
+                             "ND_standard_surface_surfaceshader")
+    doubled_surface.CreateInput("base", Sdf.ValueTypeNames.Float).Set(1.0)
+    doubled_surface.CreateInput("specular", Sdf.ValueTypeNames.Float).Set(0.0)
+    doubled_surface.CreateInput(
+        "base_color", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+            twice.ConnectableAPI(), "out")
+    doubled_surface.CreateOutput("out", Sdf.ValueTypeNames.Token)
+    doubled.CreateSurfaceOutput("mtlx").ConnectToSource(
+        doubled_surface.ConnectableAPI(), "out")
+
+    pair = UsdGeom.PointInstancer.Define(stage, "/World/Doubled")
+    pebble = cube(stage, "/World/Doubled/Protos/Pebble", 0.45)
+    pair.CreatePrototypesRel().SetTargets([pebble.GetPath()])
+    pair.CreatePositionsAttr([(-2.5, -1.5, 0), (2.5, -1.5, 0)])
+    pair.CreateProtoIndicesAttr([0, 0])
+    UsdShade.MaterialBindingAPI.Apply(pebble.GetPrim()).Bind(doubled)
     return stage, pngs
 
 
@@ -207,7 +242,7 @@ class Recorder:
             count = (x1 - x0) * (y1 - y0)
             return tuple(round(c / count) for c in total)
 
-        return mean(PLAIN) + mean(INSTANCE)
+        return mean(PLAIN) + mean(INSTANCE) + mean(DOUBLED)
 
 
 def difference(a, b):
@@ -228,7 +263,9 @@ def main():
     step = 0
     previous = live.colours(step)
 
-    def check(label, known_upstream=False):
+    def check(label, known_upstream=False, region=0):
+        """`region` picks what is printed: 0 the plain cube, 2 the doubled
+        instance. Every region is compared either way."""
         nonlocal failures, step, previous
         step += 1
         edited = live.colours(step)
@@ -236,16 +273,18 @@ def main():
         agrees = difference(edited, reference) <= TOLERANCE
         changed = difference(reference, previous) > CHANGE
         previous = reference
+        shown = slice(3 * region, 3 * region + 3)
         if known_upstream:
             print("%s  %-30s live %s, fresh %s (UsdImaging does not report "
                   "this edit; not counted)"
-                  % ("note" if not agrees else "ok  ", label, edited[:3],
-                     reference[:3]))
+                  % ("note" if not agrees else "ok  ", label, edited[shown],
+                     reference[shown]))
             return
         ok = agrees and changed
         failures += 0 if ok else 1
         print("%s  %-30s live %s, fresh %s%s"
-              % ("ok  " if ok else "FAIL", label, edited[:3], reference[:3],
+              % ("ok  " if ok else "FAIL", label, edited[shown],
+                 reference[shown],
                  "" if changed else "; the edit changed nothing"))
 
     material = UsdShade.Material(stage.GetPrimAtPath("/World/Looks/Mx"))
@@ -279,6 +318,15 @@ def main():
     check("base <- separate3.outr")
     base.ConnectToSource(split, "outg")
     check("base <- separate3.outg")
+
+    doubled = UsdShade.Material(stage.GetPrimAtPath("/World/Looks/Doubled"))
+    doubled.GetInput("diffColor").Set(Gf.Vec3f(0.05, 0.4, 0.05))
+    check("doubled: diffColor green", region=2)
+    doubled.GetInput("diffColor").Set(Gf.Vec3f(0.05, 0.05, 0.4))
+    check("doubled: diffColor blue", region=2)
+    UsdShade.Shader(stage.GetPrimAtPath("/World/Looks/Doubled/Twice")).GetInput(
+        "in2").Set(0.5)
+    check("doubled: multiplier 0.5", region=2)
 
     alternative = UsdShade.ConnectableAPI(
         stage.GetPrimAtPath("/World/Looks/Mx/AltSurface"))
