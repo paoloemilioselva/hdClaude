@@ -31,6 +31,10 @@ void HdClaudeInstancer::Sync(HdSceneDelegate* sceneDelegate,
     // asked for anything.
     _UpdateInstancer(sceneDelegate, dirtyBits);
 
+    if (*dirtyBits & HdChangeTracker::DirtyVisibility) {
+        _visible = sceneDelegate->GetVisible(GetId());
+    }
+
     if (HdChangeTracker::IsAnyPrimvarDirty(*dirtyBits, GetId())) {
         _SyncPrimvars(sceneDelegate, *dirtyBits);
     }
@@ -122,6 +126,12 @@ bool RotationAt(const VtValue& value, std::size_t index, GfQuatd* out)
 VtMatrix4dArray HdClaudeInstancer::ComputeInstanceTransforms(
     const SdfPath& prototypeId)
 {
+    // Hidden, this instancer places nothing; and a nested one whose parent is
+    // hidden composes with no parent placements, so it places nothing either.
+    if (!_visible) {
+        return {};
+    }
+
     HdSceneDelegate* delegate = GetDelegate();
     const SdfPath& id = GetId();
 
@@ -223,6 +233,11 @@ void Union(std::vector<TfToken>* into, const std::vector<TfToken>& from)
 std::vector<std::vector<TfToken>> HdClaudeInstancer::ComputeInstanceCategories(
     const SdfPath& prototypeId)
 {
+    // As ComputeInstanceTransforms, so the two stay the same length.
+    if (!_visible) {
+        return {};
+    }
+
     HdSceneDelegate* delegate = GetDelegate();
     const SdfPath& id = GetId();
 

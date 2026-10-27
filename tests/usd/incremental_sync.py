@@ -13,6 +13,15 @@ different hit:
   hidden     a mesh made invisible, then visible
   reshaped   the subdivided mesh's points changed: that is its geometry, and
              it must be refined again
+  instancer  a PointInstancer hidden and shown, one instance hidden through
+             invisibleIds, a prototype hidden, and an outer instancer of a
+             nested pair hidden: each instancer's own visibility removes
+             everything it places, at any depth
+
+Agreeing with a fresh render is not enough for an edit a fresh render can get
+wrong as well: until 2026-10-28 a hidden PointInstancer drew all its instances
+in both. So every edit that should change the picture is also compared with
+the picture before it, and must change it.
 
 A control compares the frame from before the move with the fresh render
 after it, and must disagree, or the probes cannot see a move.
@@ -73,7 +82,35 @@ def make_stage(path):
     box.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
     box.AddTranslateOp().Set(Gf.Vec3d(2.2, 0.0, 0.0))
     box.AddRotateXYZOp().Set(Gf.Vec3f(25, 35, 0))
+
+    # A row of three small cubes along the top, placed by a PointInstancer.
+    instancer = UsdGeom.PointInstancer.Define(stage, "/World/Instancer")
+    pebble = cube_mesh(stage, "/World/Instancer/Protos/Pebble", 0.3)
+    instancer.CreatePrototypesRel().SetTargets([pebble.GetPath()])
+    instancer.CreatePositionsAttr([(-1.5, 1.6, 0), (0, 1.6, 0), (1.5, 1.6, 0)])
+    instancer.CreateProtoIndicesAttr([0, 0, 0])
+
+    # And two pairs along the bottom: an outer instancer placing an inner one.
+    outer = UsdGeom.PointInstancer.Define(stage, "/World/Outer")
+    inner = UsdGeom.PointInstancer.Define(stage, "/World/Outer/Protos/Inner")
+    grain = cube_mesh(stage, "/World/Outer/Protos/Inner/Protos/Grain", 0.25)
+    inner.CreatePrototypesRel().SetTargets([grain.GetPath()])
+    inner.CreatePositionsAttr([(-0.4, 0, 0), (0.4, 0, 0)])
+    inner.CreateProtoIndicesAttr([0, 0])
+    outer.CreatePrototypesRel().SetTargets([inner.GetPath()])
+    outer.CreatePositionsAttr([(-0.9, -1.7, 0), (0.9, -1.7, 0)])
+    outer.CreateProtoIndicesAttr([0, 0])
     return stage
+
+
+def cube_mesh(stage, path, scale):
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    mesh.CreatePointsAttr([(scale * x, scale * y, scale * z)
+                           for x, y, z in CUBE_POINTS])
+    mesh.CreateFaceVertexCountsAttr(CUBE_COUNTS)
+    mesh.CreateFaceVertexIndicesAttr(CUBE_INDICES)
+    mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
+    return mesh
 
 
 def gl_context():
@@ -173,7 +210,9 @@ def main():
     if failures:
         print("FAIL: too few probes on a surface to check anything")
 
-    def check(label, expect_refined):
+    previous = [before]
+
+    def check(label, expect_refined, expect_change=False):
         nonlocal failures
         refined_before = live.refined()
         edited = live.probes()
@@ -182,11 +221,14 @@ def main():
         reference = fresh.probes()
         del fresh
         differing = disagreements(edited, reference)
-        ok = differing == 0 and (refined > 0) == expect_refined
+        changed = disagreements(previous[0], reference)
+        previous[0] = reference
+        ok = differing == 0 and (refined > 0) == expect_refined and (
+            changed > 0 or not expect_change)
         failures += 0 if ok else 1
-        print("%s  %-10s %d probes differ from a fresh render; %d mesh(es) "
-              "refined again (expected %s)"
-              % ("ok  " if ok else "FAIL", label, differing, refined,
+        print("%s  %-18s %d probes differ from a fresh render, %d from the "
+              "frame before; %d mesh(es) refined again (expected %s)"
+              % ("ok  " if ok else "FAIL", label, differing, changed, refined,
                  "some" if expect_refined else "none"))
         return reference
 
@@ -207,6 +249,27 @@ def main():
 
     blob.GetPointsAttr().Set([(1.3 * x, 0.8 * y, z) for x, y, z in CUBE_POINTS])
     check("reshaped", expect_refined=True)
+
+    instancer = UsdGeom.PointInstancer(stage.GetPrimAtPath("/World/Instancer"))
+    UsdGeom.Imageable(instancer).MakeInvisible()
+    check("instancer hidden", expect_refined=False, expect_change=True)
+    UsdGeom.Imageable(instancer).MakeVisible()
+    check("instancer shown", expect_refined=False, expect_change=True)
+    instancer.InvisIds([1], Usd.TimeCode.Default())
+    check("instance hidden", expect_refined=False, expect_change=True)
+    instancer.VisAllIds(Usd.TimeCode.Default())
+    check("instance shown", expect_refined=False, expect_change=True)
+    pebble = UsdGeom.Imageable(
+        stage.GetPrimAtPath("/World/Instancer/Protos/Pebble"))
+    pebble.MakeInvisible()
+    check("prototype hidden", expect_refined=False, expect_change=True)
+    pebble.MakeVisible()
+    check("prototype shown", expect_refined=False, expect_change=True)
+    outer = UsdGeom.Imageable(stage.GetPrimAtPath("/World/Outer"))
+    outer.MakeInvisible()
+    check("outer hidden", expect_refined=False, expect_change=True)
+    outer.MakeVisible()
+    check("outer shown", expect_refined=False, expect_change=True)
 
     del live
     del context

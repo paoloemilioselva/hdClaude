@@ -8167,3 +8167,33 @@ questions 11 to 13). VDF coefficients are specified in m^-1 and integrated per
 scene unit. The BTDF carries no `eta^2`. A transmissive Schlick lobe still
 ignores `thin_walled`.
 
+## 2026-10-28 -- A hidden PointInstancer kept drawing
+
+**Reported** as instancers not following visibility edits. A probe that edited
+a live stage and compared it with fresh engines, by picking and by pixels,
+found one defect, and found it in fresh renders as well as in edits: making a
+`PointInstancer` invisible changed nothing. Storm hid all its instances.
+`invisibleIds`, a hidden prototype, positions, and every material edit tried
+all agreed with a fresh render. The material edits covered rebinding a
+prototype or a plain mesh, an inherited binding on the instancer, a shader
+parameter, a new shader input, and two materials with one shared network
+edited apart and back together.
+
+**Why.** Hydra gives the instancer prim's visibility to the instancer, as
+`DirtyVisibility`, not to its prototypes. `HdStInstancer` reads it and returns
+no instance indices while it is false. `HdClaudeInstancer` never read it, so
+`ComputeInstanceTransforms` placed every instance whatever the instancer said.
+Meshes, basis curves and particle fields all take their placements from it.
+
+**The fix.** The instancer reads its visibility on `DirtyVisibility`. When
+invisible it places nothing and reports no categories. A nested instancer
+composes with no parent placements, so hiding the outer one of a pair hides
+everything.
+
+**Why the test missed it.** `usd_incremental_sync` compared each edit only with
+a fresh render, and here both were wrong in the same way. Each edit that should
+change the picture is now also compared with the frame before it. The test
+hides and shows an instancer, an instance by `invisibleIds`, a prototype, and
+the outer instancer of a nested pair. Against the old plugin it fails exactly
+the four instancer-visibility steps.
+

@@ -55,6 +55,12 @@ class HdClaudeInstancer : public HdInstancer {
     /// depending on the asset's age -- and the composition below is the only
     /// place that needs to know which.
     TfHashMap<TfToken, VtValue, TfToken::HashFunctor> _primvars;
+
+    /// The instancer prim's own visibility. An invisible instancer places
+    /// nothing, at any depth of nesting, which is how USD defines visibility
+    /// to inherit and how Storm's instancer answers. Read on DirtyVisibility,
+    /// which Hydra sets on the instancer, not on its prototypes.
+    bool _visible = true;
 };
 
 /// The light-linking categories of each of an rprim's `instanceCount`
