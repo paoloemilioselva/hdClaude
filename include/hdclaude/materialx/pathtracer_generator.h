@@ -340,9 +340,12 @@ float AuthoredDispersion(const mx::DocumentPtr& document,
 /// `transmission_depth` is positive. The flag therefore travels beside the
 /// program, and the dielectric closure and the integrator honour it.
 ///
-/// `open_pbr_surface` names it `geometry_thin_walled` and `standard_surface`
-/// names it `thin_walled`. A connected flag cannot be a per-material value and
-/// is reported, as is a second surface node that disagrees with the first.
+/// `open_pbr_surface` names it `geometry_thin_walled`; `standard_surface` names
+/// it `thin_walled`, and so does the PBR library's own `surface` node, which is
+/// where the MaterialX specification defines it ("In thin-walled mode
+/// refraction and scattering will be disabled"). A connected flag cannot be a
+/// per-material value and is reported, as is a second surface node that
+/// disagrees with the first.
 bool AuthoredThinWalled(const mx::DocumentPtr& document,
                         std::vector<std::string>* diagnostics = nullptr);
 

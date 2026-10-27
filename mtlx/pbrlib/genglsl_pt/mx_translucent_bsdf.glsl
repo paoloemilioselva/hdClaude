@@ -46,8 +46,18 @@ void mx_translucent_bsdf(ClosureData closureData, float weight, vec3 color, vec3
     // shaded pixel.
     color = clamp(color, vec3(0.0), vec3(1.0));
 
-    // Invert normal since we're transmitting light from the other side
-    N = -N;
+    // Invert normal since we're transmitting light from the other side.
+    //
+    // The other side *from the viewer*, which is not always the side the
+    // authored normal points away from. Upstream inverts the normal as given,
+    // which is right for a rasteriser: it only ever shades the side facing the
+    // camera. A path reaches a surface from behind as often as from in front,
+    // and the shade kernel hands every closure the true normal (every other
+    // closure turns it forward itself), so inverting it unturned sent a ray
+    // that arrived from behind back to its own side. MaterialX defines this
+    // node as diffuse *transmission*: a leaf seen from below showed the light
+    // under it rather than the sun through it.
+    N = -mx_forward_facing_normal(N, V);
 
     // ---- hdClaude: reconstruction guides -----------------------------------
     // Properties of the surface and the view alone, so they are written before

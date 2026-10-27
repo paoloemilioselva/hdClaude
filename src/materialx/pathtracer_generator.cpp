@@ -1188,6 +1188,7 @@ bool AuthoredThinWalled(const mx::DocumentPtr& document,
         const std::string& category = node->getCategory();
         const char* input = category == "open_pbr_surface"   ? "geometry_thin_walled"
                             : category == "standard_surface" ? "thin_walled"
+                            : category == "surface"          ? "thin_walled"
                                                              : nullptr;
         if (!input) {
             continue;

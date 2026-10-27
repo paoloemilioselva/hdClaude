@@ -903,6 +903,24 @@ CompiledMaterial MakeMaskedPreviewSurface(mx::DocumentPtr libraries,
     return compiled;
 }
 
+/// White diffuse transmission and nothing else: `translucent_bsdf`.
+CompiledMaterial MakeTranslucentMaterial(mx::DocumentPtr libraries,
+                                         const GlslCompiler& compiler,
+                                         const std::string& shadeKernel,
+                                         const std::string& name)
+{
+    mx::DocumentPtr doc = mx::createDocument();
+    doc->importLibrary(libraries);
+    mx::NodePtr bsdf = AddNode(doc, "translucent_bsdf", "t", "BSDF");
+    SetValue(bsdf, "weight", 1.0f);
+    SetValue(bsdf, "color", mx::Color3(1.0f, 1.0f, 1.0f));
+    mx::NodePtr surface = AddNode(doc, "surface", "s", "surfaceshader");
+    Connect(surface, "bsdf", bsdf);
+    mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+    Connect(material, "surfaceshader", surface);
+    return CompileMaterial(doc, compiler, shadeKernel, name);
+}
+
 /// Two texels across: black on the left, white on the right.
 TextureImage MakeHalfMask()
 {
@@ -4354,6 +4372,62 @@ int main()
             CHECK_NEAR(Luminance(left), Luminance(sky), Luminance(sky) * 0.01);
             CHECK_NEAR(Luminance(right), Luminance(surface),
                        Luminance(surface) * 0.03);
+        }
+
+        // --- Diffuse transmission goes to the far side of the viewer ---------
+        //
+        // `translucent_bsdf` is diffuse *transmission*: light reaches the eye
+        // through the sheet from its far side, whichever way the sheet's
+        // normal points. One sheet, lit from below and seen from above, must
+        // read the same whether its normal faces the camera or the light; lit
+        // from the camera's side, it must read nothing, since it reflects
+        // nothing. Upstream inverts the authored normal as given -- right for a
+        // rasteriser, which only shades front faces -- and with the normal
+        // facing the light that sent the camera's ray back to its own side.
+        {
+            RenderSettings direct = settings;
+            direct.samplesPerPixel = 64;
+            direct.maxBounces = 1;
+            for (int i = 0; i < 3; ++i) {
+                direct.environmentColor[i] = 0.0f;
+                direct.sunRadiance[i] = 0.0f;
+            }
+            const std::vector<CompiledMaterial> translucent = {
+                MakeTranslucentMaterial(libraries, compiler,
+                                        tracer.ShadeKernelSource(), "translucent")};
+
+            auto render = [&](bool facingCamera, bool litFromBelow) {
+                Scene scene;
+                scene.prototypes.push_back(facingCamera ? MakeQuad()
+                                                        : MakeQuadFacingBack());
+                scene.instances.push_back({0, Transform3x4{}, 0, true});
+                Light distant;
+                distant.direction[2] = litFromBelow ? 1.0f : -1.0f;
+                distant.angularRadius = 0.05f;
+                for (int i = 0; i < 3; ++i) {
+                    distant.radiance[i] = 100.0f;
+                }
+                scene.lights.push_back(distant);
+                tracer.SetScene(scene, translucent);
+                return Luminance(Window(
+                    tracer.Render(kWidth, kHeight, LookDownZ(4.0f), direct), 0.5f,
+                    0.5f, 10));
+            };
+            const float throughFront = render(true, true);
+            const float throughBack = render(false, true);
+            const float reflectedFront = render(true, false);
+            const float reflectedBack = render(false, false);
+            // E / pi for a white Lambertian transmitter, E = L pi sin^2(r).
+            const double expected = 100.0 * std::sin(0.05) * std::sin(0.05);
+            std::printf("  translucent, lit from behind: normal to camera %.4f, "
+                        "to light %.4f (expected %.4f); lit from the camera's "
+                        "side %.4f, %.4f (expected 0)\n",
+                        throughFront, throughBack, expected, reflectedFront,
+                        reflectedBack);
+            CHECK_NEAR(throughFront, expected, expected * 0.02);
+            CHECK_NEAR(throughBack, expected, expected * 0.02);
+            CHECK(reflectedFront < expected * 0.001);
+            CHECK(reflectedBack < expected * 0.001);
         }
 
         // --- A frame decides its own invalidation, and says what it is of ----

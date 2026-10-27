@@ -8122,3 +8122,48 @@ crosses two of its surfaces, and measures 0.199 against 0.20.
 
 **Not covered.** `specular_hit`, the DLSS reflection-distance guide, still
 treats every surface as opaque.
+
+## 2026-10-28 -- Transmission against the MaterialX specification
+
+A review of every closure that transmits, against `MaterialX.PBRSpec.md`
+1.39.3 and the stock `genglsl` bodies.
+
+**Agrees.** `dielectric_bsdf` tints reflected and transmitted light, as the spec
+says `tint` does. A closed object is crossed twice, so its tint is applied
+squared, which is what MaterialX's own `$refractionTwoSided` does. R, T and RT
+behave as specified. Total internal reflection comes from the Fresnel itself.
+`ior = 0` disables the Fresnel curve as specified, since
+`mx_fresnel_dielectric` returns one when `ior^2 + cos^2 - 1 < 0`, leaving the
+reflection to weight and tint. A medium is entered and left only on a
+transmission, decided by the geometric normal, and a thin-walled surface enters
+none. `UsdPreviewSurface`'s opacity below one with no threshold is
+transmission, through MaterialX's own graph, and is not a cutout.
+
+**Fixed.**
+
+- `translucent_bsdf` inverted the authored normal without turning it to face
+  the viewer. Stock MaterialX does the same, and a rasteriser never shades a
+  back face. A path that reached the sheet from the side its normal pointed
+  away from scattered back to its own side, as reflection, which the
+  specification's "diffuse transmission" cannot do. A render test now views
+  one sheet lit from behind with its normal facing each way. It reads 0.2488
+  both ways, against `E / pi = 0.2498`, and nothing when lit from the camera's
+  side. With the old line, the sheet facing the light read 0 and reflected
+  0.2488.
+- `thin_walled` was read from `open_pbr_surface` and `standard_surface` but
+  not from the PBR library's own `surface` node, where the specification
+  defines it.
+- `generalized_schlick_bsdf`, when it transmits, took three fixes the
+  dielectric already had. Its side comes from the geometric normal. Its
+  Fresnel is one wherever the microfacet cannot refract: an artistic curve
+  knows no critical angle, and the lobe had nowhere to send `1 - F` there.
+  Its lobe probabilities are no longer clamped to [0.05, 0.95], and a T-only
+  lobe no longer reflects one sample in twenty. Reflection-only use, the only
+  use any stock shading model makes of it, is unchanged. The closure suite's
+  RT cases pass: chi-squared p = 0.49, furnace within 0.012%.
+
+**Open.** Three questions are in the roadmap rather than decided here (open
+questions 11 to 13). VDF coefficients are specified in m^-1 and integrated per
+scene unit. The BTDF carries no `eta^2`. A transmissive Schlick lobe still
+ignores `thin_walled`.
+

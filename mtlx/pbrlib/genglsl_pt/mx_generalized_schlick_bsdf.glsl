@@ -19,6 +19,30 @@
 #include "lib/mx_microfacet_specular.glsl"
 #include "lib/mx_pt_sampling.glsl"
 
+// ---- hdClaude: total internal reflection, for a lobe that transmits -------
+//
+// MaterialX: "Depending on the IOR and incident angle, it is possible for
+// total internal reflection to occur, generating no transmission even if T
+// or RT is selected." A dielectric's Fresnel says so itself -- it is exactly
+// one past the critical angle -- but an artistic Schlick curve knows no
+// critical angle and stays below one there. The refraction direction is
+// still bent by the index recovered from F0, so past that angle the lobe
+// has nowhere to send `1 - F` of the light: the sampler fell back to a
+// reflection the evaluation then weighed at the reflection lobe's share
+// alone, and the transmission evaluation answered for configurations no
+// direction reaches. Taking F as one wherever the microfacet cannot
+// refract makes both halves agree with each other and with the spec. A
+// reflection-only lobe is left exactly as upstream evaluates it.
+vec3 hdclaude_schlick_fresnel(float VdotH, FresnelData fd, bool transmissive,
+                              float etaRatio)
+{
+    if (transmissive && etaRatio * etaRatio * (1.0 - VdotH * VdotH) >= 1.0)
+    {
+        return vec3(1.0);
+    }
+    return mx_compute_fresnel(VdotH, fd);
+}
+
 void mx_generalized_schlick_bsdf(ClosureData closureData, float weight, vec3 color0, vec3 color82, vec3 color90, float exponent, vec2 roughness, float thinfilm_thickness, float thinfilm_ior, vec3 N, vec3 X, int distribution, int scatter_mode, inout BSDF bsdf)
 {
     if (weight < M_FLOAT_EPS)
@@ -30,7 +54,10 @@ void mx_generalized_schlick_bsdf(ClosureData closureData, float weight, vec3 col
     vec3 V = closureData.V;
     vec3 L = closureData.L;
 
-    bool entering = dot(N, V) > 0.0;
+    // Which side of the interface, read from the geometric normal; see
+    // hdclaude_entering and mx_dielectric_bsdf for what the shading normal
+    // got wrong.
+    bool entering = hdclaude_entering(N, V);
 
     N = mx_forward_facing_normal(N, V);
     float NdotV = clamp(dot(N, V), M_FLOAT_EPS, 1.0);
@@ -73,6 +100,9 @@ void mx_generalized_schlick_bsdf(ClosureData closureData, float weight, vec3 col
     float etaInv = etaT / etaI;
 
     bool transmissive = scatter_mode != 0;
+    // Only RT chooses between lobes. Asked for one lobe, the closure has no
+    // alternative to weigh; see mx_dielectric_bsdf.
+    bool choosesLobe = scatter_mode == 2;
     // A lobe is a delta whenever *either* alpha is degenerate, not only when
     // their average is.
     //
@@ -129,15 +159,31 @@ void mx_generalized_schlick_bsdf(ClosureData closureData, float weight, vec3 col
         vec3 H = mx_pt_to_world(Ht, Xa, Ya, N);
 
         float VdotH = clamp(dot(V, H), M_FLOAT_EPS, 1.0);
-        vec3 Fh = mx_compute_fresnel(VdotH, fd);
+        vec3 Fh = hdclaude_schlick_fresnel(VdotH, fd, transmissive, etaRatio);
+        // Unclamped, and only RT splits, for the reasons mx_dielectric_bsdf
+        // gives: a clamp makes the density disagree with the sampler wherever
+        // the Fresnel is outside it, and a T-only lobe split anyway reflects one
+        // sample in twenty for nothing.
         float reflectProbability =
-            transmissive ? clamp(mx_pt_luminance_weight(Fh), 0.05, 0.95) : 1.0;
+            choosesLobe ? clamp(mx_pt_luminance_weight(Fh), 0.0, 1.0)
+                        : (transmissive ? 0.0 : 1.0);
 
         float u = mx_pt_selection_random();
         float selectionPdf;
         vec3 refracted;
-        if (mx_pt_select_lobe(u, reflectProbability, selectionPdf) ||
-            !mx_pt_refract(V, H, etaRatio, refracted))
+        bool choseReflection = mx_pt_select_lobe(u, reflectProbability, selectionPdf);
+        bool refracts = !choseReflection && mx_pt_refract(V, H, etaRatio, refracted);
+        if (scatter_mode == 1 && !refracts)
+        {
+            // Past the critical angle a T-only lobe has no reflection of its
+            // own to fall back to, and offering one would be weighed by a
+            // density that never produced it. Its response there is zero, so
+            // the sample carries nothing.
+            bsdf.sampledL = vec3(0.0);
+            bsdf.isDelta = smoothSurface ? 1.0 : 0.0;
+            return;
+        }
+        if (choseReflection || !refracts)
         {
             // Kept only on the view's side, and a refraction only if it
             // crosses: a lobe's sample that lands where the lobe has no
@@ -168,7 +214,7 @@ void mx_generalized_schlick_bsdf(ClosureData closureData, float weight, vec3 col
 
         vec3 Ht = vec3(dot(H, Xa), dot(H, Ya), dot(H, N));
 
-        vec3  F = mx_compute_fresnel(VdotH, fd);
+        vec3  F = hdclaude_schlick_fresnel(VdotH, fd, transmissive, etaRatio);
         float D = mx_ggx_NDF(Ht, safeAlpha);
         float G = mx_ggx_smith_G2(NdotL, NdotV, avgAlpha);
 
@@ -181,7 +227,7 @@ void mx_generalized_schlick_bsdf(ClosureData closureData, float weight, vec3 col
         float G1V = mx_pt_ggx_smith_G1_anisotropic(
             vec3(dot(V, Xa), dot(V, Ya), NdotV), safeAlpha);
         float reflectProbability =
-            transmissive ? clamp(mx_pt_luminance_weight(F), 0.05, 0.95) : 1.0;
+            choosesLobe ? clamp(mx_pt_luminance_weight(F), 0.0, 1.0) : 1.0;
         bsdf.pdf = dot(N, L) > 0.0
                        ? mx_pt_ggx_VNDF_reflection_PDF(Ht, safeAlpha, G1V, NdotV) *
                              reflectProbability
@@ -223,7 +269,7 @@ void mx_generalized_schlick_bsdf(ClosureData closureData, float weight, vec3 col
         }
 
         vec3 Hlocal = vec3(dot(H, Xa), dot(H, Ya), dot(H, N));
-        vec3 F = mx_compute_fresnel(abs(VdotH), fd);
+        vec3 F = hdclaude_schlick_fresnel(abs(VdotH), fd, transmissive, etaRatio);
         float D = mx_ggx_NDF(Hlocal, safeAlpha);
         float G = mx_ggx_smith_G2(NdotL, NdotV, avgAlpha);
 
@@ -242,7 +288,7 @@ void mx_generalized_schlick_bsdf(ClosureData closureData, float weight, vec3 col
                      max(NdotV, M_FLOAT_EPS);
         float jacobian = mx_pt_refraction_jacobian(VdotH, LdotH, etaInv);
         float refractProbability =
-            1.0 - clamp(mx_pt_luminance_weight(F), 0.05, 0.95);
+            choosesLobe ? 1.0 - clamp(mx_pt_luminance_weight(F), 0.0, 1.0) : 1.0;
         bsdf.pdf = pdfH * jacobian * refractProbability;
 
         bsdf.isDelta = smoothSurface ? 1.0 : 0.0;

@@ -606,3 +606,34 @@ Tracked here rather than decided prematurely.
 6. **Volume rendering.** MaterialX VDFs are declared and generated; hdClaude
    currently plans homogeneous interior media only. Heterogeneous volumes
    (`UsdVol`) are not scheduled.
+
+11. **Raised 2026-10-28: a VDF's coefficients are in m^-1, and nothing reads
+    `metersPerUnit`.** MaterialX gives `absorption_vdf` and `anisotropic_vdf`
+    rates per metre. The integrator multiplies them by distances in scene units,
+    so on a stage in centimetres an authored VDF absorbs a hundred times too
+    much. Scaling by the stage's units is not the whole answer. `standard_surface`
+    and `open_pbr_surface` build those coefficients from `transmission_depth`,
+    which their own specifications give in scene units, and scaling would break
+    every one of them. So the fix depends on where a coefficient came from, which
+    the generated code no longer knows. Every gallery stage is in metres, so
+    nothing rendered so far is affected.
+12. **Raised 2026-10-28: the BTDF carries no `eta^2`.** A refraction's
+    `f / pdf` is `(1 - F) G2 / G1`. Radiance is not scaled by `(eta_V / eta_L)^2`
+    across the interface, as pbrt's radiance mode scales it. This is the
+    convention MaterialX's requirements point to: its specification asks every
+    BSDF to conserve energy and be reciprocal, and a radiance-scaled BTDF
+    returns `eta^2 (1 - F)` from inside glass. The scale cancels for any path
+    that enters and leaves a medium, so no gallery scene shows it. It does not
+    cancel for a camera or a light *inside* a dielectric: an emitter sealed in
+    glass or water would come out `eta^2` too bright. Recorded so the choice is
+    made once, deliberately, if such a scene arrives.
+13. **Raised 2026-10-28: a transmissive `generalized_schlick_bsdf` is behind
+    the dielectric.** It now decides its side from the geometric normal, takes
+    total internal reflection into its Fresnel, and splits lobes only in RT
+    mode. It still ignores `thin_walled`, which the specification applies to
+    every transmissive BSDF. It has no transmission energy compensation, so a
+    rough one loses light. In T mode it keeps its own `1 - F`, the standalone
+    reading, where the dielectric divides out a `layer`'s factor. No stock
+    shading model transmits through it (gltf_pbr, OpenPBR, UsdPreviewSurface and
+    Disney all use it reflection-only), so only hand-authored graphs reach these.
+

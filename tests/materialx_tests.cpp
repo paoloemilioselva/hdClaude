@@ -593,6 +593,9 @@ void TestThinWalledIsReadFromTheDocument(mx::DocumentPtr libraries)
          "standard_surface default"},
         {"standard_surface", "thin_walled", true, true, true,
          "standard_surface thin"},
+        // The PBR library's own node, where the specification defines it.
+        {"surface", "thin_walled", false, false, false, "surface default"},
+        {"surface", "thin_walled", true, true, true, "surface thin"},
     };
 
     for (const Case& probe : cases) {
