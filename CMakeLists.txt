@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(hdClaude VERSION 1.0.0 LANGUAGES C CXX)
+project(hdClaude VERSION 1.0.1 LANGUAGES C CXX)
 
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
