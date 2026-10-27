@@ -8197,3 +8197,35 @@ hides and shows an instancer, an instance by `invisibleIds`, a prototype, and
 the outer instancer of a nested pair. Against the old plugin it fails exactly
 the four instancer-visibility steps.
 
+## 2026-10-28 -- Does a material network edit reach the program?
+
+**The question.** hdClaude caches compiled materials, and an edit has to get
+past each cache. The material compiler keeps every program under a key taken
+from the network: each node's type and parameters, each connection with its
+input and output names, the primvars and the terminals, with texture paths
+keyed on where they resolve. The scene store shares one material index between
+materials whose keys agree. A key that missed something an edit changes would
+serve the old program.
+
+**Measured.** `usd_material_edits` renders a stage through one frame recorder,
+which keeps one imaging engine, and compares each edit with a fresh recorder by
+the colour of a plain cube and of a PointInstancer prototype sharing one
+MaterialX `standard_surface`. These all agree, and each changes the picture:
+
+- the Material's interface input
+- base_color rewired from one image reader to another
+- an image's file swapped, and swapped back
+- base_color rewired to a NodeGraph output, and that graph's input edited
+- base_color disconnected for a constant
+- an input moved between two outputs of a `separate3`
+
+**One edit no renderer sees.** Rewiring the Material's own
+`outputs:mtlx:surface` to another shader leaves the live engine on the old one,
+in Storm as well as in hdClaude. OpenUSD 26.03's
+`UsdImagingDataSourceMaterialPrim::Invalidate` dirties a Material for its
+`inputs:` only, and `UsdImagingMaterialAdapter::InvalidateImagingSubprim` looks
+for a dirty property along the *current* connections, which the old shader is
+no longer on. No notice reaches Hydra, so neither a delegate nor a scene index
+plugin can act on it. The test still makes this edit and prints a note, so it
+will say when UsdImaging starts delivering it.
+
