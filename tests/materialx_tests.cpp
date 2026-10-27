@@ -8,10 +8,12 @@
 #include "test_support.h"
 
 #include "hdclaude/gpu/glsl_compiler.h"
+#include "hdclaude/gpu/path_tracer.h"
 #include "hdclaude/materialx/pathtracer_generator.h"
 
 #include <MaterialXCore/Document.h>
 #include <MaterialXFormat/Util.h>
+#include <MaterialXFormat/XmlIo.h>
 #include <MaterialXGenShader/GenContext.h>
 #include <MaterialXGenShader/Shader.h>
 #include <MaterialXGenShader/Util.h>
@@ -20,6 +22,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -1095,6 +1098,228 @@ void TestRoutedImagesNameTheirSamplerAfterTheImage(mx::DocumentPtr libraries)
     }
 }
 
+/// A surface material of `shaderNode` with `opacityInput` set to `value`, or
+/// left unauthored when `value` is negative.
+template <typename T>
+mx::DocumentPtr BuildOpacityMaterial(mx::DocumentPtr libraries,
+                                     const std::string& shaderNode,
+                                     const std::string& opacityInput,
+                                     const T& value, bool author)
+{
+    mx::DocumentPtr doc = BuildNamedSurfaceMaterial(libraries, shaderNode);
+    if (doc && author) {
+        SetValue(doc->getNode("ptShader"), opacityInput, value);
+    }
+    return doc;
+}
+
+/// The float a folded opacity carries, or -1 when it is not a constant.
+float FoldedOpacity(const std::string& extracted)
+{
+    if (extracted.empty()) {
+        return -1.0f;
+    }
+    mx::DocumentPtr doc = mx::createDocument();
+    mx::readFromXmlString(doc, extracted);
+    const mx::NodeGraphPtr graph = doc->getNodeGraph("hdclaude_opacity");
+    const mx::NodePtr folded = graph ? graph->getNode("folded") : nullptr;
+    const mx::InputPtr value = folded ? folded->getInput("value") : nullptr;
+    return value ? value->getValue()->asA<float>() : -1.0f;
+}
+
+/// What is taken out of a material as its cutout opacity.
+///
+/// The cases that must come back *empty* are the important ones: every surface
+/// in every scene is one of them, and an opaque surface marked cut out makes
+/// traversal hand each of its triangles to the kernel. A `UsdPreviewSurface`
+/// with nothing authored is the sharpest of these -- its own nodegraph still
+/// computes `opacity >= opacityThreshold ? 1 : 0` -- and an asset like Intel
+/// Sponza has 137 of them.
+void TestCutoutOpacityIsReadFromTheDocument(mx::DocumentPtr libraries)
+{
+    std::printf("  --- cutout opacity ---\n");
+
+    // Unauthored, on each named surface: opaque.
+    for (const char* shader : {"standard_surface", "open_pbr_surface",
+                               "UsdPreviewSurface", "gltf_pbr"}) {
+        mx::DocumentPtr doc = BuildNamedSurfaceMaterial(libraries, shader);
+        if (!doc) {
+            continue;
+        }
+        std::vector<std::string> diagnostics;
+        const std::string extracted = AuthoredCutoutOpacity(doc, nullptr, &diagnostics);
+        std::printf("  %s, nothing authored: %s\n", shader,
+                    extracted.empty() ? "opaque" : "cut out");
+        CHECK(extracted.empty());
+        CHECK(diagnostics.empty());
+    }
+
+    // Constants fold, through each surface's own graph.
+    {
+        mx::DocumentPtr doc = BuildOpacityMaterial(
+            libraries, "standard_surface", "opacity", mx::Color3(0.3f, 0.3f, 0.3f), true);
+        const float folded = FoldedOpacity(AuthoredCutoutOpacity(doc));
+        std::printf("  standard_surface opacity 0.3: folded %.4f\n", folded);
+        CHECK_NEAR(folded, 0.3, 1.0e-5);
+    }
+    {
+        mx::DocumentPtr doc = BuildOpacityMaterial(
+            libraries, "open_pbr_surface", "geometry_opacity", 0.4f, true);
+        const float folded = FoldedOpacity(AuthoredCutoutOpacity(doc));
+        std::printf("  open_pbr_surface geometry_opacity 0.4: folded %.4f\n", folded);
+        CHECK_NEAR(folded, 0.4, 1.0e-6);
+    }
+    {
+        // UsdPreviewSurface below its threshold is absent, and at or above it
+        // present -- and with no threshold, an opacity below one is the
+        // surface's *transmission* in MaterialX's graph, not its presence.
+        mx::DocumentPtr below = BuildOpacityMaterial(
+            libraries, "UsdPreviewSurface", "opacity", 0.3f, true);
+        SetValue(below->getNode("ptShader"), "opacityThreshold", 0.5f);
+        CHECK_NEAR(FoldedOpacity(AuthoredCutoutOpacity(below)), 0.0, 1.0e-6);
+
+        mx::DocumentPtr above = BuildOpacityMaterial(
+            libraries, "UsdPreviewSurface", "opacity", 0.7f, true);
+        SetValue(above->getNode("ptShader"), "opacityThreshold", 0.5f);
+        CHECK(AuthoredCutoutOpacity(above).empty());
+
+        mx::DocumentPtr transmissive = BuildOpacityMaterial(
+            libraries, "UsdPreviewSurface", "opacity", 0.3f, true);
+        CHECK(AuthoredCutoutOpacity(transmissive).empty());
+    }
+    {
+        mx::DocumentPtr doc = BuildOpacityMaterial(
+            libraries, "standard_surface", "opacity", mx::Color3(1.0f, 1.0f, 1.0f), true);
+        CHECK(AuthoredCutoutOpacity(doc).empty());
+    }
+
+    // A texture does not fold. The graph is copied, and the path is baked
+    // resolved: from the map Hydra supplies when it has one for the image's
+    // uniform, and from the document's `fileprefix` when it does not.
+    {
+        mx::DocumentPtr doc = BuildNamedSurfaceMaterial(libraries, "UsdPreviewSurface");
+        mx::NodeGraphPtr graph = doc->addNodeGraph("NG_leaf");
+        graph->setFilePrefix("/assets/leaf/");
+        mx::NodePtr image = graph->addNode("image", "mask", "float");
+        image->setNodeDefString("ND_image_float");
+        image->addInput("file", "filename")->setValueString("mask.png");
+        mx::NodePtr other = graph->addNode("image", "other", "float");
+        other->setNodeDefString("ND_image_float");
+        other->addInput("file", "filename")->setValueString("other.png");
+        mx::NodePtr product = graph->addNode("multiply", "product", "float");
+        product->addInput("in1", "float")->setConnectedNode(image);
+        product->addInput("in2", "float")->setConnectedNode(other);
+        graph->addOutput("out", "float")->setConnectedNode(product);
+
+        mx::NodePtr shader = doc->getNode("ptShader");
+        mx::InputPtr opacity = AddInput(shader, "opacity");
+        opacity->setNodeGraphString("NG_leaf");
+        opacity->setOutputString("out");
+        SetValue(shader, "opacityThreshold", 0.5f);
+
+        const std::map<std::string, std::string> resolved = {
+            {"mask_file", "/resolved/mask.png"}};
+        std::vector<std::string> diagnostics;
+        const std::string extracted = AuthoredCutoutOpacity(doc, &resolved, &diagnostics);
+        CHECK(!extracted.empty());
+        CHECK(diagnostics.empty());
+        CHECK(FoldedOpacity(extracted) < 0.0f);
+        CHECK(extracted.find("/resolved/mask.png") != std::string::npos);
+        CHECK(extracted.find("/assets/leaf/other.png") != std::string::npos);
+        CHECK(extracted.find("ifgreatereq") != std::string::npos);
+        // The shading graph is not part of it.
+        CHECK(extracted.find("BSDF") == std::string::npos);
+    }
+}
+
+/// The library generates once for every cut-out material, and splices into
+/// both traversal kernels so that each compiles.
+void TestOpacityLibraryCompilesIntoTraversal(const GlslCompiler& compiler,
+                                             mx::DocumentPtr libraries)
+{
+    std::printf("  --- opacity library ---\n");
+
+    std::vector<std::pair<std::uint32_t, std::string>> cutout;
+    {
+        mx::DocumentPtr doc = BuildOpacityMaterial(
+            libraries, "standard_surface", "opacity", mx::Color3(0.5f, 0.5f, 0.5f), true);
+        cutout.emplace_back(3u, AuthoredCutoutOpacity(doc));
+    }
+    for (const std::uint32_t index : {5u, 9u}) {
+        // Two materials whose graphs have the same node names, which the
+        // library has to keep apart.
+        mx::DocumentPtr doc = BuildNamedSurfaceMaterial(libraries, "UsdPreviewSurface");
+        mx::NodePtr uv = AddNode(doc, "texcoord", "uv", "vector2");
+        mx::NodePtr image = doc->addNode("image", "mask", "float");
+        image->setNodeDefString("ND_image_float");
+        image->addInput("file", "filename")->setValueString("mask.png");
+        image->addInput("texcoord", "vector2")->setConnectedNode(uv);
+        mx::NodePtr shader = doc->getNode("ptShader");
+        Connect(shader, "opacity", image);
+        SetValue(shader, "opacityThreshold", 0.5f);
+        cutout.emplace_back(index, AuthoredCutoutOpacity(doc));
+    }
+    for (const auto& entry : cutout) {
+        CHECK(!entry.second.empty());
+    }
+
+    std::string error;
+    const OpacityLibrary opacityLibrary =
+        OpacityLibraryDocument(cutout, libraries, &error);
+    const mx::OutputPtr& output = opacityLibrary.output;
+    CHECK(output != nullptr);
+    if (!output) {
+        std::fprintf(stderr, "  %s\n", error.c_str());
+        return;
+    }
+
+    std::string library;
+    try {
+        mx::ShaderGeneratorPtr generator = PathTracerShaderGenerator::create();
+        mx::GenContext context(generator);
+        context.registerSourceCodeSearchPath(SourceSearchPath());
+        context.getOptions().shaderInterfaceType = mx::SHADER_INTERFACE_REDUCED;
+        library = generator->generate("opacity_library", output, context)
+                      ->getSourceCode(mx::Stage::PIXEL);
+    } catch (const std::exception& exception) {
+        std::fprintf(stderr, "  generation failed: %s\n", exception.what());
+    }
+    CHECK(!library.empty());
+    if (library.empty()) {
+        return;
+    }
+    SaveForInspection("opacity_library", library);
+
+    const std::string code = StripComments(library);
+    CHECK(code.find("#version") == std::string::npos);
+    CHECK(code.find("hdclaude_material_opacity(uint material)") != std::string::npos);
+    CHECK(code.find("hdclaude_material_cutout(uint material)") != std::string::npos);
+    for (const char* label : {"case 3u:", "case 5u:", "case 9u:"}) {
+        CHECK(code.find(label) != std::string::npos);
+    }
+    // The nodes that join the roots exist only to be generated from.
+    CHECK(code.find("hdclaude_opacity_sum") == std::string::npos);
+
+    const std::filesystem::path directory(HDCLAUDE_SHADER_DIR);
+    for (const char* kernel : {"extend.comp.glsl", "shadow.comp.glsl"}) {
+        const std::string source =
+            SpliceOpacityLibrary(LoadKernel(directory, kernel), library);
+        CHECK(!source.empty());
+        GlslCompileOptions options;
+        options.moduleName = kernel;
+        const GlslCompileResult compiled = compiler.Compile(source, options);
+        if (!compiled.ok) {
+            std::fprintf(stderr, "  %s with the library did not compile:\n%s\n",
+                         kernel, compiled.log.c_str());
+        }
+        CHECK(compiled.ok);
+        if (compiled.ok) {
+            std::printf("  %s with the library: %zu SPIR-V words\n", kernel,
+                        compiled.spirv.size());
+        }
+    }
+}
+
 int main()
 {
     // Unbuffered: a crash inside MaterialX would otherwise discard every
@@ -1122,6 +1347,8 @@ int main()
     TestDisplacementIsReadFromTheDocument(libraries);
     TestDisplacementGeneratesItsOwnProgram(compiler, libraries);
     TestRoutedImagesNameTheirSamplerAfterTheImage(libraries);
+    TestCutoutOpacityIsReadFromTheDocument(libraries);
+    TestOpacityLibraryCompilesIntoTraversal(compiler, libraries);
 
     return hdclaude_test::Summarize("hdClaudeMaterialXTests");
 }

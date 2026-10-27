@@ -1,0 +1,333 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+# Cut-out opacity, read left to right. MaterialX defines the `surface` node's
+# opacity as the surface's *cutout* opacity, so each of these is decided during
+# traversal, for camera rays and shadow rays alike (shaders/cutout.glsl):
+#
+#   leaf cards   UsdPreviewSurface, opacity from a texture's alpha, cut at
+#                opacityThreshold 0.5 -- the USD leaf-card idiom. The leaves
+#                and their shadows have the leaf's outline and its two holes.
+#   panel        standard_surface whose opacity is a MaterialX checkerboard:
+#                a procedural, generated into the opacity library.
+#   ghost        open_pbr_surface with geometry_opacity 0.5: present for half
+#                the rays, so half its shadow.
+#   tinted       UsdPreviewSurface with opacity 0.35 and no threshold. In
+#                MaterialX's UsdPreviewSurface that is *transmission*, not a
+#                cutout: the sphere is a dielectric, and fully present.
+#   cube         one mesh, two GeomSubsets: opaque red sides and the panel's
+#                perforated material on top, so only the top is cut out.
+def Xform "World"
+{
+    def Camera "camera"
+    {
+        float2 clippingRange = (0.1, 100)
+        float focalLength = 30
+        float horizontalAperture = 36
+        float verticalAperture = 20.25
+        matrix4d xformOp:transform = (
+            (1, 0, 0, 0),
+            (0, 0.970143, -0.242536, 0),
+            (0, 0.242536, 0.970143, 0),
+            (0, 5, 17, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    # From the front left and above, so every shadow falls behind and to the
+    # right of what casts it, onto ground the camera can see. Normalised, so
+    # the intensity is the illuminance it delivers whatever its angle.
+    def DistantLight "key"
+    {
+        color3f inputs:color = (1, 0.95, 0.86)
+        float inputs:intensity = 3
+        bool inputs:normalize = 1
+        float inputs:angle = 1
+        matrix4d xformOp:transform = (
+            (0.833, 0, 0.555, 0),
+            (0.387, 0.718, -0.581, 0),
+            (-0.398, 0.697, 0.597, 0),
+            (0, 0, 0, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    def DomeLight "sky"
+    {
+        color3f inputs:color = (0.55, 0.66, 0.85)
+        float inputs:intensity = 0.4
+    }
+
+    def Mesh "ground" (
+        apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        float3[] extent = [(-15, 0, -15), (15, 0, 15)]
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-15, 0, 15), (15, 0, 15), (15, 0, -15), (-15, 0, -15)]
+        rel material:binding = </World/Looks/Ground>
+    }
+
+    def Xform "leaves"
+    {
+        matrix4d xformOp:transform = (
+            (1, 0, 0, 0),
+            (0, 1, 0, 0),
+            (0, 0, 1, 0),
+            (-6, 0, 0.5, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+
+        def Mesh "cardA" (
+            apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            uniform bool doubleSided = 1
+            float3[] extent = [(-0.6, 0, 0), (0.6, 2.4, 0)]
+            int[] faceVertexCounts = [4]
+            int[] faceVertexIndices = [0, 1, 2, 3]
+            point3f[] points = [(-0.6, 0, 0), (0.6, 0, 0), (0.6, 2.4, 0), (-0.6, 2.4, 0)]
+            texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+                interpolation = "vertex"
+            )
+            rel material:binding = </World/Looks/LeafCard>
+        }
+
+        def Mesh "cardB" (
+            apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            uniform bool doubleSided = 1
+            float3[] extent = [(-0.6, 0, 0), (0.6, 2.4, 0)]
+            int[] faceVertexCounts = [4]
+            int[] faceVertexIndices = [0, 1, 2, 3]
+            point3f[] points = [(-0.6, 0, 0), (0.6, 0, 0), (0.6, 2.4, 0), (-0.6, 2.4, 0)]
+            texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+                interpolation = "vertex"
+            )
+            rel material:binding = </World/Looks/LeafCard>
+            matrix4d xformOp:transform = (
+                (0, 0, -1, 0),
+                (0, 1, 0, 0),
+                (1, 0, 0, 0),
+                (0, 0, 0, 1)
+            )
+            uniform token[] xformOpOrder = ["xformOp:transform"]
+        }
+
+        # Leaning out towards the light, smaller, off to one side.
+        def Mesh "cardC" (
+            apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            uniform bool doubleSided = 1
+            float3[] extent = [(-0.6, 0, 0), (0.6, 2.4, 0)]
+            int[] faceVertexCounts = [4]
+            int[] faceVertexIndices = [0, 1, 2, 3]
+            point3f[] points = [(-0.6, 0, 0), (0.6, 0, 0), (0.6, 2.4, 0), (-0.6, 2.4, 0)]
+            texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+                interpolation = "vertex"
+            )
+            rel material:binding = </World/Looks/LeafCard>
+            matrix4d xformOp:transform = (
+                (0.566, 0, -0.566, 0),
+                (0.283, 0.693, 0.283, 0),
+                (0.490, -0.400, 0.490, 0),
+                (1.1, 0, 0.6, 1)
+            )
+            uniform token[] xformOpOrder = ["xformOp:transform"]
+        }
+    }
+
+    def Mesh "panel" (
+        apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        uniform bool doubleSided = 1
+        float3[] extent = [(-3.75, 0.1, 0), (-1.25, 2.6, 0)]
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-3.75, 0.1, 0), (-1.25, 0.1, 0), (-1.25, 2.6, 0), (-3.75, 2.6, 0)]
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        rel material:binding = </World/Looks/Perforated>
+    }
+
+    def Sphere "ghost" (
+        apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+        double radius = 1
+        rel material:binding = </World/Looks/Ghost>
+        double3 xformOp:translate = (0.6, 1, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Sphere "tinted" (
+        apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+        double radius = 1
+        rel material:binding = </World/Looks/Tinted>
+        double3 xformOp:translate = (3.3, 1, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Mesh "cube" (
+        apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        # front, back, right, left, top, bottom
+        int[] faceVertexIndices = [0, 1, 2, 3, 5, 4, 7, 6, 1, 5, 6, 2, 4, 0, 3, 7, 3, 2, 6, 7, 4, 5, 1, 0]
+        point3f[] points = [(-1, -1, 1), (1, -1, 1), (1, 1, 1), (-1, 1, 1), (-1, -1, -1), (1, -1, -1), (1, 1, -1), (-1, 1, -1)]
+        texCoord2f[] primvars:st = [
+            (0, 0), (1, 0), (1, 1), (0, 1),
+            (0, 0), (1, 0), (1, 1), (0, 1),
+            (0, 0), (1, 0), (1, 1), (0, 1),
+            (0, 0), (1, 0), (1, 1), (0, 1),
+            (0, 0), (1, 0), (1, 1), (0, 1),
+            (0, 0), (1, 0), (1, 1), (0, 1)
+        ] (
+            interpolation = "faceVarying"
+        )
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </World/Looks/Red>
+        matrix4d xformOp:transform = (
+            (0.8, 0, 0, 0),
+            (0, 0.8, 0, 0),
+            (0, 0, 0.8, 0),
+            (6.3, 0.8, 0, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+
+        def GeomSubset "top" (
+            apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            uniform token elementType = "face"
+            uniform token familyName = "materialBind"
+            int[] indices = [4]
+            rel material:binding = </World/Looks/Perforated>
+        }
+    }
+
+    def Scope "Looks"
+    {
+        def Material "Ground"
+        {
+            token outputs:surface.connect = </World/Looks/Ground/Surface.outputs:surface>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.45, 0.45, 0.45)
+                float inputs:roughness = 0.9
+                token outputs:surface
+            }
+        }
+
+        def Material "LeafCard"
+        {
+            token outputs:surface.connect = </World/Looks/LeafCard/Surface.outputs:surface>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor.connect = </World/Looks/LeafCard/Texture.outputs:rgb>
+                float inputs:opacity.connect = </World/Looks/LeafCard/Texture.outputs:a>
+                float inputs:opacityThreshold = 0.5
+                float inputs:roughness = 0.6
+                token outputs:surface
+            }
+
+            def Shader "Texture"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @./textures/leaf_card.png@
+                token inputs:sourceColorSpace = "sRGB"
+                float2 inputs:st.connect = </World/Looks/LeafCard/Coordinates.outputs:result>
+                float3 outputs:rgb
+                float outputs:a
+            }
+
+            def Shader "Coordinates"
+            {
+                uniform token info:id = "UsdPrimvarReader_float2"
+                string inputs:varname = "st"
+                float2 outputs:result
+            }
+        }
+
+        def Material "Perforated"
+        {
+            token outputs:mtlx:surface.connect = </World/Looks/Perforated/Surface.outputs:out>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "ND_standard_surface_surfaceshader"
+                color3f inputs:base_color = (0.85, 0.45, 0.12)
+                float inputs:specular_roughness = 0.4
+                color3f inputs:opacity.connect = </World/Looks/Perforated/Holes.outputs:out>
+                token outputs:out
+            }
+
+            def Shader "Holes"
+            {
+                uniform token info:id = "ND_checkerboard_color3"
+                float2 inputs:uvtiling = (6, 6)
+                color3f outputs:out
+            }
+        }
+
+        def Material "Ghost"
+        {
+            token outputs:mtlx:surface.connect = </World/Looks/Ghost/Surface.outputs:out>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "ND_open_pbr_surface_surfaceshader"
+                color3f inputs:base_color = (0.55, 0.75, 1.0)
+                float inputs:geometry_opacity = 0.5
+                token outputs:out
+            }
+        }
+
+        def Material "Tinted"
+        {
+            token outputs:surface.connect = </World/Looks/Tinted/Surface.outputs:surface>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.9, 0.85, 0.7)
+                float inputs:opacity = 0.35
+                float inputs:ior = 1.5
+                float inputs:roughness = 0.1
+                token outputs:surface
+            }
+        }
+
+        def Material "Red"
+        {
+            token outputs:surface.connect = </World/Looks/Red/Surface.outputs:surface>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.7, 0.12, 0.1)
+                float inputs:roughness = 0.5
+                token outputs:surface
+            }
+        }
+    }
+}

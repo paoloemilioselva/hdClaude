@@ -37,8 +37,14 @@ class HdClaudeMaterialCompiler {
     /// is PathTracer::DisplaceKernelSource(): a material's surface program is
     /// joined to the first and its displacement program to the second, so
     /// each ABI is defined in one place rather than restated here.
+    ///
+    /// `extendKernel` and `shadowKernel` are PathTracer::ExtendKernelSource()
+    /// and ShadowKernelSource(), which the opacity library of a scene's cut-out
+    /// materials is spliced into (CompileTraversal).
     HdClaudeMaterialCompiler(std::string shadeKernel,
-                             std::string displaceKernel);
+                             std::string displaceKernel,
+                             std::string extendKernel = {},
+                             std::string shadowKernel = {});
 
     /// One texture a material samples: where it is, and how to read it.
     ///
@@ -94,6 +100,25 @@ class HdClaudeMaterialCompiler {
     hdclaude::CompiledMaterial CompileDiffuse(const GfVec3f& color,
                                               const std::string& name);
 
+    /// The traversal kernels a published scene's cut-out materials need.
+    struct Traversal {
+        /// Invalid when no material is cut out, or when the library failed --
+        /// in which case `error` says why and every surface is drawn opaque.
+        hdclaude::TraversalPrograms programs;
+        /// The library's textures, in the order the generator numbered them.
+        /// The caller acquires them and fills `programs.textureSlots`.
+        std::vector<TextureRequest> textures;
+        std::string error;
+    };
+
+    /// Generate one opacity library from every material in `materials` that
+    /// carries a `cutoutOpacity`, indexed as the scene indexes them, and
+    /// compile the `extend` and `shadow` kernels with it.
+    ///
+    /// Remembers the last set it compiled, so republishing a scene whose
+    /// cut-out materials did not change compiles nothing.
+    Traversal CompileTraversal(const std::vector<hdclaude::CompiledMaterial>& materials);
+
     /// True once the MaterialX libraries loaded. Everything fails cleanly if
     /// they did not, rather than crashing on a null document.
     bool Ready() const { return _libraries != nullptr; }
@@ -146,6 +171,12 @@ class HdClaudeMaterialCompiler {
     std::map<std::string, Result> _compiled;
     std::string _shadeKernel;
     std::string _displaceKernel;
+    std::string _extendKernel;
+    std::string _shadowKernel;
+    /// The last CompileTraversal, by the material indices and opacities it was
+    /// compiled from.
+    std::string _traversalKey;
+    Traversal _traversal;
     hdclaude::GlslCompiler _compiler;
     MaterialX::FileSearchPath _sourceSearchPath;
     MaterialX::DocumentPtr _libraries;

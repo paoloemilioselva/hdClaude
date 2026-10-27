@@ -194,7 +194,14 @@ class SceneAccelerator {
     /// Prototypes whose fingerprint is unchanged keep their existing BLAS; the
     /// rest are built. The TLAS is rebuilt whenever instances change, which is
     /// cheap relative to a BLAS build.
-    void Update(const Scene& scene);
+    ///
+    /// `nonOpaque`, indexed like `scene.instances`, marks the placements whose
+    /// triangles traversal must hand to the kernel rather than commit: those
+    /// with a cut-out material. A per-placement flag rather than the
+    /// prototype's `OpacityClass`, because one prototype can be placed under
+    /// an opaque binding and a cut-out one, and because a material that
+    /// becomes cut out then rebuilds no BLAS. Empty marks none.
+    void Update(const Scene& scene, const std::vector<bool>& nonOpaque = {});
 
     const TopLevelStructure& Tlas() const { return _tlas; }
     const BottomLevelStructure* Blas(std::uint32_t prototype) const;

@@ -34,8 +34,13 @@ struct Transform3x4 {
 ///
 /// An opaque mesh lets the driver take its fast path and skip any-hit
 /// evaluation entirely. This is part of a prototype's identity because changing
-/// it changes the acceleration structure's build flags, so a mesh that becomes
-/// cut-out cannot reuse an opaque structure.
+/// it changes the acceleration structure's build flags.
+///
+/// Cut-out materials do not use it. Whether a ray meets a cut-out surface is
+/// asked per *placement*, through a TLAS instance flag (SceneAccelerator::Update),
+/// because one prototype can be placed under an opaque binding and a cut-out
+/// one, and because a material that becomes cut out should not rebuild a BLAS.
+/// Every prototype is built `Opaque`.
 enum class OpacityClass : std::uint8_t {
     Opaque,
     Cutout,

@@ -1,6 +1,8 @@
 #version 460
 #extension GL_EXT_ray_query : require
+// hdclaude:opacity-library
 #include "path_state.glsl"
+#include "cutout.glsl"
 
 // Closest-hit traversal for the active queue, and the volumetric walk that
 // happens on the way.
@@ -43,31 +45,42 @@ layout(push_constant) uniform ExtendParams {
 // With `exceptions`, every candidate -- triangles included -- is handed to the
 // shader, and a hit is kept only if the cull volumes among `volumes` that link
 // the hit placement do not cull it (docs/cull-volumes.md 2.1). Without it the
-// query is the ordinary opaque one, which a stretch of a ray already kept for
-// every placement it can meet needs nothing more than.
+// query leaves opacity to the instances: an opaque one is committed by the
+// implementation, and a triangle of one with a cut-out material is handed to
+// the loop to ask that material whether the ray meets it (cutout.glsl).
+//
+// `key` names this traversal for the cut-out coin.
 void extend_trace(vec3 origin, vec3 direction, float tMin, float tMax,
                   uint cullMask, bool exceptions, uint volumes, uint path,
-                  inout bool hitGeometry, inout float tGeometry,
+                  uint key, inout bool hitGeometry, inout float tGeometry,
                   inout vec2 barycentrics, inout int instance,
                   inout int primitive)
 {
     rayQueryEXT query;
     rayQueryInitializeEXT(query, sceneTlas,
                           exceptions ? gl_RayFlagsNoOpaqueEXT
-                                     : gl_RayFlagsOpaqueEXT,
+                                     : gl_RayFlagsNoneEXT,
                           cullMask, origin, tMin, direction, tMax);
     while (rayQueryProceedEXT(query))
     {
-        // Only reached by the exception query, which hands every triangle to
-        // the shader so that its own cull links can be asked about the hit.
+        // Reached by the exception query, which hands every triangle to the
+        // shader so that its own cull links can be asked about the hit, and by
+        // a triangle of a cut-out placement.
         if (rayQueryGetIntersectionTypeEXT(query, false) ==
             gl_RayQueryCandidateIntersectionTriangleEXT)
         {
             int candidateInstance =
                 rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
-            if (!hdclaude_cull_point(
-                    rayQueryGetIntersectionTEXT(query, false),
-                    instanceCullLinks.values[candidateInstance] & volumes))
+            float candidateT = rayQueryGetIntersectionTEXT(query, false);
+            if (!(exceptions &&
+                  hdclaude_cull_point(
+                      candidateT,
+                      instanceCullLinks.values[candidateInstance] & volumes)) &&
+                hdclaude_candidate_present(
+                    key, candidateInstance,
+                    rayQueryGetIntersectionPrimitiveIndexEXT(query, false),
+                    rayQueryGetIntersectionBarycentricsEXT(query, false),
+                    origin, direction, candidateT))
             {
                 rayQueryConfirmIntersectionEXT(query);
             }
@@ -205,7 +218,10 @@ void extend_trace(vec3 origin, vec3 direction, float tMin, float tMax,
                     !(exceptions &&
                       hdclaude_cull_point(
                           hit, instanceCullLinks.values[candidateInstance] &
-                                   volumes)))
+                                   volumes)) &&
+                    hdclaude_candidate_present(key, candidateInstance,
+                                               candidateSegment, vec2(0.0),
+                                               origin, direction, hit))
                 {
                     rayQueryGenerateIntersectionEXT(query, hit);
                 }
@@ -238,7 +254,7 @@ void extend_trace(vec3 origin, vec3 direction, float tMin, float tMax,
 // the placements regular for its kind; then, if there are exceptions, once
 // more over the whole ray up to the hit found, against those alone.
 void extend_closest(vec3 origin, vec3 direction, bool primary, uint path,
-                    out bool hitGeometry, out float tGeometry,
+                    uint key, out bool hitGeometry, out float tGeometry,
                     out vec2 barycentrics, out int instance,
                     out int primitive)
 {
@@ -252,7 +268,7 @@ void extend_closest(vec3 origin, vec3 direction, bool primary, uint path,
     if (volumes == 0u)
     {
         extend_trace(origin, direction, 0.0, 1.0e30, 0xFFu, false, 0u, path,
-                     hitGeometry, tGeometry, barycentrics, instance,
+                     key, hitGeometry, tGeometry, barycentrics, instance,
                      primitive);
         return;
     }
@@ -266,7 +282,7 @@ void extend_closest(vec3 origin, vec3 direction, bool primary, uint path,
          ++guard)
     {
         extend_trace(origin, direction, t, stretchEnd, regular, false, volumes,
-                     path, hitGeometry, tGeometry, barycentrics, instance,
+                     path, key, hitGeometry, tGeometry, barycentrics, instance,
                      primitive);
         if (hitGeometry)
         {
@@ -280,7 +296,7 @@ void extend_closest(vec3 origin, vec3 direction, bool primary, uint path,
         extend_trace(origin, direction, 0.0, tGeometry,
                      primary ? HDCLAUDE_MASK_PRIMARY_EXCEPTION
                              : HDCLAUDE_MASK_SECONDARY_EXCEPTION,
-                     true, volumes, path, hitGeometry, tGeometry,
+                     true, volumes, path, key, hitGeometry, tGeometry,
                      barycentrics, instance, primitive);
     }
 }
@@ -474,8 +490,11 @@ void main()
     {
         // Primary while it is still the camera's ray: the first bounce, and
         // no collision in a medium yet (README semantics rule 3).
+        // The path's state as this ray leaves names the traversal for the
+        // cut-out coin: it is the same for every stretch of the ray and
+        // different for the next ray, including the next step of a walk.
         extend_closest(origin, direction,
-                       extendParams.bounce == 0u && collisions == 0, path,
+                       extendParams.bounce == 0u && collisions == 0, path, rng,
                        hitGeometry, tGeometry, barycentrics, instance,
                        primitive);
 

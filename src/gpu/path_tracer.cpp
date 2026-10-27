@@ -18,6 +18,10 @@
 namespace hdclaude {
 namespace {
 
+/// The `material` TextureBindingsFor takes for the traversal kernels, which
+/// sample the opacity library's images rather than any one material's.
+constexpr int kTraversalTextures = -2;
+
 /// Descriptor bindings, matching shaders/path_state.glsl. Declared once and
 /// shared by every kernel, so the layouts cannot disagree and a set written for
 /// one pipeline is valid for another.
@@ -514,6 +518,19 @@ std::string ResolveKernelIncludes(const std::filesystem::path& directory,
     return output.str();
 }
 
+std::string SpliceOpacityLibrary(const std::string& kernel,
+                                 const std::string& library)
+{
+    const std::size_t marker = kernel.find(kOpacityLibraryMarker);
+    if (marker == std::string::npos) {
+        return {};
+    }
+    std::string spliced = kernel;
+    spliced.replace(marker, std::string(kOpacityLibraryMarker).size(),
+                    library + "\n#define HDCLAUDE_TRAVERSAL_OPACITY 1\n");
+    return spliced;
+}
+
 std::string LoadKernel(const std::filesystem::path& directory,
                        const std::string& name)
 {
@@ -573,8 +590,19 @@ PathTracer::PathTracer(const VulkanContext& context, VulkanAllocator& allocator,
                               std::string("kernel ") + name + " failed:\n" +
                                   compiled.log);
         }
+        if (std::string(name) == "extend.comp.glsl") {
+            _defaultExtendSpirv = compiled.spirv;
+        } else if (std::string(name) == "shadow.comp.glsl") {
+            _defaultShadowSpirv = compiled.spirv;
+        }
         return ComputePipeline(context, compiled.spirv, bindings, pushBytes, name);
     };
+
+    // The traversal kernels are kept as source as well, because a scene with
+    // cut-out materials replaces them with ones that have its opacity library
+    // spliced in, and as SPIR-V, because a scene without goes back to these.
+    _extendKernelSource = LoadKernel(_shaderDirectory, "extend.comp.glsl");
+    _shadowKernelSource = LoadKernel(_shaderDirectory, "shadow.comp.glsl");
 
     _raygen = build("raygen.comp.glsl", 0);
     _extend = build("extend.comp.glsl", sizeof(ExtendPush));
@@ -796,7 +824,9 @@ std::vector<VkDescriptorImageInfo> PathTracer::TextureBindingsFor(
     int material) const
 {
     const std::vector<std::uint32_t>* slots = nullptr;
-    if (material >= 0 &&
+    if (material == kTraversalTextures) {
+        slots = &_traversalTextureSlots;
+    } else if (material >= 0 &&
         static_cast<std::size_t>(material) < _materialTextureSlots.size()) {
         slots = &_materialTextureSlots[static_cast<std::size_t>(material)];
     }
@@ -1039,9 +1069,28 @@ const Scene& PathTracer::ApplyDisplacement(
 }
 
 void PathTracer::SetScene(const Scene& publishedScene,
-                          const std::vector<CompiledMaterial>& materials)
+                          const std::vector<CompiledMaterial>& materials,
+                          const TraversalPrograms& traversal)
 {
     _context.RequireLive("PathTracer::SetScene");
+
+    // The traversal kernels: the scene's, when it has cut-out materials, and
+    // the defaults otherwise. Rebuilt only when that changes, or when a scene
+    // brings new ones; the descriptor sets are rewritten below with everything
+    // else, because the generation is bumped for every publication.
+    if (traversal.Valid() || _traversalFromScene) {
+        const std::vector<BindingDescription> bindings = KernelBindings();
+        const bool fromScene = traversal.Valid();
+        _extend = ComputePipeline(
+            _context, fromScene ? traversal.extendSpirv : _defaultExtendSpirv,
+            bindings, sizeof(ExtendPush), "extend.comp.glsl");
+        _shadow = ComputePipeline(
+            _context, fromScene ? traversal.shadowSpirv : _defaultShadowSpirv,
+            bindings, 0, "shadow.comp.glsl");
+        _traversalFromScene = fromScene;
+    }
+    _traversalTextureSlots =
+        traversal.Valid() ? traversal.textureSlots : std::vector<std::uint32_t>();
 
     // Textures first, because a displacement reads them: a height map is the
     // usual way a displacement varies, and the pass below samples the same
@@ -1061,7 +1110,35 @@ void PathTracer::SetScene(const Scene& publishedScene,
     const Scene& scene =
         ApplyDisplacement(publishedScene, materials, &displacedStorage);
 
-    _accelerator->Update(scene);
+    // Which placements traversal must ask about: those whose material, or one
+    // of whose per-primitive materials, is cut out. Only when the kernels can
+    // answer -- a cut-out material with no library is drawn opaque, which is
+    // what it was before there was one.
+    std::vector<bool> nonOpaque;
+    if (traversal.Valid() && !traversal.cutoutMaterials.empty()) {
+        const std::unordered_set<std::uint32_t> cutout(
+            traversal.cutoutMaterials.begin(), traversal.cutoutMaterials.end());
+        std::vector<bool> prototypeCutout(scene.prototypes.size(), false);
+        for (std::size_t i = 0; i < scene.prototypes.size(); ++i) {
+            const MeshPrototype& prototype = scene.prototypes[i];
+            for (const std::uint32_t material :
+                 prototype.IsCurve() ? prototype.segmentMaterials
+                                     : prototype.triangleMaterials) {
+                if (cutout.count(material) != 0) {
+                    prototypeCutout[i] = true;
+                    break;
+                }
+            }
+        }
+        nonOpaque.resize(scene.instances.size(), false);
+        for (std::size_t i = 0; i < scene.instances.size(); ++i) {
+            const MeshInstance& instance = scene.instances[i];
+            nonOpaque[i] = cutout.count(instance.material) != 0 ||
+                           (instance.prototype < prototypeCutout.size() &&
+                            prototypeCutout[instance.prototype]);
+        }
+    }
+    _accelerator->Update(scene, nonOpaque);
 
     // --- Instance table -----------------------------------------------------
     // Built in the same order the accelerator emits instances, because the
@@ -2633,11 +2710,11 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
             }
 
             WriteDescriptors(other.raygenSet, _raygen, other);
-            WriteDescriptors(other.extendSet, _extend, other);
+            WriteDescriptors(other.extendSet, _extend, other, kTraversalTextures);
             WriteDescriptors(other.prepareSet, _prepareDispatch, other);
             WriteDescriptors(other.sortSet, _materialSort, other);
             WriteDescriptors(other.environmentSet, _environment, other);
-            WriteDescriptors(other.shadowSet, _shadow, other);
+            WriteDescriptors(other.shadowSet, _shadow, other, kTraversalTextures);
             WriteDescriptors(other.filmSet, _film, other);
             WriteDescriptors(other.guidesSet, _guides, other);
             WriteDescriptors(other.specularHitSet, _specularHit, other);

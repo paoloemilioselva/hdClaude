@@ -29,6 +29,7 @@
 #include <filesystem>
 #include <map>
 #include <fstream>
+#include <stdexcept>
 #include <utility>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -760,9 +761,13 @@ void CollectTexturePaths(
 }  // namespace
 
 HdClaudeMaterialCompiler::HdClaudeMaterialCompiler(std::string shadeKernel,
-                                                   std::string displaceKernel)
+                                                   std::string displaceKernel,
+                                                   std::string extendKernel,
+                                                   std::string shadowKernel)
     : _shadeKernel(std::move(shadeKernel)),
-      _displaceKernel(std::move(displaceKernel))
+      _displaceKernel(std::move(displaceKernel)),
+      _extendKernel(std::move(extendKernel)),
+      _shadowKernel(std::move(shadowKernel))
 {
     const mx::FilePath stdlibDir(HDCLAUDE_MATERIALX_STDLIB_DIR);
     const mx::FilePath mtlxDir = ResolveMtlxLibraryDirectory();
@@ -1306,6 +1311,140 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::CompileUncached(
                 path.GetText(), result.displacementReason.c_str());
         }
     }
+
+    // --- The cutout opacity -------------------------------------------------
+    //
+    // Taken out of the surface last, because taking it flattens the bound
+    // shader in the document, and the surface has been generated from the
+    // document by now. It is compiled with every other cut-out material's into
+    // the traversal kernels when the scene is published (CompileTraversal).
+    try {
+        std::vector<std::string> diagnostics;
+        result.material.cutoutOpacity =
+            hdclaude::AuthoredCutoutOpacity(document, &resolvedTextures, &diagnostics);
+        for (const std::string& diagnostic : diagnostics) {
+            TF_WARN("hdClaude: material <%s>: %s", path.GetText(),
+                    diagnostic.c_str());
+        }
+        if (!result.material.cutoutOpacity.empty()) {
+            HdClaudeTrace("material <%s>: cut out", path.GetText());
+        }
+    } catch (const std::exception& exception) {
+        TF_WARN("hdClaude: material <%s>: its opacity could not be read (%s); it "
+                "is rendered opaque",
+                path.GetText(), exception.what());
+    }
+    return result;
+}
+
+HdClaudeMaterialCompiler::Traversal HdClaudeMaterialCompiler::CompileTraversal(
+    const std::vector<hdclaude::CompiledMaterial>& materials)
+{
+    std::vector<std::pair<std::uint32_t, std::string>> cutout;
+    std::string key;
+    for (std::size_t i = 0; i < materials.size(); ++i) {
+        if (materials[i].cutoutOpacity.empty()) {
+            continue;
+        }
+        cutout.emplace_back(static_cast<std::uint32_t>(i),
+                            materials[i].cutoutOpacity);
+        key += std::to_string(i) + "\n" + materials[i].cutoutOpacity + "\n";
+    }
+    if (cutout.empty()) {
+        return {};
+    }
+
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (key == _traversalKey) {
+        return _traversal;
+    }
+
+    Traversal result;
+    const std::string name = "hdclaude_opacity_library";
+    if (!Ready() || _extendKernel.empty() || _shadowKernel.empty()) {
+        result.error = "the traversal kernels or the MaterialX libraries are "
+                       "not available";
+    } else {
+        try {
+            std::string error;
+            const hdclaude::OpacityLibrary opacityLibrary =
+                hdclaude::OpacityLibraryDocument(cutout, _libraries, &error);
+            if (!opacityLibrary.output) {
+                throw std::runtime_error(error);
+            }
+            const mx::DocumentPtr& document = opacityLibrary.document;
+            const mx::OutputPtr& output = opacityLibrary.output;
+
+            mx::ShaderGeneratorPtr generator =
+                hdclaude::PathTracerShaderGenerator::create();
+            mx::GenContext context(generator);
+            context.registerSourceCodeSearchPath(_sourceSearchPath);
+            context.getOptions().shaderInterfaceType = mx::SHADER_INTERFACE_REDUCED;
+
+            // Every path in the library was baked resolved when each material's
+            // opacity was taken out, so the document is the only authority.
+            std::map<std::string, std::vector<int>> udimSubstitution;
+            TellGeneratorAboutUdimSets(document, name, nullptr, generator.get(),
+                                       &udimSubstitution);
+
+            const std::string dumpDir =
+                hdclaude::EnvironmentValue("HDCLAUDE_DUMP_SHADERS");
+            if (!dumpDir.empty()) {
+                std::error_code code;
+                std::filesystem::create_directories(dumpDir, code);
+                mx::writeToXmlFile(document, (std::filesystem::path(dumpDir) /
+                                              (name + ".mtlx")).string());
+            }
+
+            mx::ShaderPtr shader = generator->generate(name, output, context);
+            if (!shader) {
+                throw std::runtime_error("MaterialX generated no opacity library");
+            }
+            const std::string library = shader->getSourceCode(mx::Stage::PIXEL);
+            if (!dumpDir.empty()) {
+                std::ofstream out(std::filesystem::path(dumpDir) / (name + ".glsl"));
+                out << library;
+            }
+
+            CollectTexturePaths(document, name, nullptr, generator.get(),
+                                udimSubstitution, &result.textures);
+
+            auto compile = [&](const std::string& kernel, const char* module) {
+                const std::string source =
+                    hdclaude::SpliceOpacityLibrary(kernel, library);
+                if (source.empty()) {
+                    throw std::runtime_error(std::string(module) +
+                                             " has no opacity-library marker");
+                }
+                hdclaude::GlslCompileOptions options;
+                options.moduleName = module;
+                const hdclaude::GlslCompileResult compiled =
+                    CompileMaterialSource(_compiler, source, options);
+                if (!compiled.ok) {
+                    throw std::runtime_error(std::string(module) +
+                                             " did not compile: " + compiled.log);
+                }
+                return compiled.spirv;
+            };
+            result.programs.extendSpirv = compile(_extendKernel, "extend.opacity");
+            result.programs.shadowSpirv = compile(_shadowKernel, "shadow.opacity");
+            for (const auto& entry : cutout) {
+                result.programs.cutoutMaterials.push_back(entry.first);
+            }
+            HdClaudeTrace("opacity library: %zu cut-out material(s), %zu texture(s)",
+                          cutout.size(), result.textures.size());
+        } catch (const std::exception& exception) {
+            result = Traversal();
+            result.error = exception.what();
+        }
+    }
+    if (!result.error.empty()) {
+        TF_WARN("hdClaude: the cut-out opacity of %zu material(s) could not be "
+                "compiled into traversal, so they are rendered opaque: %s",
+                cutout.size(), result.error.c_str());
+    }
+    _traversalKey = key;
+    _traversal = result;
     return result;
 }
 

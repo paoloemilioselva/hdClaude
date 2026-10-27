@@ -978,7 +978,7 @@ const BottomLevelStructure* SceneAccelerator::SplatBlas(
     return found == _bySplatFingerprint.end() ? nullptr : &found->second;
 }
 
-void SceneAccelerator::Update(const Scene& scene)
+void SceneAccelerator::Update(const Scene& scene, const std::vector<bool>& nonOpaque)
 {
     _context.RequireLive("SceneAccelerator::Update");
 
@@ -1177,6 +1177,12 @@ void SceneAccelerator::Update(const Scene& scene)
                          : 0x00;
         entry.instanceShaderBindingTableRecordOffset = 0;
         entry.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+        // A cut-out placement overrides its geometry's opaque bit, so the
+        // kernels' candidate loops see its triangles (cutout.glsl).
+        const std::size_t index = static_cast<std::size_t>(&instance - scene.instances.data());
+        if (index < nonOpaque.size() && nonOpaque[index]) {
+            entry.flags |= VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR;
+        }
         entry.accelerationStructureReference = found->second.DeviceAddress();
         instances.push_back(entry);
     }

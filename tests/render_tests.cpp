@@ -139,6 +139,8 @@ CompiledMaterial CompileMaterial(
     // the whole chain rather than a value set by hand.
     material.dispersionAbbe = AuthoredDispersion(doc);
     material.thinWalled = AuthoredThinWalled(doc);
+    // Last, because it flattens the bound shader in the document.
+    material.cutoutOpacity = AuthoredCutoutOpacity(doc);
     return material;
 }
 
@@ -764,6 +766,152 @@ CompiledMaterial MakeImageMaterial(mx::DocumentPtr libraries,
     // One image, at pool slot 0.
     compiled.textureSlots = {0};
     return compiled;
+}
+
+/// The traversal kernels for the cut-out materials among `materials`, built
+/// the way the Hydra material compiler builds them (CompileTraversal), with the
+/// library's images at `textureSlots` in the pool.
+TraversalPrograms CompileTraversal(const std::vector<CompiledMaterial>& materials,
+                                   mx::DocumentPtr libraries,
+                                   const GlslCompiler& compiler,
+                                   const PathTracer& tracer,
+                                   std::vector<std::uint32_t> textureSlots = {})
+{
+    TraversalPrograms programs;
+    std::vector<std::pair<std::uint32_t, std::string>> cutout;
+    for (std::size_t i = 0; i < materials.size(); ++i) {
+        if (!materials[i].cutoutOpacity.empty()) {
+            cutout.emplace_back(static_cast<std::uint32_t>(i),
+                                materials[i].cutoutOpacity);
+        }
+    }
+    if (cutout.empty()) {
+        return programs;
+    }
+
+    std::string error;
+    const OpacityLibrary opacityLibrary =
+        OpacityLibraryDocument(cutout, libraries, &error);
+    const mx::OutputPtr& output = opacityLibrary.output;
+    if (!output) {
+        std::fprintf(stderr, "  opacity library: %s\n", error.c_str());
+        return programs;
+    }
+    mx::ShaderGeneratorPtr generator = PathTracerShaderGenerator::create();
+    mx::GenContext genContext(generator);
+    genContext.registerSourceCodeSearchPath(DefaultMaterialXSourceSearchPath());
+    genContext.getOptions().shaderInterfaceType = mx::SHADER_INTERFACE_REDUCED;
+    const mx::ShaderPtr shader =
+        generator->generate("opacity_library", output, genContext);
+    const std::string library = shader->getSourceCode(mx::Stage::PIXEL);
+
+    auto compile = [&](const std::string& kernel, const char* name) {
+        GlslCompileOptions options;
+        options.moduleName = name;
+        const GlslCompileResult compiled =
+            compiler.Compile(SpliceOpacityLibrary(kernel, library), options);
+        if (!compiled.ok) {
+            std::fprintf(stderr, "  %s failed:\n%s\n", name, compiled.log.c_str());
+        }
+        return compiled.spirv;
+    };
+    programs.extendSpirv = compile(tracer.ExtendKernelSource(), "extend.opacity");
+    programs.shadowSpirv = compile(tracer.ShadowKernelSource(), "shadow.opacity");
+    programs.textureSlots = std::move(textureSlots);
+    for (const auto& entry : cutout) {
+        programs.cutoutMaterials.push_back(entry.first);
+    }
+    return programs;
+}
+
+/// A grey `standard_surface` with a constant opacity.
+///
+/// `standard_surface` takes its opacity as a colour and reduces it to a float
+/// through `luminance` and `extract` inside its own graph, so a constant one
+/// is folded to a value on the host (AuthoredCutoutOpacity) and reaches the
+/// library as a constant.
+CompiledMaterial MakeStandardSurfaceWithOpacity(mx::DocumentPtr libraries,
+                                                const GlslCompiler& compiler,
+                                                const std::string& shadeKernel,
+                                                float opacity,
+                                                const std::string& name)
+{
+    mx::DocumentPtr doc = mx::createDocument();
+    doc->importLibrary(libraries);
+    mx::NodePtr shader = AddNode(doc, "standard_surface", "ss", "surfaceshader");
+    SetValue(shader, "base", 1.0f);
+    SetValue(shader, "base_color", mx::Color3(0.6f, 0.6f, 0.6f));
+    SetValue(shader, "specular", 0.0f);
+    SetValue(shader, "opacity", mx::Color3(opacity, opacity, opacity));
+    mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+    Connect(material, "surfaceshader", shader);
+    return CompileMaterial(doc, compiler, shadeKernel, name);
+}
+
+/// A grey `open_pbr_surface` with a constant `geometry_opacity`, which OpenPBR
+/// defines as the surface's presence.
+CompiledMaterial MakeOpenPbrWithOpacity(mx::DocumentPtr libraries,
+                                        const GlslCompiler& compiler,
+                                        const std::string& shadeKernel,
+                                        float opacity, const std::string& name)
+{
+    mx::DocumentPtr doc = mx::createDocument();
+    doc->importLibrary(libraries);
+    mx::NodePtr shader = AddNode(doc, "open_pbr_surface", "op", "surfaceshader");
+    SetValue(shader, "base_color", mx::Color3(0.8f, 0.8f, 0.8f));
+    SetValue(shader, "specular_weight", 0.0f);
+    SetValue(shader, "geometry_opacity", opacity);
+    mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+    Connect(material, "surfaceshader", shader);
+    return CompileMaterial(doc, compiler, shadeKernel, name);
+}
+
+/// A grey `UsdPreviewSurface` whose opacity is the red channel of image
+/// "mask", cut at `opacityThreshold` 0.5 -- the leaf-card idiom.
+///
+/// With `masked` false the image is not connected and the opacity is one, for
+/// the opaque reference the masked one is compared with.
+CompiledMaterial MakeMaskedPreviewSurface(mx::DocumentPtr libraries,
+                                          const GlslCompiler& compiler,
+                                          const std::string& shadeKernel,
+                                          bool masked, const std::string& name)
+{
+    mx::DocumentPtr doc = mx::createDocument();
+    doc->importLibrary(libraries);
+    mx::NodePtr shader = AddNode(doc, "UsdPreviewSurface", "ups", "surfaceshader");
+    SetValue(shader, "diffuseColor", mx::Color3(0.6f, 0.6f, 0.6f));
+    SetValue(shader, "roughness", 1.0f);
+    SetValue(shader, "opacityThreshold", 0.5f);
+    if (masked) {
+        mx::NodePtr uv = AddNode(doc, "texcoord", "uv", "vector2");
+        mx::NodePtr image = doc->addNode("image", "mask", "float");
+        image->setNodeDefString("ND_image_float");
+        if (mx::InputPtr file = image->addInput("file", "filename")) {
+            file->setValueString("mask.png");
+        }
+        if (mx::InputPtr texcoord = image->addInput("texcoord", "vector2")) {
+            texcoord->setConnectedNode(uv);
+        }
+        Connect(shader, "opacity", image);
+    }
+    mx::NodePtr material = AddNode(doc, "surfacematerial", "m", "material");
+    Connect(material, "surfaceshader", shader);
+    CompiledMaterial compiled = CompileMaterial(doc, compiler, shadeKernel, name);
+    if (masked) {
+        compiled.textureSlots = {0};
+    }
+    return compiled;
+}
+
+/// Two texels across: black on the left, white on the right.
+TextureImage MakeHalfMask()
+{
+    TextureImage image;
+    image.width = 2;
+    image.height = 1;
+    image.debugName = "mask";
+    image.texels = {0, 0, 0, 255, 255, 255, 255, 255};
+    return image;
 }
 
 /// A material whose one image is a UDIM set of three tiles.
@@ -4001,6 +4149,211 @@ int main()
             CHECK(Luminance(t1003) < 0.02f);
             CHECK(Luminance(t1011) < 0.02f);
             CHECK(Luminance(t1013) < 0.02f);
+        }
+
+        // --- Cut-out opacity: camera rays meet a surface with its opacity ----
+        //
+        // MaterialX's `surface` opacity is the surface's cutout opacity, so a
+        // camera ray meets a quad of opacity 0.25 a quarter of the time and
+        // sees the environment through it the rest. Nothing else in the frame
+        // can reach the quad, so the pixel is exactly 0.25 of the opaque quad
+        // plus 0.75 of the empty frame -- a closed form that needs no estimate
+        // of how the quad is lit.
+        {
+            RenderSettings lit = settings;
+            lit.samplesPerPixel = 256;
+            for (int i = 0; i < 3; ++i) {
+                lit.environmentColor[i] = 1.0f;
+                lit.sunRadiance[i] = 0.0f;
+            }
+
+            const std::vector<CompiledMaterial> cutoutMaterials = {
+                MakeStandardSurfaceWithOpacity(libraries, compiler,
+                                               tracer.ShadeKernelSource(), 0.25f,
+                                               "quarter_present"),
+                MakeStandardSurfaceWithOpacity(libraries, compiler,
+                                               tracer.ShadeKernelSource(), 1.0f,
+                                               "present"),
+            };
+            CHECK(!cutoutMaterials[0].cutoutOpacity.empty());
+            // An opacity of one is no cutout at all, and costs nothing.
+            CHECK(cutoutMaterials[1].cutoutOpacity.empty());
+            const TraversalPrograms traversal = CompileTraversal(
+                cutoutMaterials, libraries, compiler, tracer);
+            CHECK(traversal.Valid());
+
+            auto render = [&](int material) {
+                Scene scene;
+                if (material >= 0) {
+                    scene.prototypes.push_back(MakeQuad());
+                    scene.instances.push_back(
+                        {0, Transform3x4{}, std::uint32_t(material), true});
+                }
+                tracer.SetScene(scene, cutoutMaterials, traversal);
+                return Window(tracer.Render(kWidth, kHeight, LookDownZ(4.0f), lit),
+                              0.5f, 0.5f, 10);
+            };
+            const Pixel cutout = render(0);
+            const Pixel opaque = render(1);
+            const Pixel empty = render(-1);
+            const double expected = 0.25 * Luminance(opaque) + 0.75 * Luminance(empty);
+            std::printf("  cut-out 0.25 in front of the sky: %.4f (opaque %.4f, "
+                        "empty %.4f, expected %.4f)\n",
+                        Luminance(cutout), Luminance(opaque), Luminance(empty),
+                        expected);
+            CHECK(std::abs(Luminance(opaque) - Luminance(empty)) > 0.1);
+            CHECK_NEAR(Luminance(cutout), expected, expected * 0.02);
+
+            // Without the traversal programs the same material is opaque:
+            // nothing marks the placement, so nothing asks.
+            Scene scene;
+            scene.prototypes.push_back(MakeQuad());
+            scene.instances.push_back({0, Transform3x4{}, 0, true});
+            tracer.SetScene(scene, cutoutMaterials);
+            const Pixel untraced = Window(
+                tracer.Render(kWidth, kHeight, LookDownZ(4.0f), lit), 0.5f, 0.5f, 10);
+            CHECK_NEAR(Luminance(untraced), Luminance(opaque),
+                       Luminance(opaque) * 0.02);
+        }
+
+        // --- Cut-out opacity: shadow rays are stopped with its opacity ------
+        //
+        // A floor lit by one distant light from the upper left, and an
+        // occluder above it whose shadow falls to the right of where the
+        // camera sees it. Direct light only, so every light sample crosses the
+        // occluder at most once: a half-present occluder lets exactly half the
+        // light through, and an opaque one none.
+        {
+            RenderSettings direct = settings;
+            direct.samplesPerPixel = 256;
+            direct.maxBounces = 1;
+            for (int i = 0; i < 3; ++i) {
+                direct.environmentColor[i] = 0.0f;
+                direct.sunRadiance[i] = 0.0f;
+            }
+
+            const std::vector<CompiledMaterial> shadowMaterials = {
+                materials[0],
+                MakeOpenPbrWithOpacity(libraries, compiler,
+                                       tracer.ShadeKernelSource(), 0.5f,
+                                       "half_present"),
+                MakeOpenPbrWithOpacity(libraries, compiler,
+                                       tracer.ShadeKernelSource(), 1.0f,
+                                       "occluder"),
+            };
+            CHECK(!shadowMaterials[1].cutoutOpacity.empty());
+            CHECK(shadowMaterials[2].cutoutOpacity.empty());
+            const TraversalPrograms traversal = CompileTraversal(
+                shadowMaterials, libraries, compiler, tracer);
+            CHECK(traversal.Valid());
+
+            auto render = [&](int occluder) {
+                Scene scene;
+                scene.prototypes.push_back(MakeQuad());
+                scene.instances.push_back(
+                    {0, Transform(3.0f, 3.0f, 1.0f, 0.0f, 0.0f, 0.0f), 0, true});
+                if (occluder >= 0) {
+                    scene.instances.push_back(
+                        {0, Transform(0.5f, 1.0f, 1.0f, -0.6f, 0.0f, 1.0f),
+                         std::uint32_t(occluder), true});
+                }
+                Light distant;
+                distant.direction[0] = 0.70710678f;
+                distant.direction[1] = 0.0f;
+                distant.direction[2] = -0.70710678f;
+                distant.angularRadius = 0.02f;
+                for (int i = 0; i < 3; ++i) {
+                    distant.radiance[i] = 1000.0f;
+                }
+                scene.lights.push_back(distant);
+                tracer.SetScene(scene, shadowMaterials, traversal);
+                const std::vector<float> image =
+                    tracer.Render(kWidth, kHeight, LookDownZ(4.0f), direct);
+                SavePpm(image, "cutout-shadow-" + std::to_string(occluder));
+                // World x = 0.4 on the floor, inside the shadow of the
+                // occluder and clear of where the camera sees it.
+                return Window(image, 0.6f, 0.5f, 4);
+            };
+            const Pixel absent = render(-1);
+            const Pixel half = render(1);
+            const Pixel opaque = render(2);
+            std::printf("  floor under a half-present occluder: %.4f (no "
+                        "occluder %.4f, opaque %.4f)\n",
+                        Luminance(half), Luminance(absent), Luminance(opaque));
+            CHECK(Luminance(absent) > 0.05);
+            CHECK(Luminance(opaque) < Luminance(absent) * 0.01);
+            CHECK_NEAR(Luminance(half), 0.5 * Luminance(absent),
+                       Luminance(absent) * 0.02);
+        }
+
+        // --- Cut-out opacity from a texture, at a threshold ----------------
+        //
+        // The leaf-card idiom: a `UsdPreviewSurface` whose opacity is a mask
+        // texture and whose `opacityThreshold` makes it all or nothing. Left of
+        // the mask's edge the camera sees the sky, right of it the surface.
+        // The library holds a second, unused cut-out material too, so each
+        // material's graph has to stay in its own case.
+        {
+            RenderSettings lit = settings;
+            lit.samplesPerPixel = 64;
+            for (int i = 0; i < 3; ++i) {
+                lit.environmentColor[i] = 1.0f;
+                lit.sunRadiance[i] = 0.0f;
+            }
+
+            const std::vector<CompiledMaterial> maskMaterials = {
+                MakeMaskedPreviewSurface(libraries, compiler,
+                                         tracer.ShadeKernelSource(), true, "masked"),
+                MakeMaskedPreviewSurface(libraries, compiler,
+                                         tracer.ShadeKernelSource(), false,
+                                         "unmasked"),
+                MakeStandardSurfaceWithOpacity(libraries, compiler,
+                                               tracer.ShadeKernelSource(), 0.25f,
+                                               "unused_cutout"),
+            };
+            CHECK(!maskMaterials[0].cutoutOpacity.empty());
+            // An unmasked UsdPreviewSurface's own graph still says
+            // `opacity >= opacityThreshold ? 1 : 0`, and that has to fold away
+            // or every surface in a USD asset would be cut out.
+            CHECK(maskMaterials[1].cutoutOpacity.empty());
+            const TraversalPrograms traversal = CompileTraversal(
+                maskMaterials, libraries, compiler, tracer, {0});
+            CHECK(traversal.Valid());
+            CHECK(traversal.cutoutMaterials.size() == 2);
+
+            auto render = [&](int material) {
+                Scene scene;
+                if (material >= 0) {
+                    MeshPrototype quad = MakeQuad();
+                    quad.uvs = {0, 0, 1, 0, 1, 1, 0, 1};
+                    scene.prototypes.push_back(quad);
+                    scene.instances.push_back(
+                        {0, Transform3x4{}, std::uint32_t(material), true});
+                }
+                scene.textures.push_back(
+                    std::make_shared<const TextureImage>(MakeHalfMask()));
+                tracer.SetScene(scene, maskMaterials, traversal);
+                const std::vector<float> image =
+                    tracer.Render(kWidth, kHeight, LookDownZ(4.0f), lit);
+                SavePpm(image, "cutout-mask-" + std::to_string(material));
+                return image;
+            };
+            const std::vector<float> masked = render(0);
+            const std::vector<float> unmasked = render(1);
+            const std::vector<float> empty = render(-1);
+            // The texel centres, at u = 0.25 and 0.75 of the quad.
+            const Pixel left = Window(masked, 0.375f, 0.5f, 3);
+            const Pixel right = Window(masked, 0.625f, 0.5f, 3);
+            const Pixel sky = Window(empty, 0.375f, 0.5f, 3);
+            const Pixel surface = Window(unmasked, 0.625f, 0.5f, 3);
+            std::printf("  masked quad: left %.4f (sky %.4f), right %.4f "
+                        "(surface %.4f)\n",
+                        Luminance(left), Luminance(sky), Luminance(right),
+                        Luminance(surface));
+            CHECK(std::abs(Luminance(sky) - Luminance(surface)) > 0.1);
+            CHECK_NEAR(Luminance(left), Luminance(sky), Luminance(sky) * 0.01);
+            CHECK_NEAR(Luminance(right), Luminance(surface),
+                       Luminance(surface) * 0.03);
         }
 
         // --- A frame decides its own invalidation, and says what it is of ----

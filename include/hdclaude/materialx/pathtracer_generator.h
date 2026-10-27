@@ -62,6 +62,22 @@ inline constexpr const char* kMaterialShadeEntryPoint = "hdclaude_material_shade
 inline constexpr const char* kMaterialDisplaceEntryPoint =
     "hdclaude_material_displace";
 
+/// Name of the generated function the traversal kernels call for a candidate
+/// hit on a cut-out surface: `float hdclaude_material_opacity(uint material)`,
+/// evaluated against whatever `hdclaude_set_surface_hit` last filled.
+inline constexpr const char* kMaterialOpacityEntryPoint =
+    "hdclaude_material_opacity";
+
+/// Name of the generated function that says whether a material is cut out at
+/// all: `bool hdclaude_material_cutout(uint material)`. Asked before a
+/// candidate's surface is reconstructed, so a material that is opaque costs a
+/// switch rather than an interpolation.
+inline constexpr const char* kMaterialCutoutQuery = "hdclaude_material_cutout";
+
+/// The output the opacity library is generated from. A graph whose output
+/// socket has this name is emitted as the library rather than as a material.
+inline constexpr const char* kOpacityLibraryOutput = "hdclaude_opacity_library";
+
 /// Syntax for `genglsl_pt`.
 ///
 /// Identical to Vulkan GLSL except that `BSDF` carries the path-tracing fields.
@@ -402,6 +418,68 @@ DisplacementTerminal AuthoredDisplacement(
 /// that computes a filename, or a `dot` with nothing behind it -- because no
 /// path can be read from the document there.
 mx::InputPtr FilenameSource(const mx::InputPtr& input);
+
+/// A document's cut-out opacity, as a self-contained MaterialX document, or
+/// empty when the surface is opaque.
+///
+/// MaterialX defines the `surface` node's `opacity` as the surface's *cutout*
+/// opacity: where it is below one, the surface is partly not there. A ray that
+/// meets such a surface passes it with probability `1 - opacity`, which is a
+/// question traversal has to answer -- for camera rays and shadow rays alike --
+/// before any shading kernel runs. So the opacity is taken out of the material
+/// here and evaluated during traversal (see `OpacityLibraryDocument`), and the
+/// shading program never reads it.
+///
+/// The surface shader the document's material binds is flattened -- only that
+/// one node, so `standard_surface`, `open_pbr_surface`, `UsdPreviewSurface` and
+/// `gltf_pbr` all reduce to the `surface` node their own nodegraphs end in --
+/// and the graph upstream of its `opacity` input is copied into one nodegraph,
+/// `hdclaude_opacity`, whose output `out` is the opacity. Every path a
+/// `filename` input reads is baked in resolved, from `resolvedTextures` (keyed
+/// by the uniform name, as everywhere else) or from the document's own
+/// `fileprefix`, because the copy is read in another document later.
+///
+/// A graph that reads no texture and no geometry is folded to its value first,
+/// for the nodes whose definition is simple enough to evaluate here. That is
+/// what keeps a `UsdPreviewSurface` with no opacity authored -- its own graph
+/// still says `opacity >= opacityThreshold ? 1 : 0` -- from making every
+/// surface in an asset cut out. A value of one is opaque and returns empty.
+///
+/// Flattens the bound surface shader in `document` in place. Call it after the
+/// document has been generated from.
+///
+/// `diagnostics`, when given, collects what the caller should report: a
+/// surface whose opacity cannot be traced, which is then rendered opaque.
+std::string AuthoredCutoutOpacity(
+    const mx::DocumentPtr& document,
+    const std::map<std::string, std::string>* resolvedTextures = nullptr,
+    std::vector<std::string>* diagnostics = nullptr);
+
+/// One document from which every cut-out material's opacity is generated as a
+/// single program, and the output to generate it from.
+///
+/// Both are returned, and the caller holds the document for as long as it uses
+/// the output: a MaterialX element holds its parent weakly, so an output whose
+/// document has gone has no parent and cannot be generated from.
+struct OpacityLibrary {
+    mx::DocumentPtr document;
+    mx::OutputPtr output;
+};
+
+/// `materials` pairs a material index with what `AuthoredCutoutOpacity`
+/// returned for it. Each one's nodes are copied into one nodegraph under a
+/// prefix of their own, and the output sums them through nodes the generator
+/// never emits: generating from that output is what makes MaterialX define
+/// every function the library needs exactly once, and the generator then
+/// emits each material's nodes inside its own `case` of
+/// `hdclaude_material_opacity`, so a candidate evaluates only its own
+/// material's graph.
+///
+/// Empty when `materials` is empty or a document could not be read, with the
+/// reason in `error`.
+OpacityLibrary OpacityLibraryDocument(
+    const std::vector<std::pair<std::uint32_t, std::string>>& materials,
+    const mx::DocumentPtr& libraries, std::string* error = nullptr);
 
 }  // namespace hdclaude
 

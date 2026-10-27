@@ -276,6 +276,15 @@ struct CompiledMaterial {
     /// like `dispersionAbbe`; see `AuthoredThinWalled`.
     bool thinWalled = false;
 
+    /// The material's cutout opacity, as the MaterialX document
+    /// `AuthoredCutoutOpacity` extracts, or empty when the surface is opaque.
+    ///
+    /// Text rather than a program because it is not compiled on its own: every
+    /// cut-out material's opacity is generated into one library that the
+    /// traversal kernels are compiled with (TraversalPrograms). This layer
+    /// never reads it; whoever builds those programs does.
+    std::string cutoutOpacity;
+
     // --- Displacement -----------------------------------------------------
     //
     // A material's `displacement` terminal is a second graph with a second
@@ -309,6 +318,46 @@ struct CompiledMaterial {
     /// Whether this material displaces at all.
     bool Displaces() const { return !displaceSpirv.empty(); }
 };
+
+/// The traversal kernels a scene with cut-out materials needs, and what they
+/// sample.
+///
+/// A cut-out material is one whose surface is partly absent: MaterialX's
+/// `surface` node's opacity is its cutout opacity, and whether a ray meets such
+/// a surface is decided during traversal rather than shading (cutout.glsl). So
+/// the kernels that traverse -- `extend` for paths and `shadow` for light
+/// samples -- are compiled with every cut-out material's opacity program
+/// spliced in, by whoever generates those programs, and published with the
+/// scene. Empty, the default kernels run and every surface is opaque.
+struct TraversalPrograms {
+    /// `extend.comp.glsl` and `shadow.comp.glsl`, each with the generated
+    /// opacity library at `kOpacityLibraryMarker` (SpliceOpacityLibrary).
+    std::vector<std::uint32_t> extendSpirv;
+    std::vector<std::uint32_t> shadowSpirv;
+
+    /// Where the library's textures live in the scene's texture pool, in the
+    /// order the generator numbered them -- the counterpart of a material's
+    /// `textureSlots`, for the one program every cut-out material shares.
+    std::vector<std::uint32_t> textureSlots;
+
+    /// The materials the library answers for. A placement whose material, or
+    /// any of whose per-primitive materials, is one of these is marked
+    /// non-opaque, so traversal hands its triangles to the kernel to ask.
+    std::vector<std::uint32_t> cutoutMaterials;
+
+    bool Valid() const { return !extendSpirv.empty() && !shadowSpirv.empty(); }
+};
+
+/// The line in `extend.comp.glsl` and `shadow.comp.glsl` the opacity library
+/// replaces. It follows their `#version`, which GLSL requires first, and
+/// precedes everything else.
+inline constexpr const char* kOpacityLibraryMarker = "// hdclaude:opacity-library";
+
+/// A traversal kernel's source with `library` in place of its marker, and the
+/// define that tells the kernel the library is there. Empty when the kernel
+/// has no marker.
+std::string SpliceOpacityLibrary(const std::string& kernel,
+                                 const std::string& library);
 
 /// Resolves `#include` directives in the kernel sources.
 ///
@@ -482,7 +531,12 @@ class PathTracer {
     /// `materials` is indexed by the `material` field of a MeshInstance, so
     /// there is one compiled pipeline per distinct material and the index in
     /// the scene is the index here.
-    void SetScene(const Scene& scene, const std::vector<CompiledMaterial>& materials);
+    ///
+    /// `traversal`, when valid, replaces the `extend` and `shadow` kernels with
+    /// ones that know the scene's cut-out materials. Without it every surface
+    /// is opaque, which is also what a scene with no cut-out material gets.
+    void SetScene(const Scene& scene, const std::vector<CompiledMaterial>& materials,
+                  const TraversalPrograms& traversal = {});
 
     /// Where the cull volumes are and what shape each is, indexed as the
     /// scene's `cullLinks` bits are.
@@ -568,6 +622,12 @@ class PathTracer {
     {
         return _displaceKernelSource;
     }
+
+    /// The traversal kernels' sources, which the opacity library is spliced
+    /// into (SpliceOpacityLibrary) to build a scene's TraversalPrograms.
+    /// Exposed for the reason ShadeKernelSource is.
+    const std::string& ExtendKernelSource() const { return _extendKernelSource; }
+    const std::string& ShadowKernelSource() const { return _shadowKernelSource; }
 
     /// How many prototypes the last `SetScene` displaced, and how many it
     /// took from the cache without running the program again.
@@ -771,8 +831,10 @@ class PathTracer {
                                    Scene* storage);
 
     /// The image array a material's descriptor set should be written with.
-    /// `material` indexes the compiled materials; a negative index means a
-    /// kernel that never samples, which gets placeholders throughout.
+    /// `material` indexes the compiled materials; `kTraversalTextures` means the
+    /// traversal kernels, which sample the opacity library's images; any other
+    /// negative index means a kernel that never samples, which gets
+    /// placeholders throughout.
     std::vector<VkDescriptorImageInfo> TextureBindingsFor(int material) const;
     void WriteDescriptors(VkDescriptorSet set, const ComputePipeline& pipeline,
                           const FrameSlot& slot, int material = -1);
@@ -783,6 +845,16 @@ class PathTracer {
     GlslCompiler _compiler;
     std::string _shadeKernelSource;
     std::string _displaceKernelSource;
+    std::string _extendKernelSource;
+    std::string _shadowKernelSource;
+    /// The kernels with no opacity library, kept so a scene that drops its
+    /// last cut-out material goes back to them without a compile.
+    std::vector<std::uint32_t> _defaultExtendSpirv;
+    std::vector<std::uint32_t> _defaultShadowSpirv;
+    /// Whether `_extend` and `_shadow` are the defaults or a scene's, and the
+    /// scene's texture slots for them when they are.
+    bool _traversalFromScene = false;
+    std::vector<std::uint32_t> _traversalTextureSlots;
 
     std::unique_ptr<SceneAccelerator> _accelerator;
     VulkanBuffer _instanceTable;

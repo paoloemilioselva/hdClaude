@@ -111,10 +111,11 @@ whole stage, the extra query is never issued.
 | `shadow` | secondary |
 | `specular_hit` (reflection guide probes for DLSS) | secondary, so the guides match the image, where a mirror shows a wall that is culled for primary rays only |
 
-hdClaude has no cutout-opacity continuation yet (`OpacityClass::Cutout` is
-declared but never set). When it is added, a continued camera ray must stay
-primary (README rule 3). That makes "primary" a flag on the path, not
-`bounce == 0`.
+Cut-out opacity is decided inside the same candidate loops
+(`shaders/cutout.glsl`), not by continuing a path from the shading kernel, so a
+camera ray that passes through a leaf is still the one camera ray and stays
+primary (README rule 3) without a flag on the path. A cut-out candidate is
+asked about its opacity only after its cull links have kept it.
 
 ### 2.3 Where it goes in the kernels
 

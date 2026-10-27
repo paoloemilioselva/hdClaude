@@ -944,6 +944,27 @@ void HdClaudeRenderPass::_Execute(
         std::vector<hdclaude::CompiledMaterial> materials;
         hdclaude::Scene scene = store->Snapshot(materials, selection);
 
+        // The traversal kernels, for whichever of the snapshot's materials are
+        // cut out. Compiled against the snapshot's own material indices, which
+        // are what the library's cases name; the compiler remembers the last
+        // set, so a republish that did not change them compiles nothing.
+        hdclaude::TraversalPrograms traversal;
+        if (HdClaudeMaterialCompiler* compiler = _renderDelegate->MaterialCompiler()) {
+            HdClaudeMaterialCompiler::Traversal compiled =
+                compiler->CompileTraversal(materials);
+            traversal = std::move(compiled.programs);
+            // The library's images are images its materials already sampled,
+            // so this finds them in the pool rather than decoding them.
+            HdClaudeTexturePool* pool = _renderDelegate->TexturePool();
+            if (traversal.Valid() && pool && !compiled.textures.empty()) {
+                std::vector<HdClaudeTexturePool::Request> requests;
+                for (const auto& texture : compiled.textures) {
+                    requests.push_back({texture.path, texture.colorSpace});
+                }
+                traversal.textureSlots = pool->AcquireAll(requests);
+            }
+        }
+
         // The texture pool is the delegate's, not the store's: it is filled
         // as bound materials are compiled and is shared by every material that
         // names the same image, so it is copied into the snapshot here rather
@@ -975,7 +996,7 @@ void HdClaudeRenderPass::_Execute(
 
         const auto publishStart = std::chrono::steady_clock::now();
         try {
-            tracer->SetScene(scene, materials);
+            tracer->SetScene(scene, materials, traversal);
             HdClaudeAddMilliseconds(
                 stages.publishMilliseconds,
                 std::chrono::duration<double, std::milli>(

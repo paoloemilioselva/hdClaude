@@ -491,7 +491,9 @@ void HdClaudeRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
         const auto materialXStart = std::chrono::steady_clock::now();
         _materialCompiler = std::make_unique<HdClaudeMaterialCompiler>(
             _pathTracer->ShadeKernelSource(),
-            _pathTracer->DisplaceKernelSource());
+            _pathTracer->DisplaceKernelSource(),
+            _pathTracer->ExtendKernelSource(),
+            _pathTracer->ShadowKernelSource());
         const auto fallbackStart = std::chrono::steady_clock::now();
         HdClaudeAddMilliseconds(
             _stageStats.startupMaterialXMs,

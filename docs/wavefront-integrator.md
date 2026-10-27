@@ -81,6 +81,12 @@ path state. Writes all slots to `active`.
 One `rayQueryEXT` closest-hit traversal per active path. Writes a hit record:
 instance, primitive, barycentrics, and material id.
 
+A surface with a cut-out material is met with the probability its opacity
+gives (MaterialX's `surface` opacity is cutout opacity), decided in the
+candidate loop: the scene's cut-out materials' opacity graphs are generated into
+one library spliced into this kernel and into `shadow`, and their placements are
+marked non-opaque so their triangles reach the loop (`shaders/cutout.glsl`).
+
 No Shader Execution Reordering: its builtins do not exist on the compute stage.
 The `sort` kernel below is what provides coherence, and it provides all of it —
 see [architecture.md](architecture.md) §2.1.
@@ -125,7 +131,10 @@ material's alone.
 
 ### `shadow`
 Any-hit traversal with early termination for the shadow queue. Unoccluded
-records add their pre-computed contribution to the path's radiance. Batching
+records add their pre-computed contribution to the path's radiance. A cut-out
+surface occludes with the probability it is present, as in `extend`, so the
+light reaching a point is attenuated by the product of `1 - opacity` over the
+surfaces between. Batching
 all shadow rays for a bounce into one dispatch is what makes NEE cheap.
 
 ### `film`

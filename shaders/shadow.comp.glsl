@@ -1,6 +1,8 @@
 #version 460
 #extension GL_EXT_ray_query : require
+// hdclaude:opacity-library
 #include "path_state.glsl"
+#include "cutout.glsl"
 
 // Batched shadow rays.
 //
@@ -19,22 +21,29 @@ layout(local_size_x = 64) in;
 // it, the stretch is one the volumes already keep for every placement it can
 // meet.
 bool shadow_occluded(ShadowRay ray, float tMin, float tMax, uint cullMask,
-                     bool exceptions, uint volumes)
+                     bool exceptions, uint volumes, uint key)
 {
     // A light with a shadow link is occluded only by the geometry in it
     // (UsdLux `collection:shadowLink`). Membership is a property of the
     // instance, which only the shader can test, so for such a ray every
     // triangle is handed to the loop below as a candidate instead of being
-    // committed by the implementation. Every other ray keeps the opaque fast
-    // path.
+    // committed by the implementation. Every other ray leaves opacity to the
+    // instances: an opaque one keeps the fast path, and a triangle of one with
+    // a cut-out material reaches the loop to ask whether it is there.
     //
     // The exception query of a cull volume hands every triangle to the loop for
     // the same reason: whether the hit placement is culled there is a property of
     // the placement.
+    //
+    // A cut-out surface occludes with the probability it is present, drawn
+    // independently for each surface the ray crosses, so over many samples
+    // the light is attenuated by the product of (1 - opacity) along the ray --
+    // whatever order traversal visits the surfaces in, which is why stopping
+    // at the first one met is still right.
     bool linked = ray.shadowLink >= 0;
     uint flags = gl_RayFlagsTerminateOnFirstHitEXT |
                  (linked || exceptions ? gl_RayFlagsNoOpaqueEXT
-                                       : gl_RayFlagsOpaqueEXT);
+                                       : gl_RayFlagsNoneEXT);
 
     rayQueryEXT query;
     rayQueryInitializeEXT(query, sceneTlas, flags, cullMask, ray.origin, tMin,
@@ -44,16 +53,22 @@ bool shadow_occluded(ShadowRay ray, float tMin, float tMax, uint cullMask,
         if (rayQueryGetIntersectionTypeEXT(query, false) ==
             gl_RayQueryCandidateIntersectionTriangleEXT)
         {
-            // Only reached for a linked ray or an exception query. The
-            // implementation has already placed the hit inside the ray's
-            // interval.
+            // Reached for a linked ray, an exception query, or a triangle of a
+            // cut-out placement. The implementation has already placed the hit
+            // inside the ray's interval.
             int candidateInstance =
                 rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
+            float candidateT = rayQueryGetIntersectionTEXT(query, false);
             if (hdclaude_linked(candidateInstance, ray.shadowLink) &&
                 !(exceptions &&
                   hdclaude_cull_point(
-                      rayQueryGetIntersectionTEXT(query, false),
-                      instanceCullLinks.values[candidateInstance] & volumes)))
+                      candidateT,
+                      instanceCullLinks.values[candidateInstance] & volumes)) &&
+                hdclaude_candidate_present(
+                    key, candidateInstance,
+                    rayQueryGetIntersectionPrimitiveIndexEXT(query, false),
+                    rayQueryGetIntersectionBarycentricsEXT(query, false),
+                    ray.origin, ray.direction, candidateT))
             {
                 rayQueryConfirmIntersectionEXT(query);
             }
@@ -173,7 +188,10 @@ bool shadow_occluded(ShadowRay ray, float tMin, float tMax, uint cullMask,
                     !(exceptions &&
                       hdclaude_cull_point(
                           hit, instanceCullLinks.values[candidateInstance] &
-                                   volumes)))
+                                   volumes)) &&
+                    hdclaude_candidate_present(key, candidateInstance,
+                                               candidateSegment, vec2(0.0),
+                                               ray.origin, ray.direction, hit))
                 {
                     rayQueryGenerateIntersectionEXT(query, hit);
                 }
@@ -199,10 +217,15 @@ void main()
     // exception placements (docs/cull-volumes.md 2).
     uint volumes = hdclaude_cull_volumes(false);
     bool occluded = false;
+    // Names this shadow ray for the cut-out coin. The path's state is also
+    // what the next bounce's ray is keyed on, so it is mixed with a constant of
+    // the shadow ray's own: one leaf should not decide both whether the light
+    // reaches this point and whether the path's next ray gets through it.
+    uint key = pathRng.values[ray.path] ^ 0x68e31da4u;
     if (volumes == 0u)
     {
         occluded = shadow_occluded(ray, 1.0e-4, ray.maxDistance, 0xFFu, false,
-                                   0u);
+                                   0u, key);
     }
     else
     {
@@ -215,14 +238,14 @@ void main()
              ++guard)
         {
             occluded = shadow_occluded(ray, t, stretchEnd, HDCLAUDE_MASK_SECONDARY,
-                                       false, volumes);
+                                       false, volumes, key);
             t = stretchEnd;
         }
         if (!occluded && (frame.cullExceptions & 2u) != 0u)
         {
             occluded = shadow_occluded(ray, 1.0e-4, ray.maxDistance,
                                        HDCLAUDE_MASK_SECONDARY_EXCEPTION, true,
-                                       volumes);
+                                       volumes, key);
         }
     }
 

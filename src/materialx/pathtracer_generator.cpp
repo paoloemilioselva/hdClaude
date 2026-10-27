@@ -12,9 +12,14 @@
 #include <MaterialXGenShader/ShaderGraph.h>
 #include <MaterialXGenShader/ShaderStage.h>
 
+#include <MaterialXFormat/XmlIo.h>
+
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <cmath>
 #include <optional>
+#include <set>
 
 namespace hdclaude {
 namespace {
@@ -91,6 +96,21 @@ bool IsDisplacementGraph(const mx::ShaderGraph& graph)
     }
     return false;
 }
+
+/// Whether this graph is the opacity library rather than a material.
+bool IsOpacityLibraryGraph(const mx::ShaderGraph& graph)
+{
+    for (mx::ShaderGraphOutputSocket* socket : graph.getOutputSockets()) {
+        if (socket->getName() == kOpacityLibraryOutput) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// The node in the opacity library whose output is material `m`'s opacity is
+/// named this prefix followed by `m`. See OpacityLibraryDocument.
+constexpr const char* kOpacityRootPrefix = "hdclaude_opacity_m";
 constexpr const char* kEmissionGlobal = "hdclaude_emission";
 constexpr const char* kOpacityGlobal = "hdclaude_opacity";
 
@@ -270,21 +290,21 @@ void PathTracerSurfaceNode::emitFunctionCall(const ShaderNode& node,
 
         shadergen.emitScopeBegin(stage);
 
-        // Opacity first: it gates nothing here but the kernels need it for
-        // cutout tests during traversal.
+        // Opacity, for anything that inspects the stock fields. Nothing shades
+        // with it: it is the surface's *cutout* opacity, which decides whether
+        // a ray meets the surface at all, and that is answered during traversal
+        // by the opacity library (AuthoredCutoutOpacity). A path that reaches
+        // this program has already met the surface.
+        //
+        // emitInput writes the authored value when nothing is connected. This
+        // used to write a literal one instead, which dropped a constant opacity
+        // set directly on a `surface` node.
         const ShaderInput* opacityInput = node.getInput("opacity");
         if (opacityInput)
         {
             shadergen.emitLineBegin(stage);
             shadergen.emitString(string(kOpacityGlobal) + " = ", stage);
-            if (opacityInput->getConnection())
-            {
-                shadergen.emitInput(opacityInput, context, stage);
-            }
-            else
-            {
-                shadergen.emitString("1.0", stage);
-            }
+            shadergen.emitInput(opacityInput, context, stage);
             shadergen.emitLineEnd(stage);
         }
 
@@ -766,8 +786,14 @@ void PathTracerShaderGenerator::emitPixelStage(const ShaderGraph& graph,
 {
     HwResourceBindingContextPtr resourceBindingCtx = getResourceBindingContext(context);
 
+    // The opacity library is spliced into a traversal kernel after that
+    // kernel's own `#version`, which GLSL requires to come first.
+    const bool opacityLibrary = IsOpacityLibraryGraph(graph);
+
     // --- Directives ---------------------------------------------------------
-    emitLine("#version 460", stage, false);
+    if (!opacityLibrary) {
+        emitLine("#version 460", stage, false);
+    }
     emitLine("#extension GL_GOOGLE_include_directive : enable", stage, false);
     emitLine("#extension GL_EXT_scalar_block_layout : require", stage, false);
     emitLine("#extension GL_EXT_nonuniform_qualifier : require", stage, false);
@@ -859,6 +885,83 @@ void PathTracerShaderGenerator::emitPixelStage(const ShaderGraph& graph,
 
     // --- Node function definitions ------------------------------------------
     emitFunctionDefinitions(graph, context, stage);
+
+    // --- The opacity library ------------------------------------------------
+    //
+    // Every cut-out material's opacity graph, in one program, for the
+    // traversal kernels to call on a candidate hit. One generation defines
+    // each function the materials share once; the materials' own nodes are
+    // then emitted each inside its own `case`, so a candidate evaluates its
+    // material's graph and no other. The nodes that join the roots into the
+    // single output MaterialX generated from are never emitted: they exist so
+    // that there was one output to generate from.
+    if (opacityLibrary) {
+        // The root of each material's graph, in graph order.
+        std::vector<std::pair<std::string, const ShaderNode*>> roots;
+        const string prefix = kOpacityRootPrefix;
+        for (const ShaderNode* node : graph.getNodes()) {
+            if (node->getName().rfind(prefix, 0) == 0) {
+                roots.emplace_back(node->getName().substr(prefix.size()), node);
+            }
+        }
+
+        emitLine("bool " + string(kMaterialCutoutQuery) + "(uint material)",
+                 stage, false);
+        emitScopeBegin(stage);
+        emitLine("switch (material)", stage, false);
+        emitScopeBegin(stage);
+        for (const auto& root : roots) {
+            emitLine("case " + root.first + "u:", stage, false);
+        }
+        emitLine("return true", stage);
+        emitScopeEnd(stage);
+        emitLine("return false", stage);
+        emitScopeEnd(stage);
+        emitLineBreak(stage);
+
+        setFunctionName(kMaterialOpacityEntryPoint, stage);
+        emitLine("float " + string(kMaterialOpacityEntryPoint) + "(uint material)",
+                 stage, false);
+        emitScopeBegin(stage);
+        emitLine("switch (material)", stage, false);
+        emitScopeBegin(stage);
+        for (const auto& root : roots) {
+            // The nodes this root reads, transitively. Each material's nodes
+            // carry a prefix of their own, so no node is in two of these.
+            std::set<const ShaderNode*> cone;
+            std::vector<const ShaderNode*> pending = {root.second};
+            while (!pending.empty()) {
+                const ShaderNode* node = pending.back();
+                pending.pop_back();
+                if (!cone.insert(node).second) {
+                    continue;
+                }
+                for (const ShaderInput* input : node->getInputs()) {
+                    const ShaderOutput* source = input->getConnection();
+                    if (source && source->getNode()->getParent() == &graph) {
+                        pending.push_back(source->getNode());
+                    }
+                }
+            }
+
+            emitLine("case " + root.first + "u:", stage, false);
+            emitScopeBegin(stage);
+            // In graph order, which is topological, so every node's inputs
+            // exist before it reads them.
+            for (const ShaderNode* node : graph.getNodes()) {
+                if (cone.count(node) != 0) {
+                    emitFunctionCall(*node, context, stage);
+                }
+            }
+            emitLine("return " + root.second->getOutput()->getVariable(), stage);
+            emitScopeEnd(stage);
+        }
+        emitScopeEnd(stage);
+        emitLine("return 1.0", stage);
+        emitScopeEnd(stage);
+        emitLineBreak(stage);
+        return;
+    }
 
     // --- A displacement program ---------------------------------------------
     //
@@ -1328,6 +1431,560 @@ mx::InputPtr FilenameSource(const mx::InputPtr& input)
         current = upstream->getInput(routing->second);
     }
     return nullptr;
+}
+
+namespace {
+
+/// The nodegraph, and its output, that an extracted opacity lives in.
+constexpr const char* kOpacityGraph = "hdclaude_opacity";
+constexpr const char* kOpacityGraphOutput = "out";
+
+/// What an input reads: the node and which of its outputs. The node is null
+/// when the input holds a value. Interface inputs and nodegraph outputs are
+/// followed, as MaterialX's own Input::getConnectedNode follows them.
+struct Upstream {
+    mx::NodePtr node;
+    std::string output;
+};
+
+/// The input whose value `input` takes when nothing is connected: its
+/// nodegraph's interface input when it names one, otherwise itself.
+mx::InputPtr ValueSource(const mx::InputPtr& input)
+{
+    const mx::InputPtr interface = input->getInterfaceInput();
+    return interface ? interface : input;
+}
+
+Upstream UpstreamOf(const mx::InputPtr& input)
+{
+    Upstream result;
+    const mx::InputPtr port = ValueSource(input);
+    result.node = port->getConnectedNode();
+    if (!result.node) {
+        return result;
+    }
+    if (const mx::OutputPtr output = port->getConnectedOutput()) {
+        // A multi-output node's own output, or a nodegraph output naming one.
+        result.output = output->getParent() == result.node
+                            ? output->getName()
+                            : output->getOutputString();
+    } else {
+        result.output = port->getOutputString();
+    }
+    return result;
+}
+
+/// A value folded on the host: up to four lanes, which is what MaterialX's
+/// float, integer, boolean, colour and vector types all are.
+struct Lanes {
+    std::array<float, 4> v{};
+    int n = 1;
+};
+
+int LaneCount(const std::string& type)
+{
+    if (type == "float" || type == "integer" || type == "boolean") return 1;
+    if (type == "vector2") return 2;
+    if (type == "color3" || type == "vector3") return 3;
+    if (type == "color4" || type == "vector4") return 4;
+    return 0;
+}
+
+std::optional<Lanes> LanesOf(const mx::ValuePtr& value)
+{
+    if (!value) {
+        return std::nullopt;
+    }
+    Lanes lanes;
+    if (value->isA<float>()) {
+        lanes.v[0] = value->asA<float>();
+        return lanes;
+    }
+    if (value->isA<int>()) {
+        lanes.v[0] = static_cast<float>(value->asA<int>());
+        return lanes;
+    }
+    if (value->isA<bool>()) {
+        lanes.v[0] = value->asA<bool>() ? 1.0f : 0.0f;
+        return lanes;
+    }
+    auto fill = [&lanes](const auto& vector, int n) {
+        lanes.n = n;
+        for (int i = 0; i < n; ++i) {
+            lanes.v[i] = vector[i];
+        }
+        return lanes;
+    };
+    if (value->isA<mx::Color3>()) return fill(value->asA<mx::Color3>(), 3);
+    if (value->isA<mx::Color4>()) return fill(value->asA<mx::Color4>(), 4);
+    if (value->isA<mx::Vector2>()) return fill(value->asA<mx::Vector2>(), 2);
+    if (value->isA<mx::Vector3>()) return fill(value->asA<mx::Vector3>(), 3);
+    if (value->isA<mx::Vector4>()) return fill(value->asA<mx::Vector4>(), 4);
+    return std::nullopt;
+}
+
+std::optional<Lanes> FoldNode(const mx::NodePtr& node, const std::string& output,
+                              int depth);
+
+/// The value an input of `node` takes, folded, or nothing when it depends on
+/// something only the GPU knows.
+std::optional<Lanes> FoldInput(const mx::NodePtr& node, const std::string& name,
+                               int depth)
+{
+    if (const mx::InputPtr input = node->getInput(name)) {
+        const Upstream upstream = UpstreamOf(input);
+        if (upstream.node) {
+            return FoldNode(upstream.node, upstream.output, depth + 1);
+        }
+        const mx::InputPtr source = ValueSource(input);
+        if (source->hasValueString()) {
+            return LanesOf(source->getValue());
+        }
+        if (source->hasDefaultGeomPropString()) {
+            return std::nullopt;
+        }
+    }
+    // Unauthored: the definition's default, unless that is a geometric
+    // property, which varies over the surface.
+    const mx::NodeDefPtr nodeDef = node->getNodeDef();
+    const mx::InputPtr declared = nodeDef ? nodeDef->getActiveInput(name) : nullptr;
+    if (!declared || declared->hasDefaultGeomPropString() ||
+        !declared->hasValueString()) {
+        return std::nullopt;
+    }
+    return LanesOf(declared->getValue());
+}
+
+/// A node's output, folded, for the stdlib nodes simple enough to evaluate
+/// here by their definitions in the MaterialX specification. Anything else --
+/// an image, a geometric property, a node this does not know -- is left to the
+/// GPU, which is always correct and only slower.
+std::optional<Lanes> FoldNode(const mx::NodePtr& node, const std::string& output,
+                              int depth)
+{
+    // Multi-output nodes are not folded: none of the ones folded here has more
+    // than the one output.
+    if (!node || depth > 64 || (!output.empty() && output != "out")) {
+        return std::nullopt;
+    }
+    const int lanes = LaneCount(node->getType());
+    if (lanes == 0) {
+        return std::nullopt;
+    }
+    auto in = [&](const std::string& name) { return FoldInput(node, name, depth); };
+    // A lane of `x` as an operand of this node: a scalar is broadcast.
+    auto lane = [](const Lanes& x, int i) { return x.n == 1 ? x.v[0] : x.v[i]; };
+    // `x` as this node's type: broadcast, truncated, or extended the way
+    // MaterialX's `convert` extends -- zero, and one for an alpha.
+    auto shaped = [&](const Lanes& x) {
+        Lanes result;
+        result.n = lanes;
+        for (int i = 0; i < lanes; ++i) {
+            result.v[i] = x.n == 1 ? x.v[0] : i < x.n ? x.v[i] : (i == 3 ? 1.0f : 0.0f);
+        }
+        return result;
+    };
+    auto componentwise = [&](const Lanes& a, const Lanes& b, auto op) {
+        Lanes result;
+        result.n = lanes;
+        for (int i = 0; i < lanes; ++i) {
+            result.v[i] = op(lane(a, i), lane(b, i));
+        }
+        return result;
+    };
+
+    const std::string& category = node->getCategory();
+    if (category == "constant") {
+        const auto value = in("value");
+        return value ? std::optional<Lanes>(shaped(*value)) : std::nullopt;
+    }
+    if (category == "dot" || category == "convert") {
+        const auto value = in("in");
+        return value ? std::optional<Lanes>(shaped(*value)) : std::nullopt;
+    }
+    if (category == "extract") {
+        const auto value = in("in");
+        const auto index = in("index");
+        if (!value || !index) return std::nullopt;
+        const int i = static_cast<int>(index->v[0]);
+        if (i < 0 || i >= value->n) return std::nullopt;
+        Lanes result;
+        result.v[0] = value->v[i];
+        return result;
+    }
+    if (category == "luminance") {
+        const auto value = in("in");
+        const auto coefficients = in("lumacoeffs");
+        if (!value || !coefficients || value->n < 3 || coefficients->n < 3) {
+            return std::nullopt;
+        }
+        Lanes result = *value;
+        const float luminance = value->v[0] * coefficients->v[0] +
+                                value->v[1] * coefficients->v[1] +
+                                value->v[2] * coefficients->v[2];
+        result.v[0] = result.v[1] = result.v[2] = luminance;
+        return result;
+    }
+    if (category == "add" || category == "subtract" || category == "multiply" ||
+        category == "divide" || category == "min" || category == "max") {
+        const auto a = in("in1");
+        const auto b = in("in2");
+        if (!a || !b) return std::nullopt;
+        if (category == "add") return componentwise(*a, *b, [](float x, float y) { return x + y; });
+        if (category == "subtract") return componentwise(*a, *b, [](float x, float y) { return x - y; });
+        if (category == "multiply") return componentwise(*a, *b, [](float x, float y) { return x * y; });
+        if (category == "min") return componentwise(*a, *b, [](float x, float y) { return std::min(x, y); });
+        if (category == "max") return componentwise(*a, *b, [](float x, float y) { return std::max(x, y); });
+        for (int i = 0; i < lanes; ++i) {
+            if (lane(*b, i) == 0.0f) return std::nullopt;
+        }
+        return componentwise(*a, *b, [](float x, float y) { return x / y; });
+    }
+    if (category == "clamp") {
+        const auto value = in("in");
+        const auto low = in("low");
+        const auto high = in("high");
+        if (!value || !low || !high) return std::nullopt;
+        Lanes result;
+        result.n = lanes;
+        for (int i = 0; i < lanes; ++i) {
+            result.v[i] = std::min(std::max(lane(*value, i), lane(*low, i)), lane(*high, i));
+        }
+        return result;
+    }
+    if (category == "mix") {
+        // MaterialX's mix is bg + (fg - bg) * mix.
+        const auto fg = in("fg");
+        const auto bg = in("bg");
+        const auto amount = in("mix");
+        if (!fg || !bg || !amount) return std::nullopt;
+        Lanes result;
+        result.n = lanes;
+        for (int i = 0; i < lanes; ++i) {
+            result.v[i] = lane(*bg, i) + (lane(*fg, i) - lane(*bg, i)) * lane(*amount, i);
+        }
+        return result;
+    }
+    if (category == "ifgreater" || category == "ifgreatereq" || category == "ifequal") {
+        const auto first = in("value1");
+        const auto second = in("value2");
+        if (!first || !second || first->n != second->n) return std::nullopt;
+        bool taken = true;
+        for (int i = 0; i < first->n; ++i) {
+            const float x = first->v[i];
+            const float y = second->v[i];
+            taken = taken && (category == "ifgreater"     ? x > y
+                              : category == "ifgreatereq" ? x >= y
+                                                          : x == y);
+        }
+        const auto chosen = in(taken ? "in1" : "in2");
+        return chosen ? std::optional<Lanes>(shaped(*chosen)) : std::nullopt;
+    }
+    if (category == "switch") {
+        // `which` selects in1 at zero, in2 at one, and so on, saturating at
+        // the last of the ten.
+        const auto which = in("which");
+        if (!which) return std::nullopt;
+        const int index = std::min(std::max(static_cast<int>(std::floor(which->v[0])), 0), 9);
+        const auto chosen = in("in" + std::to_string(index + 1));
+        return chosen ? std::optional<Lanes>(shaped(*chosen)) : std::nullopt;
+    }
+    return std::nullopt;
+}
+
+/// Copies the graph upstream of a node into one nodegraph, flat.
+///
+/// Connections become `nodename` references inside that graph, values that
+/// reached a node through a nodegraph interface are written onto it, and every
+/// `filename` is baked resolved. The copy is meant to be read on its own,
+/// later, in a document that has neither the original's nodegraphs nor its
+/// `fileprefix`.
+class OpacityConeCopier {
+  public:
+    OpacityConeCopier(mx::NodeGraphPtr graph,
+                      const std::map<std::string, std::string>* resolvedTextures)
+        : _graph(std::move(graph)), _resolvedTextures(resolvedTextures)
+    {
+    }
+
+    /// The name of the copy of `node`, or empty with `Error()` set.
+    std::string Copy(const mx::NodePtr& node, int depth = 0)
+    {
+        if (depth > 256) {
+            _error = "the opacity graph is deeper than 256 nodes";
+            return {};
+        }
+        const auto found = _copied.find(node);
+        if (found != _copied.end()) {
+            return found->second;
+        }
+
+        // An opacity is a pattern. A closure or a shader upstream of one means
+        // the graph is not something traversal can evaluate.
+        static const std::set<std::string> kNotPatterns = {
+            "BSDF", "EDF", "VDF", "surfaceshader", "volumeshader",
+            "displacementshader", "lightshader", "material"};
+        if (kNotPatterns.count(node->getType()) != 0) {
+            _error = "its opacity reads '" + node->getName() + "', a " +
+                     node->getType() + ", which is not a pattern";
+            return {};
+        }
+
+        // Qualified by the nodegraph it came from, because two graphs of one
+        // document may each have an `image1`.
+        const mx::ElementPtr parent = node->getParent();
+        const std::string scope =
+            parent && parent->isA<mx::NodeGraph>() ? parent->getName() + "_" : "";
+        const std::string name =
+            _graph->createValidChildName(mx::createValidName(scope + node->getName()));
+        _copied[node] = name;
+
+        const mx::NodePtr copy =
+            _graph->addNode(node->getCategory(), name, node->getType());
+        copy->copyContentFrom(node);
+        for (const mx::InputPtr& input : copy->getInputs()) {
+            const mx::InputPtr original = node->getInput(input->getName());
+            input->removeAttribute(mx::PortElement::NODE_NAME_ATTRIBUTE);
+            input->removeAttribute(mx::PortElement::NODE_GRAPH_ATTRIBUTE);
+            input->removeAttribute(mx::PortElement::OUTPUT_ATTRIBUTE);
+            input->removeAttribute(mx::ValueElement::INTERFACE_NAME_ATTRIBUTE);
+
+            const Upstream upstream = UpstreamOf(original);
+            if (upstream.node) {
+                const std::string upstreamName = Copy(upstream.node, depth + 1);
+                if (!_error.empty()) {
+                    return {};
+                }
+                input->setNodeName(upstreamName);
+                if (!upstream.output.empty()) {
+                    input->setOutputString(upstream.output);
+                }
+                continue;
+            }
+            const mx::InputPtr source = ValueSource(original);
+            if (source != original && source->hasValueString()) {
+                input->setValueString(source->getValueString());
+                if (!input->hasColorSpace() && source->hasColorSpace()) {
+                    input->setColorSpace(source->getColorSpace());
+                }
+            }
+        }
+
+        // The paths, once every input is wired, so a `dot` a file is routed
+        // through has been copied and the value lands where the copy reads it.
+        for (const mx::InputPtr& input : node->getInputs()) {
+            if (input->getType() != "filename") {
+                continue;
+            }
+            const std::string uniform =
+                mx::createValidName(node->getName() + "_" + input->getName());
+            std::string path;
+            if (_resolvedTextures) {
+                const auto resolved = _resolvedTextures->find(uniform);
+                if (resolved != _resolvedTextures->end()) {
+                    path = resolved->second;
+                }
+            }
+            if (path.empty()) {
+                if (const mx::InputPtr source = FilenameSource(input)) {
+                    path = source->getResolvedValueString();
+                }
+            }
+            const mx::InputPtr target = FilenameSource(copy->getInput(input->getName()));
+            if (target && !path.empty()) {
+                target->setValueString(path);
+            }
+        }
+        return name;
+    }
+
+    const std::string& Error() const { return _error; }
+
+  private:
+    mx::NodeGraphPtr _graph;
+    const std::map<std::string, std::string>* _resolvedTextures;
+    std::map<mx::NodePtr, std::string> _copied;
+    std::string _error;
+};
+
+}  // namespace
+
+std::string AuthoredCutoutOpacity(
+    const mx::DocumentPtr& document,
+    const std::map<std::string, std::string>* resolvedTextures,
+    std::vector<std::string>* diagnostics)
+{
+    if (!document) {
+        return {};
+    }
+    auto report = [diagnostics](const std::string& message) {
+        if (diagnostics) {
+            diagnostics->push_back(message);
+        }
+    };
+
+    // The surface shader the material binds. hdMtlx builds one material per
+    // document, and so does every document hdClaude builds itself.
+    auto boundShader = [&document]() -> mx::NodePtr {
+        for (const mx::NodePtr& material : document->getMaterialNodes()) {
+            const mx::InputPtr input = material->getInput("surfaceshader");
+            if (const mx::NodePtr shader = input ? input->getConnectedNode() : nullptr) {
+                return shader;
+            }
+        }
+        return nullptr;
+    };
+    mx::NodePtr shader = boundShader();
+    if (!shader) {
+        return {};
+    }
+
+    // Down to the `surface` node its own nodegraph ends in, flattening that one
+    // node and nothing upstream of it: a pattern node with a nodegraph of its
+    // own -- `UsdUVTexture` is one -- stays a node, which is what keeps the
+    // colour space it reads its file in.
+    const mx::InterfaceElementPtr implementation = shader->getImplementation();
+    if (implementation && implementation->isA<mx::NodeGraph>()) {
+        if (const mx::GraphElementPtr parent =
+                shader->getParent()->asA<mx::GraphElement>()) {
+            const mx::NodePtr flattening = shader;
+            parent->flattenSubgraphs(mx::EMPTY_STRING,
+                                     [&flattening](mx::NodePtr node) {
+                                         return node == flattening;
+                                     });
+            shader = boundShader();
+        }
+    }
+    if (!shader) {
+        return {};
+    }
+
+    const mx::NodeDefPtr nodeDef = shader->getNodeDef();
+    if (!shader->getInput("opacity") &&
+        !(nodeDef && nodeDef->getActiveInput("opacity"))) {
+        report("its surface is a '" + shader->getCategory() +
+               "' node, whose opacity hdClaude does not trace; it is rendered "
+               "opaque");
+        return {};
+    }
+
+    // Folded where it can be. The comparison allows for luminance: white's is
+    // one by definition and comes out of the float arithmetic a rounding short.
+    const std::optional<Lanes> folded = FoldInput(shader, "opacity", 0);
+    if (folded && !(folded->v[0] < 1.0f - 1.0e-6f)) {
+        return {};
+    }
+
+    mx::DocumentPtr extracted = mx::createDocument();
+    const mx::NodeGraphPtr graph = extracted->addNodeGraph(kOpacityGraph);
+    const mx::OutputPtr output = graph->addOutput(kOpacityGraphOutput, "float");
+    if (folded) {
+        const mx::NodePtr constant = graph->addNode("constant", "folded", "float");
+        constant->setInputValue("value", folded->v[0]);
+        output->setNodeName(constant->getName());
+    } else {
+        const mx::InputPtr opacity = shader->getInput("opacity");
+        const Upstream upstream = opacity ? UpstreamOf(opacity) : Upstream();
+        if (!upstream.node) {
+            // A value that would not fold: not a type this reads.
+            report("its opacity is a value hdClaude cannot read; it is rendered "
+                   "opaque");
+            return {};
+        }
+        OpacityConeCopier copier(graph, resolvedTextures);
+        const std::string root = copier.Copy(upstream.node);
+        if (!copier.Error().empty()) {
+            report(copier.Error() + "; it is rendered opaque");
+            return {};
+        }
+        output->setNodeName(root);
+        if (!upstream.output.empty()) {
+            output->setOutputString(upstream.output);
+        }
+    }
+    return mx::writeToXmlString(extracted);
+}
+
+OpacityLibrary OpacityLibraryDocument(
+    const std::vector<std::pair<std::uint32_t, std::string>>& materials,
+    const mx::DocumentPtr& libraries, std::string* error)
+{
+    auto fail = [error](const std::string& message) {
+        if (error) {
+            *error = message;
+        }
+        return OpacityLibrary();
+    };
+    if (materials.empty()) {
+        return fail("no material is cut out");
+    }
+
+    mx::DocumentPtr document = mx::createDocument();
+    if (libraries) {
+        document->importLibrary(libraries);
+    }
+    const mx::NodeGraphPtr graph = document->addNodeGraph("hdclaude_opacity_graph");
+
+    mx::NodePtr sum;
+    for (const auto& [material, text] : materials) {
+        mx::DocumentPtr part = mx::createDocument();
+        try {
+            mx::readFromXmlString(part, text);
+        } catch (const std::exception& exception) {
+            return fail("material " + std::to_string(material) +
+                        "'s opacity could not be read: " + exception.what());
+        }
+        const mx::NodeGraphPtr source = part->getNodeGraph(kOpacityGraph);
+        const mx::OutputPtr out = source ? source->getOutput(kOpacityGraphOutput) : nullptr;
+        if (!out) {
+            return fail("material " + std::to_string(material) +
+                        "'s opacity names no output");
+        }
+
+        // Under a prefix of the material's own, so no node is in two
+        // materials' graphs -- the generator relies on that.
+        const std::string prefix = "m" + std::to_string(material) + "_";
+        for (const mx::NodePtr& node : source->getNodes()) {
+            const mx::NodePtr copy =
+                graph->addNode(node->getCategory(), prefix + node->getName(),
+                               node->getType());
+            copy->copyContentFrom(node);
+            for (const mx::InputPtr& input : copy->getInputs()) {
+                if (input->hasNodeName()) {
+                    input->setNodeName(prefix + input->getNodeName());
+                }
+            }
+        }
+
+        const mx::NodePtr root = graph->addNode(
+            "multiply", kOpacityRootPrefix + std::to_string(material), "float");
+        const mx::InputPtr in1 = root->addInput("in1", "float");
+        if (out->hasNodeName()) {
+            in1->setNodeName(prefix + out->getNodeName());
+            if (out->hasOutputString()) {
+                in1->setOutputString(out->getOutputString());
+            }
+        } else {
+            in1->setValueString(out->hasValueString() ? out->getValueString() : "1");
+        }
+        root->setInputValue("in2", 1.0f);
+
+        if (!sum) {
+            sum = root;
+        } else {
+            const mx::NodePtr add = graph->addNode(
+                "add", "hdclaude_opacity_sum" + std::to_string(material), "float");
+            add->addInput("in1", "float")->setNodeName(sum->getName());
+            add->addInput("in2", "float")->setNodeName(root->getName());
+            sum = add;
+        }
+    }
+
+    OpacityLibrary library;
+    library.output = graph->addOutput(kOpacityLibraryOutput, "float");
+    library.output->setNodeName(sum->getName());
+    library.document = document;
+    return library;
 }
 
 }  // namespace hdclaude

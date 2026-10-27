@@ -8055,3 +8055,70 @@ guide off, render off, every purpose again, and a narrower root. After each
 step its picks agree with a fresh engine and with the expected prims.
 Turning a purpose back on brings its prims back from what the store kept,
 since Hydra had nothing to re-sync.
+
+## 2026-10-28 -- Cut-out opacity, decided in traversal
+
+**What was there.** The generator wrote each material's `surface` opacity into
+`hdclaude_opacity` and nothing read it. Every prototype was classified
+`Opaque` and every surface was drawn solid, so a leaf card was a rectangle and
+so was its shadow. The generator also wrote a literal `1.0` for an unconnected
+opacity, which dropped a constant set directly on a `surface` node.
+
+**What the spec asks.** MaterialX's `surface` node defines `opacity` as the
+surface's *cutout* opacity. That is visibility: a ray meets the surface with
+that probability. `UsdPreviewSurface`'s MaterialX graph reduces its own inputs
+to it -- `opacity >= opacityThreshold ? 1 : 0`, so the threshold is a cutout --
+while an opacity below one with no threshold goes to a *transmission* mix in
+the same graph, and the surface stays fully present. `standard_surface` takes
+the luminance of its colour `opacity`; OpenPBR's `geometry_opacity` and glTF's
+`alpha` reach the same input.
+
+**Why traversal, not shading.** The cull-volume notes assumed a path would be
+continued from the shading kernel when it drew "absent". That costs a bounce
+per layer a ray crosses -- a tree eats the bounce budget -- and it cannot reach
+shadow rays, which run no material, so shadows would stay solid. Every
+production renderer answers this in any-hit for the same reason. Here that
+means the opacity graphs have to be inside `extend` and `shadow`, which are
+compiled once for every material.
+
+**How.** `AuthoredCutoutOpacity` flattens only the bound surface shader, which
+reaches the `surface` node its nodegraph ends in, and copies the graph upstream
+of `opacity` into one flat nodegraph. Texture paths are baked resolved. Pattern
+nodes with nodegraphs of their own, `UsdUVTexture` among them, stay whole, so
+their colour space is read as it is for shading. `OpacityLibraryDocument` puts
+every cut-out material's copy into one nodegraph under a prefix of its own and
+sums the roots into one output. The generator emits that graph as
+`hdclaude_material_opacity(uint material)`, with each material's nodes in its
+own `case`. One generation is what defines the shared functions once.
+`SpliceOpacityLibrary` puts the result after the kernels' `#version`. The
+placements whose material, or one of whose GeomSubsets, is cut out get
+`VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR`, which leaves BLAS reuse alone
+and lets one prototype be opaque under one binding and cut out under another.
+The candidate rebuilds the hit with the shading kernel's own
+`hdclaude_reconstruct`, now in `surface_point.glsl`, and compares the opacity
+with a coin hashed from the traversal and the primitive. A driver may report a
+candidate twice, and a hash gives it the same answer both times.
+
+**The fold is not an optimisation.** An untouched `UsdPreviewSurface` still
+carries the `ifgreatereq`/`ifequal`/`switch` chain. Left to the GPU, every
+surface in a USD asset would be marked non-opaque and every triangle handed to
+the kernel. The host folds a graph of constants for the stdlib nodes simple
+enough to evaluate from the spec. Anything else goes to the GPU, which is
+always correct and only slower.
+
+**A MaterialX trap.** `OpacityLibraryDocument` first returned only the output.
+MaterialX elements hold their parents weakly, so the document died on return,
+the output had no parent, and generation crashed inside `ShaderGraph::create`
+with no message. It now returns the document beside the output.
+
+**Checked.** Render tests in closed form. A quad of opacity 0.25 is
+`0.25 * opaque + 0.75 * empty` (0.8995 against 0.8990). A half-present occluder
+passes half the light to the floor (0.1095 against 0.1102). A mask at threshold
+0.5 shows the sky on one side and the surface on the other. MaterialX tests
+cover the folds, the copy and the baked paths, and the library compiling into
+both kernels. `gallery/opacity_cutout.usda` is the visual check: a half-present
+sphere casts a shadow letting `0.5 * 0.5 = 0.25` through, because a shadow ray
+crosses two of its surfaces, and measures 0.199 against 0.20.
+
+**Not covered.** `specular_hit`, the DLSS reflection-distance guide, still
+treats every surface as opaque.

@@ -76,6 +76,10 @@ class HDCLAUDE_API HdClaudeRenderDelegate final : public HdRenderDelegate {
     hdclaude::PathTracer* PathTracer() const { return _pathTracer.get(); }
     HdClaudeSceneStore* SceneStore() const { return _store.get(); }
     HdClaudeTexturePool* TexturePool() const { return _texturePool.get(); }
+    HdClaudeMaterialCompiler* MaterialCompiler() const
+    {
+        return _materialCompiler.get();
+    }
 
     /// Why the renderer is not usable, or empty if it is. The render pass shows
     /// this rather than rendering a black frame with no explanation.
