@@ -348,6 +348,7 @@ bool HdClaudeRenderPass::Framing::operator==(const Framing& other) const
            sceneRevision == other.sceneRevision &&
            cullRevision == other.cullRevision &&
            settingsVersion == other.settingsVersion &&
+           cameraExposureScale == other.cameraExposureScale &&
            selection == other.selection &&
            std::memcmp(camera.cameraToWorld, other.camera.cameraToWorld,
                        sizeof(camera.cameraToWorld)) == 0 &&
@@ -826,6 +827,18 @@ void HdClaudeRenderPass::_Execute(
     framing.sceneRevision = store->Revision();
     framing.cullRevision = store->CullRevision();
     framing.settingsVersion = settingsVersion;
+    // The camera prim's exposure. Unlike the framing, which comes from the
+    // pass state's matrices, this exists only on the prim; a pass with no
+    // camera behind it (a host handing over bare matrices) is unit exposure,
+    // which is also what an HdCamera with nothing authored computes. A
+    // non-finite or negative scale is the prim's error, not a picture, and
+    // is treated as unauthored rather than painting the frame NaN or black.
+    if (const HdCamera* passCamera = renderPassState->GetCamera()) {
+        const float scale = passCamera->GetLinearExposureScale();
+        if (std::isfinite(scale) && scale >= 0.0f) {
+            framing.cameraExposureScale = scale;
+        }
+    }
     // Hydra syncs only what this pass includes, and keeps what it excluded
     // since: so what the store holds is drawn only as far as the pass's render
     // tags and collection still include it (HdClaudeDrawSelection).
@@ -1312,11 +1325,15 @@ void HdClaudeRenderPass::_Execute(
     }
 
     // Exposure last, on the resolved image, so the accumulated film keeps the
-    // radiance the renderer computed and changing exposure costs no samples.
+    // radiance the renderer computed. Two factors: the camera prim's, which is
+    // what the scene authored (exposure, f-stop, shutter, ISO, responsivity,
+    // as HdCamera combines them), and the `Exposure` setting in stops, which
+    // is the viewer's own adjustment on top of it.
     const float exposure =
         _renderDelegate->GetRenderSetting<float>(_tokens->exposure, 0.0f);
-    if (exposure != 0.0f) {
-        const float scale = std::pow(2.0f, exposure);
+    const float scale =
+        _framing.cameraExposureScale * std::pow(2.0f, exposure);
+    if (scale != 1.0f) {
         for (std::size_t i = 0; i < image.size(); i += 4) {
             image[i + 0] *= scale;
             image[i + 1] *= scale;

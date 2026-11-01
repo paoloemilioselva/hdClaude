@@ -47,6 +47,12 @@ class HDCLAUDE_API HdClaudeRenderPass final : public HdRenderPass {
         /// volumes without publishing the scene.
         std::uint64_t cullRevision = 0;
         unsigned int settingsVersion = 0;
+        /// The pass camera's HdCamera::GetLinearExposureScale(): the authored
+        /// exposure, f-stop, shutter, ISO and responsivity combined. Applied
+        /// to the resolved image, but here because a converged pass only
+        /// re-shows its last frame, so a new scale has to start a new one --
+        /// as the `Exposure` setting does through the settings version.
+        float cameraExposureScale = 1.0f;
         /// What the pass draws -- its render tags, its collection, and the
         /// render index's render-tag version -- as one key. A purpose turned
         /// on or off changes what is drawn while no prim republishes, so it
