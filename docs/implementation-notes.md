@@ -8229,3 +8229,41 @@ no longer on. No notice reaches Hydra, so neither a delegate nor a scene index
 plugin can act on it. The test still makes this edit and prints a note, so it
 will say when UsdImaging starts delivering it.
 
+
+---
+
+## 2026-11-01 -- DDS textures
+
+**Why hdClaude reads them itself.** Every other image reaches the texture pool
+through Hio, and no Hio plugin in the OpenUSD builds hdClaude targets reads
+DDS: the built-in reader covers PNG, JPEG, BMP, TGA and HDR, `hioOiio`
+registers only `tif`, `tiff`, `zfile` and `tx`, and a Linux USD that ships
+`RtxHioImage.so` ships it without a `plugInfo.json`, so it never registers. A
+`.dds` path therefore skips Hio: `HdClaudeLoadTexture` reads its bytes through
+Ar (which also finds one inside a `.usdz`), and `src/hydra/dds_image.cpp`
+parses the container and decompresses blocks with bcdec, fetched into `_deps`
+at a pinned commit like every other dependency.
+
+**What is read.** The top mip level of BC1-BC7 (including signed and unsigned
+BC6H), uncompressed formats described by channel masks, and 16-bit, half and
+float images. BC6H and float formats stay in half floats; everything else
+becomes eight bits a channel, as the Hio path does. Cube maps, volumes, texture
+arrays, signed-normalised formats and premultiplied DXT2/DXT4 are refused with
+a reason, so they show the missing-texture placeholder instead of the wrong
+picture.
+
+**Encoding.** The same rule as Hio: the material's colour space if it declared
+one, otherwise sRGB for eight-bit colour and linear for everything else. A DX10
+header's `_SRGB` suffix is deliberately not consulted. Texture tools write
+colour maps as `BC7_UNORM` unless asked otherwise, and honouring `UNORM` read
+bcdec's BC7 sample albedo as linear while the identical picture in BC3 read as
+sRGB. Data maps are
+unaffected, because the material compiler already declares them raw by their
+type.
+
+**Not done.** Blocks are decompressed on the CPU and uploaded as RGBA8 or
+RGBA16F, so a BC1 texture costs eight times its file size in GPU memory. Keeping
+the blocks compressed would mean BC formats in `TexelFormat` and a reducer that
+can halve them; it is worth doing if DDS-heavy scenes run out of memory. A
+two-channel BC5 normal map arrives as (R, G, 0), as a two-channel PNG would;
+nothing reconstructs Z.

@@ -4,6 +4,7 @@
 
 #include "test_support.h"
 
+#include "dds_image.h"
 #include "instancer.h"
 #include "render_buffer.h"
 
@@ -18,7 +19,10 @@
 #include "pxr/imaging/hd/tokens.h"
 
 #include <cmath>
+#include <cstdint>
 #include <cstring>
+#include <initializer_list>
+#include <string>
 #include <map>
 #include <vector>
 
@@ -313,6 +317,303 @@ void TestInstancerKeepsWhatIsStillAuthored()
                          authored));
 }
 
+
+// --- DDS ------------------------------------------------------------------
+//
+// Files built byte by byte, so each test states exactly which header field and
+// which block it is about, and no image asset has to travel with the tests.
+
+void PutU32(std::vector<std::uint8_t>& bytes, std::size_t at, std::uint32_t value)
+{
+    for (std::size_t i = 0; i < 4; ++i) {
+        bytes[at + i] = static_cast<std::uint8_t>(value >> (8 * i));
+    }
+}
+
+void AppendU16(std::vector<std::uint8_t>& bytes, std::uint16_t value)
+{
+    bytes.push_back(static_cast<std::uint8_t>(value & 0xff));
+    bytes.push_back(static_cast<std::uint8_t>(value >> 8));
+}
+
+constexpr std::uint32_t kDdsFourCCFlag = 0x4;
+constexpr std::uint32_t kDdsRgbFlag = 0x40;
+constexpr std::uint32_t kDdsAlphaPixelsFlag = 0x1;
+constexpr std::uint32_t kDdsLuminanceFlag = 0x20000;
+
+constexpr std::uint32_t DdsFourCC(const char (&name)[5])
+{
+    return static_cast<std::uint32_t>(name[0]) |
+           static_cast<std::uint32_t>(name[1]) << 8 |
+           static_cast<std::uint32_t>(name[2]) << 16 |
+           static_cast<std::uint32_t>(name[3]) << 24;
+}
+
+/// The magic number and a legacy header; the pixel data is appended after.
+std::vector<std::uint8_t> LegacyDds(std::uint32_t width, std::uint32_t height,
+                                    std::uint32_t pixelFlags,
+                                    std::uint32_t fourCC = 0,
+                                    std::uint32_t bits = 0,
+                                    std::initializer_list<std::uint32_t> masks = {})
+{
+    std::vector<std::uint8_t> bytes(128, 0);
+    PutU32(bytes, 0, DdsFourCC("DDS "));
+    PutU32(bytes, 4, 124);
+    PutU32(bytes, 8, 0x1007);   // CAPS | HEIGHT | WIDTH | PIXELFORMAT
+    PutU32(bytes, 12, height);
+    PutU32(bytes, 16, width);
+    PutU32(bytes, 4 + 72, 32);
+    PutU32(bytes, 4 + 76, pixelFlags);
+    PutU32(bytes, 4 + 80, fourCC);
+    PutU32(bytes, 4 + 84, bits);
+    std::size_t at = 4 + 88;
+    for (const std::uint32_t mask : masks) {
+        PutU32(bytes, at, mask);
+        at += 4;
+    }
+    PutU32(bytes, 4 + 104, 0x1000);   // DDSCAPS_TEXTURE
+    return bytes;
+}
+
+/// A legacy header followed by a DX10 header naming `dxgiFormat`.
+std::vector<std::uint8_t> Dx10Dds(std::uint32_t width, std::uint32_t height,
+                                  std::uint32_t dxgiFormat,
+                                  std::uint32_t miscFlags = 0,
+                                  std::uint32_t arraySize = 1)
+{
+    std::vector<std::uint8_t> bytes =
+        LegacyDds(width, height, kDdsFourCCFlag, DdsFourCC("DX10"));
+    bytes.resize(148, 0);
+    PutU32(bytes, 128, dxgiFormat);
+    PutU32(bytes, 132, 3);   // D3D10_RESOURCE_DIMENSION_TEXTURE2D
+    PutU32(bytes, 136, miscFlags);
+    PutU32(bytes, 140, arraySize);
+    return bytes;
+}
+
+/// A BC1 block of one flat colour: both endpoints `rgb565`, every index 0.
+void AppendFlatBc1(std::vector<std::uint8_t>& bytes, std::uint16_t rgb565)
+{
+    AppendU16(bytes, rgb565);
+    AppendU16(bytes, rgb565);
+    for (int i = 0; i < 4; ++i) {
+        bytes.push_back(0);
+    }
+}
+
+bool DecodeDds(const std::vector<std::uint8_t>& bytes, hdclaude::TextureImage* image,
+               HdClaudeTextureColorSpace colorSpace = HdClaudeTextureColorSpace::Auto,
+               std::string* error = nullptr)
+{
+    std::string ignored;
+    return HdClaudeDecodeDds(bytes.data(), bytes.size(), colorSpace, image,
+                             error ? error : &ignored);
+}
+
+/// RGBA8 at (x, y), y counted from the bottom row as TextureImage stores it.
+const std::uint8_t* Texel8(const hdclaude::TextureImage& image, std::uint32_t x,
+                           std::uint32_t y)
+{
+    return &image.texels[(static_cast<std::size_t>(y) * image.width + x) * 4];
+}
+
+float TexelHalf(const hdclaude::TextureImage& image, std::uint32_t x,
+                std::uint32_t y, std::uint32_t c)
+{
+    GfHalf half;
+    std::memcpy(&half,
+                &image.texels[((static_cast<std::size_t>(y) * image.width + x) * 4 + c) * 2],
+                sizeof(half));
+    return static_cast<float>(half);
+}
+
+/// Legacy A8R8G8B8: the masks, not a fixed order, decide which byte is red,
+/// and the file's top row ends up as the image's last.
+void TestDdsReadsMaskedPixelsBottomUp()
+{
+    std::vector<std::uint8_t> bytes =
+        LegacyDds(2, 2, kDdsRgbFlag | kDdsAlphaPixelsFlag, 0, 32,
+                  {0x00ff0000, 0x0000ff00, 0x000000ff, 0xff000000});
+    // Stored B, G, R, A in memory. Top row: red, green. Bottom row: blue, grey.
+    for (const std::uint8_t byte : {0, 0, 255, 255,   0, 255, 0, 128,
+                                    255, 0, 0, 255,   64, 64, 64, 0}) {
+        bytes.push_back(byte);
+    }
+
+    hdclaude::TextureImage image;
+    CHECK(HdClaudeIsDds(bytes.data(), bytes.size()));
+    CHECK(DecodeDds(bytes, &image));
+    CHECK(image.Valid());
+    CHECK_EQ(image.width, 2u);
+    CHECK_EQ(image.height, 2u);
+    // Row 0 is the bottom of the image: blue then grey.
+    CHECK_EQ(Texel8(image, 0, 0)[2], 255);
+    CHECK_EQ(Texel8(image, 0, 0)[0], 0);
+    CHECK_EQ(Texel8(image, 1, 0)[0], 64);
+    CHECK_EQ(Texel8(image, 1, 0)[3], 0);
+    // Row 1 is the top: red then half-transparent green.
+    CHECK_EQ(Texel8(image, 0, 1)[0], 255);
+    CHECK_EQ(Texel8(image, 0, 1)[1], 0);
+    CHECK_EQ(Texel8(image, 1, 1)[1], 255);
+    CHECK_EQ(Texel8(image, 1, 1)[3], 128);
+    // Legacy eight-bit colour carries no encoding of its own and reads as
+    // sRGB, as the same pixels from a PNG would; a material can overrule it.
+    CHECK(image.format == hdclaude::TexelFormat::Rgba8Srgb);
+    CHECK(DecodeDds(bytes, &image, HdClaudeTextureColorSpace::Raw));
+    CHECK(image.format == hdclaude::TexelFormat::Rgba8Unorm);
+}
+
+/// One channel is grey, and an alpha mask without the flag that says alpha is
+/// present is a leftover and ignored.
+void TestDdsReadsLuminanceAsGrey()
+{
+    std::vector<std::uint8_t> bytes =
+        LegacyDds(1, 1, kDdsLuminanceFlag, 0, 8, {0xff, 0, 0, 0xff});
+    bytes.push_back(200);
+
+    hdclaude::TextureImage image;
+    CHECK(DecodeDds(bytes, &image));
+    CHECK_EQ(Texel8(image, 0, 0)[0], 200);
+    CHECK_EQ(Texel8(image, 0, 0)[1], 200);
+    CHECK_EQ(Texel8(image, 0, 0)[2], 200);
+    CHECK_EQ(Texel8(image, 0, 0)[3], 255);
+    CHECK(image.format == hdclaude::TexelFormat::Rgba8Unorm);
+}
+
+/// Under Auto a DX10 header's UNORM is not taken as "linear": tools write
+/// colour maps as BC7_UNORM by default, so eight-bit colour is sRGB whether the
+/// suffix is _SRGB or not, exactly as for a PNG, and the material decides.
+void TestDdsEightBitColourIsSrgbUnlessDeclared()
+{
+    for (const std::uint32_t format : {28u, 29u, 87u}) {   // RGBA8, _SRGB, BGRA8
+        std::vector<std::uint8_t> bytes = Dx10Dds(1, 1, format);
+        for (const std::uint8_t byte : {10, 20, 30, 40}) {
+            bytes.push_back(byte);
+        }
+        hdclaude::TextureImage image;
+        CHECK(DecodeDds(bytes, &image));
+        CHECK_EQ(Texel8(image, 0, 0)[0], format == 87 ? 30 : 10);
+        CHECK_EQ(Texel8(image, 0, 0)[3], 40);
+        CHECK(image.format == hdclaude::TexelFormat::Rgba8Srgb);
+        CHECK(DecodeDds(bytes, &image, HdClaudeTextureColorSpace::Raw));
+        CHECK(image.format == hdclaude::TexelFormat::Rgba8Unorm);
+    }
+}
+
+/// BC1 blocks in a size that is not a multiple of four: the file holds whole
+/// blocks, the image only the pixels inside its edge, and the top block row
+/// becomes the top of the image.
+void TestDdsDecodesBc1Blocks()
+{
+    // Six by six: two blocks across, two down. Top blocks red, bottom blue.
+    std::vector<std::uint8_t> bytes =
+        LegacyDds(6, 6, kDdsFourCCFlag, DdsFourCC("DXT1"));
+    AppendFlatBc1(bytes, 0xf800);
+    AppendFlatBc1(bytes, 0xf800);
+    AppendFlatBc1(bytes, 0x001f);
+    AppendFlatBc1(bytes, 0x001f);
+
+    hdclaude::TextureImage image;
+    CHECK(DecodeDds(bytes, &image));
+    CHECK(image.Valid());
+    CHECK_EQ(image.width, 6u);
+    CHECK_EQ(image.height, 6u);
+    // The bottom block row spans file rows 4-5, which are image rows 0-1.
+    for (std::uint32_t y = 0; y < 6; ++y) {
+        const bool top = y >= 2;
+        for (std::uint32_t x = 0; x < 6; ++x) {
+            const std::uint8_t* texel = Texel8(image, x, y);
+            CHECK_EQ(texel[0], top ? 255 : 0);
+            CHECK_EQ(texel[2], top ? 0 : 255);
+            CHECK_EQ(texel[3], 255);
+        }
+    }
+    CHECK(image.format == hdclaude::TexelFormat::Rgba8Srgb);
+}
+
+/// BC4 is one channel of data: grey, and linear even under Auto.
+void TestDdsDecodesBc4AsLinearGrey()
+{
+    std::vector<std::uint8_t> bytes =
+        LegacyDds(4, 4, kDdsFourCCFlag, DdsFourCC("ATI1"));
+    bytes.push_back(200);   // red0
+    bytes.push_back(0);     // red1
+    for (int i = 0; i < 6; ++i) {
+        bytes.push_back(0); // every index selects red0
+    }
+
+    hdclaude::TextureImage image;
+    CHECK(DecodeDds(bytes, &image));
+    CHECK_EQ(Texel8(image, 3, 3)[0], 200);
+    CHECK_EQ(Texel8(image, 3, 3)[1], 200);
+    CHECK_EQ(Texel8(image, 3, 3)[2], 200);
+    CHECK(image.format == hdclaude::TexelFormat::Rgba8Unorm);
+}
+
+/// Float formats keep what is above one: half RGBA from a DX10 header, and a
+/// one-channel float from a legacy D3DFMT code.
+void TestDdsKeepsFloatRange()
+{
+    std::vector<std::uint8_t> half = Dx10Dds(1, 1, 10);   // R16G16B16A16_FLOAT
+    for (const float value : {4.0f, 0.5f, 0.0f, 1.0f}) {
+        AppendU16(half, GfHalf(value).bits());
+    }
+    hdclaude::TextureImage image;
+    CHECK(DecodeDds(half, &image, HdClaudeTextureColorSpace::Srgb));
+    CHECK(image.format == hdclaude::TexelFormat::Rgba16Sfloat);
+    CHECK_NEAR(TexelHalf(image, 0, 0, 0), 4.0, 1e-3);
+    CHECK_NEAR(TexelHalf(image, 0, 0, 1), 0.5, 1e-3);
+
+    std::vector<std::uint8_t> single = LegacyDds(1, 1, kDdsFourCCFlag, 114);
+    const float value = 12.5f;
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    single.resize(single.size() + 4);
+    PutU32(single, single.size() - 4, bits);
+    CHECK(DecodeDds(single, &image));
+    CHECK(image.format == hdclaude::TexelFormat::Rgba16Sfloat);
+    CHECK_NEAR(TexelHalf(image, 0, 0, 0), 12.5, 1e-2);
+    CHECK_NEAR(TexelHalf(image, 0, 0, 2), 12.5, 1e-2);
+    CHECK_NEAR(TexelHalf(image, 0, 0, 3), 1.0, 1e-3);
+}
+
+/// What is refused is refused with a reason, never decoded as something else.
+void TestDdsRefusesWhatItCannotRead()
+{
+    const auto refused = [](const std::vector<std::uint8_t>& bytes,
+                            const char* expect) {
+        hdclaude::TextureImage image;
+        std::string error;
+        const bool ok = DecodeDds(bytes, &image, HdClaudeTextureColorSpace::Auto,
+                                  &error);
+        hdclaude_test::Report(!ok && error.find(expect) != std::string::npos,
+                              "refused with a reason", __FILE__, __LINE__,
+                              std::string("expected '") + expect + "', got '" +
+                                  error + "'");
+    };
+
+    std::vector<std::uint8_t> cube =
+        LegacyDds(4, 4, kDdsFourCCFlag, DdsFourCC("DXT1"));
+    PutU32(cube, 4 + 108, 0x200 | 0xfc00);   // CUBEMAP and all six faces
+    cube.resize(cube.size() + 8 * 6, 0);
+    refused(cube, "cube");
+
+    refused(Dx10Dds(4, 4, 71, 0x4), "cube");
+    refused(Dx10Dds(4, 4, 71, 0, 3), "array");
+    refused(LegacyDds(4, 4, kDdsFourCCFlag, DdsFourCC("DXT2")), "premultiplied");
+    refused(Dx10Dds(4, 4, 84), "signed");
+
+    // A header promising more than the file holds.
+    std::vector<std::uint8_t> truncated =
+        LegacyDds(8, 8, kDdsFourCCFlag, DdsFourCC("DXT1"));
+    AppendFlatBc1(truncated, 0xffff);
+    refused(truncated, "shorter");
+
+    const std::vector<std::uint8_t> notDds(200, 0);
+    CHECK(!HdClaudeIsDds(notDds.data(), notDds.size()));
+    refused(notDds, "not a DDS");
+}
+
 }  // namespace
 
 int main()
@@ -326,5 +627,12 @@ int main()
     TestReallocationDiscardsTheFrame();
     TestInstancerForgetsRemovedPrimvars();
     TestInstancerKeepsWhatIsStillAuthored();
+    TestDdsReadsMaskedPixelsBottomUp();
+    TestDdsReadsLuminanceAsGrey();
+    TestDdsEightBitColourIsSrgbUnlessDeclared();
+    TestDdsDecodesBc1Blocks();
+    TestDdsDecodesBc4AsLinearGrey();
+    TestDdsKeepsFloatRange();
+    TestDdsRefusesWhatItCannotRead();
     return hdclaude_test::Summarize("hydra");
 }

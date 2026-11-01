@@ -134,6 +134,7 @@ if(HDCLAUDE_ENABLE_MATERIALX)
   if(HDCLAUDE_BUILD_HYDRA_PLUGIN)
     add_executable(hdClaudeHydraTests
         hydra_tests.cpp
+        ${CMAKE_SOURCE_DIR}/src/hydra/dds_image.cpp
         ${CMAKE_SOURCE_DIR}/src/hydra/instancer.cpp
         ${CMAKE_SOURCE_DIR}/src/hydra/render_buffer.cpp)
     target_include_directories(hdClaudeHydraTests PRIVATE
@@ -141,7 +142,7 @@ if(HDCLAUDE_ENABLE_MATERIALX)
         ${CMAKE_SOURCE_DIR}/src/hydra
         ${CMAKE_SOURCE_DIR}/include)
     target_link_libraries(hdClaudeHydraTests PRIVATE
-        hdClaudeProjectOptions hdClaude::Core gf hd sdf tf vt)
+        hdClaudeProjectOptions hdClaude::Core hdClaudeBcdec gf hd sdf tf vt)
     if(MSVC)
       # The plugin's own suppressions, for the same OpenUSD headers.
       target_compile_options(hdClaudeHydraTests PRIVATE
