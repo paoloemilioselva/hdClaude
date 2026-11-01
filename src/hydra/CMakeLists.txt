@@ -14,6 +14,7 @@
 add_library(hdClaude MODULE
     camera.cpp
     cull_volume.cpp
+    dds_image.cpp
     instancer.cpp
     light.cpp
     implicit_surface_scene_index_plugin.cpp
@@ -46,6 +47,7 @@ target_link_libraries(hdClaude
         hdClaude::Core
         hdClaude::Gpu
         hdClaude::MaterialX
+        hdClaudeBcdec
         ar
         hd
         hdsi

@@ -29,6 +29,9 @@ set(HDCLAUDE_VULKAN_SDK_TAG "vulkan-sdk-1.4.357.0" CACHE STRING
     "Vulkan SDK release tag used for Vulkan-Headers, volk, and glslang")
 set(HDCLAUDE_VMA_TAG "v3.2.1" CACHE STRING
     "VulkanMemoryAllocator release tag")
+# bcdec has no release tags, so it is pinned to a commit (v0.985).
+set(HDCLAUDE_BCDEC_TAG "80859ed3b7afb1c527a2a99d70c61457bea72d0c" CACHE STRING
+    "bcdec commit")
 
 # ---------------------------------------------------------------------------
 # Vulkan-Headers - the API definition. Header-only.
@@ -78,7 +81,38 @@ FetchContent_Declare(glslang
     GIT_SHALLOW    TRUE
     GIT_PROGRESS   TRUE)
 
-FetchContent_MakeAvailable(vulkan_headers volk vma glslang)
+# ---------------------------------------------------------------------------
+# bcdec - BC1-BC7 block decompression, for DDS textures. Hio has no DDS reader,
+# so hdClaude parses the container itself (src/hydra/dds_image.cpp) and hands
+# the compressed blocks to this. A single header under MIT/Unlicense.
+#
+# Its own CMakeLists builds only a test executable, so SOURCE_SUBDIR points at a
+# directory that does not exist: the sources are fetched and nothing of bcdec's
+# is added to this build.
+# ---------------------------------------------------------------------------
+FetchContent_Declare(bcdec
+    GIT_REPOSITORY https://github.com/iOrange/bcdec.git
+    GIT_TAG        ${HDCLAUDE_BCDEC_TAG}
+    GIT_PROGRESS   TRUE
+    SOURCE_SUBDIR  no-cmake-build)
+
+FetchContent_MakeAvailable(vulkan_headers volk vma glslang bcdec)
+
+# The implementation, compiled once as C in a library of its own. Kept apart
+# from hdClaudeProjectOptions on purpose: third-party code is not held to
+# hdClaude's /W4 /WX or -Wall -Werror, and a new compiler's opinion of bcdec
+# must not fail the build on one platform and not the other. Position
+# independent because it ends up inside the hdClaude shared module.
+if(NOT TARGET hdClaudeBcdec)
+  set(_bcdec_unit "${CMAKE_BINARY_DIR}/generated/bcdec_implementation.c")
+  file(CONFIGURE OUTPUT "${_bcdec_unit}" CONTENT
+      "#define BCDEC_IMPLEMENTATION\n#include \"bcdec.h\"\n")
+  add_library(hdClaudeBcdec STATIC "${_bcdec_unit}")
+  target_include_directories(hdClaudeBcdec PUBLIC "${bcdec_SOURCE_DIR}")
+  set_target_properties(hdClaudeBcdec PROPERTIES
+      POSITION_INDEPENDENT_CODE ON
+      LINKER_LANGUAGE C)
+endif()
 
 # volk is a static library that ends up inside the hdClaude shared module, and
 # its own CMake does not ask for position-independent code. MSVC does not care;

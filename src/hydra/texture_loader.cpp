@@ -1,11 +1,14 @@
 #include "texture_loader.h"
 
+#include "dds_image.h"
 #include "trace.h"
 
 #include "pxr/base/gf/half.h"
 #include "pxr/base/work/loops.h"
 #include "pxr/imaging/hio/image.h"
 #include "pxr/imaging/hio/types.h"
+#include "pxr/usd/ar/asset.h"
+#include "pxr/usd/ar/resolvedPath.h"
 #include "pxr/usd/ar/resolver.h"
 
 #include <algorithm>
@@ -351,6 +354,19 @@ int Reduce(hdclaude::TextureImage* image, std::uint32_t maxEdge)
     return steps;
 }
 
+/// Whether a path names a DDS file, by extension.
+///
+/// By extension because that is how Hio chooses a reader too, and the
+/// resolver's GetExtension sees through a package path such as
+/// `textures.usdz[albedo.dds]` to the file inside it.
+bool IsDdsPath(const std::string& path)
+{
+    std::string extension = ArGetResolver().GetExtension(path);
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return extension == "dds";
+}
+
 }  // namespace
 
 std::uint32_t HdClaudeTextureEdgeCap(const std::string& quality)
@@ -419,17 +435,32 @@ bool HdClaudeLoadTexture(const std::string& assetPath,
         resolved = resolvedPath.GetPathString();
     }
 
-    HioImageSharedPtr image = HioImage::OpenForReading(resolved);
-    if (!image) {
-        if (error) {
-            *error = "no image plugin opened '" + resolved + "'";
-        }
-        return false;
-    }
-
     out->debugName = assetPath;
-    if (!Widen(image, out, error, colorSpace)) {
-        return false;
+    if (IsDdsPath(path)) {
+        // No Hio plugin reads DDS (dds_image.h), so its bytes are read through
+        // Ar -- which also finds one inside a .usdz -- and decoded here.
+        std::shared_ptr<ArAsset> asset =
+            ArGetResolver().OpenAsset(ArResolvedPath(resolved));
+        std::shared_ptr<const char> bytes = asset ? asset->GetBuffer() : nullptr;
+        if (!bytes) {
+            if (error) *error = "could not read '" + resolved + "'";
+            return false;
+        }
+        if (!HdClaudeDecodeDds(bytes.get(), asset->GetSize(), colorSpace, out,
+                               error)) {
+            return false;
+        }
+    } else {
+        HioImageSharedPtr image = HioImage::OpenForReading(resolved);
+        if (!image) {
+            if (error) {
+                *error = "no image plugin opened '" + resolved + "'";
+            }
+            return false;
+        }
+        if (!Widen(image, out, error, colorSpace)) {
+            return false;
+        }
     }
 
     // Reduced after decoding rather than by asking the image plugin for a
