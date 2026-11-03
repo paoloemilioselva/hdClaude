@@ -341,8 +341,9 @@ void HdClaudeParticleField::Sync(HdSceneDelegate* sceneDelegate,
     // A material bound to the prim. Reported rather than applied: the schema
     // carries radiance and no reflectance, so there is nothing for a surface
     // shader to shade, and a MaterialX `volumeshader` -- which *would* have
-    // something to say about a splat cloud -- is a terminal hdClaude does not
-    // compile yet (docs/gaussian-splats.md 4).
+    // something to say about a splat cloud -- is compiled for fog volumes on
+    // meshes (docs/fog-volumes.md) but not applied to a cloud yet
+    // (docs/gaussian-splats.md 4).
     if (!GetMaterialId().IsEmpty()) {
         entry.reports.push_back(
             "a material is bound at <" + GetMaterialId().GetString() +

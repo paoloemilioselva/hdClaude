@@ -16,6 +16,7 @@ Related documents:
 - [DLSS integration](dlss-integration.md) — guides, resolution, history.
 - [Gaussian splats](gaussian-splats.md) -- the splat schema, and what "properly path traced" means for it.
 - [Cull volumes](cull-volumes.md) -- culling geometry per ray kind inside a region, by clipping rays rather than the BVH.
+- [Fog volumes](fog-volumes.md) -- a volume-only MaterialX material on a mesh, walked through during traversal.
 - [Lessons from hdCodex](lessons-from-hdcodex.md) — defects inherited as rules.
 - [Debugging a render](debugging-a-render.md) — how a reported image is turned into a measurement.
 - [Implementation notes](implementation-notes.md) — findings that corrected this design.

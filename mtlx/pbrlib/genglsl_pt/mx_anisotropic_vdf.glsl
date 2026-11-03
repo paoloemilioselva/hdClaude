@@ -21,8 +21,10 @@
 // through the interface, and the combinators are what know which lobe that was.
 // See mtlx/pbrlib/genglsl_pt/lib/mx_closure_type.glsl.
 //
-// Scope: homogeneous interior media only. Heterogeneous volumes (UsdVol) are
-// not scheduled -- docs/roadmap.md, open question 4.
+// Scope: this is the node as part of a *surface*, the interior a transmissive
+// surface encloses, which is homogeneous. A `volume` shader's VDFs are never
+// generated through here: a fog volume's tree is flattened into patterns on
+// the host and walked during traversal (docs/fog-volumes.md).
 
 #include "lib/mx_closure_type.glsl"
 
