@@ -74,9 +74,28 @@ inline constexpr const char* kMaterialOpacityEntryPoint =
 /// switch rather than an interpolation.
 inline constexpr const char* kMaterialCutoutQuery = "hdclaude_material_cutout";
 
-/// The output the opacity library is generated from. A graph whose output
+/// The output the traversal library is generated from. A graph whose output
 /// socket has this name is emitted as the library rather than as a material.
+/// The library holds every cut-out material's opacity and every volume
+/// material's medium; the name is the opacity's because the opacity came first.
 inline constexpr const char* kOpacityLibraryOutput = "hdclaude_opacity_library";
+
+/// Name of the generated function the traversal kernels call to evaluate a
+/// fog volume's medium at a point:
+/// `HdclaudeMedium hdclaude_material_medium(uint material)`, against whatever
+/// `hdclaude_set_surface_hit` last filled. See `AuthoredVolume`.
+inline constexpr const char* kMaterialMediumEntryPoint = "hdclaude_material_medium";
+
+/// Name of the generated function that says whether a material is a volume:
+/// `bool hdclaude_material_volume(uint material)`.
+inline constexpr const char* kMaterialVolumeQuery = "hdclaude_material_volume";
+
+/// How many Henyey-Greenstein lobes a volume's phase function keeps. MaterialX
+/// builds a phase function by mixing and adding `anisotropic_vdf` nodes, and
+/// the mixture's lobes are carried individually rather than collapsed into one
+/// mean cosine, because a fog's look is the forward peak *and* the backward
+/// tail at once. Four covers every graph seen; more is reported.
+inline constexpr int kMaxVolumeLobes = 4;
 
 /// Syntax for `genglsl_pt`.
 ///
@@ -478,11 +497,54 @@ struct OpacityLibrary {
 /// `hdclaude_material_opacity`, so a candidate evaluates only its own
 /// material's graph.
 ///
-/// Empty when `materials` is empty or a document could not be read, with the
+/// `volumes` does the same for what `AuthoredVolume` returned, and those land
+/// in `hdclaude_material_medium`. Either list may be empty, not both.
+///
+/// Empty when both lists are empty or a document could not be read, with the
 /// reason in `error`.
 OpacityLibrary OpacityLibraryDocument(
     const std::vector<std::pair<std::uint32_t, std::string>>& materials,
-    const mx::DocumentPtr& libraries, std::string* error = nullptr);
+    const mx::DocumentPtr& libraries, std::string* error = nullptr,
+    const std::vector<std::pair<std::uint32_t, std::string>>& volumes = {});
+
+/// A document's `volume` shader, as a self-contained MaterialX document of
+/// patterns, or empty when the material binds no volume shader hdClaude can
+/// transport.
+///
+/// A volume is transported by the integrator, not shaded: absorption,
+/// scattering and emission happen along a ray inside the medium, at points
+/// the walk chooses, so what traversal needs from the material is the medium's
+/// coefficients *at a point* -- patterns, not closures. The VDF and EDF trees
+/// under the `volume` node are flattened here into those patterns, exactly
+/// where MaterialX's definitions make them linear:
+///
+///   anisotropic_vdf   absorption, scattering, and one phase lobe
+///   absorption_vdf    absorption alone
+///   mix (VDF)         both sides, weighted by `mix` and `1 - mix`
+///   add (VDF)         both sides
+///   multiply (VDF)    every coefficient, by the weight
+///   uniform_edf       an emission, per unit length
+///   mix, add, multiply (EDF)  as for a VDF
+///
+/// The result is one nodegraph, `hdclaude_volume`, with outputs `absorption`
+/// and `scattering` (vector3), `emission` (color3), and for each phase lobe
+/// `anisotropy<i>` and `weight<i>` (float), `i` below `kMaxVolumeLobes`. A
+/// lobe's weight is its share of the scattering, as the mean of its three
+/// coefficients; an absent lobe has weight zero.
+///
+/// Units: every coefficient is per *scene* unit, and so is the emission. The
+/// MaterialX specification states VDF rates in inverse metres, and that is
+/// deliberately not applied: the coefficients `standard_surface` and
+/// `open_pbr_surface` build from `transmission_depth` are in scene units by
+/// their own specifications, and pipelines author fog with the stage's unit
+/// already folded into the density (docs/roadmap.md, open item 11).
+///
+/// `diagnostics` collects what the caller should report: a node the walk
+/// cannot flatten, which then contributes nothing, or lobes beyond the cap.
+std::string AuthoredVolume(
+    const mx::DocumentPtr& document,
+    const std::map<std::string, std::string>* resolvedTextures = nullptr,
+    std::vector<std::string>* diagnostics = nullptr);
 
 }  // namespace hdclaude
 

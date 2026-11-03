@@ -285,6 +285,15 @@ struct CompiledMaterial {
     /// never reads it; whoever builds those programs does.
     std::string cutoutOpacity;
 
+    /// The material's volume, as the MaterialX document `AuthoredVolume`
+    /// extracts, or empty when it is not a volume.
+    ///
+    /// Non-empty means the material is a *fog volume*: a mesh bound to it is
+    /// the boundary of a participating medium rather than a surface. Like
+    /// `cutoutOpacity` it is text for the traversal library, which every
+    /// volume material's medium is generated into (TraversalPrograms).
+    std::string volume;
+
     // --- Displacement -----------------------------------------------------
     //
     // A material's `displacement` terminal is a second graph with a second
@@ -344,6 +353,11 @@ struct TraversalPrograms {
     /// any of whose per-primitive materials, is one of these is marked
     /// non-opaque, so traversal hands its triangles to the kernel to ask.
     std::vector<std::uint32_t> cutoutMaterials;
+
+    /// The volume materials the library answers for. A placement bound to one
+    /// is a fog boundary: it leaves every ray's mask but the fog's, and the
+    /// traversal kernels walk the medium it encloses (docs/fog-volumes.md).
+    std::vector<std::uint32_t> volumeMaterials;
 
     bool Valid() const { return !extendSpirv.empty() && !shadowSpirv.empty(); }
 };

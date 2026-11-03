@@ -18,6 +18,7 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <map>
 #include <optional>
 #include <set>
 
@@ -905,31 +906,27 @@ void PathTracerShaderGenerator::emitPixelStage(const ShaderGraph& graph,
             }
         }
 
-        emitLine("bool " + string(kMaterialCutoutQuery) + "(uint material)",
-                 stage, false);
-        emitScopeBegin(stage);
-        emitLine("switch (material)", stage, false);
-        emitScopeBegin(stage);
-        for (const auto& root : roots) {
-            emitLine("case " + root.first + "u:", stage, false);
+        // The volume roots, grouped by material: `hdclaude_volume_m<m>_<field>`.
+        std::map<std::string, std::map<string, const ShaderNode*>> volumes;
+        const string volumePrefix = "hdclaude_volume_m";
+        for (const ShaderNode* node : graph.getNodes()) {
+            const string& name = node->getName();
+            if (name.rfind(volumePrefix, 0) != 0) {
+                continue;
+            }
+            const string rest = name.substr(volumePrefix.size());
+            const std::size_t underscore = rest.find('_');
+            if (underscore == string::npos) {
+                continue;
+            }
+            volumes[rest.substr(0, underscore)][rest.substr(underscore + 1)] = node;
         }
-        emitLine("return true", stage);
-        emitScopeEnd(stage);
-        emitLine("return false", stage);
-        emitScopeEnd(stage);
-        emitLineBreak(stage);
 
-        setFunctionName(kMaterialOpacityEntryPoint, stage);
-        emitLine("float " + string(kMaterialOpacityEntryPoint) + "(uint material)",
-                 stage, false);
-        emitScopeBegin(stage);
-        emitLine("switch (material)", stage, false);
-        emitScopeBegin(stage);
-        for (const auto& root : roots) {
-            // The nodes this root reads, transitively. Each material's nodes
-            // carry a prefix of their own, so no node is in two of these.
+        // The nodes a set of roots reads, transitively. Each material's nodes
+        // carry a prefix of their own, so no node is in two materials' cones.
+        auto coneOf = [&graph](const std::vector<const ShaderNode*>& tips) {
             std::set<const ShaderNode*> cone;
-            std::vector<const ShaderNode*> pending = {root.second};
+            std::vector<const ShaderNode*> pending = tips;
             while (!pending.empty()) {
                 const ShaderNode* node = pending.back();
                 pending.pop_back();
@@ -943,21 +940,128 @@ void PathTracerShaderGenerator::emitPixelStage(const ShaderGraph& graph,
                     }
                 }
             }
-
-            emitLine("case " + root.first + "u:", stage, false);
-            emitScopeBegin(stage);
-            // In graph order, which is topological, so every node's inputs
-            // exist before it reads them.
+            return cone;
+        };
+        // In graph order, which is topological, so every node's inputs exist
+        // before it reads them.
+        auto emitCone = [&](const std::set<const ShaderNode*>& cone) {
             for (const ShaderNode* node : graph.getNodes()) {
                 if (cone.count(node) != 0) {
                     emitFunctionCall(*node, context, stage);
                 }
             }
-            emitLine("return " + root.second->getOutput()->getVariable(), stage);
+        };
+        // A `switch` with no case is not something every compiler accepts, so
+        // a library with nothing of one kind answers without one.
+        auto emitMembership = [&](const string& function,
+                                  const std::vector<string>& materials) {
+            emitLine("bool " + function + "(uint material)", stage, false);
+            emitScopeBegin(stage);
+            if (!materials.empty()) {
+                emitLine("switch (material)", stage, false);
+                emitScopeBegin(stage);
+                for (const string& material : materials) {
+                    emitLine("case " + material + "u:", stage, false);
+                }
+                emitLine("return true", stage);
+                emitScopeEnd(stage);
+            }
+            emitLine("return false", stage);
+            emitScopeEnd(stage);
+            emitLineBreak(stage);
+        };
+
+        std::vector<string> cutoutMaterials;
+        for (const auto& root : roots) {
+            cutoutMaterials.push_back(root.first);
+        }
+        emitMembership(kMaterialCutoutQuery, cutoutMaterials);
+
+        setFunctionName(kMaterialOpacityEntryPoint, stage);
+        emitLine("float " + string(kMaterialOpacityEntryPoint) + "(uint material)",
+                 stage, false);
+        emitScopeBegin(stage);
+        if (!roots.empty()) {
+            emitLine("switch (material)", stage, false);
+            emitScopeBegin(stage);
+            for (const auto& root : roots) {
+                emitLine("case " + root.first + "u:", stage, false);
+                emitScopeBegin(stage);
+                emitCone(coneOf({root.second}));
+                emitLine("return " + root.second->getOutput()->getVariable(), stage);
+                emitScopeEnd(stage);
+            }
             emitScopeEnd(stage);
         }
-        emitScopeEnd(stage);
         emitLine("return 1.0", stage);
+        emitScopeEnd(stage);
+        emitLineBreak(stage);
+
+        // --- The volume library ---------------------------------------------
+        //
+        // A medium at a point, for the walk through a fog volume. Every field
+        // is a pattern the host flattened out of the VDF and EDF trees
+        // (AuthoredVolume); the kernel resolves them to wavelengths.
+        emitLine("struct HdclaudeMedium", stage, false);
+        emitScopeBegin(stage);
+        emitLine("vec3 absorption", stage);
+        emitLine("vec3 scattering", stage);
+        emitLine("vec3 emission", stage);
+        emitLine("vec4 anisotropy", stage);
+        emitLine("vec4 weight", stage);
+        emitScopeEnd(stage, true, false);
+        emitLineBreak(stage);
+
+        static_assert(kMaxVolumeLobes == 4,
+                      "a medium's lobes travel in one vec4 each");
+        std::vector<string> volumeMaterials;
+        for (const auto& volume : volumes) {
+            volumeMaterials.push_back(volume.first);
+        }
+        emitMembership(kMaterialVolumeQuery, volumeMaterials);
+
+        emitLine("HdclaudeMedium " + string(kMaterialMediumEntryPoint) +
+                     "(uint material)",
+                 stage, false);
+        emitScopeBegin(stage);
+        emitLine("HdclaudeMedium medium = HdclaudeMedium(vec3(0.0), vec3(0.0), "
+                 "vec3(0.0), vec4(0.0), vec4(0.0))",
+                 stage);
+        if (!volumes.empty()) {
+            emitLine("switch (material)", stage, false);
+            emitScopeBegin(stage);
+            for (const auto& [material, fields] : volumes) {
+                std::vector<const ShaderNode*> tips;
+                for (const auto& field : fields) {
+                    tips.push_back(field.second);
+                }
+                emitLine("case " + material + "u:", stage, false);
+                emitScopeBegin(stage);
+                emitCone(coneOf(tips));
+                auto value = [&fields](const string& field) -> string {
+                    const auto found = fields.find(field);
+                    return found == fields.end()
+                               ? string("0.0")
+                               : found->second->getOutput()->getVariable();
+                };
+                emitLine("medium.absorption = " + value("absorption"), stage);
+                emitLine("medium.scattering = " + value("scattering"), stage);
+                emitLine("medium.emission = " + value("emission"), stage);
+                string anisotropy = "vec4(";
+                string weight = "vec4(";
+                for (int lobe = 0; lobe < kMaxVolumeLobes; ++lobe) {
+                    const string separator = lobe == 0 ? "" : ", ";
+                    anisotropy += separator + value("anisotropy" + std::to_string(lobe));
+                    weight += separator + value("weight" + std::to_string(lobe));
+                }
+                emitLine("medium.anisotropy = " + anisotropy + ")", stage);
+                emitLine("medium.weight = " + weight + ")", stage);
+                emitLine("break", stage);
+                emitScopeEnd(stage);
+            }
+            emitScopeEnd(stage);
+        }
+        emitLine("return medium", stage);
         emitScopeEnd(stage);
         emitLineBreak(stage);
         return;
@@ -1906,9 +2010,380 @@ std::string AuthoredCutoutOpacity(
     return mx::writeToXmlString(extracted);
 }
 
+namespace {
+
+/// The nodegraph an extracted volume lives in. See AuthoredVolume.
+constexpr const char* kVolumeGraph = "hdclaude_volume";
+
+/// Prefix of the library node that holds field `f` of material `m`'s medium:
+/// `hdclaude_volume_m<m>_<f>`. See OpacityLibraryDocument.
+constexpr const char* kVolumeRootPrefix = "hdclaude_volume_m";
+
+/// One output of the `hdclaude_volume` nodegraph.
+struct VolumeField {
+    std::string name;
+    std::string type;
+};
+
+std::vector<VolumeField> VolumeFields()
+{
+    std::vector<VolumeField> fields = {{"absorption", "vector3"},
+                                       {"scattering", "vector3"},
+                                       {"emission", "color3"}};
+    for (int lobe = 0; lobe < kMaxVolumeLobes; ++lobe) {
+        fields.push_back({"anisotropy" + std::to_string(lobe), "float"});
+        fields.push_back({"weight" + std::to_string(lobe), "float"});
+    }
+    return fields;
+}
+
+/// Flattens the VDF and EDF trees under a `volume` node into patterns.
+///
+/// Every value it returns is the name of a node in `graph`, or empty for zero,
+/// which keeps a medium with no absorption -- the common fog -- from carrying a
+/// chain of multiplications by nothing.
+class VolumeFlattener {
+  public:
+    struct Lobe {
+        std::string scattering;  // vector3
+        std::string anisotropy;  // float
+    };
+    struct Vdf {
+        std::string absorption;  // vector3
+        std::vector<Lobe> lobes;
+    };
+
+    VolumeFlattener(mx::NodeGraphPtr graph,
+                    const std::map<std::string, std::string>* resolvedTextures)
+        : _graph(graph), _copier(graph, resolvedTextures)
+    {
+    }
+
+    Vdf FlattenVdf(const mx::InputPtr& input, int depth = 0)
+    {
+        const Upstream upstream = input ? UpstreamOf(input) : Upstream();
+        if (!upstream.node || depth > 64) {
+            return {};
+        }
+        const mx::NodePtr node = upstream.node;
+        const std::string category = node->getCategory();
+        if (category == "anisotropic_vdf") {
+            Vdf vdf;
+            vdf.absorption = Pattern(node, "absorption", "vector3");
+            vdf.lobes.push_back({Pattern(node, "scattering", "vector3"),
+                                 Pattern(node, "anisotropy", "float")});
+            return vdf;
+        }
+        if (category == "absorption_vdf") {
+            Vdf vdf;
+            vdf.absorption = Pattern(node, "absorption", "vector3");
+            return vdf;
+        }
+        if (category == "mix") {
+            const Vdf fg = FlattenVdf(node->getInput("fg"), depth + 1);
+            const Vdf bg = FlattenVdf(node->getInput("bg"), depth + 1);
+            const std::string mix = Pattern(node, "mix", "float");
+            const std::string rest = Subtract(Constant("float", "1"), mix);
+            return Sum(Scale(fg, mix), Scale(bg, rest));
+        }
+        if (category == "add") {
+            return Sum(FlattenVdf(node->getInput("in1"), depth + 1),
+                       FlattenVdf(node->getInput("in2"), depth + 1));
+        }
+        if (category == "multiply") {
+            const Vdf in1 = FlattenVdf(node->getInput("in1"), depth + 1);
+            const mx::InputPtr weight = node->getActiveInput("in2");
+            if (weight && weight->getType() == "color3") {
+                const std::string colour = Pattern(node, "in2", "color3");
+                return Scale(in1, Convert(colour, "vector3"));
+            }
+            return Scale(in1, Pattern(node, "in2", "float"));
+        }
+        Report("its volume reads '" + node->getName() + "', a '" + category +
+               "' VDF, which hdClaude does not transport; it contributes "
+               "nothing");
+        return {};
+    }
+
+    std::string FlattenEdf(const mx::InputPtr& input, int depth = 0)
+    {
+        const Upstream upstream = input ? UpstreamOf(input) : Upstream();
+        if (!upstream.node || depth > 64) {
+            return {};
+        }
+        const mx::NodePtr node = upstream.node;
+        const std::string category = node->getCategory();
+        if (category == "uniform_edf") {
+            return Pattern(node, "color", "color3");
+        }
+        if (category == "mix") {
+            const std::string fg = FlattenEdf(node->getInput("fg"), depth + 1);
+            const std::string bg = FlattenEdf(node->getInput("bg"), depth + 1);
+            if (fg.empty() && bg.empty()) {
+                return {};
+            }
+            const std::string mix = Pattern(node, "mix", "float");
+            return Add(Multiply(fg, mix, "color3"),
+                       Multiply(bg, Subtract(Constant("float", "1"), mix), "color3"),
+                       "color3");
+        }
+        if (category == "add") {
+            return Add(FlattenEdf(node->getInput("in1"), depth + 1),
+                       FlattenEdf(node->getInput("in2"), depth + 1), "color3");
+        }
+        if (category == "multiply") {
+            const std::string in1 = FlattenEdf(node->getInput("in1"), depth + 1);
+            const mx::InputPtr weight = node->getActiveInput("in2");
+            const std::string type =
+                weight && weight->getType() == "color3" ? "color3" : "float";
+            return Multiply(in1, Pattern(node, "in2", type), "color3");
+        }
+        Report("its volume emits through '" + node->getName() + "', a '" +
+               category + "' EDF, which has no meaning inside a medium; it "
+               "contributes nothing");
+        return {};
+    }
+
+    /// A node of `type` that is always `value`.
+    std::string Constant(const std::string& type, const std::string& value)
+    {
+        const mx::NodePtr node = _graph->addNode(
+            "constant", _graph->createValidChildName("hdclaude_constant"), type);
+        node->addInput("value", type)->setValueString(value);
+        return node->getName();
+    }
+
+    /// `in1 + in2`, where an empty name is zero.
+    std::string Add(const std::string& in1, const std::string& in2,
+                    const std::string& type)
+    {
+        if (in1.empty()) {
+            return in2;
+        }
+        if (in2.empty()) {
+            return in1;
+        }
+        return Binary("add", type, in1, type, in2, type);
+    }
+
+    /// `value * weight`, where `weight` is a float, or of `type` itself.
+    std::string Multiply(const std::string& value, const std::string& weight,
+                         const std::string& type)
+    {
+        if (value.empty()) {
+            return {};
+        }
+        const mx::NodePtr node = _graph->getNode(weight);
+        const std::string weightType = node ? node->getType() : "float";
+        return Binary("multiply", type, value, type, weight, weightType);
+    }
+
+    std::string Dot(const std::string& in1, const std::string& in2)
+    {
+        return Binary("dotproduct", "float", in1, "vector3", in2, "vector3");
+    }
+
+    const std::vector<std::string>& Diagnostics() const { return _diagnostics; }
+    const std::string& Error() const { return _copier.Error(); }
+
+  private:
+    /// Input `name` of `node` as a node in the graph: the copy of whatever it
+    /// reads, or a constant holding its value -- authored, through the
+    /// nodegraph interface, or the nodedef's default, in that order.
+    std::string Pattern(const mx::NodePtr& node, const std::string& name,
+                        const std::string& type)
+    {
+        const mx::InputPtr input = node->getInput(name);
+        const Upstream upstream = input ? UpstreamOf(input) : Upstream();
+        if (upstream.node) {
+            const std::string copied = _copier.Copy(upstream.node);
+            if (copied.empty()) {
+                return {};
+            }
+            // Through a `dot`, so a multi-output node's own output can be
+            // named and every caller deals in node names alone.
+            const mx::NodePtr dot = _graph->addNode(
+                "dot", _graph->createValidChildName("hdclaude_read"), type);
+            const mx::InputPtr in = dot->addInput("in", type);
+            in->setNodeName(copied);
+            if (!upstream.output.empty()) {
+                in->setOutputString(upstream.output);
+            }
+            return dot->getName();
+        }
+        std::string value;
+        if (input) {
+            const mx::InputPtr source = ValueSource(input);
+            if (source->hasValueString()) {
+                value = source->getValueString();
+            }
+        }
+        if (value.empty()) {
+            const mx::NodeDefPtr nodeDef = node->getNodeDef();
+            const mx::InputPtr fallback =
+                nodeDef ? nodeDef->getActiveInput(name) : nullptr;
+            if (fallback && fallback->hasValueString()) {
+                value = fallback->getValueString();
+            }
+        }
+        if (value.empty()) {
+            return {};
+        }
+        return Constant(type, value);
+    }
+
+    std::string Binary(const std::string& category, const std::string& type,
+                       const std::string& in1, const std::string& type1,
+                       const std::string& in2, const std::string& type2)
+    {
+        const mx::NodePtr node = _graph->addNode(
+            category, _graph->createValidChildName("hdclaude_" + category), type);
+        node->addInput("in1", type1)->setNodeName(in1);
+        node->addInput("in2", type2)->setNodeName(in2);
+        return node->getName();
+    }
+
+    std::string Subtract(const std::string& in1, const std::string& in2)
+    {
+        if (in2.empty()) {
+            return in1;
+        }
+        return Binary("subtract", "float", in1, "float", in2, "float");
+    }
+
+    std::string Convert(const std::string& in, const std::string& type)
+    {
+        const mx::NodePtr from = _graph->getNode(in);
+        const mx::NodePtr node = _graph->addNode(
+            "convert", _graph->createValidChildName("hdclaude_convert"), type);
+        node->addInput("in", from ? from->getType() : "color3")->setNodeName(in);
+        return node->getName();
+    }
+
+    Vdf Scale(const Vdf& vdf, const std::string& weight)
+    {
+        if (weight.empty()) {
+            return {};
+        }
+        Vdf scaled;
+        scaled.absorption = Multiply(vdf.absorption, weight, "vector3");
+        for (const Lobe& lobe : vdf.lobes) {
+            scaled.lobes.push_back(
+                {Multiply(lobe.scattering, weight, "vector3"), lobe.anisotropy});
+        }
+        return scaled;
+    }
+
+    Vdf Sum(const Vdf& a, const Vdf& b)
+    {
+        Vdf sum;
+        sum.absorption = Add(a.absorption, b.absorption, "vector3");
+        sum.lobes = a.lobes;
+        sum.lobes.insert(sum.lobes.end(), b.lobes.begin(), b.lobes.end());
+        return sum;
+    }
+
+    void Report(const std::string& message) { _diagnostics.push_back(message); }
+
+    mx::NodeGraphPtr _graph;
+    OpacityConeCopier _copier;
+    std::vector<std::string> _diagnostics;
+};
+
+}  // namespace
+
+std::string AuthoredVolume(
+    const mx::DocumentPtr& document,
+    const std::map<std::string, std::string>* resolvedTextures,
+    std::vector<std::string>* diagnostics)
+{
+    if (!document) {
+        return {};
+    }
+    auto report = [diagnostics](const std::string& message) {
+        if (diagnostics) {
+            diagnostics->push_back(message);
+        }
+    };
+
+    mx::NodePtr shader;
+    for (const mx::NodePtr& material : document->getMaterialNodes()) {
+        const mx::InputPtr input = material->getInput("volumeshader");
+        if (const mx::NodePtr connected = input ? input->getConnectedNode() : nullptr) {
+            shader = connected;
+            break;
+        }
+    }
+    if (!shader) {
+        report("it binds no volume shader");
+        return {};
+    }
+    if (shader->getCategory() != "volume") {
+        // A shading model with a nodegraph of its own would be flattened the
+        // way a surface is; none is in the standard libraries, so the one
+        // constructor MaterialX defines is the one this reads.
+        report("its volume shader is a '" + shader->getCategory() +
+               "' node; hdClaude reads the `volume` constructor");
+        return {};
+    }
+
+    mx::DocumentPtr extracted = mx::createDocument();
+    const mx::NodeGraphPtr graph = extracted->addNodeGraph(kVolumeGraph);
+    VolumeFlattener flattener(graph, resolvedTextures);
+
+    const VolumeFlattener::Vdf vdf = flattener.FlattenVdf(shader->getInput("vdf"));
+    const std::string emission = flattener.FlattenEdf(shader->getInput("edf"));
+    for (const std::string& message : flattener.Diagnostics()) {
+        report(message);
+    }
+    if (!flattener.Error().empty()) {
+        report(flattener.Error() + "; the volume is not rendered");
+        return {};
+    }
+    if (vdf.absorption.empty() && vdf.lobes.empty() && emission.empty()) {
+        report("its volume neither attenuates nor emits");
+        return {};
+    }
+
+    std::string scattering;
+    for (const VolumeFlattener::Lobe& lobe : vdf.lobes) {
+        scattering = flattener.Add(scattering, lobe.scattering, "vector3");
+    }
+    if (static_cast<int>(vdf.lobes.size()) > kMaxVolumeLobes) {
+        report("its phase function mixes " + std::to_string(vdf.lobes.size()) +
+               " Henyey-Greenstein lobes and hdClaude keeps " +
+               std::to_string(kMaxVolumeLobes) +
+               "; the others still scatter, with the kept lobes' shape");
+    }
+
+    std::map<std::string, std::string> fields;
+    fields["absorption"] = vdf.absorption;
+    fields["scattering"] = scattering;
+    fields["emission"] = emission;
+    const std::string third = flattener.Constant("vector3", "0.333333, 0.333333, 0.333333");
+    for (int i = 0; i < kMaxVolumeLobes && i < static_cast<int>(vdf.lobes.size()); ++i) {
+        const VolumeFlattener::Lobe& lobe = vdf.lobes[i];
+        fields["anisotropy" + std::to_string(i)] = lobe.anisotropy;
+        if (!lobe.scattering.empty()) {
+            fields["weight" + std::to_string(i)] = flattener.Dot(lobe.scattering, third);
+        }
+    }
+
+    for (const VolumeField& field : VolumeFields()) {
+        std::string node = fields[field.name];
+        if (node.empty()) {
+            node = flattener.Constant(field.type, field.type == "float" ? "0"
+                                                                         : "0, 0, 0");
+        }
+        graph->addOutput(field.name, field.type)->setNodeName(node);
+    }
+    return mx::writeToXmlString(extracted);
+}
+
 OpacityLibrary OpacityLibraryDocument(
     const std::vector<std::pair<std::uint32_t, std::string>>& materials,
-    const mx::DocumentPtr& libraries, std::string* error)
+    const mx::DocumentPtr& libraries, std::string* error,
+    const std::vector<std::pair<std::uint32_t, std::string>>& volumes)
 {
     auto fail = [error](const std::string& message) {
         if (error) {
@@ -1916,8 +2391,8 @@ OpacityLibrary OpacityLibraryDocument(
         }
         return OpacityLibrary();
     };
-    if (materials.empty()) {
-        return fail("no material is cut out");
+    if (materials.empty() && volumes.empty()) {
+        return fail("no material is cut out or a volume");
     }
 
     mx::DocumentPtr document = mx::createDocument();
@@ -1926,7 +2401,20 @@ OpacityLibrary OpacityLibraryDocument(
     }
     const mx::NodeGraphPtr graph = document->addNodeGraph("hdclaude_opacity_graph");
 
+    // Every root joins one float sum, through nodes the generator never emits.
     mx::NodePtr sum;
+    auto join = [&graph, &sum](const mx::NodePtr& root) {
+        if (!sum) {
+            sum = root;
+            return;
+        }
+        const mx::NodePtr add = graph->addNode(
+            "add", graph->createValidChildName("hdclaude_opacity_sum"), "float");
+        add->addInput("in1", "float")->setNodeName(sum->getName());
+        add->addInput("in2", "float")->setNodeName(root->getName());
+        sum = add;
+    };
+
     for (const auto& [material, text] : materials) {
         mx::DocumentPtr part = mx::createDocument();
         try {
@@ -1970,14 +2458,66 @@ OpacityLibrary OpacityLibraryDocument(
         }
         root->setInputValue("in2", 1.0f);
 
-        if (!sum) {
-            sum = root;
-        } else {
-            const mx::NodePtr add = graph->addNode(
-                "add", "hdclaude_opacity_sum" + std::to_string(material), "float");
-            add->addInput("in1", "float")->setNodeName(sum->getName());
-            add->addInput("in2", "float")->setNodeName(root->getName());
-            sum = add;
+        join(root);
+    }
+
+    // The volumes. Each field of a medium gets a root of its own, named for
+    // the material and the field, so the generator can emit one case per
+    // material that fills every field from the roots it finds.
+    for (const auto& [material, text] : volumes) {
+        mx::DocumentPtr part = mx::createDocument();
+        try {
+            mx::readFromXmlString(part, text);
+        } catch (const std::exception& exception) {
+            return fail("material " + std::to_string(material) +
+                        "'s volume could not be read: " + exception.what());
+        }
+        const mx::NodeGraphPtr source = part->getNodeGraph(kVolumeGraph);
+        if (!source) {
+            return fail("material " + std::to_string(material) +
+                        "'s volume names no nodegraph");
+        }
+
+        // A prefix of its own, distinct from the opacity's, so a material
+        // that were both could not have one node in two cones.
+        const std::string prefix = "v" + std::to_string(material) + "_";
+        for (const mx::NodePtr& node : source->getNodes()) {
+            const mx::NodePtr copy =
+                graph->addNode(node->getCategory(), prefix + node->getName(),
+                               node->getType());
+            copy->copyContentFrom(node);
+            for (const mx::InputPtr& input : copy->getInputs()) {
+                if (input->hasNodeName()) {
+                    input->setNodeName(prefix + input->getNodeName());
+                }
+            }
+        }
+
+        for (const VolumeField& field : VolumeFields()) {
+            const mx::OutputPtr out = source->getOutput(field.name);
+            if (!out || !out->hasNodeName()) {
+                return fail("material " + std::to_string(material) +
+                            "'s volume has no '" + field.name + "'");
+            }
+            const mx::NodePtr root = graph->addNode(
+                "multiply",
+                kVolumeRootPrefix + std::to_string(material) + "_" + field.name,
+                field.type);
+            root->addInput("in1", field.type)
+                ->setNodeName(prefix + out->getNodeName());
+            root->setInputValue("in2", 1.0f);
+
+            // Joined into the float sum through one lane, because the sum is
+            // only there to make every root reachable from one output.
+            if (field.type == "float") {
+                join(root);
+            } else {
+                const mx::NodePtr lane = graph->addNode(
+                    "extract", graph->createValidChildName("hdclaude_lane"), "float");
+                lane->addInput("in", field.type)->setNodeName(root->getName());
+                lane->setInputValue("index", 0);
+                join(lane);
+            }
         }
     }
 

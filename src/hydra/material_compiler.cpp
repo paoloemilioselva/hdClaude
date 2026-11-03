@@ -1160,11 +1160,81 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::CompileUncached(
     const HdMaterialNetwork2 network =
         HdConvertToHdMaterialNetwork2(networkMap, &isVolume);
 
-    if (isVolume) {
-        result.fallbackReason = "volume materials are not implemented";
+    // --- A volume ------------------------------------------------------------
+    //
+    // A material whose only terminal is a volume is a *fog volume*: the mesh it
+    // is bound to is not a surface but the boundary of a participating medium,
+    // invisible and index-matched, and the medium is transported by the
+    // integrator through the traversal library rather than shaded
+    // (AuthoredVolume, docs/architecture.md). The mesh still needs a program
+    // to sit in the material table, and gets the stand-in, which no path ever
+    // reaches: a boundary is in no ray's mask but the fog's.
+    //
+    // A material with a surface *and* a volume describes a surface enclosing
+    // a medium. That pairing is not transported yet, and says so; its surface
+    // is shaded as authored.
+    const bool hasSurface =
+        network.terminals.count(HdMaterialTerminalTokens->surface) != 0;
+    if (isVolume && !hasSurface) {
+        const auto volume = network.terminals.find(HdMaterialTerminalTokens->volume);
+        const HdMaterialNetwork2 translated = TranslateUsdNodeTypes(network);
+        const auto volumeNode =
+            volume == network.terminals.end()
+                ? translated.nodes.end()
+                : translated.nodes.find(volume->second.upstreamNode);
+        if (volumeNode == translated.nodes.end()) {
+            result.fallbackReason = "the volume terminal names a missing node";
+        } else {
+            try {
+                HdMtlxTexturePrimvarData mxHdData;
+                mx::DocumentPtr document = HdMtlxCreateMtlxDocumentFromHdNetwork(
+                    translated, volumeNode->second, volume->second.upstreamNode,
+                    path, _libraries, &mxHdData);
+                if (!document) {
+                    result.fallbackReason =
+                        "could not build a MaterialX document for the volume";
+                } else {
+                    std::map<std::string, std::string> resolved =
+                        ResolvedTexturePaths(translated, mxHdData);
+                    ResolvePrimvarReaders(document, name);
+                    PruneUndeclaredInputs(document, name);
+                    std::vector<std::string> diagnostics;
+                    const std::string extracted =
+                        hdclaude::AuthoredVolume(document, &resolved, &diagnostics);
+                    for (const std::string& diagnostic : diagnostics) {
+                        TF_WARN("hdClaude: material <%s>: %s", path.GetText(),
+                                diagnostic.c_str());
+                    }
+                    if (extracted.empty()) {
+                        result.fallbackReason =
+                            "its volume could not be read" +
+                            (diagnostics.empty() ? std::string()
+                                                 : ": " + diagnostics.back());
+                    } else {
+                        lock.unlock();
+                        result.material =
+                            CompileDiffuse(fallbackColor, name + "_fog_boundary");
+                        result.material.volume = extracted;
+                        HdClaudeTrace("material <%s>: a fog volume", path.GetText());
+                        return result;
+                    }
+                }
+            } catch (const std::exception& error) {
+                result.fallbackReason =
+                    std::string("could not build a MaterialX document for the "
+                                "volume: ") +
+                    error.what();
+            }
+        }
         lock.unlock();
         result.material = CompileDiffuse(fallbackColor, name + "_fallback");
         return result;
+    }
+    if (isVolume) {
+        TF_WARN("hdClaude: material <%s> authors a volume beside its surface; a "
+                "surface enclosing a medium is not transported, so only the "
+                "surface is rendered",
+                path.GetText());
     }
 
     auto terminal = network.terminals.find(HdMaterialTerminalTokens->surface);
@@ -1341,16 +1411,21 @@ HdClaudeMaterialCompiler::Traversal HdClaudeMaterialCompiler::CompileTraversal(
     const std::vector<hdclaude::CompiledMaterial>& materials)
 {
     std::vector<std::pair<std::uint32_t, std::string>> cutout;
+    std::vector<std::pair<std::uint32_t, std::string>> volumes;
     std::string key;
     for (std::size_t i = 0; i < materials.size(); ++i) {
-        if (materials[i].cutoutOpacity.empty()) {
-            continue;
+        if (!materials[i].cutoutOpacity.empty()) {
+            cutout.emplace_back(static_cast<std::uint32_t>(i),
+                                materials[i].cutoutOpacity);
+            key += std::to_string(i) + "\n" + materials[i].cutoutOpacity + "\n";
         }
-        cutout.emplace_back(static_cast<std::uint32_t>(i),
-                            materials[i].cutoutOpacity);
-        key += std::to_string(i) + "\n" + materials[i].cutoutOpacity + "\n";
+        if (!materials[i].volume.empty()) {
+            volumes.emplace_back(static_cast<std::uint32_t>(i),
+                                 materials[i].volume);
+            key += "volume " + std::to_string(i) + "\n" + materials[i].volume + "\n";
+        }
     }
-    if (cutout.empty()) {
+    if (cutout.empty() && volumes.empty()) {
         return {};
     }
 
@@ -1368,7 +1443,8 @@ HdClaudeMaterialCompiler::Traversal HdClaudeMaterialCompiler::CompileTraversal(
         try {
             std::string error;
             const hdclaude::OpacityLibrary opacityLibrary =
-                hdclaude::OpacityLibraryDocument(cutout, _libraries, &error);
+                hdclaude::OpacityLibraryDocument(cutout, _libraries, &error,
+                                                 volumes);
             if (!opacityLibrary.output) {
                 throw std::runtime_error(error);
             }
@@ -1431,17 +1507,22 @@ HdClaudeMaterialCompiler::Traversal HdClaudeMaterialCompiler::CompileTraversal(
             for (const auto& entry : cutout) {
                 result.programs.cutoutMaterials.push_back(entry.first);
             }
-            HdClaudeTrace("opacity library: %zu cut-out material(s), %zu texture(s)",
-                          cutout.size(), result.textures.size());
+            for (const auto& entry : volumes) {
+                result.programs.volumeMaterials.push_back(entry.first);
+            }
+            HdClaudeTrace("traversal library: %zu cut-out material(s), %zu "
+                          "volume(s), %zu texture(s)",
+                          cutout.size(), volumes.size(), result.textures.size());
         } catch (const std::exception& exception) {
             result = Traversal();
             result.error = exception.what();
         }
     }
     if (!result.error.empty()) {
-        TF_WARN("hdClaude: the cut-out opacity of %zu material(s) could not be "
-                "compiled into traversal, so they are rendered opaque: %s",
-                cutout.size(), result.error.c_str());
+        TF_WARN("hdClaude: the cut-out opacity of %zu material(s) and the "
+                "medium of %zu volume(s) could not be compiled into traversal, so "
+                "the surfaces are rendered opaque and the volumes not at all: %s",
+                cutout.size(), volumes.size(), result.error.c_str());
     }
     _traversalKey = key;
     _traversal = result;
