@@ -127,7 +127,8 @@ void main()
     uint volumes = hdclaude_cull_volumes(false);
     if (volumes == 0u)
     {
-        specular_trace(origin.xyz, direction, 1.0e-4, 1.0e30, 0xFFu, false, 0u,
+        specular_trace(origin.xyz, direction, 1.0e-4, 1.0e30,
+                       HDCLAUDE_MASK_SURFACES, false, 0u,
                        tGeometry);
     }
     else

@@ -329,6 +329,10 @@ inline constexpr std::uint8_t kInstanceMaskPrimary = 0x01;
 inline constexpr std::uint8_t kInstanceMaskPrimaryException = 0x02;
 inline constexpr std::uint8_t kInstanceMaskSecondary = 0x04;
 inline constexpr std::uint8_t kInstanceMaskSecondaryException = 0x08;
+/// A fog volume's boundary. Not a surface, so it carries this bit and no
+/// other, and only the fog walk asks for it (shaders/fog.glsl). Every ray that
+/// looks for surfaces asks for everything but this.
+inline constexpr std::uint8_t kInstanceMaskFog = 0x10;
 
 /// The mask a visible placement is given, from which volumes cull it and which
 /// volumes affect each kind of ray.

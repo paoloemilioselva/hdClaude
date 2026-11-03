@@ -3,6 +3,7 @@
 // hdclaude:opacity-library
 #include "path_state.glsl"
 #include "cutout.glsl"
+#include "fog.glsl"
 
 // Closest-hit traversal for the active queue, and the volumetric walk that
 // happens on the way.
@@ -19,11 +20,16 @@
 // with exactly one surface hit -- at the cost of a loop bounded by its own
 // roulette rather than by the bounce count.
 //
-// What that costs: no next-event estimation at a scattering vertex. Light
-// reaches the medium by entering it and is found when the walk leaves, so the
-// estimate is unbiased and noisier than one that also sampled lights from
-// inside. That is the same trade the integrator already makes for a delta
-// closure, and it is recorded rather than hidden.
+// What that costs: no next-event estimation at a scattering vertex of an
+// *interior*. Light reaches the medium by entering it and is found when the
+// walk leaves, so the estimate is unbiased and noisier than one that also
+// sampled lights from inside. That is the same trade the integrator already
+// makes for a delta closure, and it is recorded rather than hidden.
+//
+// Fog volumes are walked here too, after the nearest surface is known, and a
+// collision in fog *does* sample a light: a fog's boundary deviates nothing,
+// so the line from the collision to the lamp is a real path (fog.glsl,
+// docs/fog-volumes.md).
 
 layout(local_size_x = 64) in;
 
@@ -32,9 +38,15 @@ layout(local_size_x = 64) in;
 const int kMaxWalkSteps = 256;
 
 layout(push_constant) uniform ExtendParams {
-    /// Which bounce this dispatch is, counted from zero. Only a cull volume
-    /// asks: its flags are about whether a ray is still the camera's.
+    /// Which bounce this dispatch is, counted from zero. A cull volume asks --
+    /// its flags are about whether a ray is still the camera's -- and so does
+    /// a scattering vertex in fog, which ends the path on the last one.
     uint bounce;
+    /// 0 traces the active queue. 1 builds the fog majorants instead, one
+    /// invocation per sample point (fog.glsl); a pass of this kernel rather
+    /// than a kernel of its own because it needs exactly the traversal
+    /// library this kernel is compiled with.
+    uint mode;
 } extendParams;
 
 // One closest-hit query over [tMin, tMax], meeting only the placements whose
@@ -267,7 +279,8 @@ void extend_closest(vec3 origin, vec3 direction, bool primary, uint path,
     uint volumes = hdclaude_cull_volumes(primary);
     if (volumes == 0u)
     {
-        extend_trace(origin, direction, 0.0, 1.0e30, 0xFFu, false, 0u, path,
+        extend_trace(origin, direction, 0.0, 1.0e30, HDCLAUDE_MASK_SURFACES,
+                     false, 0u, path,
                      key, hitGeometry, tGeometry, barycentrics, instance,
                      primitive);
         return;
@@ -304,6 +317,12 @@ void extend_closest(vec3 origin, vec3 direction, bool primary, uint path,
 
 void main()
 {
+    if (extendParams.mode == 1u)
+    {
+        hdclaude_fog_build_majorant(gl_GlobalInvocationID.x);
+        return;
+    }
+
     uint slot = gl_GlobalInvocationID.x;
     if (slot >= counters.activeCount)
     {
@@ -679,6 +698,89 @@ void main()
         }
     }
 
+    // --- Fog volumes ------------------------------------------------------
+    //
+    // The fog between the ray's origin and whatever it reached, walked after
+    // everything else has decided where the ray ends (fog.glsl). Not inside an
+    // interior medium: a path inside glass or skin is in that, and a fog is
+    // outside every closed surface it contains.
+    //
+    // A real collision in the fog is a vertex the path scatters at, handled
+    // here because it has no material to be sorted into: a light is sampled
+    // from it, a direction drawn from its phase function, and the path goes
+    // straight onto the next bounce's queue with a record the sort, the
+    // shading kernels and the environment kernel all pass over.
+    bool fogScattered = false;
+    if (frame.fogVolumeCount > 0u && !inMedium && dot(throughput, throughput) > 0.0)
+    {
+        float tEnd = min(tGeometry, tLight);
+        float tScatter;
+        vec4 lobeAnisotropy;
+        vec4 lobeWeight;
+        int fogInstance;
+        vec4 emitted = vec4(0.0);
+        int event = hdclaude_fog_walk(origin, direction, tEnd, lambda, rng,
+                                      throughput, emitted, tScatter,
+                                      lobeAnisotropy, lobeWeight, fogInstance);
+        pathRadiance.values[path] += emitted;
+        if (event == 2)
+        {
+            hitGeometry = false;
+            light = -1;
+        }
+        else if (event == 1)
+        {
+            fogScattered = true;
+            hitGeometry = false;
+            light = -1;
+            vec3 position = origin + direction * tScatter;
+            hdclaude_fog_next_event(path, position, direction, lambda, throughput,
+                                    lobeAnisotropy, lobeWeight, fogInstance, rng);
+
+            if (extendParams.bounce + 1u >= frame.maxBounces)
+            {
+                throughput = vec4(0.0);
+            }
+            else
+            {
+                vec3 scattered = hdclaude_fog_sample_phase(
+                    lobeAnisotropy, lobeWeight, direction,
+                    vec3(hdclaude_random(rng), hdclaude_random(rng),
+                         hdclaude_random(rng)));
+                // The density the environment kernel weighs an emitter this
+                // ray reaches against, which is the phase function's own.
+                pathScatterPdf.values[path] = hdclaude_fog_phase(
+                    lobeAnisotropy, lobeWeight, direction, scattered);
+                pathLastInstance.values[path] = fogInstance;
+
+                // Roulette as a surface vertex has it, from the same bounce.
+                if (extendParams.bounce >= 2u)
+                {
+                    float survival =
+                        clamp(max(max(abs(throughput.x), abs(throughput.y)),
+                                  max(abs(throughput.z), abs(throughput.w))),
+                              0.05, 1.0);
+                    if (hdclaude_random(rng) > survival)
+                    {
+                        throughput = vec4(0.0);
+                    }
+                    else
+                    {
+                        throughput /= survival;
+                    }
+                }
+
+                origin = position;
+                direction = scattered;
+                if (dot(throughput, throughput) > 0.0)
+                {
+                    uint next = atomicAdd(counters.nextActiveCount, 1u);
+                    nextActiveQueue.values[next] = path;
+                }
+            }
+        }
+    }
+
     pathThroughput.values[path] = throughput;
     pathRng.values[path] = rng;
     pathOrigin.values[path] = origin;
@@ -699,7 +801,11 @@ void main()
     }
 
     ivec4 record = ivec4(-1, -1, 0, 0);
-    if (light >= 0)
+    if (fogScattered)
+    {
+        record.x = HDCLAUDE_HIT_MEDIUM;
+    }
+    else if (light >= 0)
     {
         // Encoded below -1 so the sort skips it exactly as it skips a miss, and
         // the kernel that retires missed paths adds the emission. The origin is

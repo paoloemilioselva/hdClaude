@@ -13,6 +13,7 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <limits>
 #include <unordered_set>
 
 namespace hdclaude {
@@ -104,6 +105,8 @@ std::vector<BindingDescription> KernelBindings()
     bindings.push_back(storage(34, "instanceCullLinks"));
     bindings.push_back(storage(35, "instancePicks"));
     bindings.push_back(storage(36, "guidePick"));
+    bindings.push_back(storage(37, "fogVolumes"));
+    bindings.push_back(storage(38, "fogMajorants"));
 
     return bindings;
 }
@@ -133,7 +136,31 @@ struct EnvironmentPush {
 /// ray is primary, which is what a cull volume's two flags are about.
 struct ExtendPush {
     std::uint32_t bounce = 0;
+    /// 0 traces; 1 builds the fog majorants (shaders/fog.glsl).
+    std::uint32_t mode = 0;
 };
+
+/// Mirrors FogVolume in path_state.glsl, scalar layout: four words, then two
+/// vec3s each followed by a pad.
+struct FogVolume {
+    std::uint32_t instance = 0;
+    std::uint32_t material = 0;
+    float emissionRate = 0.0f;
+    std::uint32_t pad = 0;
+    float lo[3] = {0.0f, 0.0f, 0.0f};
+    float pad1 = 0.0f;
+    float hi[3] = {0.0f, 0.0f, 0.0f};
+    float pad2 = 0.0f;
+};
+static_assert(sizeof(FogVolume) == 48, "FogVolume must match path_state.glsl");
+
+/// The fog volumes one frame walks, at most. One bit each in the kernels'
+/// masks of which volumes a ray is inside.
+constexpr std::uint32_t kMaxFogVolumes = 32;
+
+/// Points the majorant pass samples per fog volume: shaders/fog.glsl's
+/// resolution, cubed.
+constexpr std::uint32_t kFogMajorantSamples = 32u * 32u * 32u;
 
 /// Mirrors the FrameBlock uniform in path_state.glsl, scalar layout.
 struct FrameBlock {
@@ -211,6 +238,8 @@ struct FrameBlock {
     /// orthographic one), 0 from the field of view, for a caller that
     /// supplied no projection.
     std::uint32_t cameraRays;
+    /// Fog volumes in the fog table. See shaders/fog.glsl.
+    std::uint32_t fogVolumeCount;
 };
 
 /// The radical inverse of `index` in `base`, one coordinate of a Halton
@@ -527,7 +556,9 @@ std::string SpliceOpacityLibrary(const std::string& kernel,
     }
     std::string spliced = kernel;
     spliced.replace(marker, std::string(kOpacityLibraryMarker).size(),
-                    library + "\n#define HDCLAUDE_TRAVERSAL_OPACITY 1\n");
+                    library +
+                        "\n#define HDCLAUDE_TRAVERSAL_OPACITY 1"
+                        "\n#define HDCLAUDE_TRAVERSAL_VOLUME 1\n");
     return spliced;
 }
 
@@ -1138,7 +1169,93 @@ void PathTracer::SetScene(const Scene& publishedScene,
                             prototypeCutout[instance.prototype]);
         }
     }
-    _accelerator->Update(scene, nonOpaque);
+    // Which placements bound a fog volume: those whose material is a volume
+    // the library answers for. Only a triangle mesh with one material
+    // encloses anything; a curve set, or a mesh whose subsets bind other
+    // materials, is reported and drawn with the stand-in instead.
+    std::vector<bool> fog;
+    std::vector<FogVolume> fogTable;
+    if (traversal.Valid() && !traversal.volumeMaterials.empty()) {
+        const std::unordered_set<std::uint32_t> volumes(
+            traversal.volumeMaterials.begin(), traversal.volumeMaterials.end());
+        fog.resize(scene.instances.size(), false);
+        for (std::size_t i = 0; i < scene.instances.size(); ++i) {
+            const MeshInstance& instance = scene.instances[i];
+            if (volumes.count(instance.material) == 0 || !instance.visible ||
+                instance.prototype >= scene.prototypes.size()) {
+                continue;
+            }
+            const MeshPrototype& prototype = scene.prototypes[instance.prototype];
+            if (prototype.IsCurve() || !prototype.triangleMaterials.empty() ||
+                prototype.positions.size() < 9) {
+                std::fprintf(stderr,
+                             "hdClaude: placement %zu is bound to a volume "
+                             "material but is not a single-material triangle "
+                             "mesh, so it bounds no fog\n",
+                             i);
+                continue;
+            }
+            if (fogTable.size() >= kMaxFogVolumes) {
+                std::fprintf(stderr,
+                             "hdClaude: more than %u fog volumes; placement %zu "
+                             "is not walked\n",
+                             kMaxFogVolumes, i);
+                continue;
+            }
+            FogVolume entry;
+            entry.instance = static_cast<std::uint32_t>(i);
+            entry.material = instance.material;
+            for (int axis = 0; axis < 3; ++axis) {
+                entry.lo[axis] = std::numeric_limits<float>::max();
+                entry.hi[axis] = -std::numeric_limits<float>::max();
+            }
+            for (std::size_t v = 0; v + 2 < prototype.positions.size(); v += 3) {
+                for (int axis = 0; axis < 3; ++axis) {
+                    entry.lo[axis] = std::min(entry.lo[axis], prototype.positions[v + axis]);
+                    entry.hi[axis] = std::max(entry.hi[axis], prototype.positions[v + axis]);
+                }
+            }
+            // Four emission samples across the world-space diagonal. Only a
+            // volume that emits with no density to sample against uses it.
+            float diagonal = 0.0f;
+            for (int axis = 0; axis < 3; ++axis) {
+                float extent = 0.0f;
+                for (int column = 0; column < 3; ++column) {
+                    extent += std::abs(instance.transform.m[4 * axis + column]) *
+                              (entry.hi[column] - entry.lo[column]);
+                }
+                diagonal += extent * extent;
+            }
+            diagonal = std::sqrt(diagonal);
+            entry.emissionRate = diagonal > 0.0f ? 4.0f / diagonal : 0.0f;
+            fog[i] = true;
+            fogTable.push_back(entry);
+        }
+    }
+    _accelerator->Update(scene, nonOpaque, fog);
+
+    _fogVolumeCount = static_cast<std::uint32_t>(fogTable.size());
+    {
+        if (fogTable.empty()) {
+            fogTable.resize(1);
+        }
+        const VkDeviceSize size = fogTable.size() * sizeof(FogVolume);
+        BufferDescription staging;
+        staging.size = size;
+        staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        staging.domain = BufferDomain::HostUpload;
+        staging.debugName = "fogVolumes.staging";
+        VulkanBuffer upload(_allocator, staging);
+        upload.Write(fogTable.data(), size);
+
+        _fogVolumes = MakeStorage(_allocator, size, "fogVolumes");
+        _context.SubmitImmediate([&](VkCommandBuffer command) {
+            VkBufferCopy region{};
+            region.size = size;
+            vkCmdCopyBuffer(command, upload.Handle(), _fogVolumes.Handle(), 1,
+                            &region);
+        });
+    }
 
     // --- Instance table -----------------------------------------------------
     // Built in the same order the accelerator emits instances, because the
@@ -1700,6 +1817,11 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
             MakeStorage(_allocator, paths * 32, "guide.specularRay");
         // Two ints per pixel: the pick id and pick instance of the primary hit.
         VulkanBuffer guidePick = MakeStorage(_allocator, paths * 8, "guide.pick");
+        // Each fog volume's majorant, rebuilt by every frame that walks fog.
+        // Per slot because a frame in flight is still reading its own while
+        // the next one builds.
+        VulkanBuffer fogMajorants =
+            MakeStorage(_allocator, kMaxFogVolumes * 4, "fog.majorants");
         // Eight uints: activeCount, nextActiveCount, shadowCount, a pad, the two
         // ray accumulators, and the two hashes -- over what the rays were and over
         // what they hit. Everything past byte 16 is per call rather than per
@@ -1793,6 +1915,7 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
         slot.surfaceReadback = std::move(surfaceReadback);
         slot.specularRayReadback = std::move(specularRayReadback);
         slot.guidePick = std::move(guidePick);
+        slot.fogMajorants = std::move(fogMajorants);
         slot.pickReadback = std::move(pickReadback);
         }
 
@@ -1868,6 +1991,8 @@ void PathTracer::WriteDescriptors(VkDescriptorSet set,
     pipeline.WriteBuffer(set, 34, _instanceCullLinks);
     pipeline.WriteBuffer(set, 35, _instancePicks);
     pipeline.WriteBuffer(set, 36, slot.guidePick);
+    pipeline.WriteBuffer(set, 37, _fogVolumes);
+    pipeline.WriteBuffer(set, 38, slot.fogMajorants);
 }
 
 void PathTracer::SetCullVolumes(const std::vector<CullVolume>& volumes)
@@ -2796,6 +2921,7 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
                            : std::abs(viewToClip[15]) < 1e-6f ? 1u
                                                               : 0u;
     }
+    block.fogVolumeCount = _fogVolumeCount;
     // The previous frame's matrix, or this one's when there is no previous
     // frame. The second reports no motion, which is the truth: a surface seen
     // for the first time has not moved on screen, and inventing a displacement
@@ -2936,6 +3062,26 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
                         // raygen runs once per *sample* and this must not.
                         vkCmdFillBuffer(command, slot.counters.Handle(), 16, 16, 0);
                         Barrier(command);
+
+                        // The fog majorants, once per call: every volume
+                        // sampled densely, its extinction's maximum kept with
+                        // a margin (shaders/fog.glsl). Rebuilt rather than
+                        // remembered, because a medium can vary with anything
+                        // its graph reads, and this costs one dispatch of a
+                        // few thousand groups against a frame of tracing.
+                        if (_fogVolumeCount > 0) {
+                            vkCmdFillBuffer(command, slot.fogMajorants.Handle(), 0,
+                                            VK_WHOLE_SIZE, 0);
+                            Barrier(command);
+                            ExtendPush majorantPush;
+                            majorantPush.mode = 1;
+                            const std::uint32_t invocations =
+                                _fogVolumeCount * kFogMajorantSamples;
+                            _extend.Dispatch(command, extendSet,
+                                             (invocations + 63) / 64, 1, 1,
+                                             &majorantPush, sizeof(majorantPush));
+                            Barrier(command);
+                        }
                     }
                     _raygen.Dispatch(command, raygenSet, pixelGroupsX, pixelGroupsY);
                     Barrier(command);

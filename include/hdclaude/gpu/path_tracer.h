@@ -913,6 +913,12 @@ class PathTracer {
     /// From SetCullVolumes: the volumes with a shape that can contain anything.
     std::uint32_t _cullValidVolumes = 0;
 
+    /// The fog volumes: which placement bounds each, its material, and its
+    /// object-space bounds. Always at least one entry, so the descriptor is
+    /// valid in a scene with none. See shaders/fog.glsl.
+    VulkanBuffer _fogVolumes;
+    std::uint32_t _fogVolumeCount = 0;
+
     // The scene's texture pool: each distinct image once, referred to by a
     // material's textureSlots.
     std::vector<VulkanImage> _texturePool;
@@ -1173,6 +1179,9 @@ class PathTracer {
         VulkanBuffer specularRayReadback;
         /// The primary hit's pick ids: two ints per pixel.
         VulkanBuffer guidePick;
+        /// Each fog volume's majorant, as float bits: built at the start of
+        /// every frame that walks fog (shaders/fog.glsl).
+        VulkanBuffer fogMajorants;
         VulkanBuffer pickReadback;
         VulkanBuffer guideReadback;
         VulkanBuffer motionReadback;

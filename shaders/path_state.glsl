@@ -109,6 +109,9 @@ layout(set = 0, binding = 0, scalar) uniform FrameBlock {
     // 0 not at all, when no projection was supplied. See raygen.comp.glsl.
     mat4  clipToView;
     uint  cameraRays;
+    // Fog volumes in `fogVolumes`, zero when the scene has none -- which is
+    // what keeps every kernel's fog work to one comparison in such a scene.
+    uint  fogVolumeCount;
 } frame;
 
 const uint HDCLAUDE_SPLAT_COVERAGE = 0u;
@@ -455,6 +458,13 @@ struct InstanceGeometry {
 /// as `-2 - index`, which is also negative.
 const int HDCLAUDE_HIT_SPLAT = int(0x80000000u);
 
+/// What a hit record's first component holds when the ray scattered inside a
+/// fog volume before reaching anything. The vertex has been handled already --
+/// `extend` sampled a light from it and chose the next direction -- so the
+/// path is on the next queue, and the sort, the shading kernels and the
+/// environment kernel all leave it alone. Negative, below every light's band.
+const int HDCLAUDE_HIT_MEDIUM = int(0x80000001u);
+
 const uint HDCLAUDE_SPLAT_KERNEL_ELLIPSOID = 0u;
 const uint HDCLAUDE_SPLAT_KERNEL_GAUSSIAN_SURFLET = 1u;
 const uint HDCLAUDE_SPLAT_KERNEL_CONSTANT_SURFLET = 2u;
@@ -612,6 +622,13 @@ const uint HDCLAUDE_MASK_PRIMARY = 0x01u;
 const uint HDCLAUDE_MASK_PRIMARY_EXCEPTION = 0x02u;
 const uint HDCLAUDE_MASK_SECONDARY = 0x04u;
 const uint HDCLAUDE_MASK_SECONDARY_EXCEPTION = 0x08u;
+// A fog volume's boundary, and nothing else. A boundary is not a surface: no
+// ray that looks for one meets it, and only the fog walk asks for this bit
+// (fog.glsl). Mirrors kInstanceMaskFog in scene.h.
+const uint HDCLAUDE_MASK_FOG = 0x10u;
+// Every placement that is a surface: what a ray with no cull volume to honour
+// asks for, which used to be 0xFF and must now leave the fog out.
+const uint HDCLAUDE_MASK_SURFACES = 0xFFu & ~HDCLAUDE_MASK_FOG;
 
 // Mirrors hdclaude::CullVolume. The rows take a world point into the shape's
 // unit frame, where the cube is [-1, 1]^3, the sphere has radius one and the
@@ -647,6 +664,38 @@ layout(set = 0, binding = 35, scalar) readonly buffer InstancePicks {
 // The primary hit's pick ids, one ivec2 per pixel, (-1, -1) for a miss. A guide
 // like depth: the last sample wins.
 layout(set = 0, binding = 36, scalar) buffer GuidePick { ivec2 values[]; } guidePick;
+
+// --- Fog volumes ---------------------------------------------------------
+//
+// A placement bound to a volume material is the boundary of a participating
+// medium (docs/fog-volumes.md). Mirrors FogVolume in path_tracer.cpp.
+struct FogVolume {
+    /// The boundary's placement, in the instance table.
+    uint instance;
+    /// Its material, which names the medium in the traversal library.
+    uint material;
+    /// A rate the walk samples emission at where the medium has no density
+    /// to sample against: four points across the volume's diagonal.
+    float emissionRate;
+    uint pad;
+    /// The boundary's object-space bounds, which the majorant is sampled over.
+    vec3 lo;
+    float pad1;
+    vec3 hi;
+    float pad2;
+};
+layout(set = 0, binding = 37, scalar) readonly buffer FogVolumes {
+    FogVolume values[];
+} fogVolumes;
+
+// Each fog volume's majorant: a bound on its extinction anywhere inside it,
+// per scene unit, as the bits of a non-negative float so `atomicMax` on the
+// integer orders them as floats. Built at the start of every frame by
+// `extend` in its majorant mode, which samples the medium densely and keeps
+// a margin; the walk then samples free flights against it.
+layout(set = 0, binding = 38, scalar) buffer FogMajorants {
+    uint values[];
+} fogMajorants;
 
 // "Everything" and "nothing", as intervals of t. Beyond any ray's extent, so a
 // half-space that contains a whole ray contains it at both ends.

@@ -3,6 +3,7 @@
 // hdclaude:opacity-library
 #include "path_state.glsl"
 #include "cutout.glsl"
+#include "fog.glsl"
 
 // Batched shadow rays.
 //
@@ -224,8 +225,8 @@ void main()
     uint key = pathRng.values[ray.path] ^ 0x68e31da4u;
     if (volumes == 0u)
     {
-        occluded = shadow_occluded(ray, 1.0e-4, ray.maxDistance, 0xFFu, false,
-                                   0u, key);
+        occluded = shadow_occluded(ray, 1.0e-4, ray.maxDistance,
+                                   HDCLAUDE_MASK_SURFACES, false, 0u, key);
     }
     else
     {
@@ -301,10 +302,23 @@ void main()
         }
     }
 
+    // Fog attenuates rather than blocks, so it is asked only of a ray that got
+    // through everything else, and multiplies what the ray delivers
+    // (fog.glsl). Its own stream, apart from the splat walk's and the cut-out
+    // coins', for the reason those give.
+    vec4 contribution = ray.contribution;
+    if (!blockedByVolume && !occluded && frame.fogVolumeCount > 0u)
+    {
+        uint fogRng = pathRng.values[ray.path] ^ 0x2c1b3c6du;
+        contribution *= hdclaude_fog_transmittance(
+            ray.origin, ray.direction, 1.0e-4, ray.maxDistance,
+            pathWavelengths.values[ray.path], fogRng);
+    }
+
     if (!blockedByVolume && !occluded)
     {
         // No atomic: a path emits at most one shadow ray per bounce, so no two
         // invocations here write the same path's radiance.
-        pathRadiance.values[ray.path] += ray.contribution;
+        pathRadiance.values[ray.path] += contribution;
     }
 }

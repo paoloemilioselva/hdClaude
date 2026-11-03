@@ -978,7 +978,8 @@ const BottomLevelStructure* SceneAccelerator::SplatBlas(
     return found == _bySplatFingerprint.end() ? nullptr : &found->second;
 }
 
-void SceneAccelerator::Update(const Scene& scene, const std::vector<bool>& nonOpaque)
+void SceneAccelerator::Update(const Scene& scene, const std::vector<bool>& nonOpaque,
+                              const std::vector<bool>& fog)
 {
     _context.RequireLive("SceneAccelerator::Update");
 
@@ -1182,6 +1183,11 @@ void SceneAccelerator::Update(const Scene& scene, const std::vector<bool>& nonOp
         const std::size_t index = static_cast<std::size_t>(&instance - scene.instances.data());
         if (index < nonOpaque.size() && nonOpaque[index]) {
             entry.flags |= VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR;
+        }
+        // A fog boundary is met by the fog walk alone, whichever volumes cull
+        // what; it is not a surface for a cull volume to cull either.
+        if (index < fog.size() && fog[index]) {
+            entry.mask = instance.visible ? kInstanceMaskFog : 0x00;
         }
         entry.accelerationStructureReference = found->second.DeviceAddress();
         instances.push_back(entry);

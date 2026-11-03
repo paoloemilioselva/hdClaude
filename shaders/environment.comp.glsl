@@ -59,6 +59,14 @@ void main()
         return;   // hit geometry; the shade kernel owns this path
     }
 
+    // Scattered in fog: `extend` has already sampled a light from the vertex
+    // and put the path on the next bounce's queue. Tested before the light
+    // band, which every negative record below -1 would otherwise fall into.
+    if (record == HDCLAUDE_HIT_MEDIUM)
+    {
+        return;
+    }
+
     vec3 direction = pathDirection.values[path];
     vec4 lambda = pathWavelengths.values[path];
 

@@ -201,7 +201,12 @@ class SceneAccelerator {
     /// prototype's `OpacityClass`, because one prototype can be placed under
     /// an opaque binding and a cut-out one, and because a material that
     /// becomes cut out then rebuilds no BLAS. Empty marks none.
-    void Update(const Scene& scene, const std::vector<bool>& nonOpaque = {});
+    ///
+    /// `fog`, indexed the same way, marks the placements that bound a fog
+    /// volume. Such a placement is not a surface, so it takes the fog's mask
+    /// bit alone (kInstanceMaskFog) and only the fog walk ever meets it.
+    void Update(const Scene& scene, const std::vector<bool>& nonOpaque = {},
+                const std::vector<bool>& fog = {});
 
     const TopLevelStructure& Tlas() const { return _tlas; }
     const BottomLevelStructure* Blas(std::uint32_t prototype) const;
