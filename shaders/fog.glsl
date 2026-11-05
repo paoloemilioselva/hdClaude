@@ -173,7 +173,7 @@ HdclaudeMedium hdclaude_fog_medium(uint fog, vec3 position)
                              vec3(0.0, 1.0, 0.0), objectPosition,
                              vec3(0.0, 0.0, 1.0), vec3(1.0, 0.0, 0.0),
                              vec3(0.0, 1.0, 0.0), vec2(0.0),
-                             geometry.displayColor);
+                             geometry.displayColor, vec3(0.0, 0.0, -1.0));
     HdclaudeMedium medium = hdclaude_material_medium(volume.material);
     // A coefficient below zero is not a medium. Clamped where it is used as
     // one, as a cut-out opacity is clamped where it is used as a probability.

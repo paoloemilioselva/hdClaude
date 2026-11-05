@@ -123,7 +123,9 @@ void main()
     // therefore reads object space, and the material compiler says so. The
     // displayColor is a placement's for the same reason, so a prototype has
     // none to give and a graph that reads it gets neutral grey.
-    hdclaude_set_surface_hit(P, N, T, B, P, N, T, B, uv, vec3(0.5));
+    // No ray reaches a vertex: a `viewdirection` reads the one looking
+    // straight down the normal.
+    hdclaude_set_surface_hit(P, N, T, B, P, N, T, B, uv, vec3(0.5), -N);
     hdclaude_material_displace();
 
     const vec3 offset = hdclaude_displacement.offset * hdclaude_displacement.scale;

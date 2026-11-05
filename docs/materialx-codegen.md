@@ -318,8 +318,13 @@ also emits the function that fills it:
 ```glsl
 void hdclaude_set_surface_hit(vec3 P, vec3 N, vec3 T, vec3 B,
                               vec3 Pobj, vec3 Nobj, vec3 Tobj, vec3 Bobj,
-                              vec2 uv, vec3 displayColor);
+                              vec2 uv, vec3 displayColor, vec3 I);
 ```
+
+`I` is the incident ray's direction (towards the surface). A material with a
+`viewdirection` node gets `u_viewPosition = P - I` in its setter, so the node
+returns `I`, as OSL's `I` is; without it the uniform stayed at zero and the
+node returned normalize(P), the direction from the world origin.
 
 `displayColor` is the placement's, from the instance table, and is what a
 `geompropvalue` reading `displayColor` receives. Unbound geometry is shaded by

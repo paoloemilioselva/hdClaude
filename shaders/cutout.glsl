@@ -73,7 +73,7 @@ bool hdclaude_candidate_present(uint key, int instance, int primitive,
                              point.bitangent, point.objectPosition,
                              point.objectNormal, point.objectTangent,
                              point.objectBitangent, point.uv,
-                             geometry.displayColor);
+                             geometry.displayColor, direction);
 
     // A probability, so one at or above one is always met and one at or below
     // zero never is -- the coin lies in [0, 1). The opacity is used as the

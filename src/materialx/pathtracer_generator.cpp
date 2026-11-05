@@ -640,7 +640,7 @@ void PathTracerShaderGenerator::emitInputs(GenContext& context,
         const string setter = "void " + string(kSurfaceHitSetter) +
                               "(vec3 P, vec3 N, vec3 T, vec3 B, vec3 Pobj, "
                               "vec3 Nobj, vec3 Tobj, vec3 Bobj, vec2 uv, "
-                              "vec3 displayColor)";
+                              "vec3 displayColor, vec3 I)";
 
         if (vertexData.empty())
         {
@@ -768,6 +768,23 @@ void PathTracerShaderGenerator::emitInputs(GenContext& context,
                     emitLine(instance + "." + variable + " = " +
                                  _syntax->getDefaultValue(port->getType()),
                              stage);
+                }
+            }
+
+            // The eye a `viewdirection` node measures from. Its GLSL body is
+            // normalize(positionWorld - u_viewPosition), written for a
+            // rasteriser's camera; here the eye is wherever the ray came from,
+            // so it is placed one unit back along the incident direction `I`,
+            // and the node returns `I` -- OSL's meaning, on every bounce.
+            // Left at its declared zero, it measured from the world origin:
+            // normalize(P), so every facing-ratio graph (a rim fade) depended
+            // on where the object sits rather than on the view.
+            for (const auto& entry : stage.getUniformBlocks())
+            {
+                if (const ShaderPort* eye = entry.second->find(HW::T_VIEW_POSITION))
+                {
+                    emitLine(eye->getVariable() + " = P - I", stage);
+                    break;
                 }
             }
             emitScopeEnd(stage);

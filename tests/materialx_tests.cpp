@@ -152,7 +152,7 @@ void main()
     hdclaude_set_surface_hit(vec3(0.0), vec3(0.0, 0.0, 1.0), vec3(1.0, 0.0, 0.0),
                              vec3(0.0, 1.0, 0.0), vec3(0.0), vec3(0.0, 0.0, 1.0),
                              vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0),
-                             vec2(0.5), vec3(0.5));
+                             vec2(0.5), vec3(0.5), vec3(0.0, 0.0, -1.0));
 
     // Per-invocation path state the closures read.
     hdclaude_wavelengths = vec4(450.0, 550.0, 600.0, 650.0);
@@ -927,7 +927,7 @@ void main()
     hdclaude_set_surface_hit(vec3(0.0), vec3(0.0, 0.0, 1.0), vec3(1.0, 0.0, 0.0),
                              vec3(0.0, 1.0, 0.0), vec3(0.0), vec3(0.0, 0.0, 1.0),
                              vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0),
-                             vec2(0.5), vec3(0.5));
+                             vec2(0.5), vec3(0.5), vec3(0.0, 0.0, -1.0));
 
     hdclaude_material_displace();
 
