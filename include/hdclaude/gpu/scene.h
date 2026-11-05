@@ -472,9 +472,18 @@ enum class DisplacementSpace : std::uint32_t {
 ///
 /// Fixed rather than sized to the scene, because every kernel shares one
 /// descriptor set layout and that layout is built before any texture is known.
-/// Must match kHdClaudeTextureCapacity in shaders/path_state.glsl; the
-/// MaterialX generator reads this constant so only those two can disagree.
-inline constexpr std::uint32_t kTextureCapacity = 128;
+/// This is the only definition: the MaterialX generator emits the GLSL array
+/// declaration from it, so the shaders cannot disagree with the host.
+///
+/// The binding is in every kernel's layout, so it is sized for the busiest
+/// user -- the traversal library, which gathers the cut-out opacity and volume
+/// textures of every material in the scene into this one array, a UDIM set
+/// taking a slot per tile. The cost is descriptor-pool memory rather than
+/// speed: each pipeline's pool reserves kDescriptorSetsPerPipeline times this
+/// many, and there is a shade pipeline per material. Devices allow far more
+/// (65,535 samplers per stage on the weakest one tested), so that memory, not
+/// the hardware, is what bounds it.
+inline constexpr std::uint32_t kTextureCapacity = 1024;
 
 /// How a decoded texture's texels are laid out.
 ///

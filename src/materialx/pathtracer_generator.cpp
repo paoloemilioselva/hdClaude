@@ -613,13 +613,14 @@ void PathTracerShaderGenerator::emitUniforms(GenContext& context,
     if (_textureOrder.size() > kTextureCapacity)
     {
         throw mx::ExceptionShaderGenError(
-            "This material needs " + std::to_string(_textureOrder.size()) +
+            "This shader needs " + std::to_string(_textureOrder.size()) +
             " texture slots; hdClaude's shared array holds " +
             std::to_string(kTextureCapacity) +
-            ". A UDIM set takes one slot per tile, so a material with several "
-            "sets of many tiles reaches this long before it has that many "
-            "images. Raise kTextureCapacity in pathtracer_generator.h and "
-            "kHdClaudeTextureCapacity in shaders/path_state.glsl together.");
+            ". The traversal library gathers the cut-out opacity and volume "
+            "textures of every material in the scene into one array, and a "
+            "UDIM set takes one slot per tile, so either reaches this long "
+            "before any one material has that many images. Raise "
+            "kTextureCapacity in include/hdclaude/gpu/scene.h.");
     }
 }
 

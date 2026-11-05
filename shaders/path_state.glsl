@@ -966,8 +966,9 @@ bool hdclaude_cull_next(inout float t, float tMax, uint volumes,
 // because `texture(name, uv)` still expands to a sampler expression.
 //
 // The capacity is fixed because every kernel shares one descriptor set layout
-// and that layout is built before any texture is known. It must match
-// kTextureCapacity in include/hdclaude/gpu/scene.h.
+// and that layout is built before any texture is known. The size is
+// kTextureCapacity in include/hdclaude/gpu/scene.h, which the generator writes
+// into the declaration below.
 //
 // Every slot is written, unused ones with a placeholder: an undefined
 // descriptor is undefined behaviour, and on this driver that is a lost device
