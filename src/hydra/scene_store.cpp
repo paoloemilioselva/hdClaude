@@ -475,6 +475,7 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
             }
             instance.material = material;
             instance.visible = true;
+            instance.rayVisibility = mesh.rayVisibility;
             std::copy(std::begin(mesh.displayColor), std::end(mesh.displayColor),
                       std::begin(instance.displayColor));
             if (i < mesh.instanceCategories.size() && !categoryIndex.empty()) {
@@ -520,6 +521,7 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
                 instance.hasPreviousTransform = true;
             }
             instance.visible = true;
+            instance.rayVisibility = splats.rayVisibility;
             if (i < splats.instanceCategories.size() && !categoryIndex.empty()) {
                 for (const TfToken& token : splats.instanceCategories[i]) {
                     const auto found = categoryIndex.find(token);

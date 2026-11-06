@@ -128,7 +128,7 @@ void main()
     if (volumes == 0u)
     {
         specular_trace(origin.xyz, direction, 1.0e-4, 1.0e30,
-                       HDCLAUDE_MASK_SURFACES, false, 0u,
+                       HDCLAUDE_MASK_INDIRECT_RAYS, false, 0u,
                        tGeometry);
     }
     else

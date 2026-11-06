@@ -173,6 +173,7 @@ if(HDCLAUDE_ENABLE_MATERIALX)
             "usd_instancing|instancing_equivalence"
             "usd_lights|light_linking_equivalence"
             "usd_cull_volumes|cull_volume_equivalence"
+            "usd_ray_visibility|ray_visibility_equivalence"
             "usd_fog_volumes|fog_volumes"
             "usd_implicit_surfaces|implicit_surfaces"
             "usd_texture_quality|texture_quality"

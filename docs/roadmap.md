@@ -45,7 +45,7 @@ A blocked phase must name what blocks it.
 | 17 | External-memory AOV interop for Hgi hosts | Not started | - |
 | 19 | Fog volumes: a volume-only MaterialX material on a mesh, transported | In progress | `AuthoredVolume` flattens the VDF and EDF trees into patterns that are generated into the traversal library. `extend` walks the fog by spectral tracking against a sampled majorant, gathers emission, and turns a scattering collision into a vertex with next-event estimation. `shadow` ratio-tracks the fog's transmittance. `usd_fog_volumes` checks eleven closed forms, among them absorption grey and per channel, height falloff, homogeneous and falloff furnaces, and emission. Open: a surface and a volume on one material, and `UsdVol` fields ([fog-volumes.md](fog-volumes.md)) |
 | 18 | Gaussian splats: `UsdVolParticleField3DGaussianSplat` path traced | In progress | Schema read and asserted against; ingest landed. The kernel, the validation rules and the radiance conventions are implemented in `hdClaudeCore` and gated by unit tests that need no GPU and no USD runtime. The real spherical-harmonics basis is orthonormal to 3e-3 by numerical integration over the sphere and matches the published closed forms for all 16 functions of degree 3 to float precision. The schema's documented fallback radiance -- "a DC signal of (0.5, 0.5, 0.5), with degree 0" -- is asserted to evaluate to 0.5 in every direction, which is what pins the basis normalisation to sqrt(pi). The kernel is one sigma at one scale along each of its own principal axes, with those axes taken from an independently written quaternion rotation rather than from the matrix under test; exactly zero past the 3-sigma support the specification names; and isotropic under any rotation when the three scales are equal. The closed-form peak response along a ray agrees with a 200,000-step search on both the distance and the response over 24 random splat-and-ray pairs. The 3-sigma boxes the acceleration structure will be built over are asserted against the exact extreme r |row(M)| rather than against the best of a sample set, and hold 40,000 points of the support's surface. The schema's length rules are asserted as written: a long array truncated, a short one discarded for its documented default, and a dropped degenerate particle taking its own radiance coefficients with it. 246,480 core checks pass. `HdClaudeParticleField` ingests the prim, resolves float against half in the order the schema's `UsesFloat*` helpers prescribe, describes the prim's primvars in the trace once. That last one has now been run and the answer recorded in [gaussian-splats.md](gaussian-splats.md) 1.1: Hydra declares no schema for particle field data, and the adapter delivers the arrays as **primvars named exactly as the schema names the attributes** -- `positions` (vertex, role `point`), `orientations`, `scales`, `opacities` and `radiance:sphericalHarmonicsCoefficients` all vertex, and `radiance:sphericalHarmonicsDegree` as a *constant* primvar -- with an unauthored attribute simply absent. All six prims of `tests/usd/gaussian_splats.usda` ingest: the bounds come out at exactly three sigma, including the rotated one at a half extent of 1.7103 against `3 |(0.8 cos45, -0.1 sin45, 0)|`, and the degree-1 prim is read as 4 coefficients a particle rather than falling back. A bound material and both rasterizer hints are reported as not honoured, and so is a negative DC radiance -- which the first downloaded asset turned out to have across 82.99% of its channels, its converter having written the reference implementation's `f_dc` through without folding in the `+0.5`. Reports are warned on the console as well as carried in render stats, because `usdrecord` prints no stats and that asset had to be diagnosed by hand. **Splats render.** One axis-aligned box per particle at the 3-sigma support, intersected in `extend` and `shadow` by the same closed form the unit tests assert, with coverage decided by a hash of the path, the sample, the instance and the particle -- so the decision is independent per particle, identical whichever order traversal reports the boxes in, and reproducible. A hit is retired with its spherical-harmonics radiance through the existing emission upsampling rather than shaded, because there is no material to shade it with. Measured on the test stage at 1024 samples: the analytic single-particle profile matches at 0, 0.5, 1, 1.5 and 2 sigma; the two-particle composite is 0.623 green and 0.373 blue against an analytic 0.614 and 0.334; the same pair authored backwards agrees with it to within 1.0% over the whole blob; the degree-1 particle renders 1.96-2.01 where the opposite radiance convention would give 0.0; and a particle authoring only positions renders the schema's fallback 0.5. That composite number is the gate earning its place: the first implementation searched each particle's peak only as far as the already-committed hit, which made a particle behind it evaluate its falloff at the wrong depth and generate a competing intersection at exactly that distance, and 0.6/0.32 came out 0.48/0.51 in a picture that looked entirely plausible. All 11 test suites pass. A 262,144-particle downloaded capture renders in 8 seconds at 640 px and 64 samples. The volumetric reading's foundation is in and gated on CPU: `SplatExtinction` reproduces an isotropic particle's authored alpha from every direction when the field is integrated numerically, and `SplatMajorantGrid` bounds the summed density at every one of 240,000 sampled points across an anisotropic and an isotropic cloud while staying within a factor of 50 of it, agrees with a brute-force sum over every particle, and survives a single particle, a plane of them and an empty cloud. 506,551 core checks pass. **Transport through a cloud works**, selected by `Splat transport` (`HDCLAUDE_SPLAT_TRANSPORT`): the walk enters from the cloud's instance rather than a surface, steps the majorant grid cell by cell and delta-tracks within each against that cell's bound. Both readings are asserted against one closed form on `tests/usd/splat_volume.usda` -- an isotropic particle of opacity o in front of a dome of radiance 1 leaves exactly 1-o through its centre, and at 2048 samples coverage and volume are both within 1% at 0.25, 0.50 and 0.75 -- and they diverge off that line by the amount the schema's gap predicts (0.697 against 0.657 at one sigma; measured 0.695-0.708 and 0.667-0.676). All 11 suites pass. The 262,144-particle capture renders in 108 s at 640 px and 128 samples in volume against 18 s in coverage. Not yet done, in the order [gaussian-splats.md](gaussian-splats.md) 7.5 sets out: the `volumeshader` terminal that is the only honest route to splats that receive light, next-event estimation without which splat-lit geometry is unbiased and unusable, the reconstruction guides, and a gallery scene |
-| 20 | Per-ray-kind visibility from RenderMan and Karma attributes | Not started | Planned 2026-11-04; see the phase 20 exit gate for the plan and open question 14 for what is unverified. |
+| 20 | Per-ray-kind visibility from RenderMan and Karma attributes | In progress | Step 1 landed 2026-11-05: `ri:attributes:visibility:camera`, `:indirect` and `:transmission` and Karma's `rendervisibility` are read from an rprim's constant primvars (inherited from ancestors through UsdImaging) on meshes, curves and splat clouds, and carried by the TLAS instance mask, with shadow rays given a pair of bits of their own. `usd_ray_visibility` (`tests/usd/ray_visibility_equivalence.py`) checks 19 pairs against cull volumes, a shadow link, the stage without the object and a mirror, and `usd_incremental_sync` a live edit of each convention. Open: lights (*Lights take another path*), Karma's diffuse/reflect/refract split, splat volume transport, fog boundaries, and open question 14's Karma grammar. |
 
 Phases 13 and 14 are the two hdCodex never reached. They are deliberately late:
 each depends on guide buffers that are only meaningful once phases 4-10 are
@@ -162,11 +162,33 @@ without it, except for its shadow and its reflections, which stay. One hidden
 from shadows lets the light through as if it were removed, while it remains in
 camera. One hidden from indirect rays disappears from mirrors and bounce light
 only. Each pair is matched by a render the visibility must change, so an
-attribute that did nothing cannot pass. A USD-level equivalence test reads the
+attribute that did nothing cannot pass. A UsdLux light hidden from the camera
+leaves its shape out of the frame and every lit surface unchanged. One hidden
+from indirect rays drops out of mirrors while the brightness of a surface it
+lights stays the same within noise, which is the check that next-event
+estimation took the share the scattered ray gave up rather than losing it or
+counting it twice. Both are rendered with `lightGeometry` on, since with it off
+no light has a shape to hide. A USD-level equivalence test reads the
 attributes through the installed plugin, and an edit to one on a live stage
 matches a fresh render.
 
-*The plan, not yet started.* The attributes are constant primvars, inherited
+*Step 1, landed 2026-11-05.* `HdClaudeRayVisibility` (`src/hydra/ray_visibility.cpp`)
+reads the four primvars from an rprim's constant primvar descriptors, which
+UsdImaging fills with what ancestors author too, so inheritance needs no code
+of its own; Karma's pattern is parsed in `hdClaudeCore`
+(`ray_visibility.h`, unit-tested in `core`). Meshes, curves and splat clouds
+carry the result on each placement, and `InstanceMask` (`scene.h`, tested in
+`geometry` for every combination of hidden kinds and cull links) clears the
+hidden kinds' pairs; `extend` asks for the camera or indirect pair, the
+specular guide's probe for the indirect pair and `shadow` for the shadow pair,
+on the no-cull-volume path as well as the culled one. A primvar edit is a full
+sync of the rprim, as any primvar edit is, and its prototype is reused by
+fingerprint. Not covered yet: splat clouds under volume transport, whose walk
+visits every cloud without asking the mask; fog boundaries; and lights, below.
+Unreadable values and patterns not honoured as written are warned once per
+prim.
+
+*The plan.* The attributes are constant primvars, inherited
 down namespace: RenderMan's `primvars:ri:attributes:visibility:camera`,
 `:indirect` and `:transmission` (ints, default 1), and Karma's
 `primvars:karma:object:rendervisibility` (a pattern string over `primary`,
@@ -181,8 +203,37 @@ per-hit work. Karma's split of indirect into diffuse, reflect and refract does
 not fit in the remaining bit. It is phase 2: a per-placement visibility word
 checked on candidate hits, as shadow links are, plus a lobe kind returned by
 the MaterialX sampling code, which no scattered ray carries today. Until then
-those three tokens act as "indirect" and are reported. Fog boundaries, UsdLux
-lights and picking are out of scope for phase 1.
+those three tokens act as "indirect" and are reported. Fog boundaries and
+picking are out of scope for phase 1.
+
+*Lights take another path* and are their own step, independent of the mask.
+UsdLux lights are analytic and not in the TLAS. A camera or scattered ray finds
+an area light's shape through the loop in `hdclaude_nearest_light`
+(`extend`, `specular_hit`), and a distant light's disc in the environment
+kernel. Both ask `hdclaude_light_geometry_visible`: the global `lightGeometry`
+setting and `Light::visibleGeometry`, which is 1 for every light because
+UsdLux names no per-light visibility. RenderMan does: hdPrman honours
+`primvars:ri:attributes:visibility:camera = 0` on a RectLight, removing its
+shape from the frame and leaving its light on the floor unchanged (checked
+2026-11-05). The step reads the same attributes on lights, and Karma's light
+equivalent once its spelling is known, into a camera bit and an indirect bit
+in place of `visibleGeometry`, still ANDed with the global setting, which can
+only take shapes away. `hdclaude_nearest_light` and the distant-disc loop are
+told which kind of ray is asking, so that a camera ray tests the camera bit and
+a scattered or mirror ray the indirect one. The `hittable` test that weighs
+next-event estimation (`shade`, `fog`) reads the indirect bit only, since a
+scattered ray is the only competing strategy and a camera ray has none. A light
+hidden from indirect rays is then next-event estimation alone, which is what a
+light without geometry already is, so open question 14's second point is
+answered for lights by code that exists. `transmission` means nothing on a
+light, because a light's shape occludes nothing here, and is ignored. How Hydra
+delivers the attribute to an `HdLight`, as a light parameter or as a primvar,
+is to be read from a trace before the code is written. The dome is a third
+path, a miss reaching the environment, and its camera visibility (a black or
+transparent background) would go in the environment kernel; it is optional and
+left for later. Emissive meshes are in the TLAS and are covered by the mask,
+and since a scattered ray is the only way they are found, hiding one from
+indirect rays removes it from bounce light consistently.
 
 ## Decision log
 
@@ -336,6 +387,8 @@ reversed.
 | 2026-11-03 | Which fog volumes contain a point is decided by the parity of boundary crossings to infinity, not by facing or by path state | Parity is right for a closed mesh whichever way it winds. A record on the path cannot nest -- the interior media's does not -- and fog overlaps other fog and contains surfaces and cameras |
 | 2026-11-03 | A fog scattering collision is a vertex handled in `extend`, with next-event estimation | It has no material for the sort to bin. Sampling the light, choosing the direction and requeueing in place keeps one shadow ray per path per bounce. Unlike the 2026-09-15 decision for interior media, NEE is right here: a fog boundary deviates nothing, so the straight line from a collision to a lamp is a path the transport has |
 | 2026-11-03 | A fog's majorant is sampled, 32^3 lattice and jittered points per volume with a margin of 1.5, and rebuilt every frame | The medium is an arbitrary graph, so only evaluating it can bound it. Rebuilt per frame because a graph may read anything, and one dispatch costs far less than a frame. A point that exceeds the bound gets no null collisions, which under-attenuates it rather than failing |
+| 2026-11-05 | Per-ray visibility rides the TLAS instance mask, with shadow rays given a pair of bits (`0x20`, `0x40`) of their own | Each kind of ray already asks the mask for its bits, so hiding a placement from a kind costs no work per hit. Shadow rays shared the secondary pair, which would have tied "no shadows" to "no reflections"; their pair repeats the secondary cull choice, so cull volumes behave as before |
+| 2026-11-05 | Karma's `rendervisibility`: a pattern whose first term takes a kind away starts from every kind; an empty pattern and unknown names are read as visible and warned | Karma's grammar is not documented anywhere found (open question 14), and salta writes `-shadow` meaning "everything but shadows". Reading the unknown as visible keeps the object in the frame, where a wrong guess shows, rather than removing it silently |
 
 ## Open questions
 
@@ -678,17 +731,26 @@ Tracked here rather than decided prematurely.
     reading, where the dielectric divides out a `layer`'s factor. No stock
     shading model transmits through it (gltf_pbr, OpenPBR, UsdPreviewSurface and
     Disney all use it reflection-only), so only hand-authored graphs reach these.
-14. **Raised 2026-11-04: per-ray-kind visibility (phase 20) has three
-    unsettled points.** First, the exact attribute spellings: the RenderMan
-    wiki documents `visibility:camera` and the others without the
-    `primvars:ri:attributes:` prefix, and the grammar of Karma's
-    `rendervisibility` pattern is not documented anywhere found. Both are to be
-    confirmed against prims exported from Solaris and RenderMan before a parser
-    is written. Second, an emitter hidden from indirect rays is still found by
-    next-event estimation but not by a scattered ray, so the two strategies
-    estimate different transport. The likely answer is the shadow-link one,
-    estimating such an emitter by next-event estimation alone, which is to be
-    decided and logged. Third, picking reads the last frame's primId AOV, so a
-    placement hidden from the camera cannot be picked, as in Karma. That is to
-    be accepted or worked around deliberately.
+14. **Raised 2026-11-04: per-ray-kind visibility (phase 20) has three unsettled
+    points.** First, the exact attribute spellings: the RenderMan wiki documents
+    `visibility:camera` and the others without the `primvars:ri:attributes:`
+    prefix, and the grammar of Karma's `rendervisibility` pattern is not
+    documented anywhere found. Both are to be confirmed against prims exported
+    from Solaris and RenderMan before a parser is written. *Update 2026-11-05:*
+    the RenderMan half is confirmed in a hdPrman render (RenderMan RIS through
+    `usdrecord`): the prefixed constant primvars work as written, `camera = 0`
+    hiding a sphere and keeping its shadow, `transmission = 0` removing the
+    shadow and keeping the sphere, and `camera = 0` on a RectLight hiding its
+    shape. Karma's grammar is still unconfirmed, in particular whether a lone
+    `-shadow` means "every kind but shadow", which is how salta's converter
+    writes it and how step 1's parser reads it (decision log, 2026-11-05) until
+    a Solaris export says otherwise. Second, an emitter hidden from indirect
+    rays is still found by next-event estimation but not by a scattered ray, so
+    the two strategies estimate different transport. The likely answer is the
+    shadow-link one, estimating such an emitter by next-event estimation alone,
+    which is to be decided and logged. For UsdLux lights that is already how a
+    light without geometry is treated (phase 20, *Lights take another path*).
+    Third, picking reads the last frame's primId AOV, so a placement hidden from
+    the camera cannot be picked, as in Karma. That is to be accepted or worked
+    around deliberately.
 

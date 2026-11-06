@@ -60,6 +60,10 @@ struct HdClaudeMeshEntry {
     /// The rprim's `HdRprim::GetPrimId`, which the `primId` AOV reports and a
     /// picking host maps back to a path through the render index.
     int primId = -1;
+
+    /// The kinds of ray that meet it (HdClaudeRayVisibility), given to every
+    /// one of its placements.
+    std::uint8_t rayVisibility = hdclaude::kRayAll;
 };
 
 /// Where the one material for unbound geometry is published.
@@ -96,6 +100,9 @@ struct HdClaudeSplatEntry {
 
     /// The rprim's prim id. See `HdClaudeMeshEntry::primId`.
     int primId = -1;
+
+    /// The kinds of ray that meet it. See `HdClaudeMeshEntry::rayVisibility`.
+    std::uint8_t rayVisibility = hdclaude::kRayAll;
 };
 
 /// A material, keyed by the path of the Hydra material prim.

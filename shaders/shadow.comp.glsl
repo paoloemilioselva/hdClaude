@@ -226,7 +226,7 @@ void main()
     if (volumes == 0u)
     {
         occluded = shadow_occluded(ray, 1.0e-4, ray.maxDistance,
-                                   HDCLAUDE_MASK_SURFACES, false, 0u, key);
+                                   HDCLAUDE_MASK_SHADOW_RAYS, false, 0u, key);
     }
     else
     {
@@ -238,14 +238,14 @@ void main()
              hdclaude_cull_next(t, ray.maxDistance, volumes, stretchEnd);
              ++guard)
         {
-            occluded = shadow_occluded(ray, t, stretchEnd, HDCLAUDE_MASK_SECONDARY,
+            occluded = shadow_occluded(ray, t, stretchEnd, HDCLAUDE_MASK_SHADOW,
                                        false, volumes, key);
             t = stretchEnd;
         }
         if (!occluded && (frame.cullExceptions & 2u) != 0u)
         {
             occluded = shadow_occluded(ray, 1.0e-4, ray.maxDistance,
-                                       HDCLAUDE_MASK_SECONDARY_EXCEPTION, true,
+                                       HDCLAUDE_MASK_SHADOW_EXCEPTION, true,
                                        volumes, key);
         }
     }

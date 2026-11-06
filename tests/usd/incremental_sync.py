@@ -17,6 +17,11 @@ different hit:
              invisibleIds, a prototype hidden, and an outer instancer of a
              nested pair hidden: each instancer's own visibility removes
              everything it places, at any depth
+  camera     the box hidden from camera rays through RenderMan's
+             `ri:attributes:visibility:camera` primvar and Karma's
+             `rendervisibility`, then shown again (roadmap phase 20): a primvar
+             edit, so the box is synced in full, and picking reads camera rays,
+             so a hidden box is not under any probe
 
 Agreeing with a fresh render is not enough for an edit a fresh render can get
 wrong as well: until 2026-10-28 a hidden PointInstancer drew all its instances
@@ -270,6 +275,22 @@ def main():
     check("outer hidden", expect_refined=False, expect_change=True)
     outer.MakeVisible()
     check("outer shown", expect_refined=False, expect_change=True)
+
+    primvars = UsdGeom.PrimvarsAPI(box.GetPrim())
+    camera_switch = primvars.CreatePrimvar(
+        "ri:attributes:visibility:camera", Sdf.ValueTypeNames.Int,
+        UsdGeom.Tokens.constant)
+    camera_switch.Set(0)
+    check("camera hidden", expect_refined=False, expect_change=True)
+    camera_switch.Set(1)
+    check("camera shown", expect_refined=False, expect_change=True)
+    karma = primvars.CreatePrimvar(
+        "karma:object:rendervisibility", Sdf.ValueTypeNames.String,
+        UsdGeom.Tokens.constant)
+    karma.Set("-primary")
+    check("karma hidden", expect_refined=False, expect_change=True)
+    karma.Set("*")
+    check("karma shown", expect_refined=False, expect_change=True)
 
     del live
     del context

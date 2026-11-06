@@ -279,7 +279,9 @@ void extend_closest(vec3 origin, vec3 direction, bool primary, uint path,
     uint volumes = hdclaude_cull_volumes(primary);
     if (volumes == 0u)
     {
-        extend_trace(origin, direction, 0.0, 1.0e30, HDCLAUDE_MASK_SURFACES,
+        extend_trace(origin, direction, 0.0, 1.0e30,
+                     primary ? HDCLAUDE_MASK_CAMERA_RAYS
+                             : HDCLAUDE_MASK_INDIRECT_RAYS,
                      false, 0u, path,
                      key, hitGeometry, tGeometry, barycentrics, instance,
                      primitive);

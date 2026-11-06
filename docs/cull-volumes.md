@@ -76,7 +76,7 @@ The interval method is exact only for geometry linked to *every* active volume
 of the ray's kind. Geometry left out of some volume's `cullLink` (the excluded
 pillar, the kept backdrop) has a different culled region, which a ray-wide
 interval cannot express. These are rare, and are handled apart using the TLAS
-instance mask, which today is only `visible ? 0xFF : 0x00`:
+instance mask:
 
 | Mask bit | Meaning |
 | --- | --- |
@@ -84,6 +84,17 @@ instance mask, which today is only `visible ? 0xFF : 0x00`:
 | `0x02` | primary rays, exception |
 | `0x04` | secondary rays, regular |
 | `0x08` | secondary rays, exception |
+| `0x10` | a fog volume's boundary, met by the fog walk alone |
+| `0x20` | shadow rays, regular: chosen as the secondary bit is |
+| `0x40` | shadow rays, exception |
+
+Shadow rays are culled by the volumes that affect secondary rays, so their
+pair repeats the secondary choice. It is a pair of its own so that per-ray
+visibility (roadmap phase 20) can hide a placement from indirect rays and not
+from shadows, or the reverse: a placement hidden from a kind of ray has
+neither bit of that kind's pair (scene.h, `InstanceMask`), and a ray with no
+volume to honour asks for both bits of its own pair rather than for every
+surface.
 
 - The kept-interval queries use the ray kind's *regular* bit only.
 - If the frame has any exception instances for that kind, one more query

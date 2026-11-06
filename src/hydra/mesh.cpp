@@ -3,6 +3,7 @@
 #include "instancer.h"
 
 #include "material_compiler.h"
+#include "ray_visibility.h"
 #include "render_param.h"
 
 #include <chrono>
@@ -640,6 +641,7 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     entry.primId = GetPrimId();
     entry.material = GetMaterialId();
     entry.visible = sceneDelegate->GetVisible(id);
+    entry.rayVisibility = HdClaudeRayVisibility(sceneDelegate, id);
     entry.prototype.debugName = id.GetString();
 
     // --- Points -------------------------------------------------------------

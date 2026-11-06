@@ -25,6 +25,7 @@ add_library(hdClaude MODULE
     mesh.cpp
     nurbs_scene_index_plugin.cpp
     particle_field.cpp
+    ray_visibility.cpp
     retessellation_scene_index_plugin.cpp
     sphere_scene_index.cpp
     render_buffer.cpp

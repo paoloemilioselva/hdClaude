@@ -2,6 +2,7 @@
 
 #include "hdclaude/core/curve_sweep.h"
 #include "material_compiler.h"
+#include "ray_visibility.h"
 #include "render_param.h"
 #include "scene_store.h"
 #include "trace.h"
@@ -275,6 +276,7 @@ void HdClaudeBasisCurves::Sync(HdSceneDelegate* sceneDelegate,
     }
     entry.prototype.opacity = hdclaude::OpacityClass::Opaque;
     entry.visible = sceneDelegate->GetVisible(id);
+    entry.rayVisibility = HdClaudeRayVisibility(sceneDelegate, id);
     entry.material = GetMaterialId();
 
     // Unbound curves share the one displayColor material, as unbound meshes

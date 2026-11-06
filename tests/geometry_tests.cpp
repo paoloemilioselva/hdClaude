@@ -411,6 +411,67 @@ void TestOpacityClassIsPartOfIdentity()
     CHECK_EQ(opaque.Fingerprint(), renamed.Fingerprint());
 }
 
+/// A placement hidden from a kind of ray loses both bits of that kind's pair
+/// and nothing else (scene.h, InstanceMask).
+///
+/// Each kind of ray asks for its own pair when no cull volume affects it
+/// (path_state.glsl): camera rays the primary bits, indirect rays the
+/// secondary ones, shadow rays the shadow ones. So a mask that kept one bit of
+/// a hidden kind's pair would leave the placement in that kind's rays, and one
+/// that cleared a bit of another kind's pair would hide it from rays it was
+/// not hidden from; either shows here, for every combination of hidden kinds
+/// and of regular and exception placements.
+void TestInstanceMaskHidesEachKindOfRay()
+{
+    const std::uint8_t camera =
+        kInstanceMaskPrimary | kInstanceMaskPrimaryException;
+    const std::uint8_t indirect =
+        kInstanceMaskSecondary | kInstanceMaskSecondaryException;
+    const std::uint8_t shadow =
+        kInstanceMaskShadow | kInstanceMaskShadowException;
+
+    // The pairs are disjoint from each other and from the fog's bit.
+    CHECK_EQ(camera & indirect, 0);
+    CHECK_EQ((camera | indirect) & shadow, 0);
+    CHECK_EQ((camera | indirect | shadow) & kInstanceMaskFog, 0);
+
+    // With no volume, every placement is regular for every kind.
+    CHECK_EQ(static_cast<int>(InstanceMask(0u, 0u, 0u, kRayAll)),
+             static_cast<int>(kInstanceMaskPrimary | kInstanceMaskSecondary |
+                              kInstanceMaskShadow));
+
+    // Shadow rays are culled by the volumes that cull secondary rays, so a
+    // placement that is an exception for one is an exception for the other.
+    CHECK_EQ(static_cast<int>(CullInstanceMask(0u, 0u, 1u) & shadow),
+             static_cast<int>(kInstanceMaskShadowException));
+    CHECK_EQ(static_cast<int>(CullInstanceMask(1u, 0u, 1u) & shadow),
+             static_cast<int>(kInstanceMaskShadow));
+
+    const std::uint32_t links[] = {0u, 1u, 2u, 3u};
+    for (std::uint32_t cullLinks : links) {
+        for (std::uint32_t primary = 0u; primary < 4u; ++primary) {
+            for (std::uint32_t secondary = 0u; secondary < 4u; ++secondary) {
+                const std::uint8_t full =
+                    CullInstanceMask(cullLinks, primary, secondary);
+                CHECK_EQ(static_cast<int>(InstanceMask(cullLinks, primary,
+                                                       secondary, kRayAll)),
+                         static_cast<int>(full));
+                for (std::uint8_t kinds = 0; kinds <= kRayAll; ++kinds) {
+                    const std::uint8_t mask =
+                        InstanceMask(cullLinks, primary, secondary, kinds);
+                    CHECK_EQ(mask & camera,
+                             (kinds & kRayCamera) ? full & camera : 0);
+                    CHECK_EQ(mask & indirect,
+                             (kinds & kRayIndirect) ? full & indirect : 0);
+                    CHECK_EQ(mask & shadow,
+                             (kinds & kRayShadow) ? full & shadow : 0);
+                    CHECK_EQ(mask & kInstanceMaskFog, 0);
+                }
+            }
+        }
+    }
+}
+
 /// Direction of an interleaved xyz entry, or the zero vector.
 std::array<float, 3> Direction(const std::vector<float>& values,
                                std::size_t index)
@@ -564,6 +625,7 @@ int main()
 
     TestOpacityClassIsPartOfIdentity();
     TestVertexFramesAreTheSurfaceAtEachVertex();
+    TestInstanceMaskHidesEachKindOfRay();
 
     std::unique_ptr<VulkanContext> context;
     try {

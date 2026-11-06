@@ -14,6 +14,7 @@
 #define HDCLAUDE_GPU_SCENE_H
 
 #include "hdclaude/core/gaussian_splats.h"
+#include "hdclaude/core/ray_visibility.h"
 
 #include <cstdint>
 #include <memory>
@@ -206,6 +207,11 @@ struct MeshInstance {
     /// reads out of the `primId` and `instanceId` AOVs.
     std::int32_t pickId = -1;
     std::int32_t pickInstance = -1;
+
+    /// The kinds of ray that meet this placement, `kRayCamera`, `kRayIndirect`
+    /// and `kRayShadow` (ray_visibility.h): RenderMan's and Karma's per-ray
+    /// visibility. Carried by the TLAS instance mask (InstanceMask).
+    std::uint8_t rayVisibility = kRayAll;
 };
 
 /// One object-space Gaussian splat cloud prototype.
@@ -271,6 +277,9 @@ struct SplatInstance {
     /// What the host calls this placement. See `MeshInstance::pickId`.
     std::int32_t pickId = -1;
     std::int32_t pickInstance = -1;
+
+    /// The kinds of ray that meet it. See `MeshInstance::rayVisibility`.
+    std::uint8_t rayVisibility = kRayAll;
 };
 
 // --- Cull volumes --------------------------------------------------------------
@@ -333,6 +342,13 @@ inline constexpr std::uint8_t kInstanceMaskSecondaryException = 0x08;
 /// other, and only the fog walk asks for it (shaders/fog.glsl). Every ray that
 /// looks for surfaces asks for everything but this.
 inline constexpr std::uint8_t kInstanceMaskFog = 0x10;
+/// Shadow rays' own pair. They are culled by the volumes that cull secondary
+/// rays, so a placement's shadow bits are chosen as its secondary bits are;
+/// they are separate so that per-ray visibility can hide a placement from
+/// indirect rays and not from shadows, or the reverse (InstanceMask). `0x80`
+/// is free.
+inline constexpr std::uint8_t kInstanceMaskShadow = 0x20;
+inline constexpr std::uint8_t kInstanceMaskShadowException = 0x40;
 
 /// The mask a visible placement is given, from which volumes cull it and which
 /// volumes affect each kind of ray.
@@ -346,7 +362,35 @@ inline std::uint8_t CullInstanceMask(std::uint32_t cullLinks,
     return static_cast<std::uint8_t>(
         (primaryRegular ? kInstanceMaskPrimary : kInstanceMaskPrimaryException) |
         (secondaryRegular ? kInstanceMaskSecondary
-                          : kInstanceMaskSecondaryException));
+                          : kInstanceMaskSecondaryException) |
+        (secondaryRegular ? kInstanceMaskShadow : kInstanceMaskShadowException));
+}
+
+/// The mask a visible placement is given: its cull mask, less both bits of
+/// every kind of ray it is hidden from (`rayVisibility`, ray_visibility.h).
+/// Each kind of ray asks for its own pair, so a placement hidden from a kind
+/// is met by no ray of that kind and is unchanged for the rest, at no cost
+/// per hit.
+inline std::uint8_t InstanceMask(std::uint32_t cullLinks,
+                                 std::uint32_t primaryVolumes,
+                                 std::uint32_t secondaryVolumes,
+                                 std::uint8_t rayVisibility)
+{
+    std::uint8_t mask =
+        CullInstanceMask(cullLinks, primaryVolumes, secondaryVolumes);
+    if ((rayVisibility & kRayCamera) == 0) {
+        mask &= static_cast<std::uint8_t>(
+            ~(kInstanceMaskPrimary | kInstanceMaskPrimaryException));
+    }
+    if ((rayVisibility & kRayIndirect) == 0) {
+        mask &= static_cast<std::uint8_t>(
+            ~(kInstanceMaskSecondary | kInstanceMaskSecondaryException));
+    }
+    if ((rayVisibility & kRayShadow) == 0) {
+        mask &= static_cast<std::uint8_t>(
+            ~(kInstanceMaskShadow | kInstanceMaskShadowException));
+    }
+    return mask;
 }
 
 /// What kind of emitter a Light is. Mirrors `path_state.glsl`.

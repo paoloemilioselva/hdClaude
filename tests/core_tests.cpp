@@ -8,6 +8,7 @@
 #include "hdclaude/core/display.h"
 #include "hdclaude/core/image_metrics.h"
 #include "hdclaude/core/quad_tessellation.h"
+#include "hdclaude/core/ray_visibility.h"
 #include "hdclaude/core/sphere_mesh.h"
 #include "hdclaude/core/spectrum.h"
 #include "hdclaude/core/tessellation.h"
@@ -2958,9 +2959,82 @@ void TestSplatMajorantGridSurvivesDegenerateClouds()
     CHECK_EQ(EvaluateSplatDensity(empty, emptyGrid, anywhere), 0.0f);
 }
 
+// ---------------------------------------------------------------------------
+// Per-ray-kind visibility
+// ---------------------------------------------------------------------------
+
+/// Karma's rendervisibility pattern, read as ray_visibility.h documents it.
+///
+/// Each case is the kinds the pattern leaves visible and whether anything in
+/// it is reported. A pattern that is honoured as written must report nothing,
+/// or a stage that is fine warns on every sync; one that is not must report,
+/// or a scene renders differently from Karma without a word.
+void TestKarmaRenderVisibilityPatterns()
+{
+    struct Case {
+        const char* pattern;
+        std::uint8_t visibility;
+        bool reported;
+    };
+    const std::uint8_t camera = kRayCamera;
+    const std::uint8_t indirect = kRayIndirect;
+    const std::uint8_t shadow = kRayShadow;
+    const Case cases[] = {
+        {"*", kRayAll, false},
+        {"primary", camera, false},
+        {"shadow", shadow, false},
+        {"+primary", camera, false},
+        {"primary shadow", camera | shadow, false},
+        {"primary,shadow", camera | shadow, false},
+        {"  primary \t shadow  ", camera | shadow, false},
+        {"diffuse reflect refract", indirect, false},
+        {"* -primary", indirect | shadow, false},
+        // A pattern that starts by taking a kind away starts from every kind:
+        // salta writes `-shadow` for "everything but shadows".
+        {"-shadow", camera | indirect, false},
+        {"^primary", indirect | shadow, false},
+        {"-primary -shadow", indirect, false},
+        {"-diffuse -reflect -refract", camera | shadow, false},
+        {"shadow -shadow", 0, false},
+        {"primary -*", 0, false},
+        // Indirect is one kind here: visible to it if any of the three is
+        // named, and a pattern that separates them is reported.
+        {"diffuse", indirect, true},
+        {"-diffuse", kRayAll, true},
+        {"primary reflect", camera | indirect, true},
+        // Nothing named, or a name that is not a kind of ray.
+        {"", kRayAll, true},
+        {"   ", kRayAll, true},
+        {"primary volume", camera, true},
+        {"-", kRayAll, true},
+    };
+    for (const Case& c : cases) {
+        const KarmaRenderVisibility result =
+            ParseKarmaRenderVisibility(c.pattern);
+        const bool ok = result.visibility == c.visibility &&
+                        result.reports.empty() == !c.reported;
+        if (!ok) {
+            std::fprintf(stderr,
+                         "  rendervisibility \"%s\": visibility %d (expected "
+                         "%d), %zu report(s)\n",
+                         c.pattern, result.visibility, c.visibility,
+                         result.reports.size());
+        }
+        CHECK(ok);
+    }
+
+    // Reports name what they are about, and say each thing once.
+    const KarmaRenderVisibility bogus =
+        ParseKarmaRenderVisibility("bogus primary bogus");
+    CHECK_EQ(bogus.reports.size(), std::size_t(1));
+    CHECK(!bogus.reports.empty() &&
+          bogus.reports[0].find("'bogus'") != std::string::npos);
+}
+
 int main()
 {
     TestEnvironmentFlagReadsOneWay();
+    TestKarmaRenderVisibilityPatterns();
     TestEdgeRateIsAPowerOfTwo();
     TestQuadTessellationCoversItsDomain();
     TestQuadTessellationAgreesWithItsNeighbour();

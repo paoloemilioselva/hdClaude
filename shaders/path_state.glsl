@@ -626,9 +626,21 @@ const uint HDCLAUDE_MASK_SECONDARY_EXCEPTION = 0x08u;
 // ray that looks for one meets it, and only the fog walk asks for this bit
 // (fog.glsl). Mirrors kInstanceMaskFog in scene.h.
 const uint HDCLAUDE_MASK_FOG = 0x10u;
-// Every placement that is a surface: what a ray with no cull volume to honour
-// asks for, which used to be 0xFF and must now leave the fog out.
-const uint HDCLAUDE_MASK_SURFACES = 0xFFu & ~HDCLAUDE_MASK_FOG;
+// Shadow rays' own pair, chosen as the secondary pair is. Mirrors
+// kInstanceMaskShadow in scene.h.
+const uint HDCLAUDE_MASK_SHADOW = 0x20u;
+const uint HDCLAUDE_MASK_SHADOW_EXCEPTION = 0x40u;
+// Every placement a kind of ray meets when there is no cull volume to honour:
+// both bits of its pair, so a placement hidden from that kind of ray
+// (primvars:ri:attributes:visibility:*, karma rendervisibility; scene.h,
+// InstanceMask) has neither and is not met. These used to be one mask for
+// every surface.
+const uint HDCLAUDE_MASK_CAMERA_RAYS =
+    HDCLAUDE_MASK_PRIMARY | HDCLAUDE_MASK_PRIMARY_EXCEPTION;
+const uint HDCLAUDE_MASK_INDIRECT_RAYS =
+    HDCLAUDE_MASK_SECONDARY | HDCLAUDE_MASK_SECONDARY_EXCEPTION;
+const uint HDCLAUDE_MASK_SHADOW_RAYS =
+    HDCLAUDE_MASK_SHADOW | HDCLAUDE_MASK_SHADOW_EXCEPTION;
 
 // Mirrors hdclaude::CullVolume. The rows take a world point into the shape's
 // unit frame, where the cube is [-1, 1]^3, the sphere has radius one and the

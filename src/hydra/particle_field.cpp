@@ -2,6 +2,7 @@
 
 #include "hdclaude/core/gaussian_splats.h"
 #include "instancer.h"
+#include "ray_visibility.h"
 #include "render_param.h"
 #include "scene_store.h"
 #include "trace.h"
@@ -327,6 +328,7 @@ void HdClaudeParticleField::Sync(HdSceneDelegate* sceneDelegate,
     entry.prototype.debugName = id.GetString();
     entry.reports = entry.prototype.cloud.reports;
     entry.visible = sceneDelegate->GetVisible(id);
+    entry.rayVisibility = HdClaudeRayVisibility(sceneDelegate, id);
 
     if (!entry.prototype.cloud.Valid()) {
         TF_WARN(

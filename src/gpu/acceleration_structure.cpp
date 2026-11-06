@@ -1168,13 +1168,13 @@ void SceneAccelerator::Update(const Scene& scene, const std::vector<bool>& nonOp
         entry.instanceCustomIndex =
             static_cast<std::uint32_t>(&instance - scene.instances.data()) & 0xFFFFFF;
         // Which rays meet it: none when it is invisible, and otherwise every
-        // ray, through either its regular or its exception bit for each kind
-        // (scene.h, CullInstanceMask). A ray that asks for 0xFF still meets
-        // every visible placement.
+        // kind of ray it is not hidden from, through either its regular or its
+        // exception bit for that kind (scene.h, InstanceMask).
         entry.mask = instance.visible
-                         ? CullInstanceMask(instance.cullLinks,
-                                            scene.cullPrimaryVolumes,
-                                            scene.cullSecondaryVolumes)
+                         ? InstanceMask(instance.cullLinks,
+                                        scene.cullPrimaryVolumes,
+                                        scene.cullSecondaryVolumes,
+                                        instance.rayVisibility)
                          : 0x00;
         entry.instanceShaderBindingTableRecordOffset = 0;
         entry.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
@@ -1215,9 +1215,10 @@ void SceneAccelerator::Update(const Scene& scene, const std::vector<bool>& nonOp
         entry.instanceCustomIndex =
             static_cast<std::uint32_t>(scene.instances.size() + i) & 0xFFFFFF;
         entry.mask = instance.visible
-                         ? CullInstanceMask(instance.cullLinks,
-                                            scene.cullPrimaryVolumes,
-                                            scene.cullSecondaryVolumes)
+                         ? InstanceMask(instance.cullLinks,
+                                        scene.cullPrimaryVolumes,
+                                        scene.cullSecondaryVolumes,
+                                        instance.rayVisibility)
                          : 0x00;
         entry.instanceShaderBindingTableRecordOffset = 0;
         entry.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
