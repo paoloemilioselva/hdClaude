@@ -8289,3 +8289,31 @@ would have been 1.48 GB. Per placement the device now holds 283 bytes: the
 top-level structure's own storage, 179 -- 1.07 GB here, and the largest
 per-placement cost left -- its 64-byte instance input, the 24-byte record and
 16 bytes of link, cull and pick words.
+
+## 2026-11-11 -- Compaction, measured
+
+**Bottom level: compacted.** Each mesh, curve and splat structure is built
+with ALLOW_COMPACTION, its compacted size queried in the same submission,
+and copied into a buffer of exactly that size; the original and its scratch
+are released at once, so only one structure is ever held twice. A structure
+built to be refitted is not compacted. On the island without `isBeach` and
+`isDunesB` (49,125 structures) the bottom level went from 3.60 GB to
+1.35 GB, the device peak from 9.54 GB to 7.26 GB, tracing was no slower, and
+publishing took 88 s rather than 73 s for the extra submission each.
+
+**Top level: not compacted.** The size a top-level build asks for is 179
+bytes an instance on the RTX 5060 Ti (driver 616.92), and the preference
+flags barely move it: LOW_MEMORY changes nothing, PREFER_FAST_BUILD saves 3%.
+Compacted, it came to 162 bytes -- 9% -- and for the length of the copy both
+are held, so the subset's top level peaked at 2.04 GB instead of 1.07 GB. On
+a stage whose largest allocation is its top level, compaction raises the
+peak that decides whether it fits. `HDCLAUDE_TRACE` prints what each
+preference would cost.
+
+**Two ways to lose the device, both made here first.** The size query must
+see ALLOW_COMPACTION: a compactable build can need more than the query
+without it reported, and building into the smaller size overran it on the
+first structure. And a barrier around the compacting copy must name the
+build stage, not ACCELERATION_STRUCTURE_COPY, which exists only with
+rayTracingMaintenance1 (VUID-VkMemoryBarrier2-srcStageMask-10752).
+`BuildAndCompact` refuses a build whose flags lack compaction.

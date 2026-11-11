@@ -106,6 +106,136 @@ AlignedScratch MakeScratch(const VulkanContext& context, VulkanAllocator& alloca
     return scratch;
 }
 
+namespace {
+
+/// Everything a build wrote to an acceleration structure, finished before
+/// anything reads it: a compacted-size query, or a compacting copy recorded
+/// in a later submission.
+///
+/// The build stage on both sides, and not the copy stage: that one exists
+/// only with rayTracingMaintenance1, which hdClaude does not enable, and
+/// without it a compacting copy and a properties query both execute in the
+/// build stage (VUID-VkMemoryBarrier2-srcStageMask-10752).
+void RecordBuildBarrier(VkCommandBuffer command)
+{
+    VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+    barrier.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+    barrier.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dependency.memoryBarrierCount = 1;
+    dependency.pMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier2(command, &dependency);
+}
+
+/// Build `buildInfo` into `structure`, and when `compact` is set, replace the
+/// result with a copy exactly as large as the driver says it needs to be.
+///
+/// What a build is sized for is the driver's worst case for that many
+/// primitives, and on an RTX 5060 Ti that is 179 bytes a top-level instance
+/// whatever the preference flags say; a compacted copy is what the structure
+/// actually came to. The two exist together only for the length of the copy,
+/// and only for this one structure, so the peak a scene reaches is its
+/// uncompacted size for the largest structure alone, not for all of them.
+///
+/// Never for a structure built to be updated: an update writes into the tree
+/// as built, and the accelerator asks for that only of geometry that deforms.
+///
+/// `buildInfo` must already carry ALLOW_COMPACTION when `compact` is set, and
+/// must have carried it when its sizes were queried: a structure built to be
+/// compactable can need more than one that is not, and building into the
+/// smaller size overruns it and loses the device.
+void BuildAndCompact(const VulkanContext& context, VulkanAllocator& allocator,
+                     VkAccelerationStructureBuildGeometryInfoKHR buildInfo,
+                     const VkAccelerationStructureBuildRangeInfoKHR& range,
+                     VkAccelerationStructureTypeKHR type, bool compact,
+                     VkAccelerationStructureKHR& structure, VulkanBuffer& storage,
+                     AlignedScratch& scratch)
+{
+    VkQueryPool pool = VK_NULL_HANDLE;
+    if (compact) {
+        if ((buildInfo.flags &
+             VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR) == 0) {
+            throw VulkanError(VK_ERROR_UNKNOWN,
+                              "BuildAndCompact: compaction asked of a build "
+                              "sized without ALLOW_COMPACTION");
+        }
+        VkQueryPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        poolInfo.queryType =
+            VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR;
+        poolInfo.queryCount = 1;
+        context.Check(vkCreateQueryPool(context.Device(), &poolInfo, nullptr,
+                                        &pool),
+                      "vkCreateQueryPool(compacted size)");
+    }
+
+    buildInfo.dstAccelerationStructure = structure;
+    buildInfo.scratchData.deviceAddress = scratch.address;
+    const VkAccelerationStructureBuildRangeInfoKHR* ranges = &range;
+    context.SubmitImmediate([&](VkCommandBuffer command) {
+        if (pool != VK_NULL_HANDLE) {
+            vkCmdResetQueryPool(command, pool, 0, 1);
+        }
+        vkCmdBuildAccelerationStructuresKHR(command, 1, &buildInfo, &ranges);
+        if (pool != VK_NULL_HANDLE) {
+            RecordBuildBarrier(command);
+            vkCmdWriteAccelerationStructuresPropertiesKHR(
+                command, 1, &structure,
+                VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR, pool, 0);
+        }
+    });
+    // The build is done with its scratch; release it before the copy, so the
+    // two are never held together.
+    scratch = AlignedScratch{};
+    if (pool == VK_NULL_HANDLE) {
+        return;
+    }
+
+    VkDeviceSize compactedSize = 0;
+    const VkResult queried = vkGetQueryPoolResults(
+        context.Device(), pool, 0, 1, sizeof(compactedSize), &compactedSize,
+        sizeof(compactedSize),
+        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+    vkDestroyQueryPool(context.Device(), pool, nullptr);
+    context.Check(queried, "vkGetQueryPoolResults(compacted size)");
+    if (compactedSize == 0 || compactedSize >= storage.Size()) {
+        return;
+    }
+
+    BufferDescription description = storage.Description();
+    description.size = compactedSize;
+    VulkanBuffer compactedStorage(allocator, description);
+
+    VkAccelerationStructureCreateInfoKHR createInfo{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
+    createInfo.buffer = compactedStorage.Handle();
+    createInfo.size = compactedSize;
+    createInfo.type = type;
+    VkAccelerationStructureKHR compacted = VK_NULL_HANDLE;
+    context.Check(vkCreateAccelerationStructureKHR(context.Device(), &createInfo,
+                                                   nullptr, &compacted),
+                  "vkCreateAccelerationStructureKHR(compacted " +
+                      description.debugName + ")");
+
+    VkCopyAccelerationStructureInfoKHR copy{
+        VK_STRUCTURE_TYPE_COPY_ACCELERATION_STRUCTURE_INFO_KHR};
+    copy.src = structure;
+    copy.dst = compacted;
+    copy.mode = VK_COPY_ACCELERATION_STRUCTURE_MODE_COMPACT_KHR;
+    context.SubmitImmediate([&](VkCommandBuffer command) {
+        RecordBuildBarrier(command);
+        vkCmdCopyAccelerationStructureKHR(command, &copy);
+        RecordBuildBarrier(command);
+    });
+
+    vkDestroyAccelerationStructureKHR(context.Device(), structure, nullptr);
+    structure = compacted;
+    storage = std::move(compactedStorage);
+}
+
+}  // namespace
+
 std::uint64_t MeshPrototype::Fingerprint() const
 {
     // Hashed over the actual bytes rather than over counts or a name: two
@@ -448,6 +578,10 @@ BottomLevelStructure::BottomLevelStructure(const VulkanContext& context,
     buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
     if (allowUpdate) {
         buildInfo.flags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+    } else {
+        // Before the size query, which must see the flags the build will use.
+        buildInfo.flags |=
+            VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR;
     }
     buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     buildInfo.geometryCount = 1;
@@ -477,19 +611,14 @@ BottomLevelStructure::BottomLevelStructure(const VulkanContext& context,
                                                    nullptr, &_structure),
                   "vkCreateAccelerationStructureKHR(" + name + ")");
 
-    const AlignedScratch scratch =
+    AlignedScratch scratch =
         MakeScratch(context, allocator, sizes.buildScratchSize, name + ".scratch");
-
-    buildInfo.dstAccelerationStructure = _structure;
-    buildInfo.scratchData.deviceAddress = scratch.address;
 
     VkAccelerationStructureBuildRangeInfoKHR range{};
     range.primitiveCount = _triangleCount;
-    const VkAccelerationStructureBuildRangeInfoKHR* ranges = &range;
-
-    context.SubmitImmediate([&](VkCommandBuffer command) {
-        vkCmdBuildAccelerationStructuresKHR(command, 1, &buildInfo, &ranges);
-    });
+    BuildAndCompact(context, allocator, buildInfo, range,
+                    VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+                    /*compact=*/!allowUpdate, _structure, _storage, scratch);
 
     _address = StructureAddress(context, _structure);
 }
@@ -585,7 +714,8 @@ BottomLevelStructure::BottomLevelStructure(const VulkanContext& context,
     VkAccelerationStructureBuildGeometryInfoKHR buildInfo{
         VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
     buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-    buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
+                      VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR;
     buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     buildInfo.geometryCount = 1;
     buildInfo.pGeometries = &geometry;
@@ -613,19 +743,14 @@ BottomLevelStructure::BottomLevelStructure(const VulkanContext& context,
                                                    nullptr, &_structure),
                   "vkCreateAccelerationStructureKHR(" + name + ")");
 
-    const AlignedScratch scratch =
+    AlignedScratch scratch =
         MakeScratch(context, allocator, sizes.buildScratchSize, name + ".scratch");
-
-    buildInfo.dstAccelerationStructure = _structure;
-    buildInfo.scratchData.deviceAddress = scratch.address;
 
     VkAccelerationStructureBuildRangeInfoKHR range{};
     range.primitiveCount = _triangleCount;
-    const VkAccelerationStructureBuildRangeInfoKHR* ranges = &range;
-
-    context.SubmitImmediate([&](VkCommandBuffer command) {
-        vkCmdBuildAccelerationStructuresKHR(command, 1, &buildInfo, &ranges);
-    });
+    BuildAndCompact(context, allocator, buildInfo, range,
+                    VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+                    /*compact=*/true, _structure, _storage, scratch);
 
     _address = StructureAddress(context, _structure);
 }
@@ -896,6 +1021,43 @@ void TopLevelStructure::Build(
         context.Device(), VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
         &buildInfo, &instanceCount, &sizes);
 
+    // Under the trace: what the same instances would cost under each build
+    // preference, which is a question the driver answers from the count alone.
+    // The top-level structure's storage is a per-placement cost the renderer
+    // does not otherwise control, so it is worth knowing what is on offer.
+    if (hdclaude::EnvironmentFlag("HDCLAUDE_TRACE") && instanceCount > 0) {
+        const struct {
+            const char* name;
+            VkBuildAccelerationStructureFlagsKHR flags;
+        } options[] = {
+            {"fast trace", VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR},
+            {"fast trace, low memory",
+             VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
+                 VK_BUILD_ACCELERATION_STRUCTURE_LOW_MEMORY_BIT_KHR},
+            {"fast build", VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR},
+            {"fast build, low memory",
+             VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR |
+                 VK_BUILD_ACCELERATION_STRUCTURE_LOW_MEMORY_BIT_KHR},
+            {"low memory", VK_BUILD_ACCELERATION_STRUCTURE_LOW_MEMORY_BIT_KHR},
+        };
+        for (const auto& option : options) {
+            VkAccelerationStructureBuildGeometryInfoKHR probe = buildInfo;
+            probe.flags = option.flags;
+            VkAccelerationStructureBuildSizesInfoKHR probed{
+                VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+            vkGetAccelerationStructureBuildSizesKHR(
+                context.Device(), VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+                &probe, &instanceCount, &probed);
+            std::fprintf(
+                stderr,
+                "hdClaude tlas sizes: %-24s storage %.1f B/instance, scratch "
+                "%.1f B/instance\n",
+                option.name,
+                double(probed.accelerationStructureSize) / instanceCount,
+                double(probed.buildScratchSize) / instanceCount);
+        }
+    }
+
     BufferDescription storageDescription;
     storageDescription.size = sizes.accelerationStructureSize;
     storageDescription.usage =
@@ -913,19 +1075,20 @@ void TopLevelStructure::Build(
                                                    nullptr, &structure),
                   "vkCreateAccelerationStructureKHR(tlas)");
 
-    const AlignedScratch scratch =
+    AlignedScratch scratch =
         MakeScratch(context, allocator, sizes.buildScratchSize, "tlas.scratch");
-
-    buildInfo.dstAccelerationStructure = structure;
-    buildInfo.scratchData.deviceAddress = scratch.address;
 
     VkAccelerationStructureBuildRangeInfoKHR range{};
     range.primitiveCount = instanceCount;
-    const VkAccelerationStructureBuildRangeInfoKHR* ranges = &range;
-
-    context.SubmitImmediate([&](VkCommandBuffer command) {
-        vkCmdBuildAccelerationStructuresKHR(command, 1, &buildInfo, &ranges);
-    });
+    BuildAndCompact(context, allocator, buildInfo, range,
+                    VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
+                    // Not compacted. Measured on 5.98 M island placements it
+                    // saves 9% (179 to 162 bytes an instance), and for the
+                    // length of the copy both forms are held: the peak goes
+                    // from 1.07 GB to 2.04 GB. A top-level structure is the
+                    // largest single allocation of an instanced stage, so its
+                    // peak is the scene's.
+                    /*compact=*/false, structure, storage, scratch);
 
     // Publish.
     Reset();
