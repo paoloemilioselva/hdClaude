@@ -11,8 +11,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <limits>
 #include <fstream>
 #include <sstream>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace hdclaude {
@@ -312,34 +314,51 @@ static_assert(sizeof(PrototypeGeometry) == 88,
               "PrototypeGeometry must be 88 bytes with no implicit padding; "
               "path_state.glsl mirrors this layout member for member");
 
-/// What is a placement's own. Mirrors InstanceRecord in path_state.glsl.
+/// What is a placement's own: which prototype, and which attributes. Mirrors
+/// InstanceRecord in path_state.glsl.
 ///
 /// Its transform is not here: the top-level structure's instance array holds
 /// it already, in the layout the shaders read (path_state.glsl,
-/// TopLevelInstance), and the inverse is computed where it is used. A
-/// previous placement is here only as an index, because nearly every
-/// placement of nearly every frame has none.
+/// TopLevelInstance), and the inverse is computed where it is used. Nor is
+/// anything else: material, colour, history, light links, cull links and
+/// pick ids are what an *attribute* is, and placements that agree on all of
+/// them share one. A PointInstancer's placements agree on all of them, which
+/// is why 49 million placements on the Moana island need eight bytes each
+/// rather than forty.
 struct InstanceRecord {
     std::uint32_t prototype;
+    std::uint32_t attributeIndex;
+};
+static_assert(sizeof(InstanceRecord) == 8,
+              "InstanceRecord must be 8 bytes; path_state.glsl mirrors it");
+
+/// What placements share. Mirrors InstanceAttributes in path_state.glsl. Its
+/// link words, cull word and pick ids are in their own bindings, indexed by
+/// the same attribute.
+struct InstanceAttributes {
     std::uint32_t material;
-    /// Index into the history table, or kNoHistory.
+    /// Index into the history table, or kNoHistory. A placement that moved
+    /// has its own attribute, which is what makes this per-attribute.
     std::uint32_t history;
     /// The placement's displayColor, read by the shared material for unbound
     /// geometry.
     float displayColor[3];
 };
-static_assert(sizeof(InstanceRecord) == 24,
-              "InstanceRecord must be 24 bytes with no implicit padding; "
+static_assert(sizeof(InstanceAttributes) == 20,
+              "InstanceAttributes must be 20 bytes with no implicit padding; "
               "path_state.glsl mirrors this layout member for member");
 
-/// The instance table's header: where the other two tables are, and where the
+/// The instance table's header: where the other tables are, and where the
 /// placements' transforms are. Then the records.
 struct InstanceTableHeader {
     std::uint64_t prototypes;
     std::uint64_t placements;
     std::uint64_t history;
-    std::uint64_t reserved;
+    std::uint64_t attributes;
 };
+
+/// What a pick reports for a placement with no instance index of its own.
+constexpr std::int32_t kNoPickInstance = std::numeric_limits<std::int32_t>::min();
 static_assert(sizeof(InstanceTableHeader) == 32,
               "InstanceTableHeader mirrors the head of InstanceTable in "
               "path_state.glsl");
@@ -1329,6 +1348,70 @@ void PathTracer::SetScene(const Scene& publishedScene,
     std::vector<InstanceRecord> records(placements);
     std::vector<float> history;
     _instancesWithHistory.clear();
+    _linkWords = (scene.linkCategoryCount + 31u) / 32u;
+
+    // Attributes, shared by every placement that agrees on all of them.
+    //
+    // Keyed on the bytes the shaders would read, so two placements share an
+    // attribute exactly when no kernel could tell them apart by it. The pick
+    // instance is keyed as `index - pickInstance`, which is the same for every
+    // placement of one instancer laid out in order: that is what lets a
+    // PointInstancer's placements share one. Consecutive placements usually
+    // agree, so the last one is compared first and the map is the slow path.
+    std::vector<InstanceAttributes> attributes;
+    std::vector<std::uint32_t> attributeLinks;
+    std::vector<std::uint32_t> attributeCull;
+    std::vector<std::int32_t> attributePicks;
+    std::unordered_map<std::string, std::uint32_t> attributeByKey;
+    std::string key;
+    std::string previousKey;
+    std::uint32_t previousAttribute = 0;
+    std::vector<std::uint32_t> words(std::max<std::uint32_t>(_linkWords, 1u));
+    const auto attribute = [&](std::size_t index, std::uint32_t material,
+                               std::uint32_t moved, const float colour[3],
+                               const std::vector<std::uint32_t>& categories,
+                               std::uint32_t cullLinks, std::int32_t pickId,
+                               std::int32_t pickInstance) {
+        std::fill(words.begin(), words.end(), 0u);
+        for (const std::uint32_t category : categories) {
+            if (category < scene.linkCategoryCount) {
+                words[category / 32u] |= 1u << (category % 32u);
+            }
+        }
+        const std::int32_t pickBase =
+            pickInstance < 0
+                ? kNoPickInstance
+                : static_cast<std::int32_t>(static_cast<std::int64_t>(index) -
+                                            pickInstance);
+        InstanceAttributes value{};
+        value.material = material;
+        value.history = moved;
+        std::memcpy(value.displayColor, colour, sizeof(value.displayColor));
+
+        key.assign(reinterpret_cast<const char*>(&value), sizeof(value));
+        key.append(reinterpret_cast<const char*>(&cullLinks), sizeof(cullLinks));
+        key.append(reinterpret_cast<const char*>(&pickId), sizeof(pickId));
+        key.append(reinterpret_cast<const char*>(&pickBase), sizeof(pickBase));
+        key.append(reinterpret_cast<const char*>(words.data()),
+                   _linkWords * sizeof(std::uint32_t));
+        if (!attributes.empty() && key == previousKey) {
+            return previousAttribute;
+        }
+        auto [found, inserted] = attributeByKey.try_emplace(
+            key, static_cast<std::uint32_t>(attributes.size()));
+        if (inserted) {
+            attributes.push_back(value);
+            attributeLinks.insert(attributeLinks.end(), words.begin(),
+                                  words.begin() + _linkWords);
+            attributeCull.push_back(cullLinks);
+            attributePicks.push_back(pickId);
+            attributePicks.push_back(pickBase);
+        }
+        previousKey = key;
+        previousAttribute = found->second;
+        return found->second;
+    };
+
     const auto place = [&](std::size_t index, std::uint32_t prototype,
                            const Transform3x4& transform,
                            const Transform3x4* previous) {
@@ -1337,38 +1420,51 @@ void PathTracer::SetScene(const Scene& publishedScene,
             prototype < prototypeBuilt.size() && prototypeBuilt[prototype]
                 ? prototype
                 : emptyPrototype;
-        record.history = kNoHistory;
+        std::uint32_t moved = kNoHistory;
         if (previous != nullptr &&
             std::memcmp(previous->m, transform.m, sizeof(transform.m)) != 0) {
-            record.history = static_cast<std::uint32_t>(history.size() / 12);
+            moved = static_cast<std::uint32_t>(history.size() / 12);
             history.insert(history.end(), previous->m, previous->m + 12);
             _instancesWithHistory.push_back(static_cast<std::uint32_t>(index));
         }
+        return moved;
     };
     for (std::size_t index = 0; index < scene.instances.size(); ++index) {
         const MeshInstance& instance = scene.instances[index];
-        place(index, instance.prototype, instance.transform,
-              instance.hasPreviousTransform ? &instance.previousTransform
-                                            : nullptr);
-        records[index].material = instance.material;
-        std::memcpy(records[index].displayColor, instance.displayColor,
-                    sizeof(records[index].displayColor));
+        const std::uint32_t moved =
+            place(index, instance.prototype, instance.transform,
+                  instance.hasPreviousTransform ? &instance.previousTransform
+                                                : nullptr);
+        records[index].attributeIndex = attribute(
+            index, instance.material, moved, instance.displayColor,
+            instance.linkCategories, instance.cullLinks, instance.pickId,
+            instance.pickInstance);
     }
     // Splat placements occupy the table after every mesh placement, which is
     // the numbering the accelerator gives their top-level instances.
     for (std::size_t i = 0; i < scene.splatInstances.size(); ++i) {
         const SplatInstance& instance = scene.splatInstances[i];
         const std::size_t index = scene.instances.size() + i;
-        place(index,
-              static_cast<std::uint32_t>(meshPrototypes + instance.prototype),
-              instance.transform,
-              instance.hasPreviousTransform ? &instance.previousTransform
-                                            : nullptr);
+        const std::uint32_t moved =
+            place(index,
+                  static_cast<std::uint32_t>(meshPrototypes + instance.prototype),
+                  instance.transform,
+                  instance.hasPreviousTransform ? &instance.previousTransform
+                                                : nullptr);
         // No material index. A splat cloud is shaded by nothing: its radiance
         // is its own, and index 0 here would name the fallback material as
         // though one applied.
-        records[index].material = 0;
+        const float grey[3] = {0.5f, 0.5f, 0.5f};
+        records[index].attributeIndex =
+            attribute(index, 0u, moved, grey, instance.linkCategories,
+                      instance.cullLinks, instance.pickId, instance.pickInstance);
     }
+    // Never empty, so every binding below has something to bind.
+    if (attributes.empty()) {
+        const float grey[3] = {0.5f, 0.5f, 0.5f};
+        attribute(0, 0u, kNoHistory, grey, {}, 0u, -1, -1);
+    }
+    _attributeCount = static_cast<std::uint32_t>(attributes.size());
     _splatInstanceBegin = static_cast<std::uint32_t>(scene.instances.size());
     _splatInstanceCount =
         static_cast<std::uint32_t>(scene.splatInstances.size());
@@ -1405,6 +1501,10 @@ void PathTracer::SetScene(const Scene& publishedScene,
         _historyTable = uploadTable(history.data(), history.size() * sizeof(float),
                                "historyTable");
     }
+    _attributeTable =
+        uploadTable(attributes.data(),
+                    attributes.size() * sizeof(InstanceAttributes),
+                    "attributeTable");
 
     const VulkanBuffer& placementsBuffer = _accelerator->Tlas().InstanceBuffer();
     InstanceTableHeader header{};
@@ -1412,6 +1512,7 @@ void PathTracer::SetScene(const Scene& publishedScene,
     header.placements =
         placementsBuffer.Valid() ? placementsBuffer.DeviceAddress() : 0;
     header.history = _historyTable.Valid() ? _historyTable.DeviceAddress() : 0;
+    header.attributes = _attributeTable.DeviceAddress();
     {
         // Header and records in one staging write, so the table is one buffer
         // and one binding as it always was. Built in place rather than in a
@@ -1468,53 +1569,27 @@ void PathTracer::SetScene(const Scene& publishedScene,
         _lightCount = static_cast<std::uint32_t>(scene.lights.size());
     }
 
-    // --- Light-linking membership ---------------------------------------------
-    // One bit a category, `_linkWords` words an instance, indexed by the
-    // instance's position in the scene -- which is the custom index a ray query
-    // reports, not its position in the instance table. Always allocated, for the
-    // same reason as the light table.
+    // --- Light links, cull links, pick ids --------------------------------------
+    // Per attribute, built with the instance table above: one bit a category
+    // and `_linkWords` words an attribute, one cull word an attribute, and a
+    // pick id with the base its placements' pick instances are counted from.
+    // Shaders reach each through the hit placement's record.
     {
-        _linkWords = (scene.linkCategoryCount + 31u) / 32u;
-        std::vector<std::uint32_t> membership(
-            std::max<std::size_t>(1, scene.instances.size() * _linkWords), 0u);
-        for (std::size_t i = 0; i < scene.instances.size(); ++i) {
-            for (const std::uint32_t category : scene.instances[i].linkCategories) {
-                if (category < scene.linkCategoryCount) {
-                    membership[i * _linkWords + category / 32u] |=
-                        1u << (category % 32u);
-                }
-            }
+        if (attributeLinks.empty()) {
+            attributeLinks.push_back(0u);
         }
-        const VkDeviceSize size = membership.size() * sizeof(std::uint32_t);
-
-        BufferDescription staging;
-        staging.size = size;
-        staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        staging.domain = BufferDomain::HostUpload;
-        staging.debugName = "instanceLinks.staging";
-        VulkanBuffer upload(_allocator, staging);
-        upload.Write(membership.data(), size);
-
-        _instanceLinks = MakeStorage(_allocator, size, "instanceLinks");
-        _context.SubmitImmediate([&](VkCommandBuffer command) {
-            VkBufferCopy region{};
-            region.size = size;
-            vkCmdCopyBuffer(command, upload.Handle(), _instanceLinks.Handle(), 1,
-                            &region);
-        });
+        _instanceLinks = uploadTable(attributeLinks.data(),
+                                     attributeLinks.size() * sizeof(std::uint32_t),
+                                     "instanceLinks");
         _domeLightLink = scene.domeLightLink;
         _domeShadowLink = scene.domeShadowLink;
     }
-
-    // --- Cull volume linking -------------------------------------------------
-    // One word a placement, mesh placements then splat placements, which is the
-    // custom index order. Always allocated, like the light-linking membership.
     {
-        std::vector<std::uint32_t> links;
-        links.reserve(scene.instances.size() + scene.splatInstances.size() + 1);
+        // Which kinds of exception any visible placement is, which decides
+        // whether the kernels look for exceptions at all. Over placements,
+        // because visibility is a placement's and not an attribute's.
         _cullExceptions = 0;
         const auto note = [&](std::uint32_t cullLinks, bool visible) {
-            links.push_back(cullLinks);
             if (!visible) {
                 return;
             }
@@ -1533,27 +1608,9 @@ void PathTracer::SetScene(const Scene& publishedScene,
         for (const SplatInstance& instance : scene.splatInstances) {
             note(instance.cullLinks, instance.visible);
         }
-        if (links.empty()) {
-            links.push_back(0u);
-        }
-        const VkDeviceSize size = links.size() * sizeof(std::uint32_t);
-
-        BufferDescription staging;
-        staging.size = size;
-        staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        staging.domain = BufferDomain::HostUpload;
-        staging.debugName = "instanceCullLinks.staging";
-        VulkanBuffer upload(_allocator, staging);
-        upload.Write(links.data(), size);
-
-        _instanceCullLinks = MakeStorage(_allocator, size, "instanceCullLinks");
-        _context.SubmitImmediate([&](VkCommandBuffer command) {
-            VkBufferCopy region{};
-            region.size = size;
-            vkCmdCopyBuffer(command, upload.Handle(),
-                            _instanceCullLinks.Handle(), 1, &region);
-        });
-
+        _instanceCullLinks = uploadTable(
+            attributeCull.data(), attributeCull.size() * sizeof(std::uint32_t),
+            "instanceCullLinks");
         _cullVolumeCount = std::min(scene.cullVolumeCount, kMaxCullVolumes);
         _cullPrimaryVolumes = scene.cullPrimaryVolumes;
         _cullSecondaryVolumes = scene.cullSecondaryVolumes;
@@ -1561,43 +1618,9 @@ void PathTracer::SetScene(const Scene& publishedScene,
             SetCullVolumes({});
         }
     }
-
-    // --- Pick ids --------------------------------------------------------------
-    // Two ints a placement, in custom index order like the cull links, for the
-    // guides kernel to copy out for whatever the camera ray hit.
-    {
-        std::vector<std::int32_t> picks;
-        picks.reserve(2 * (scene.instances.size() + scene.splatInstances.size()) +
-                      2);
-        for (const MeshInstance& instance : scene.instances) {
-            picks.push_back(instance.pickId);
-            picks.push_back(instance.pickInstance);
-        }
-        for (const SplatInstance& instance : scene.splatInstances) {
-            picks.push_back(instance.pickId);
-            picks.push_back(instance.pickInstance);
-        }
-        if (picks.empty()) {
-            picks.assign(2, -1);
-        }
-        const VkDeviceSize size = picks.size() * sizeof(std::int32_t);
-
-        BufferDescription staging;
-        staging.size = size;
-        staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        staging.domain = BufferDomain::HostUpload;
-        staging.debugName = "instancePicks.staging";
-        VulkanBuffer upload(_allocator, staging);
-        upload.Write(picks.data(), size);
-
-        _instancePicks = MakeStorage(_allocator, size, "instancePicks");
-        _context.SubmitImmediate([&](VkCommandBuffer command) {
-            VkBufferCopy region{};
-            region.size = size;
-            vkCmdCopyBuffer(command, upload.Handle(), _instancePicks.Handle(), 1,
-                            &region);
-        });
-    }
+    _instancePicks = uploadTable(attributePicks.data(),
+                                 attributePicks.size() * sizeof(std::int32_t),
+                                 "instancePicks");
 
     // --- Textures ------------------------------------------------------------
     // Uploaded at the top of this function, before the displacement pass that

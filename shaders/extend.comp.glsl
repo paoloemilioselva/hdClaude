@@ -75,7 +75,7 @@ void extend_trace(vec3 origin, vec3 direction, float tMin, float tMax,
             if (!(exceptions &&
                   hdclaude_cull_point(
                       candidateT,
-                      instanceCullLinks.values[candidateInstance] & volumes)) &&
+                      instanceCullLinks.values[hdclaude_attribute(int(candidateInstance))] & volumes)) &&
                 hdclaude_candidate_present(
                     key, candidateInstance,
                     rayQueryGetIntersectionPrimitiveIndexEXT(query, false),
@@ -144,7 +144,7 @@ void extend_trace(vec3 origin, vec3 direction, float tMin, float tMax,
                     hit < min(committedT, tMax) &&
                     !(exceptions &&
                       hdclaude_cull_point(
-                          hit, instanceCullLinks.values[candidateInstance] &
+                          hit, instanceCullLinks.values[hdclaude_attribute(int(candidateInstance))] &
                                    volumes)))
                 {
                     // Clamped because this is a probability. The opacity is
@@ -217,7 +217,7 @@ void extend_trace(vec3 origin, vec3 direction, float tMin, float tMax,
                     hit < min(committedT, tMax) &&
                     !(exceptions &&
                       hdclaude_cull_point(
-                          hit, instanceCullLinks.values[candidateInstance] &
+                          hit, instanceCullLinks.values[hdclaude_attribute(int(candidateInstance))] &
                                    volumes)) &&
                     hdclaude_candidate_present(key, candidateInstance,
                                                candidateSegment, vec2(0.0),
@@ -634,7 +634,7 @@ void main()
             // (README semantics rule 7). Free flights are memoryless, so a
             // walk over each kept stretch in turn is the walk over the kept
             // part of the ray, and the first collision found is the nearest.
-            uint cloudVolumes = cullVolumes_ & instanceCullLinks.values[index];
+            uint cloudVolumes = cullVolumes_ & instanceCullLinks.values[hdclaude_attribute(int(index))];
             float collision;
             vec3 emitted;
             bool collided = false;

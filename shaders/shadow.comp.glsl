@@ -63,7 +63,7 @@ bool shadow_occluded(ShadowRay ray, float tMin, float tMax, uint cullMask,
                 !(exceptions &&
                   hdclaude_cull_point(
                       candidateT,
-                      instanceCullLinks.values[candidateInstance] & volumes)) &&
+                      instanceCullLinks.values[hdclaude_attribute(int(candidateInstance))] & volumes)) &&
                 hdclaude_candidate_present(
                     key, candidateInstance,
                     rayQueryGetIntersectionPrimitiveIndexEXT(query, false),
@@ -123,7 +123,7 @@ bool shadow_occluded(ShadowRay ray, float tMin, float tMax, uint cullMask,
                     hdclaude_linked(candidateInstance, ray.shadowLink) &&
                     !(exceptions &&
                       hdclaude_cull_point(
-                          hit, instanceCullLinks.values[candidateInstance] &
+                          hit, instanceCullLinks.values[hdclaude_attribute(int(candidateInstance))] &
                                    volumes)))
                 {
                     float alpha = clamp(splat.opacity * response, 0.0, 1.0);
@@ -187,7 +187,7 @@ bool shadow_occluded(ShadowRay ray, float tMin, float tMax, uint cullMask,
                     hdclaude_linked(candidateInstance, ray.shadowLink) &&
                     !(exceptions &&
                       hdclaude_cull_point(
-                          hit, instanceCullLinks.values[candidateInstance] &
+                          hit, instanceCullLinks.values[hdclaude_attribute(int(candidateInstance))] &
                                    volumes)) &&
                     hdclaude_candidate_present(key, candidateInstance,
                                                candidateSegment, vec2(0.0),
@@ -275,7 +275,7 @@ void main()
             // Only over the stretches this cloud's cull volumes keep, as in
             // `extend`.
             uint cloudVolumes =
-                volumes & instanceCullLinks.values[frame.splatInstanceBegin + i];
+                volumes & instanceCullLinks.values[hdclaude_attribute(int(frame.splatInstanceBegin + i))];
             if (cloudVolumes == 0u)
             {
                 blockedByVolume = hdclaude_splat_volume_collision(

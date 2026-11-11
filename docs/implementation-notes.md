@@ -8343,3 +8343,41 @@ A first attempt at this measurement rendered the island at subdivision 2 by
 mistake and traced for 32 s: the refined geometry no longer fitted beside
 what other applications held, and the device paged. Check the level before
 reading a time.
+
+## 2026-11-11 -- A kernel edit that did not reach the tests
+
+The build-tree plugin's kernels were copied by a POST_BUILD step of the
+`hdClaude` library, which runs only when the library links. A change to a
+`.glsl` file links nothing, so after one the build tree kept the previous
+kernels while the install had the new ones -- and the USD tests load the
+build tree. Found when `glsl_compiler` (which reads `shaders/`) passed and
+`usd_picking` reported a syntax error from a line already fixed. The copy is
+now the `hdClaudePluginResources` target, run on every build. Earlier runs in
+which kernels and C++ changed together were not affected: the link ran.
+
+## 2026-11-11 -- Per-placement attributes, shared
+
+A placement's record is now its prototype and an *attribute*: material,
+history index and displayColor in an attribute table, and the light-link
+words, cull word and pick ids in their bindings, all indexed by attribute.
+Placements that agree on every one of them share one, keyed on the bytes the
+shaders read, with the pick instance keyed as `index - pickInstance` so the
+placements of one instancer laid out in order agree. On the island subset:
+
+| | before | after |
+| --- | --- | --- |
+| records | 143.5 MB (24 B) | 47.8 MB (8 B) |
+| link, cull and pick words | 95.6 MB (16 B) | 0.9 MB |
+| attribute table | -- | 1.1 MB, 54,308 attributes |
+| device peak | 7.25 GB | 6.84 GB |
+
+All of it stays in device memory. Moving the records to system memory was
+measured first and made the material sort, which reads every path's record
+each bounce, six times slower; the link, cull and pick words cost nothing
+measurable there, but sharing them saves twice as much without leaving the
+device.
+
+The render test's timed check (one heavy material's share of shading,
+bound 0.75) read 0.85 in the commit before this and in this one alike, at
+216 s for the test against 185 s earlier in the day: the GPU's state, not the
+change. Every functional check passed in both.

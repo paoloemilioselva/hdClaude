@@ -51,7 +51,9 @@ void main()
 
     // Named for the host before anything below can return: a hit behind the
     // camera is still what this pixel's ray met first.
-    guidePick.values[index] = instancePicks.values[record.x];
+    ivec2 pick = instancePicks.values[hdclaude_attribute(record.x)];
+    guidePick.values[index] = ivec2(
+        pick.x, pick.y == HDCLAUDE_NO_PICK_INSTANCE ? -1 : record.x - pick.y);
 
     // Cleared for a hit as for a miss, and before anything below can return:
     // `shade` overwrites the surface guides and records a probe for a hit whose

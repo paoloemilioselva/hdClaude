@@ -511,12 +511,20 @@ struct PrototypeGeometry {
     uint splatKernel;
 };
 
-/// What is a placement's own. Mirrors InstanceRecord in path_tracer.cpp: 24
-/// bytes. `history` indexes the previous-placement table, or is
-/// HDCLAUDE_NO_HISTORY when the placement has not moved, which is nearly all of
-/// them.
+/// What is a placement's own: its prototype, and the attributes it shares
+/// with every placement that agrees with it on all of them. Mirrors
+/// InstanceRecord in path_tracer.cpp: 8 bytes.
 struct InstanceRecord {
     uint prototype;
+    uint attributeIndex;
+};
+
+/// What placements share. Mirrors InstanceAttributes in path_tracer.cpp: 20
+/// bytes. `history` indexes the previous-placement table, or is
+/// HDCLAUDE_NO_HISTORY when the placement has not moved, which is nearly all
+/// of them. The same index reaches the attribute's light-link words, cull word
+/// and pick ids in their own bindings.
+struct InstanceAttributes {
     uint material;
     uint history;
     vec3 displayColor;
@@ -537,6 +545,7 @@ struct TopLevelInstance {
 layout(buffer_reference, scalar) readonly buffer PrototypeTable { PrototypeGeometry values[]; };
 layout(buffer_reference, scalar) readonly buffer PlacementTable { TopLevelInstance values[]; };
 layout(buffer_reference, scalar) readonly buffer HistoryTable   { mat3x4 values[]; };
+layout(buffer_reference, scalar) readonly buffer AttributeTable { InstanceAttributes values[]; };
 
 /// Indexed by rayQueryGetIntersectionInstanceIdEXT -- the placement's position
 /// in the top-level instance array, which the accelerator keeps in scene order
@@ -545,9 +554,16 @@ layout(set = 0, binding = 14, scalar) readonly buffer InstanceTable {
     uint64_t prototypes;
     uint64_t placements;
     uint64_t history;
-    uint64_t reserved;
+    uint64_t attributes;
     InstanceRecord records[];
 } instances;
+
+/// Placement `index`'s attribute: the row of every per-attribute table that
+/// describes it.
+uint hdclaude_attribute(int index)
+{
+    return instances.records[index].attributeIndex;
+}
 
 /// The inverse of an affine row-major 3x4, in the order of operations
 /// InvertTransform3x4 in path_tracer.cpp uses, which is what computed it
@@ -588,6 +604,8 @@ InstanceGeometry hdclaude_instance(int index)
     InstanceRecord record = instances.records[index];
     PrototypeGeometry prototype =
         PrototypeTable(instances.prototypes).values[record.prototype];
+    InstanceAttributes attributes =
+        AttributeTable(instances.attributes).values[record.attributeIndex];
     mat3x4 objectToWorld =
         PlacementTable(instances.placements).values[index].transform;
 
@@ -604,15 +622,15 @@ InstanceGeometry hdclaude_instance(int index)
     geometry.objectToWorld = objectToWorld;
     geometry.worldToObject = hdclaude_invert_transform(objectToWorld);
     geometry.previousObjectToWorld =
-        record.history == HDCLAUDE_NO_HISTORY
+        attributes.history == HDCLAUDE_NO_HISTORY
             ? objectToWorld
-            : HistoryTable(instances.history).values[record.history];
-    geometry.material = record.material;
+            : HistoryTable(instances.history).values[attributes.history];
+    geometry.material = attributes.material;
     geometry.uvsPerCorner = prototype.uvsPerCorner;
     geometry.normalsPerCorner = prototype.normalsPerCorner;
     geometry.harmonicsDegree = prototype.harmonicsDegree;
     geometry.splatKernel = prototype.splatKernel;
-    geometry.displayColor = record.displayColor;
+    geometry.displayColor = attributes.displayColor;
     return geometry;
 }
 
@@ -629,7 +647,7 @@ uint hdclaude_instance_material(int index, int primitive)
     {
         return TriMaterialBuffer(perPrimitive).values[primitive];
     }
-    return record.material;
+    return AttributeTable(instances.attributes).values[record.attributeIndex].material;
 }
 
 // --- Lights -----------------------------------------------------------------
@@ -698,8 +716,8 @@ layout(set = 0, binding = 15, scalar) readonly buffer LightTable {
 // and tells every rprim which categories include it; a light names a category
 // by index, and -1 is the collection that includes everything.
 //
-// Membership is one bit a category, `frame.linkWords` words an instance,
-// indexed by the instance's custom index.
+// Membership is one bit a category, `frame.linkWords` words an attribute,
+// reached through the placement's record (hdclaude_attribute).
 layout(set = 0, binding = 31, scalar) readonly buffer InstanceLinks {
     uint values[];
 } instanceLinks;
@@ -723,7 +741,7 @@ bool hdclaude_linked(int instance, int category)
     {
         return true;
     }
-    uint word = instanceLinks.values[uint(instance) * frame.linkWords +
+    uint word = instanceLinks.values[hdclaude_attribute(instance) * frame.linkWords +
                                      uint(category) / 32u];
     return ((word >> (uint(category) % 32u)) & 1u) != 0u;
 }
@@ -774,18 +792,25 @@ layout(set = 0, binding = 33, scalar) readonly buffer CullVolumes {
     CullVolume values[];
 } cullVolumes;
 
-// Which volumes cull each placement, one bit a volume, by custom index.
+// Which volumes cull each placement, one bit a volume, by attribute.
 layout(set = 0, binding = 34, scalar) readonly buffer InstanceCullLinks {
     uint values[];
 } instanceCullLinks;
 
 // --- Picking ----------------------------------------------------------------
 
-// What the host calls each placement, two ints by custom index: Hydra's prim
-// id and instance index. Opaque here; the guides kernel copies them out.
+// What the host calls each placement, two ints by attribute: Hydra's prim id,
+// and the base the placement's instance index is counted from -- the index is
+// the placement's own index minus it, which is what lets every placement of
+// an instancer share one attribute. Opaque otherwise; the guides kernel
+// reports them.
 layout(set = 0, binding = 35, scalar) readonly buffer InstancePicks {
     ivec2 values[];
 } instancePicks;
+
+/// A pick base meaning the placement has no pick instance: it reports -1.
+/// Any other base is subtracted from the placement's index to give it.
+const int HDCLAUDE_NO_PICK_INSTANCE = int(0x80000000u);
 
 // The primary hit's pick ids, one ivec2 per pixel, (-1, -1) for a miss. A guide
 // like depth: the last sample wins.

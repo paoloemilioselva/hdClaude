@@ -865,6 +865,10 @@ class PathTracer {
     /// The previous placement of each instance in `_instancesWithHistory`, in
     /// that order; absent when nothing moved.
     VulkanBuffer _historyTable;
+    /// What placements share: one record per distinct material, history,
+    /// colour, link, cull and pick combination.
+    VulkanBuffer _attributeTable;
+    std::uint32_t _attributeCount = 0;
     std::uint32_t _instanceCount = 0;
     VulkanBuffer _triangleMaterials;
     /// One majorant-grid record per splat prototype, pointed at by every
