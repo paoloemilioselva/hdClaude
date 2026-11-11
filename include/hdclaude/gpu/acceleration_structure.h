@@ -107,6 +107,9 @@ class BottomLevelStructure {
     const VulkanBuffer& GridIndices() const { return _gridIndices; }
     const SplatGridShape& GridShape() const { return _gridShape; }
     bool IsCurve() const { return _curve; }
+    /// True when the indices are 16-bit, which they are for any mesh of at
+    /// most 65,536 vertices: half the bytes, and the same triangles.
+    bool Indices16() const { return _indices16; }
     bool IsSplat() const { return _splat; }
     /// The degree every particle of this cloud shares.
     std::uint32_t HarmonicsDegree() const { return _harmonicsDegree; }
@@ -128,8 +131,8 @@ class BottomLevelStructure {
     VulkanBuffer _uvs;
     VulkanBuffer _segments;
     VulkanBuffer _segmentMaterials;
-    /// The boxes the structure is partitioned over. Held because the structure
-    /// references them and a refit rewrites them.
+    /// The boxes the structure is partitioned over: a build input, released
+    /// once the build has read it, because nothing reads it again.
     VulkanBuffer _aabbs;
     VulkanBuffer _splats;
     VulkanBuffer _harmonics;
@@ -139,6 +142,7 @@ class BottomLevelStructure {
     SplatGridShape _gridShape;
     bool _curve = false;
     bool _splat = false;
+    bool _indices16 = false;
     std::uint32_t _harmonicsDegree = 0;
     SplatKernel _kernel = SplatKernel::GaussianEllipsoid;
     std::uint32_t _triangleCount = 0;

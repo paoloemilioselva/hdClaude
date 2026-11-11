@@ -309,9 +309,12 @@ struct PrototypeGeometry {
     /// Which spatial basis function the particles instantiate, matching
     /// `SplatKernel`.
     std::uint32_t splatKernel;
+    /// 1 when `indices` holds 16-bit indices, two to a 32-bit word.
+    std::uint32_t indices16;
+    std::uint32_t reserved;
 };
-static_assert(sizeof(PrototypeGeometry) == 88,
-              "PrototypeGeometry must be 88 bytes with no implicit padding; "
+static_assert(sizeof(PrototypeGeometry) == 96,
+              "PrototypeGeometry must be 96 bytes with no implicit padding; "
               "path_state.glsl mirrors this layout member for member");
 
 /// What is a placement's own: which prototype, and which attributes. Mirrors
@@ -1318,6 +1321,7 @@ void PathTracer::SetScene(const Scene& publishedScene,
         }
         entry.uvsPerCorner = scene.prototypes[p].uvsPerCorner ? 1u : 0u;
         entry.normalsPerCorner = scene.prototypes[p].normalsPerCorner ? 1u : 0u;
+        entry.indices16 = blas->Indices16() ? 1u : 0u;
     }
     for (std::size_t p = 0; p < splatPrototypes; ++p) {
         const BottomLevelStructure* blas =

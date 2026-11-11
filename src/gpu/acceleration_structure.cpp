@@ -518,9 +518,27 @@ BottomLevelStructure::BottomLevelStructure(const VulkanContext& context,
         _positions = UploadDeviceLocal(context, allocator, prototype.positions,
                                        kBuildInputUsage,
                                        (name + ".positions").c_str());
-        _indices = UploadDeviceLocal(context, allocator, prototype.indices,
-                                     kBuildInputUsage,
-                                     (name + ".indices").c_str());
+        // 16-bit where every index fits, which on a production stage is
+        // nearly every prototype: the island's are mostly leaves, pebbles and
+        // shells of a few hundred vertices. Padded to a whole 32-bit word,
+        // because the shading kernel reads them as halves of one
+        // (surface_point.glsl) rather than asking the device for 16-bit
+        // storage access.
+        _indices16 = prototype.VertexCount() <= 65536;
+        if (_indices16) {
+            std::vector<std::uint16_t> narrow(prototype.indices.begin(),
+                                              prototype.indices.end());
+            if (narrow.size() % 2 != 0) {
+                narrow.push_back(0);
+            }
+            _indices = UploadDeviceLocal(context, allocator, narrow,
+                                         kBuildInputUsage,
+                                         (name + ".indices").c_str());
+        } else {
+            _indices = UploadDeviceLocal(context, allocator, prototype.indices,
+                                         kBuildInputUsage,
+                                         (name + ".indices").c_str());
+        }
     }
     if (!curve && !prototype.normals.empty()) {
         _normals = UploadDeviceLocal(context, allocator, prototype.normals,
@@ -564,7 +582,8 @@ BottomLevelStructure::BottomLevelStructure(const VulkanContext& context,
         triangles.vertexStride = 3 * sizeof(float);
         triangles.maxVertex =
             static_cast<std::uint32_t>(prototype.VertexCount() - 1);
-        triangles.indexType = VK_INDEX_TYPE_UINT32;
+        triangles.indexType =
+            _indices16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
         triangles.indexData.deviceAddress = _indices.DeviceAddress();
         triangles.transformData.deviceAddress = 0;
     }
@@ -619,6 +638,12 @@ BottomLevelStructure::BottomLevelStructure(const VulkanContext& context,
     BuildAndCompact(context, allocator, buildInfo, range,
                     VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
                     /*compact=*/!allowUpdate, _structure, _storage, scratch);
+    // A curve set's boxes are a build input and nothing else: no kernel reads
+    // them -- intersection uses the segments -- and a curve set is never
+    // refitted (Refit). 24 bytes a segment, 0.45 GB on the Moana island.
+    if (curve) {
+        _aabbs.Reset();
+    }
 
     _address = StructureAddress(context, _structure);
 }
@@ -751,6 +776,9 @@ BottomLevelStructure::BottomLevelStructure(const VulkanContext& context,
     BuildAndCompact(context, allocator, buildInfo, range,
                     VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
                     /*compact=*/true, _structure, _storage, scratch);
+    // The boxes are a build input only, as a curve set's are: the traversal
+    // kernel intersects the particles, and a cloud is never refitted.
+    _aabbs.Reset();
 
     _address = StructureAddress(context, _structure);
 }
@@ -834,7 +862,9 @@ bool BottomLevelStructure::Refit(VulkanAllocator& allocator,
     triangles.vertexData.deviceAddress = _positions.DeviceAddress();
     triangles.vertexStride = 3 * sizeof(float);
     triangles.maxVertex = _vertexCount > 0 ? _vertexCount - 1 : 0;
-    triangles.indexType = VK_INDEX_TYPE_UINT32;
+    // As the structure was built: an update must describe the same geometry.
+    triangles.indexType =
+        _indices16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
     triangles.indexData.deviceAddress = _indices.DeviceAddress();
     triangles.transformData.deviceAddress = 0;
 
@@ -904,7 +934,8 @@ BottomLevelStructure::BottomLevelStructure(BottomLevelStructure&& other) noexcep
       _topology(std::exchange(other._topology, 0)),
       _updatable(std::exchange(other._updatable, false)),
       _opacity(other._opacity),
-      _vertexCount(std::exchange(other._vertexCount, 0))
+      _vertexCount(std::exchange(other._vertexCount, 0)),
+      _indices16(std::exchange(other._indices16, false))
 {
 }
 
@@ -940,6 +971,7 @@ BottomLevelStructure& BottomLevelStructure::operator=(
         _updatable = std::exchange(other._updatable, false);
         _opacity = other._opacity;
         _vertexCount = std::exchange(other._vertexCount, 0);
+        _indices16 = std::exchange(other._indices16, false);
     }
     return *this;
 }

@@ -1442,6 +1442,47 @@ int main()
             CHECK(left.g > left.r * 0.5f);
         }
 
+        // --- 16-bit and 32-bit indices shade the same triangles ---------------
+        //
+        // A mesh of at most 65,536 vertices is stored with 16-bit indices, two
+        // to a word, and read back by halves in surface_point.glsl; a larger
+        // one keeps 32-bit indices. The same quad with 70,000 unused vertices
+        // appended crosses the line without changing a triangle, so the two
+        // must render to the bit.
+        {
+            Scene narrow;
+            narrow.prototypes.push_back(MakeQuad());
+            narrow.instances.push_back({0, Transform3x4{}, 0, true});
+            tracer.SetScene(narrow, materials);
+            const std::vector<float> sixteen =
+                tracer.Render(kWidth, kHeight, LookDownZ(4.0f), settings);
+
+            Scene wide = narrow;
+            MeshPrototype& padded = wide.prototypes[0];
+            const std::size_t extra = 70000;
+            const bool hasNormals = !padded.normals.empty();
+            const bool hasUvs = !padded.uvs.empty() && !padded.uvsPerCorner;
+            for (std::size_t i = 0; i < extra; ++i) {
+                padded.positions.insert(padded.positions.end(), {0.0f, 0.0f, -50.0f});
+                if (hasNormals) {
+                    padded.normals.insert(padded.normals.end(), {0.0f, 0.0f, 1.0f});
+                }
+                if (hasUvs) {
+                    padded.uvs.insert(padded.uvs.end(), {0.0f, 0.0f});
+                }
+            }
+            CHECK(padded.VertexCount() > 65536);
+            tracer.SetScene(wide, materials);
+            const std::vector<float> thirtyTwo =
+                tracer.Render(kWidth, kHeight, LookDownZ(4.0f), settings);
+
+            CHECK(sixteen.size() == thirtyTwo.size());
+            CHECK(std::memcmp(sixteen.data(), thirtyTwo.data(),
+                              sixteen.size() * sizeof(float)) == 0);
+            const Pixel centre = At(thirtyTwo, 0.5f, 0.5f);
+            CHECK(Luminance(centre) > 0.0f);
+        }
+
         // --- Material identity is per instance -------------------------------
         {
             Scene scene;

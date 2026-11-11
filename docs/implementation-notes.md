@@ -8381,3 +8381,16 @@ The render test's timed check (one heavy material's share of shading,
 bound 0.75) read 0.85 in the commit before this and in this one alike, at
 216 s for the test against 185 s earlier in the day: the GPU's state, not the
 change. Every functional check passed in both.
+
+## 2026-11-11 -- Build-only boxes, and 16-bit indices
+
+A curve set's and a splat cloud's boxes are a build input and nothing else --
+intersection reads the segments and the particles, and neither is refitted --
+so they are released once the build has read them. A mesh of at most 65,536
+vertices stores 16-bit indices, padded to a whole word, and
+`surface_point.glsl` reads them as halves of 32-bit words, so the device needs
+no 16-bit storage access; a refit describes the same index type its build
+did. A render test pads a quad past 65,536 vertices and requires the same
+image to the bit. On the island subset: indices 554 MB to 414 MB (the large
+meshes keep 32-bit), the boxes (418 MB) gone from the peak, and the device
+peak 6.84 GB to 6.32 GB.

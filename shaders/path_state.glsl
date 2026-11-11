@@ -440,15 +440,13 @@ struct InstanceGeometry {
     /// `hdclaude::SplatKernel`: 0 ellipsoid, 1 Gaussian surflet, 2 constant
     /// surflet.
     uint splatKernel;
+    /// 1 when `indices` are 16-bit, two to a word (surface_point.glsl).
+    uint indices16;
     /// The placement's displayColor, which the shared material for unbound
-    /// geometry reads through a `displayColor` geomprop. Carried per instance
+    /// geometry reads through a `displayColor` geomprop. Carried per placement
     /// rather than baked into a material: one material per colour cost a
     /// MaterialX generation, a SPIR-V compile and a pipeline for every unbound
     /// mesh in the stage.
-    ///
-    /// Also what keeps this struct free of *implicit* padding: nine addresses,
-    /// three matrices, five words and three floats, 248 bytes. See the mirror
-    /// in path_tracer.cpp for why that matters.
     vec3 displayColor;
 };
 
@@ -494,7 +492,7 @@ uint hdclaude_material_of(InstanceGeometry geometry, int primitive)
     return geometry.material;
 }
 /// What every placement of one prototype shares. Mirrors PrototypeGeometry in
-/// path_tracer.cpp: nine addresses and four words, 88 bytes.
+/// path_tracer.cpp: nine addresses and six words, 96 bytes.
 struct PrototypeGeometry {
     uint64_t positions;
     uint64_t indices;
@@ -509,6 +507,8 @@ struct PrototypeGeometry {
     uint normalsPerCorner;
     uint harmonicsDegree;
     uint splatKernel;
+    uint indices16;
+    uint reserved;
 };
 
 /// What is a placement's own: its prototype, and the attributes it shares
@@ -630,6 +630,7 @@ InstanceGeometry hdclaude_instance(int index)
     geometry.normalsPerCorner = prototype.normalsPerCorner;
     geometry.harmonicsDegree = prototype.harmonicsDegree;
     geometry.splatKernel = prototype.splatKernel;
+    geometry.indices16 = prototype.indices16;
     geometry.displayColor = attributes.displayColor;
     return geometry;
 }

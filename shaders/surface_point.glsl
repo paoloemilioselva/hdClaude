@@ -139,9 +139,25 @@ SurfacePoint hdclaude_reconstruct(ivec4 record, vec3 rayDirection, vec3 hitPosit
     IndexBuffer indices = IndexBuffer(geometry.indices);
     PositionBuffer positions = PositionBuffer(geometry.positions);
 
-    uint i0 = indices.values[record.y * 3 + 0];
-    uint i1 = indices.values[record.y * 3 + 1];
-    uint i2 = indices.values[record.y * 3 + 2];
+    uint i0;
+    uint i1;
+    uint i2;
+    if (geometry.indices16 != 0u)
+    {
+        // Two 16-bit indices a word, little-endian: corner k is the low half
+        // of word k/2 when k is even and the high half when it is odd. The
+        // buffer is padded to a whole word, so the last read stays inside it.
+        uint k = uint(record.y) * 3u;
+        i0 = (indices.values[(k + 0u) >> 1] >> (((k + 0u) & 1u) * 16u)) & 0xFFFFu;
+        i1 = (indices.values[(k + 1u) >> 1] >> (((k + 1u) & 1u) * 16u)) & 0xFFFFu;
+        i2 = (indices.values[(k + 2u) >> 1] >> (((k + 2u) & 1u) * 16u)) & 0xFFFFu;
+    }
+    else
+    {
+        i0 = indices.values[record.y * 3 + 0];
+        i1 = indices.values[record.y * 3 + 1];
+        i2 = indices.values[record.y * 3 + 2];
+    }
 
     vec3 p0 = positions.values[i0];
     vec3 p1 = positions.values[i1];
