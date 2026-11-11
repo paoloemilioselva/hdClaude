@@ -74,8 +74,7 @@ mx::FilePath ResolveMtlxLibraryDirectory()
 /// Other values key on both their text and their exact hash, so two floats
 /// that print alike but differ still key apart.
 std::string NetworkContentKey(const HdMaterialNetworkMap& networkMap,
-                              const SdfPath& material,
-                              const GfVec3f& fallbackColor)
+                              const SdfPath& material)
 {
     hdclaude::Sha256Builder hash;
     const auto relative = [&](const SdfPath& path) {
@@ -135,8 +134,6 @@ std::string NetworkContentKey(const HdMaterialNetworkMap& networkMap,
         hash.Field(name);
         value(setting);
     }
-    // What a network that cannot be used is shaded with instead.
-    hash.Value(fallbackColor[0]).Value(fallbackColor[1]).Value(fallbackColor[2]);
     return hdclaude::ToHex(hash.Finish());
 }
 
@@ -1108,10 +1105,9 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDiffuse(
 }
 
 HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::Compile(
-    const HdMaterialNetworkMap& networkMap, const SdfPath& path,
-    const GfVec3f& fallbackColor)
+    const HdMaterialNetworkMap& networkMap, const SdfPath& path)
 {
-    const std::string key = NetworkContentKey(networkMap, path, fallbackColor);
+    const std::string key = NetworkContentKey(networkMap, path);
     {
         std::lock_guard<std::mutex> lock(_mutex);
         const auto found = _compiled.find(key);
@@ -1127,7 +1123,7 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::Compile(
     // lock for the generator and glslang, and a second request for this key
     // arriving meanwhile compiles it again rather than waiting -- wasted work,
     // never a wrong result.
-    Result result = CompileUncached(networkMap, path, fallbackColor);
+    Result result = CompileUncached(networkMap, path);
     result.contentKey = key;
     {
         std::lock_guard<std::mutex> lock(_mutex);
@@ -1137,15 +1133,13 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::Compile(
 }
 
 HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::CompileUncached(
-    const HdMaterialNetworkMap& networkMap, const SdfPath& path,
-    const GfVec3f& fallbackColor)
+    const HdMaterialNetworkMap& networkMap, const SdfPath& path)
 {
     Result result;
     const std::string name = "hdclaude_" + HdMtlxCreateNameFromPath(path);
 
     if (!Ready()) {
         result.fallbackReason = "the MaterialX libraries are not available";
-        result.material = CompileDiffuse(fallbackColor, name + "_fallback");
         return result;
     }
 
@@ -1163,7 +1157,6 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::CompileUncached(
     if (isVolume) {
         result.fallbackReason = "volume materials are not implemented";
         lock.unlock();
-        result.material = CompileDiffuse(fallbackColor, name + "_fallback");
         return result;
     }
 
@@ -1171,7 +1164,6 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::CompileUncached(
     if (terminal == network.terminals.end()) {
         result.fallbackReason = "the network has no surface terminal";
         lock.unlock();
-        result.material = CompileDiffuse(fallbackColor, name + "_fallback");
         return result;
     }
 
@@ -1180,7 +1172,6 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::CompileUncached(
     if (terminalNode == network.nodes.end()) {
         result.fallbackReason = "the surface terminal names a missing node";
         lock.unlock();
-        result.material = CompileDiffuse(fallbackColor, name + "_fallback");
         return result;
     }
 
@@ -1191,9 +1182,8 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::CompileUncached(
         // "approximated material" state the architecture rules out.
         result.fallbackReason =
             "'" + terminalNode->second.nodeTypeId.GetString() +
-            "' is not a MaterialX surface; shaded with displayColor instead";
+            "' is not a MaterialX surface";
         lock.unlock();
-        result.material = CompileDiffuse(fallbackColor, name + "_fallback");
         return result;
     }
 
@@ -1223,7 +1213,6 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::CompileUncached(
             result.fallbackReason = "could not build a MaterialX document";
         }
         lock.unlock();
-        result.material = CompileDiffuse(fallbackColor, name + "_fallback");
         return result;
     }
 
@@ -1239,7 +1228,6 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::CompileUncached(
         TF_RUNTIME_ERROR("hdClaude: material <%s> did not compile: %s",
                          path.GetText(), error.c_str());
         lock.unlock();
-        result.material = CompileDiffuse(fallbackColor, name + "_fallback");
         return result;
     }
 

@@ -8443,3 +8443,45 @@ Recording through `UsdAppUtils.FrameRecorder` at `Usd.TimeCode.Default()`
 rather than at time 0, as `usdrecord` does, published 3.65 million placements
 fewer: some of the island's attributes exist only as time samples, which have
 no value at the default time. A recording script must name a time.
+
+## 2026-11-11 -- A material hdClaude cannot use is no material
+
+The island's renders were one gold-grey. None of its 17,343 materials reaches
+hdClaude: each inherits `BaseMaterial` (`usd/materials/material.usda`), whose
+only surfaces are `outputs:ri:surface` (a `PxrDisneyBsdf`) and
+`outputs:glslfx:surface` (a `UsdPreviewSurface` fed by `HwPtexTexture_1`),
+and hdClaude asks Hydra for the `mtlx` context alone, so every material
+arrives with no HdMaterialNetworkMap -- including the ones with no Ptex map,
+which set only constant Disney parameters. A bound material that could not be
+used was shaded with material index 0, a 50% grey, and the island's key
+lights are `(1, 0.57, 0.17)`: hence gold. Its meshes do author
+`displayColor` (the mountain's is a dark green), and it was ignored because a
+material was bound.
+
+That contradicted architecture.md 1.1, which already said a terminal MaterialX
+does not declare is reported and shaded with `displayColor`, and the
+compiler's own message, which said "shaded with displayColor instead" while
+compiling a grey diffuse. A material hdClaude cannot use is, to the renderer,
+no material, so what binds it now falls back as unbound geometry does: the
+snapshot gives such a material no index, and a binding with no index resolves
+to the shared `displayColor` material. Index 0's grey is left for when that
+material itself is missing. The compiler no longer builds a grey program for
+each network it rejects -- nothing would use it -- so `Compile` loses its
+fallback colour and a rejected network's result carries only its reason.
+
+`usd_unusable_materials` binds red-`displayColor` cubes to a glslfx-only, a
+RenderMan-only and a non-MaterialX-surface material, and requires each to
+render as the unbound cube does, beside a MaterialX cube that must keep its
+own blue. A DistantLight would not do to light it: hdClaude reads its
+intensity as radiance over the 0.53-degree disc, so intensity 3 lights
+nothing visible (the island's sun has exposure 13.6); a uniform dome renders
+an unoccluded diffuse face at its albedo.
+
+Rendered again through all seven cameras, the island reads as itself -- a
+green mountain and canopy, brown trunks and sand, a blue ocean -- at the same
+14.41 GB device peak. What remains is noise (64 samples, no denoiser) and
+everything a Ptex map would add.
+
+Ptex is a separate gap: about 3,768 of the island's materials take colour or
+displacement from 7,288 `.ptx` maps (14 GB on disk), and there is no Ptex
+reader, nor a Ptex library in the USD builds here.

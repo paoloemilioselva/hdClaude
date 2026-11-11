@@ -63,7 +63,11 @@ own translation unused and cost every material in a USD-authored asset.
 
 A terminal MaterialX does *not* declare is still reported and shaded with
 `displayColor`, which remains the only non-MaterialX path and is a fallback
-rather than a shading model.
+rather than a shading model. So is a material that offers Hydra no network
+for the `mtlx` context at all -- one with only a `glslfx` or a RenderMan
+surface -- and one whose network did not compile: a material hdClaude cannot
+use is, to the renderer, no material, and what binds it is shaded as unbound
+geometry is.
 
 ### 1.2 Spectral is the transport representation
 

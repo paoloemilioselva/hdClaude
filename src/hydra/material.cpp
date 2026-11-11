@@ -59,8 +59,9 @@ void HdClaudeMaterial::Sync(HdSceneDelegate* sceneDelegate,
         // Sync is as useful as saying it later.
         entry.fallbackReason =
             "the material prim carries no HdMaterialNetworkMap";
-        TF_WARN("hdClaude: <%s> is not shaded as authored: %s", id.GetText(),
-                entry.fallbackReason.c_str());
+        TF_WARN("hdClaude: <%s> is not shaded as authored: %s; what binds it "
+                "is shaded with its displayColor",
+                id.GetText(), entry.fallbackReason.c_str());
     }
 
     param->SceneStore()->PublishMaterial(id, std::move(entry));
@@ -84,13 +85,11 @@ CompiledPending CompileMaterial(HdClaudeRenderParam* param,
     result.pending = pending;
     const SdfPath& id = pending.id;
 
-    // The grey here is only reached when the authored network cannot be used;
-    // a mesh's own displayColor fallback is handled by the mesh, which is the
-    // prim that knows it.
+    // A network that cannot be used compiles to nothing, and the snapshot
+    // shades whatever binds it with its displayColor.
     const auto compileStart = std::chrono::steady_clock::now();
     HdClaudeMaterialCompiler::Result compiled =
-        param->MaterialCompiler()->Compile(pending.network, id,
-                                           GfVec3f(0.5f, 0.5f, 0.5f));
+        param->MaterialCompiler()->Compile(pending.network, id);
     // Generation and SPIR-V compilation are one cost from out here, and there
     // is no moment between them worth reporting separately.
     const double compileMs = std::chrono::duration<double, std::milli>(
@@ -115,8 +114,9 @@ CompiledPending CompileMaterial(HdClaudeRenderParam* param,
     if (!result.entry.fallbackReason.empty()) {
         // Said once, when compiled, not once per frame: a per-frame warning
         // buries the first occurrence and makes the log useless.
-        TF_WARN("hdClaude: <%s> is not shaded as authored: %s", id.GetText(),
-                result.entry.fallbackReason.c_str());
+        TF_WARN("hdClaude: <%s> is not shaded as authored: %s; what binds it "
+                "is shaded with its displayColor",
+                id.GetText(), result.entry.fallbackReason.c_str());
     }
     return result;
 }

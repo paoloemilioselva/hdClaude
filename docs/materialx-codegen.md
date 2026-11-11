@@ -363,7 +363,11 @@ A material that fails at any step is **rejected with a diagnostic naming the
 prim, the MaterialX node, and the compiler message**. It is not silently
 replaced by an approximation. Unbound geometry — genuinely no material — uses
 Hydra `displayColor` through a small generated MaterialX document, so even the
-fallback goes through the same pipeline.
+fallback goes through the same pipeline. A rejected material, and one that
+offers no network for the `mtlx` context, is treated as no material: what
+binds it is shaded by that same `displayColor` material, and the rejection is
+reported once. The plain grey of material index 0 is left for when the
+`displayColor` material itself is missing.
 
 ## 7. Known upstream friction
 

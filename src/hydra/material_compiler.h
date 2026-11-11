@@ -84,10 +84,11 @@ class HdClaudeMaterialCompiler {
 
     /// Compile a Hydra material network.
     ///
-    /// Falls back to a diffuse material of `fallbackColor` when the network has
-    /// no MaterialX surface terminal, or when generation or compilation fails.
-    Result Compile(const HdMaterialNetworkMap& network, const SdfPath& path,
-                   const GfVec3f& fallbackColor);
+    /// When the network has no MaterialX surface terminal, or generation or
+    /// compilation fails, the result carries a `fallbackReason` and no
+    /// program: the material cannot be used, and the scene shades what binds
+    /// it as though nothing did, with its displayColor.
+    Result Compile(const HdMaterialNetworkMap& network, const SdfPath& path);
 
     /// A diffuse material of a given colour, with no authored network behind
     /// it. Used for unbound geometry and as the delegate's fallback.
@@ -162,7 +163,7 @@ class HdClaudeMaterialCompiler {
     /// thread-safe, and compilation is not on the interactive path, so one
     /// lock is the right trade rather than per-object copies of the generator.
     Result CompileUncached(const HdMaterialNetworkMap& network,
-                           const SdfPath& path, const GfVec3f& fallbackColor);
+                           const SdfPath& path);
 
     mutable std::mutex _mutex;
     /// Every network compiled so far, by content key. Held for the delegate's
