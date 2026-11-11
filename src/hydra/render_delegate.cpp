@@ -51,6 +51,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (reconstructionAutoExposure)
                          (lightGeometry)
                          (cullVolumes)
+                         (hostInstanceData)
                          ((cullVolumePrimType, "cullVolume"))
                          (curveGeometry)
                          (splatTransport)
@@ -103,6 +104,7 @@ const std::vector<std::pair<TfToken, std::string>>& HdClaudeEnvironmentSettings(
         {_tokens->sunIntensity, "HDCLAUDE_SUN_INTENSITY"},
         {_tokens->lightGeometry, "HDCLAUDE_LIGHT_GEOMETRY"},
         {_tokens->cullVolumes, "HDCLAUDE_CULL_VOLUMES"},
+        {_tokens->hostInstanceData, "HDCLAUDE_HOST_INSTANCE_DATA"},
         {_tokens->textureQuality, "HDCLAUDE_TEXTURE_QUALITY"},
         {_tokens->curveGeometry, "HDCLAUDE_CURVE_GEOMETRY"},
         {_tokens->curveSides, "HDCLAUDE_CURVE_SIDES"},
@@ -1053,6 +1055,14 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         // them without editing the stage (docs/cull-volumes.md 4).
         {"Cull volumes", _tokens->cullVolumes,
          VtValue(TfGetenvBool("HDCLAUDE_CULL_VOLUMES", true))},
+        // On by default. The top-level instance array is read once a hit
+        // after its build, for the transform, and from system memory that
+        // cost 3.6% of trace time on 5.98 M island placements and nothing
+        // measurable on the Kitchen Set, against 64 bytes of device memory
+        // a placement. Off keeps it on the device, for a stage where every
+        // per cent of speed matters more than the memory.
+        {"Instance data in system memory", _tokens->hostInstanceData,
+         VtValue(TfGetenvBool("HDCLAUDE_HOST_INSTANCE_DATA", true))},
 
         // Reconstruction, and which model reconstructs.
         //

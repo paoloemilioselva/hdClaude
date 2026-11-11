@@ -1394,6 +1394,54 @@ int main()
             CHECK_NEAR(centre.r / centre.g, 1.0, 0.25);
         }
 
+        // --- The instance array reads the same from either memory ------------
+        //
+        // Scene::hostInstanceData moves the top-level instance array to system
+        // memory, where shading reads each hit's transform across the bus. The
+        // bytes are the same, so the picture must be the same to the bit. A
+        // turned, unevenly scaled placement makes the transform matter, and a
+        // placement naming a prototype that does not exist sits between the
+        // others: it is an inactive entry in the instance array, and the red
+        // placement after it is only red if indices still line up past it.
+        {
+            Scene scene;
+            scene.prototypes.push_back(MakeQuad());
+            Transform3x4 turned = Transform(1.0f, 1.0f, 1.0f, 1.4f, 0.0f, 0.0f);
+            // A quarter turn about z of a quad scaled 0.5 by 0.3.
+            const float rows[12] = {0.0f, -0.3f, 0.0f, 1.4f,
+                                    0.5f, 0.0f,  0.0f, 0.0f,
+                                    0.0f, 0.0f,  1.0f, 0.0f};
+            std::memcpy(turned.m, rows, sizeof(rows));
+            scene.instances.push_back(
+                {0, Transform(0.4f, 0.4f, 1.0f, -1.4f, 0.0f, 0.0f), 0, true});
+            scene.instances.push_back({0, turned, 1, true});
+            scene.instances.push_back(
+                {7, Transform(1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f), 0, true});
+            scene.instances.push_back(
+                {0, Transform(0.4f, 0.4f, 1.0f, 0.0f, 0.0f, 0.0f), 1, true});
+
+            scene.hostInstanceData = false;
+            tracer.SetScene(scene, materials);
+            const std::vector<float> device =
+                tracer.Render(kWidth, kHeight, LookDownZ(6.0f), settings);
+            scene.hostInstanceData = true;
+            tracer.SetScene(scene, materials);
+            const std::vector<float> host =
+                tracer.Render(kWidth, kHeight, LookDownZ(6.0f), settings);
+            SavePpm(host, "host-instance-data");
+
+            CHECK(device.size() == host.size());
+            CHECK(std::memcmp(device.data(), host.data(),
+                              device.size() * sizeof(float)) == 0);
+
+            const Pixel centre = At(host, 0.5f, 0.5f);
+            const Pixel left = At(host, 0.19f, 0.5f);
+            std::printf("  past the inactive entry %.4f %.4f %.4f\n", centre.r,
+                        centre.g, centre.b);
+            CHECK(centre.r > centre.g * 2.0f);
+            CHECK(left.g > left.r * 0.5f);
+        }
+
         // --- Material identity is per instance -------------------------------
         {
             Scene scene;

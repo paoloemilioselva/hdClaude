@@ -56,6 +56,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (reconstructionAutoExposure)
                          (lightGeometry)
                          (cullVolumes)
+                         (hostInstanceData)
                          (splatTransport)
                          (curveGeometry)
                          (curveSides)
@@ -819,6 +820,8 @@ void HdClaudeRenderPass::_Execute(
     // this frame's snapshot rather than a reason to take another.
     store->SetCullVolumesEnabled(
         _renderDelegate->GetRenderSetting<bool>(_tokens->cullVolumes, true));
+    store->SetHostInstanceData(
+        _renderDelegate->GetRenderSetting<bool>(_tokens->hostInstanceData, true));
 
     Framing framing;
     framing.camera = cameraResult.camera;

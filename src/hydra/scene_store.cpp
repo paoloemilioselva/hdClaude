@@ -184,6 +184,15 @@ void HdClaudeSceneStore::SetCullVolumesEnabled(bool enabled)
     }
 }
 
+void HdClaudeSceneStore::SetHostInstanceData(bool host)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (host != _hostInstanceData) {
+        _hostInstanceData = host;
+        ++_revision;
+    }
+}
+
 std::uint64_t HdClaudeSceneStore::CullRevision() const
 {
     std::lock_guard<std::mutex> lock(_mutex);
@@ -605,6 +614,7 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
         scene.environmentColor[2] = 0.0f;
     }
 
+    scene.hostInstanceData = _hostInstanceData;
     scene.revision = _revision;
     // This snapshot becomes the next one's past once a frame of it has been
     // rendered (CommitHistory), and not before. Recorded for every mesh

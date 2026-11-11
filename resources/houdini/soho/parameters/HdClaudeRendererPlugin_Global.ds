@@ -557,6 +557,28 @@
         disablewhen "{ textureQuality_control == block } { textureQuality_control == none }"
     }
     parm {
+        name    "hostInstanceData_control"
+        label   "Instance data in system memory"
+        type    string
+        default { "none" }
+        menujoin {
+            [ "import loputils" ]
+            [ "return loputils.createEditPropertiesControlMenu(kwargs, 'bool')" ]
+            language python
+        }
+        parmtag { "sidefx::look" "icon" }
+    }
+    parm {
+        name    "hostInstanceData"
+        label   "Instance data in system memory"
+        type    toggle
+        size    1
+        default { 1 }
+        parmtag { "spare_category" "Memory" }
+        parmtag { "usdvaluetype" "bool" }
+        disablewhen "{ hostInstanceData_control == block } { hostInstanceData_control == none }"
+    }
+    parm {
         name    "reconstruction_control"
         label   "Reconstruction"
         type    string

@@ -8317,3 +8317,29 @@ first structure. And a barrier around the compacting copy must name the
 build stage, not ACCELERATION_STRUCTURE_COPY, which exists only with
 rayTracingMaintenance1 (VUID-VkMemoryBarrier2-srcStageMask-10752).
 `BuildAndCompact` refuses a build whose flags lack compaction.
+
+## 2026-11-11 -- The instance array, read from system memory
+
+After its build, the top-level structure's instance array is read only for a
+hit's transform: once a hit, by shading, and never by traversal. So it was
+tried in system memory (host-visible, not device-local; PCIe 5.0 x8 on this
+machine), at 1024 px and 32 samples, subdivision 0:
+
+| | in VRAM | in system memory |
+| --- | --- | --- |
+| island without `isBeach`, `isDunesB` (5.98 M placements), trace | 710 ms | 736 ms (+3.6%) |
+| -- extend / shade / shadow kernels | 10.23 / 3.08 / 4.59 ms | 10.50 / 3.08 / 5.12 ms |
+| -- device peak | 7.63 GB | 7.25 GB |
+| Kitchen Set (1,788 placements), trace | 334 ms | 311 ms |
+
+Identical traced-ray counts, so the same paths. The shadow kernel's share is
+its cut-out candidate loop, which assembles the candidate's instance. The
+Kitchen Set's difference is run-to-run noise: 114 KB stays in cache wherever
+it lives. It is now the `hostInstanceData` render setting
+(`HDCLAUDE_HOST_INSTANCE_DATA`), on by default, and its 64 bytes a placement
+are 3.1 GB on the whole island.
+
+A first attempt at this measurement rendered the island at subdivision 2 by
+mistake and traced for 32 s: the refined geometry no longer fitted beside
+what other applications held, and the device paged. Check the level before
+reading a time.

@@ -176,8 +176,12 @@ class TopLevelStructure {
     /// Built into locals and swapped in on success, so a failure leaves the
     /// previous structure intact and still traversable rather than leaving the
     /// renderer with nothing to trace against (docs/architecture.md 6 rule 1).
+    ///
+    /// `hostResident` puts the instance array in system memory, read by the
+    /// build and by shading across the bus (Scene::hostInstanceData).
     void Build(const VulkanContext& context, VulkanAllocator& allocator,
-               const std::vector<VkAccelerationStructureInstanceKHR>& instances);
+               const std::vector<VkAccelerationStructureInstanceKHR>& instances,
+               bool hostResident = false);
 
     void Reset();
 

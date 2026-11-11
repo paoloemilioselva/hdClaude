@@ -267,6 +267,10 @@ class HdClaudeSceneStore {
     /// render can be compared with and without them without editing the stage.
     void SetCullVolumesEnabled(bool enabled);
 
+    /// The `hostInstanceData` render setting. A change republishes, because
+    /// it decides where the next top-level build puts its instance array.
+    void SetHostInstanceData(bool host);
+
     // --- Consumption, from the render pass ------------------------------------
 
     /// Bumped by every publication. The render pass compares it to decide
@@ -346,6 +350,7 @@ class HdClaudeSceneStore {
     std::map<SdfPath, HdClaudeCullVolumeEntry> _cullVolumes;
     HdSceneIndexBaseRefPtr _sceneIndex;
     bool _cullVolumesEnabled = true;
+    bool _hostInstanceData = true;
     std::uint64_t _cullRevision = 1;
     /// The volumes past kMaxCullVolumes the last snapshot ignored, so the
     /// report is made when that set changes rather than on every snapshot.

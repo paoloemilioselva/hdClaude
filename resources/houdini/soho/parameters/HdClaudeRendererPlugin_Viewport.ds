@@ -269,6 +269,16 @@
         }
     }
     parm {
+        name    "hostInstanceData"
+        label   "Instance data in system memory"
+        type    toggle
+        size    1
+        default { 1 }
+        parmtag { "spare_category" "Memory" }
+        parmtag { "uiscope" "viewport" }
+        parmtag { "usdvaluetype" "bool" }
+    }
+    parm {
         name    "reconstruction"
         label   "Reconstruction"
         type    string

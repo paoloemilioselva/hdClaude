@@ -950,7 +950,8 @@ BottomLevelStructure& BottomLevelStructure::operator=(
 
 void TopLevelStructure::Build(
     const VulkanContext& context, VulkanAllocator& allocator,
-    const std::vector<VkAccelerationStructureInstanceKHR>& instances)
+    const std::vector<VkAccelerationStructureInstanceKHR>& instances,
+    bool hostResident)
 {
     context.RequireLive("TopLevelStructure::Build");
 
@@ -993,9 +994,24 @@ void TopLevelStructure::Build(
     // A copy source as well as a build input: once a frame has used a moved
     // instance's history, its current placement is copied from here over its
     // previous one (PathTracer, after the frame's readback).
-    instanceBuffer = UploadDeviceLocal(
-        context, allocator, uploaded,
-        kBuildInputUsage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, "tlas.instances");
+    if (hostResident) {
+        // Written straight into host-visible memory, with no staging copy
+        // and no device copy: the build reads it across the bus once, and
+        // shading once a hit (Scene::hostInstanceData). Named apart from the
+        // device form so the memory breakdown says which a scene used.
+        BufferDescription host;
+        host.size = uploaded.size() * sizeof(VkAccelerationStructureInstanceKHR);
+        host.usage = kBuildInputUsage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        host.domain = BufferDomain::HostUpload;
+        host.debugName = "tlas.instances.host";
+        instanceBuffer = VulkanBuffer(allocator, host);
+        instanceBuffer.Write(uploaded.data(), host.size);
+    } else {
+        instanceBuffer = UploadDeviceLocal(
+            context, allocator, uploaded,
+            kBuildInputUsage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            "tlas.instances");
+    }
 
     VkAccelerationStructureGeometryKHR geometry{
         VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
@@ -1449,7 +1465,7 @@ void SceneAccelerator::Update(const Scene& scene, const std::vector<bool>& nonOp
                      instances.size(), lo[0], lo[1], lo[2], hi[0],
                      hi[1], hi[2]);
     }
-    _tlas.Build(_context, _allocator, instances);
+    _tlas.Build(_context, _allocator, instances, scene.hostInstanceData);
 }
 
 const BottomLevelStructure* SceneAccelerator::Blas(std::uint32_t prototype) const

@@ -74,6 +74,9 @@ IF "%~1"=="" (
   ECHO   HDCLAUDE_CULL_VOLUMES          default on. Off ignores every cull
   ECHO                                  volume in the stage, to compare a render
   ECHO                                  with and without them
+  ECHO   HDCLAUDE_HOST_INSTANCE_DATA    default on. The top-level instance array
+  ECHO                                  in system memory: 64 bytes a placement
+  ECHO                                  off the GPU for a few per cent of trace
   ECHO   HDCLAUDE_DEVICE                substring of the GPU to select
   ECHO.
   ECHO Reconstruction. Off renders the progressive reference this delegate has
