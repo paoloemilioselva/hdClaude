@@ -8423,3 +8423,23 @@ The chunked run also found a defect left by the shared attributes:
 `specular_hit.comp.glsl` still read the cull word by placement index from a
 table now indexed by attribute. It affected only the specular-ray guide in a
 stage with cull-volume exceptions.
+
+## 2026-11-11 -- The whole Moana island, rendered
+
+With the changes of this day the whole island renders on the RTX 5060 Ti
+(16 GB, about 5 GB of it held by other applications at the time): 49,087,499
+placements of 49,346 prototypes, 27.1 billion instanced triangles, three
+top-level structures, subdivision 0. Through one engine and all seven of its
+cameras at 1024 px and 64 samples: publish 108 s, ingest 20 s, then 8.6 to
+12.9 s a camera, device peak 14.41 GB, nothing spilled. The top-level
+structures are 8.61 GB of that peak, the largest thing on the device by far.
+At the start of the day the same stage needed an estimated 25 GB and could
+not have been built at all past 16,777,215 placements.
+
+The island is shaded by the fallback: its materials are RenderMan networks
+with Ptex maps, which carry no HdMaterialNetworkMap hdClaude reads.
+
+Recording through `UsdAppUtils.FrameRecorder` at `Usd.TimeCode.Default()`
+rather than at time 0, as `usdrecord` does, published 3.65 million placements
+fewer: some of the island's attributes exist only as time samples, which have
+no value at the default time. A recording script must name a time.
