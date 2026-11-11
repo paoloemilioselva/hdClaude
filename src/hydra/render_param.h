@@ -111,6 +111,15 @@ struct HdClaudeTessellationSettings {
 /// cannot ask for 4^30 faces before the budget gets a chance to refuse.
 inline constexpr int kHdClaudeMaxSubdivisionLevel = 10;
 
+/// The refinement depth when nothing sets one: none, the control cage.
+///
+/// Refinement multiplies a mesh's faces by four a level, and every refined
+/// face is held in device memory as positions, normals, UVs, indices and an
+/// acceleration structure. A production stage whose meshes are already dense
+/// does not fit in a 16 GB card at level 2, so refinement is something a
+/// stage or a user asks for rather than something every mesh pays for.
+inline constexpr int kHdClaudeDefaultSubdivisionLevel = 0;
+
 /// The bounds every reader of these settings applies.
 ///
 /// In one place because the delegate reads them from the environment when it
@@ -141,7 +150,8 @@ inline HdClaudeTessellationSettings HdClaudeReadTessellationEnvironment()
     settings.adaptive =
         settings.perFace ||
         hdclaude::EnvironmentFlag("HDCLAUDE_ADAPTIVE_SUBDIVISION", false);
-    settings.level = TfGetenvInt("HDCLAUDE_SUBDIVISION_LEVEL", 2);
+    settings.level = TfGetenvInt("HDCLAUDE_SUBDIVISION_LEVEL",
+                                 kHdClaudeDefaultSubdivisionLevel);
     settings.offScreenLevel =
         TfGetenvInt("HDCLAUDE_SUBDIVISION_OFFSCREEN_LEVEL", 1);
     settings.targetEdgePixels = static_cast<float>(

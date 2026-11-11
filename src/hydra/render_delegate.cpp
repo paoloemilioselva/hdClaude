@@ -367,6 +367,23 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
                 << "startupFallbackMs "
                 << stages.startupFallbackMs.load(std::memory_order_relaxed)
                 << '\n';
+            // What the device-local peak was made of. Four columns rather
+            // than `key value`, so a reader that takes only `key value` lines
+            // passes over them.
+            if (_allocator) {
+                out << "deviceBytesAllocatedPeak "
+                    << _allocator->DeviceLocalAllocatedPeak() << '\n';
+                out << "# deviceMemory <bytesAtPeak> <countAtPeak> "
+                       "<bytesAtExit> <category>\n";
+                for (const auto& category : _allocator->DeviceLocalBreakdown()) {
+                    if (category.bytesAtPeak == 0 && category.bytes == 0) {
+                        continue;
+                    }
+                    out << "deviceMemory " << category.bytesAtPeak << ' '
+                        << category.countAtPeak << ' ' << category.bytes << ' '
+                        << category.name << '\n';
+                }
+            }
         } else {
             TF_WARN("hdClaude: could not write the stats report to '%s'",
                     path.c_str());
@@ -857,7 +874,8 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         // The refinement depth. A ceiling rather than the answer once
         // `Adaptive subdivision` is on.
         {"Subdivision level", _tokens->subdivisionLevel,
-         VtValue(TfGetenvInt("HDCLAUDE_SUBDIVISION_LEVEL", 2))},
+         VtValue(TfGetenvInt("HDCLAUDE_SUBDIVISION_LEVEL",
+                             kHdClaudeDefaultSubdivisionLevel))},
 
         // Whether each mesh gets the level its projected size earns.
         //

@@ -208,7 +208,7 @@
         label   "Subdivision level"
         type    int
         size    1
-        default { 2 }
+        default { 0 }
         parmtag { "spare_category" "Geometry" }
         parmtag { "usdvaluetype" "int" }
         disablewhen "{ subdivisionLevel_control == block } { subdivisionLevel_control == none }"

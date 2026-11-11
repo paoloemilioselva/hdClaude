@@ -38,6 +38,9 @@ import sys
 # Before the engine reads them: picking needs a frame, not a converged one.
 os.environ["HDCLAUDE_SAMPLES_PER_PIXEL"] = "4"
 os.environ["HDCLAUDE_RECONSTRUCTION"] = "off"
+# The default level is 0, the control cage, which refines nothing; the moved
+# and reshaped checks are about a mesh that is refined.
+os.environ["HDCLAUDE_SUBDIVISION_LEVEL"] = "2"
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdImagingGL, UsdLux
 
@@ -67,7 +70,7 @@ def make_stage(path):
     UsdLux.DistantLight.Define(stage, "/World/Sun")
 
     # Catmull-Clark, the scheme a UsdGeomMesh has unless it says otherwise,
-    # so it is refined at the default level: the cube rounds into a blob.
+    # so it is refined at the level set above: the cube rounds into a blob.
     blob = UsdGeom.Mesh.Define(stage, "/World/Blob")
     blob.CreatePointsAttr(CUBE_POINTS)
     blob.CreateFaceVertexCountsAttr(CUBE_COUNTS)

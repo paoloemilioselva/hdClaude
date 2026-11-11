@@ -116,7 +116,7 @@ that do not expose Hydra settings, set them in the environment:
 set HDCLAUDE_SAMPLES_PER_PIXEL=1024   :: samples in the image
 set HDCLAUDE_SAMPLES_PER_FRAME=32     :: samples per progressive update
 set HDCLAUDE_MAX_BOUNCES=8            :: path length
-set HDCLAUDE_SUBDIVISION_LEVEL=2      :: 0 to 6; 0 traces the control cage
+set HDCLAUDE_SUBDIVISION_LEVEL=2      :: 0 to 10; default 0, the control cage
 set HDCLAUDE_EXPOSURE=0               :: stops, applied after the film resolves
 set HDCLAUDE_DEVICE=5060              :: substring of the GPU to select
 ```

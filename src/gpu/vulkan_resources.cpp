@@ -1,5 +1,6 @@
 #include "hdclaude/gpu/vulkan_resources.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <utility>
@@ -19,6 +20,48 @@ VmaAllocator ToVma(void* handle) { return static_cast<VmaAllocator>(handle); }
 VmaAllocation ToVmaAllocation(void* handle)
 {
     return static_cast<VmaAllocation>(handle);
+}
+
+/// The category an allocation is tallied under.
+///
+/// A name that belongs to one object -- a prim path, a texture's file, a
+/// material's generated `hdclaude_` name -- is reduced to its last suffix, so
+/// every mesh's positions are counted together however many meshes there are.
+/// A name that is already a kind (`frame`, `guide.readback`) is kept whole.
+std::string MemoryCategoryOf(const std::string& name)
+{
+    if (name.empty()) {
+        return "(unnamed)";
+    }
+    const bool perObject = name.find_first_of("/\\") != std::string::npos ||
+                           name.rfind("hdclaude_", 0) == 0;
+    if (!perObject) {
+        return name;
+    }
+    const std::size_t separator = name.find_last_of("/\\");
+    const std::size_t dot = name.find_last_of('.');
+    if (dot != std::string::npos &&
+        (separator == std::string::npos || dot > separator)) {
+        return "*" + name.substr(dot);
+    }
+    return "*";
+}
+
+/// The bytes an allocation takes from a device-local heap, or zero when it
+/// was placed in host memory and so costs no video memory at all.
+std::uint64_t DeviceLocalSizeOf(VmaAllocator allocator, VmaAllocation allocation)
+{
+    if (allocation == VK_NULL_HANDLE) {
+        return 0;
+    }
+    VkMemoryPropertyFlags properties = 0;
+    vmaGetAllocationMemoryProperties(allocator, allocation, &properties);
+    if ((properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0) {
+        return 0;
+    }
+    VmaAllocationInfo info{};
+    vmaGetAllocationInfo(allocator, allocation, &info);
+    return info.size;
 }
 
 }  // namespace
@@ -94,6 +137,71 @@ std::uint64_t VulkanAllocator::DeviceLocalBytesAvailable() const
         }
     }
     return available;
+}
+
+void VulkanAllocator::NoteAllocation(const std::string& debugName,
+                                     std::uint64_t bytes)
+{
+    if (bytes == 0) {
+        return;
+    }
+    const std::string category = MemoryCategoryOf(debugName);
+    const std::lock_guard<std::mutex> lock(_tallyMutex);
+    Tally& tally = _tallies[category];
+    tally.bytes += bytes;
+    tally.count += 1;
+    _allocatedBytes += bytes;
+    if (_allocatedBytes > _allocatedPeak) {
+        // A new peak: every category's present share is what it held at the
+        // peak. Proportional to the number of categories, which stays small
+        // because MemoryCategoryOf folds per-object names together.
+        _allocatedPeak = _allocatedBytes;
+        for (auto& [name, each] : _tallies) {
+            each.bytesAtPeak = each.bytes;
+            each.countAtPeak = each.count;
+        }
+    }
+}
+
+void VulkanAllocator::NoteRelease(const std::string& debugName,
+                                  std::uint64_t bytes)
+{
+    if (bytes == 0) {
+        return;
+    }
+    const std::string category = MemoryCategoryOf(debugName);
+    const std::lock_guard<std::mutex> lock(_tallyMutex);
+    Tally& tally = _tallies[category];
+    tally.bytes -= std::min(tally.bytes, bytes);
+    tally.count -= std::min<std::uint64_t>(tally.count, 1);
+    _allocatedBytes -= std::min(_allocatedBytes, bytes);
+}
+
+std::vector<VulkanAllocator::MemoryCategory>
+VulkanAllocator::DeviceLocalBreakdown() const
+{
+    std::vector<MemoryCategory> out;
+    {
+        const std::lock_guard<std::mutex> lock(_tallyMutex);
+        out.reserve(_tallies.size());
+        for (const auto& [name, tally] : _tallies) {
+            out.push_back({name, tally.bytes, tally.count, tally.bytesAtPeak,
+                           tally.countAtPeak});
+        }
+    }
+    std::sort(out.begin(), out.end(),
+              [](const MemoryCategory& a, const MemoryCategory& b) {
+                  return a.bytesAtPeak != b.bytesAtPeak
+                             ? a.bytesAtPeak > b.bytesAtPeak
+                             : a.name < b.name;
+              });
+    return out;
+}
+
+std::uint64_t VulkanAllocator::DeviceLocalAllocatedPeak() const
+{
+    const std::lock_guard<std::mutex> lock(_tallyMutex);
+    return _allocatedPeak;
 }
 
 bool VulkanAllocator::SupportsImageFormat(VkFormat format,
@@ -207,6 +315,9 @@ VulkanBuffer::VulkanBuffer(VulkanAllocator& allocator,
             allocator.NoteDeviceLocalSpill(description.size);
         }
     }
+    allocator.NoteAllocation(description.debugName,
+                             DeviceLocalSizeOf(ToVma(allocator.Handle()),
+                                               allocation));
 
     if ((usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0) {
         VkBufferDeviceAddressInfo addressInfo{
@@ -230,6 +341,10 @@ VulkanBuffer::VulkanBuffer(VulkanAllocator& allocator,
 void VulkanBuffer::Reset()
 {
     if (_handle != VK_NULL_HANDLE && _allocator != nullptr) {
+        _allocator->NoteRelease(
+            _description.debugName,
+            DeviceLocalSizeOf(ToVma(_allocator->Handle()),
+                              ToVmaAllocation(_allocation)));
         vmaDestroyBuffer(ToVma(_allocator->Handle()), _handle,
                          ToVmaAllocation(_allocation));
     }
@@ -355,6 +470,9 @@ VulkanImage::VulkanImage(VulkanAllocator& allocator,
                                   "vkCreateImageView(" + description.debugName + ")");
     }
 
+    allocator.NoteAllocation(description.debugName,
+                             DeviceLocalSizeOf(ToVma(allocator.Handle()),
+                                               allocation));
     _generation = NextResourceGeneration();
 }
 
@@ -365,6 +483,10 @@ void VulkanImage::Reset()
             vkDestroyImageView(_allocator->Context().Device(), _view, nullptr);
         }
         if (_handle != VK_NULL_HANDLE) {
+            _allocator->NoteRelease(
+                _description.debugName,
+                DeviceLocalSizeOf(ToVma(_allocator->Handle()),
+                                  ToVmaAllocation(_allocation)));
             vmaDestroyImage(ToVma(_allocator->Handle()), _handle,
                             ToVmaAllocation(_allocation));
         }

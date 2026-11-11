@@ -8229,3 +8229,38 @@ no longer on. No notice reaches Hydra, so neither a delegate nor a scene index
 plugin can act on it. The test still makes this edit and prints a note, so it
 will say when UsdImaging starts delivering it.
 
+
+## 2026-11-11 -- What the Moana island holds on the device
+
+**The question.** Disney's Moana island (USD v2.1) does not load on a 16 GB
+RTX 5060 Ti. Peak bytes alone say that it is full, not what filled it, so the
+allocator now tallies device-local bytes by category -- the debug name with
+any per-object prefix folded away, so every prim's positions count as
+`*.positions` -- and `HDCLAUDE_STATS_REPORT` writes each category's share at
+the moment the sum peaked as `deviceMemory` lines.
+
+**Measured** at subdivision level 0, `shotCam`, 512 px, with 6 GB of the card
+held by other applications: 49,087,499 instances of 49,346 bottom-level
+structures, 27.1 billion instanced triangles. Publish failed with
+`vmaCreateBuffer(tlas): VK_ERROR_OUT_OF_DEVICE_MEMORY` with 10.6 GB live:
+
+| category | bytes at peak | count |
+| --- | --- | --- |
+| `*.blas` | 3.71 GB | 49,346 |
+| `tlas.instances` | 3.14 GB | 1 |
+| `*.exr` | 0.82 GB | 1 |
+| `*.segments` | 0.75 GB | 177 |
+| `*.indices` | 0.57 GB | 49,169 |
+| `*.png` | 0.54 GB | 1 |
+| `*.aabbs` | 0.45 GB | 177 |
+| `*.positions` | 0.31 GB | 49,169 |
+| `*.normals` | 0.30 GB | 49,169 |
+
+The TLAS itself and its scratch had not been allocated yet, and neither had
+the instance table that follows it: `InstanceGeometry` is 248 bytes, so 49.1
+million of them are another 12.2 GB. Most of each record is the same for
+every instance of a prototype -- nine buffer addresses and four flags -- and
+two of its three transforms are derivable or usually absent. That table, not
+the geometry, is what keeps an instanced production stage off a 16 GB card.
+
+The island's 7,288 `.ptx` maps reach none of this: there is no Ptex reader.

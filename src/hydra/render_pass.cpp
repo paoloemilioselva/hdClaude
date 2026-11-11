@@ -617,7 +617,8 @@ void HdClaudeRenderPass::_Execute(
             1, 32);
         HdClaudeTessellationSettings tessellation;
         tessellation.level =
-            _renderDelegate->GetRenderSetting<int>(_tokens->subdivisionLevel, 2);
+            _renderDelegate->GetRenderSetting<int>(_tokens->subdivisionLevel,
+                                                   kHdClaudeDefaultSubdivisionLevel);
         tessellation.perFace = _renderDelegate->GetRenderSetting<bool>(
             _tokens->perFaceSubdivision, false);
         // Per-face needs a sampled view exactly as per-mesh does, so it turns
