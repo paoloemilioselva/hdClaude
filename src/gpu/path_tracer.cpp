@@ -254,8 +254,8 @@ constexpr std::uint32_t kSortScatter = 1;
 /// Mirrors SplatVolume in path_state.glsl.
 ///
 /// Per *cloud*, not per instance, and reached from the instance by one address.
-/// The alternative -- eleven more words on every InstanceGeometry -- would make
-/// every mesh in every scene carry a splat cloud's grid parameters.
+/// The alternative -- eleven more words on every PrototypeGeometry -- would
+/// make every mesh in every scene carry a splat cloud's grid parameters.
 struct SplatVolume {
     float origin[3];
     float cellSize[3];
@@ -272,30 +272,31 @@ static_assert(sizeof(SplatVolume) == 64,
               "SplatVolume must be 64 bytes with no implicit padding; "
               "path_state.glsl mirrors this layout member for member");
 
-/// Mirrors InstanceGeometry in path_state.glsl.
-struct InstanceGeometry {
+/// What every placement of one prototype shares. Mirrors PrototypeGeometry in
+/// path_state.glsl.
+///
+/// Split from the placement because it used to be repeated in every one: nine
+/// addresses and four flags on each of the Moana island's 49 million
+/// placements, of 49 thousand prototypes, was 4.3 GB of the same 49 thousand
+/// records.
+struct PrototypeGeometry {
     std::uint64_t positions;
     std::uint64_t indices;
-    /// Curve segments, eight floats each. Non-zero exactly when this instance
+    /// Curve segments, eight floats each. Non-zero exactly when this prototype
     /// is a curve set.
     std::uint64_t segments;
     std::uint64_t normals;
     std::uint64_t uvs;
     std::uint64_t triangleMaterials;
-    /// Particles, thirteen floats each. Non-zero exactly when this instance is
-    /// a Gaussian splat cloud, which is how a kernel tells it from a mesh and a
-    /// curve set -- the buffer's presence is the fact, as it is for `segments`.
+    /// Particles, thirteen floats each. Non-zero exactly when this prototype
+    /// is a Gaussian splat cloud, which is how a kernel tells it from a mesh
+    /// and a curve set -- the buffer's presence is the fact, as it is for
+    /// `segments`.
     std::uint64_t splats;
     /// Spherical-harmonics coefficients, particle-major.
     std::uint64_t harmonics;
     /// This cloud's majorant grid, or zero. Non-zero only alongside `splats`.
     std::uint64_t splatVolume;
-    float objectToWorld[12];
-    float worldToObject[12];
-    /// The previous frame's placement, for motion vectors. Composed with
-    /// `worldToObject` it takes a hit back to where it was.
-    float previousObjectToWorld[12];
-    std::uint32_t material;
     /// 1 when `uvs` holds one coordinate per triangle corner.
     std::uint32_t uvsPerCorner;
     /// 1 when `normals` holds one normal per triangle corner.
@@ -306,22 +307,50 @@ struct InstanceGeometry {
     /// Which spatial basis function the particles instantiate, matching
     /// `SplatKernel`.
     std::uint32_t splatKernel;
+};
+static_assert(sizeof(PrototypeGeometry) == 88,
+              "PrototypeGeometry must be 88 bytes with no implicit padding; "
+              "path_state.glsl mirrors this layout member for member");
+
+/// What is a placement's own. Mirrors InstanceRecord in path_state.glsl.
+///
+/// Its transform is not here: the top-level structure's instance array holds
+/// it already, in the layout the shaders read (path_state.glsl,
+/// TopLevelInstance), and the inverse is computed where it is used. A
+/// previous placement is here only as an index, because nearly every
+/// placement of nearly every frame has none.
+struct InstanceRecord {
+    std::uint32_t prototype;
+    std::uint32_t material;
+    /// Index into the history table, or kNoHistory.
+    std::uint32_t history;
     /// The placement's displayColor, read by the shared material for unbound
     /// geometry.
-    ///
-    /// Also what keeps this struct free of *implicit* padding. The nine
-    /// addresses come first and the words and floats last precisely so that
-    /// nothing has to be inserted between them: 72 + 144 + 20 + 12 = 248, a
-    /// multiple of the eight bytes a 64-bit member is aligned to, under C++ and
-    /// under GLSL's scalar block layout alike. Relying on two compilers to
-    /// insert the same invisible bytes in the same places is the kind of
-    /// agreement that holds until it does not, and a disagreement here reads
-    /// every buffer address off by a word.
     float displayColor[3];
 };
-static_assert(sizeof(InstanceGeometry) == 248,
-              "InstanceGeometry must be 248 bytes with no implicit padding; "
+static_assert(sizeof(InstanceRecord) == 24,
+              "InstanceRecord must be 24 bytes with no implicit padding; "
               "path_state.glsl mirrors this layout member for member");
+
+/// The instance table's header: where the other two tables are, and where the
+/// placements' transforms are. Then the records.
+struct InstanceTableHeader {
+    std::uint64_t prototypes;
+    std::uint64_t placements;
+    std::uint64_t history;
+    std::uint64_t reserved;
+};
+static_assert(sizeof(InstanceTableHeader) == 32,
+              "InstanceTableHeader mirrors the head of InstanceTable in "
+              "path_state.glsl");
+
+constexpr std::uint32_t kNoHistory = 0xFFFFFFFFu;
+
+/// The top-level instance layout the shaders read transforms from.
+static_assert(sizeof(VkAccelerationStructureInstanceKHR) == 64 &&
+                  offsetof(VkAccelerationStructureInstanceKHR, transform) == 0,
+              "path_state.glsl's TopLevelInstance reads the transform as the "
+              "first 48 bytes of a 64-byte instance");
 
 VulkanBuffer MakeStorage(VulkanAllocator& allocator, VkDeviceSize size,
                          const char* name)
@@ -1140,9 +1169,6 @@ void PathTracer::SetScene(const Scene& publishedScene,
     }
     _accelerator->Update(scene, nonOpaque);
 
-    // --- Instance table -----------------------------------------------------
-    // Built in the same order the accelerator emits instances, because the
-    // custom index a ray query reports is an index into this table.
     // --- Per-triangle materials ----------------------------------------------
     // One buffer for the whole scene, with each prototype's run at a known
     // offset. It is deliberately *not* part of the BLAS: a material index
@@ -1189,14 +1215,6 @@ void PathTracer::SetScene(const Scene& publishedScene,
         });
     }
 
-    // Sized to the scene's instance lists and written *by index*, not appended.
-    //
-    // The custom index a ray query reports is the scene's instance index, so a
-    // table built by appending would be off by one for every instance after any
-    // that was skipped -- which is what a prototype that failed to build causes.
-    // Every entry is written, and one whose prototype has no structure stays
-    // zeroed: nothing references it, because the accelerator emits no top-level
-    // instance for it either.
     // One volume record per splat prototype, uploaded once and pointed at by
     // every placement of that cloud.
     std::vector<SplatVolume> volumes(scene.splatPrototypes.size());
@@ -1245,109 +1263,177 @@ void PathTracer::SetScene(const Scene& publishedScene,
         });
     }
 
-    std::vector<InstanceGeometry> table(scene.instances.size() +
-                                        scene.splatInstances.size());
-
-    for (std::size_t index = 0; index < scene.instances.size(); ++index) {
-        const MeshInstance& instance = scene.instances[index];
-        const BottomLevelStructure* blas = _accelerator->Blas(instance.prototype);
+    // One record per prototype that any placement can name: mesh prototypes,
+    // then splat prototypes, then one zeroed record. A placement whose
+    // prototype has no structure points at the zeroed one; it is inactive in
+    // the top-level structure, so no ray reports it, but the splat walk visits
+    // every splat placement and must find nothing there.
+    const std::size_t meshPrototypes = scene.prototypes.size();
+    const std::size_t splatPrototypes = scene.splatPrototypes.size();
+    const std::uint32_t emptyPrototype =
+        static_cast<std::uint32_t>(meshPrototypes + splatPrototypes);
+    // --- Instance table -----------------------------------------------------
+    std::vector<PrototypeGeometry> prototypeTable(meshPrototypes +
+                                                  splatPrototypes + 1);
+    std::vector<bool> prototypeBuilt(meshPrototypes + splatPrototypes, false);
+    for (std::size_t p = 0; p < meshPrototypes; ++p) {
+        const BottomLevelStructure* blas =
+            _accelerator->Blas(static_cast<std::uint32_t>(p));
         if (blas == nullptr) {
             continue;
         }
-        InstanceGeometry& entry = table[index];
+        prototypeBuilt[p] = true;
+        PrototypeGeometry& entry = prototypeTable[p];
         entry.positions = blas->Positions().DeviceAddress();
         entry.indices = blas->Indices().DeviceAddress();
         entry.segments =
             blas->Segments().Valid() ? blas->Segments().DeviceAddress() : 0;
         entry.normals = blas->Normals().Valid() ? blas->Normals().DeviceAddress() : 0;
         entry.uvs = blas->Uvs().Valid() ? blas->Uvs().DeviceAddress() : 0;
-
         entry.triangleMaterials = 0;
-        if (instance.prototype < prototypeMaterialOffset.size() &&
-            prototypeMaterialOffset[instance.prototype] != std::size_t(-1) &&
+        if (prototypeMaterialOffset[p] != std::size_t(-1) &&
             _triangleMaterials.Valid()) {
             entry.triangleMaterials =
                 _triangleMaterials.DeviceAddress() +
-                prototypeMaterialOffset[instance.prototype] *
-                    sizeof(std::uint32_t);
+                prototypeMaterialOffset[p] * sizeof(std::uint32_t);
         }
-        std::memcpy(entry.objectToWorld, instance.transform.m, sizeof(entry.objectToWorld));
-        InvertTransform3x4(instance.transform.m, entry.worldToObject);
-        std::memcpy(entry.previousObjectToWorld,
-                    instance.hasPreviousTransform ? instance.previousTransform.m
-                                                  : instance.transform.m,
-                    sizeof(entry.previousObjectToWorld));
-        entry.material = instance.material;
-        std::memcpy(entry.displayColor, instance.displayColor,
-                    sizeof(entry.displayColor));
-        if (instance.prototype < scene.prototypes.size()) {
-            entry.uvsPerCorner =
-                scene.prototypes[instance.prototype].uvsPerCorner ? 1u : 0u;
-            entry.normalsPerCorner =
-                scene.prototypes[instance.prototype].normalsPerCorner ? 1u : 0u;
-        }
+        entry.uvsPerCorner = scene.prototypes[p].uvsPerCorner ? 1u : 0u;
+        entry.normalsPerCorner = scene.prototypes[p].normalsPerCorner ? 1u : 0u;
     }
-
-    // Splat placements occupy the table after every mesh placement, which is the
-    // numbering the accelerator gives their top-level instances.
-    for (std::size_t i = 0; i < scene.splatInstances.size(); ++i) {
-        const SplatInstance& instance = scene.splatInstances[i];
+    for (std::size_t p = 0; p < splatPrototypes; ++p) {
         const BottomLevelStructure* blas =
-            _accelerator->SplatBlas(instance.prototype);
+            _accelerator->SplatBlas(static_cast<std::uint32_t>(p));
         if (blas == nullptr || !blas->Splats().Valid()) {
             continue;
         }
-        InstanceGeometry& entry = table[scene.instances.size() + i];
+        prototypeBuilt[meshPrototypes + p] = true;
+        PrototypeGeometry& entry = prototypeTable[meshPrototypes + p];
         entry.splats = blas->Splats().DeviceAddress();
         entry.harmonics =
             blas->Harmonics().Valid() ? blas->Harmonics().DeviceAddress() : 0;
         entry.harmonicsDegree = blas->HarmonicsDegree();
         entry.splatKernel = static_cast<std::uint32_t>(blas->Kernel());
-        if (_splatVolumes.Valid() &&
-            instance.prototype < scene.splatPrototypes.size()) {
-            entry.splatVolume = _splatVolumes.DeviceAddress() +
-                                instance.prototype * sizeof(SplatVolume);
+        if (_splatVolumes.Valid()) {
+            entry.splatVolume =
+                _splatVolumes.DeviceAddress() + p * sizeof(SplatVolume);
         }
-        std::memcpy(entry.objectToWorld, instance.transform.m,
-                    sizeof(entry.objectToWorld));
-        InvertTransform3x4(instance.transform.m, entry.worldToObject);
-        std::memcpy(entry.previousObjectToWorld,
-                    instance.hasPreviousTransform ? instance.previousTransform.m
-                                                  : instance.transform.m,
-                    sizeof(entry.previousObjectToWorld));
-        // No material index. A splat cloud is shaded by nothing: its radiance is
-        // its own, and index 0 here would name the fallback material as though
-        // one applied.
-        entry.material = 0;
+    }
+
+    // Sized to the scene's instance lists and written *by index*, not
+    // appended, because the index a ray query reports is the placement's
+    // position in the top-level instance array, which the accelerator keeps in
+    // scene order with an inactive entry wherever a placement has no
+    // structure.
+    const std::size_t placements =
+        scene.instances.size() + scene.splatInstances.size();
+    std::vector<InstanceRecord> records(placements);
+    std::vector<float> history;
+    _instancesWithHistory.clear();
+    const auto place = [&](std::size_t index, std::uint32_t prototype,
+                           const Transform3x4& transform,
+                           const Transform3x4* previous) {
+        InstanceRecord& record = records[index];
+        record.prototype =
+            prototype < prototypeBuilt.size() && prototypeBuilt[prototype]
+                ? prototype
+                : emptyPrototype;
+        record.history = kNoHistory;
+        if (previous != nullptr &&
+            std::memcmp(previous->m, transform.m, sizeof(transform.m)) != 0) {
+            record.history = static_cast<std::uint32_t>(history.size() / 12);
+            history.insert(history.end(), previous->m, previous->m + 12);
+            _instancesWithHistory.push_back(static_cast<std::uint32_t>(index));
+        }
+    };
+    for (std::size_t index = 0; index < scene.instances.size(); ++index) {
+        const MeshInstance& instance = scene.instances[index];
+        place(index, instance.prototype, instance.transform,
+              instance.hasPreviousTransform ? &instance.previousTransform
+                                            : nullptr);
+        records[index].material = instance.material;
+        std::memcpy(records[index].displayColor, instance.displayColor,
+                    sizeof(records[index].displayColor));
+    }
+    // Splat placements occupy the table after every mesh placement, which is
+    // the numbering the accelerator gives their top-level instances.
+    for (std::size_t i = 0; i < scene.splatInstances.size(); ++i) {
+        const SplatInstance& instance = scene.splatInstances[i];
+        const std::size_t index = scene.instances.size() + i;
+        place(index,
+              static_cast<std::uint32_t>(meshPrototypes + instance.prototype),
+              instance.transform,
+              instance.hasPreviousTransform ? &instance.previousTransform
+                                            : nullptr);
+        // No material index. A splat cloud is shaded by nothing: its radiance
+        // is its own, and index 0 here would name the fallback material as
+        // though one applied.
+        records[index].material = 0;
     }
     _splatInstanceBegin = static_cast<std::uint32_t>(scene.instances.size());
     _splatInstanceCount =
         static_cast<std::uint32_t>(scene.splatInstances.size());
-    _instanceCount = static_cast<std::uint32_t>(table.size());
+    _instanceCount = static_cast<std::uint32_t>(placements);
+    _historySlots = history.size() / 12;
 
-    _instancesWithHistory.clear();
-    for (std::size_t i = 0; i < table.size(); ++i) {
-        if (std::memcmp(table[i].previousObjectToWorld, table[i].objectToWorld,
-                        sizeof(table[i].objectToWorld)) != 0) {
-            _instancesWithHistory.push_back(static_cast<std::uint32_t>(i));
-        }
+    // Device-local copies of three host arrays, each through its own staging
+    // buffer, released as soon as the copy has completed.
+    const auto uploadTable = [&](const void* data, VkDeviceSize size,
+                            const char* name) {
+        BufferDescription staging;
+        staging.size = size;
+        staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        staging.domain = BufferDomain::HostUpload;
+        staging.debugName = std::string(name) + ".staging";
+        VulkanBuffer source(_allocator, staging);
+        source.Write(data, size);
+        VulkanBuffer destination = MakeStorage(_allocator, size, name);
+        _context.SubmitImmediate([&](VkCommandBuffer command) {
+            VkBufferCopy region{};
+            region.size = size;
+            vkCmdCopyBuffer(command, source.Handle(), destination.Handle(), 1,
+                            &region);
+        });
+        return destination;
+    };
+
+    _prototypeTable =
+        uploadTable(prototypeTable.data(),
+               prototypeTable.size() * sizeof(PrototypeGeometry),
+               "prototypeTable");
+    _historyTable = VulkanBuffer();
+    if (!history.empty()) {
+        _historyTable = uploadTable(history.data(), history.size() * sizeof(float),
+                               "historyTable");
     }
 
-    if (!table.empty()) {
-        const VkDeviceSize size = table.size() * sizeof(InstanceGeometry);
+    const VulkanBuffer& placementsBuffer = _accelerator->Tlas().InstanceBuffer();
+    InstanceTableHeader header{};
+    header.prototypes = _prototypeTable.DeviceAddress();
+    header.placements =
+        placementsBuffer.Valid() ? placementsBuffer.DeviceAddress() : 0;
+    header.history = _historyTable.Valid() ? _historyTable.DeviceAddress() : 0;
+    {
+        // Header and records in one staging write, so the table is one buffer
+        // and one binding as it always was. Built in place rather than in a
+        // second host array of the same size.
+        const VkDeviceSize size =
+            sizeof(InstanceTableHeader) + records.size() * sizeof(InstanceRecord);
         BufferDescription staging;
         staging.size = size;
         staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
         staging.domain = BufferDomain::HostUpload;
         staging.debugName = "instanceTable.staging";
-        VulkanBuffer upload(_allocator, staging);
-        upload.Write(table.data(), size);
-
+        VulkanBuffer source(_allocator, staging);
+        source.Write(&header, sizeof(header));
+        if (!records.empty()) {
+            source.Write(records.data(), records.size() * sizeof(InstanceRecord),
+                         sizeof(InstanceTableHeader));
+        }
         _instanceTable = MakeStorage(_allocator, size, "instanceTable");
         _context.SubmitImmediate([&](VkCommandBuffer command) {
             VkBufferCopy region{};
             region.size = size;
-            vkCmdCopyBuffer(command, upload.Handle(), _instanceTable.Handle(), 1,
+            vkCmdCopyBuffer(command, source.Handle(), _instanceTable.Handle(), 1,
                             &region);
         });
     }
@@ -3214,22 +3300,28 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     // once goes on reporting that move on every frame until the next
     // publication, however still it and the camera are. Device to device,
     // touching only the entries that moved, and once per publication.
-    if (!_instancesWithHistory.empty() && _instanceTable.Valid()) {
+    //
+    // The current placement is the first 48 bytes of the instance's top-level
+    // entry, and its history slot is the `moved`-th 48 bytes of the history
+    // table, in the order the list was built.
+    const VulkanBuffer& placementsBuffer = _accelerator->Tlas().InstanceBuffer();
+    if (!_instancesWithHistory.empty() && _historyTable.Valid() &&
+        placementsBuffer.Valid()) {
         std::vector<VkBufferCopy> regions;
         regions.reserve(_instancesWithHistory.size());
-        for (const std::uint32_t index : _instancesWithHistory) {
-            const VkDeviceSize entry =
-                static_cast<VkDeviceSize>(index) * sizeof(InstanceGeometry);
+        for (std::size_t moved = 0; moved < _instancesWithHistory.size(); ++moved) {
             VkBufferCopy region{};
-            region.srcOffset = entry + offsetof(InstanceGeometry, objectToWorld);
+            region.srcOffset =
+                static_cast<VkDeviceSize>(_instancesWithHistory[moved]) *
+                sizeof(VkAccelerationStructureInstanceKHR);
             region.dstOffset =
-                entry + offsetof(InstanceGeometry, previousObjectToWorld);
-            region.size = sizeof(InstanceGeometry::objectToWorld);
+                static_cast<VkDeviceSize>(moved) * 12 * sizeof(float);
+            region.size = 12 * sizeof(float);
             regions.push_back(region);
         }
         _context.SubmitImmediate([&](VkCommandBuffer command) {
-            vkCmdCopyBuffer(command, _instanceTable.Handle(),
-                            _instanceTable.Handle(),
+            vkCmdCopyBuffer(command, placementsBuffer.Handle(),
+                            _historyTable.Handle(),
                             static_cast<std::uint32_t>(regions.size()),
                             regions.data());
         });

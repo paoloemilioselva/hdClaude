@@ -70,7 +70,7 @@ void extend_trace(vec3 origin, vec3 direction, float tMin, float tMax,
             gl_RayQueryCandidateIntersectionTriangleEXT)
         {
             int candidateInstance =
-                rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
+                rayQueryGetIntersectionInstanceIdEXT(query, false);
             float candidateT = rayQueryGetIntersectionTEXT(query, false);
             if (!(exceptions &&
                   hdclaude_cull_point(
@@ -94,9 +94,9 @@ void extend_trace(vec3 origin, vec3 direction, float tMin, float tMax,
             gl_RayQueryCandidateIntersectionAABBEXT)
         {
             int candidateInstance =
-                rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
+                rayQueryGetIntersectionInstanceIdEXT(query, false);
             InstanceGeometry candidateGeometry =
-                instances.values[candidateInstance];
+                hdclaude_instance(int(candidateInstance));
             if (candidateGeometry.splats != 0ul &&
                 frame.splatTransport == HDCLAUDE_SPLAT_COVERAGE)
             {
@@ -242,7 +242,7 @@ void extend_trace(vec3 origin, vec3 direction, float tMin, float tMax,
             committed == gl_RayQueryCommittedIntersectionTriangleEXT
                 ? rayQueryGetIntersectionBarycentricsEXT(query, true)
                 : vec2(0.0);
-        instance = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
+        instance = rayQueryGetIntersectionInstanceIdEXT(query, true);
         primitive = rayQueryGetIntersectionPrimitiveIndexEXT(query, true);
     }
 }
@@ -623,7 +623,7 @@ void main()
         for (uint i = 0u; i < frame.splatInstanceCount; ++i)
         {
             uint index = frame.splatInstanceBegin + i;
-            InstanceGeometry cloud = instances.values[index];
+            InstanceGeometry cloud = hdclaude_instance(int(index));
             if (cloud.splats == 0ul || cloud.splatVolume == 0ul)
             {
                 continue;
@@ -707,7 +707,7 @@ void main()
         // light to recover the distance and normal the density needs.
         record.x = -2 - light;
     }
-    else if (hitGeometry && instances.values[instance].splats != 0ul)
+    else if (hitGeometry && hdclaude_instance(int(instance)).splats != 0ul)
     {
         // A Gaussian splat that accepted the ray. Recorded in a band of its own
         // so the per-material sort skips it: there is no material to sort it

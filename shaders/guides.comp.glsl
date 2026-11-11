@@ -88,7 +88,7 @@ void main()
     // Rigid only: a mesh whose points changed moved in a way no matrix
     // describes, and this reports the rigid part rather than pretending to the
     // rest.
-    InstanceGeometry geometry = instances.values[record.x];
+    InstanceGeometry geometry = hdclaude_instance(int(record.x));
     vec3 objectPoint = vec4(hitWorld, 1.0) * geometry.worldToObject;
     vec3 previousWorld = vec4(objectPoint, 1.0) * geometry.previousObjectToWorld;
     vec4 previousClip = frame.previousWorldToClip * vec4(previousWorld, 1.0);

@@ -8237,7 +8237,7 @@ RTX 5060 Ti. Peak bytes alone say that it is full, not what filled it, so the
 allocator now tallies device-local bytes by category -- the debug name with
 any per-object prefix folded away, so every prim's positions count as
 `*.positions` -- and `HDCLAUDE_STATS_REPORT` writes each category's share at
-the moment the sum peaked as `deviceMemory` lines.
+the moment the sum peaked as `deviceMemoryPeak[<category>]` lines.
 
 **Measured** at subdivision level 0, `shotCam`, 512 px, with 6 GB of the card
 held by other applications: 49,087,499 instances of 49,346 bottom-level
@@ -8264,3 +8264,28 @@ two of its three transforms are derivable or usually absent. That table, not
 the geometry, is what keeps an instanced production stage off a 16 GB card.
 
 The island's 7,288 `.ptx` maps reach none of this: there is no Ptex reader.
+
+**Changed.** The instance table is now a 24-byte record per placement --
+prototype, material, history index, displayColor -- behind a header that
+points at a per-prototype table (88 bytes each) and at the top-level
+structure's own instance array, from which shaders read the transform.
+`worldToObject` is inverted where it is read, in InvertTransform3x4's order of
+operations; a previous placement is stored only for a placement that moved.
+Kernels index all of it by `rayQueryGetIntersectionInstanceIdEXT`, and the
+accelerator emits an inactive entry (null reference, VUID 12281) for a
+placement with no structure, so that index is the scene's.
+
+That also closes a silent defect: the custom index a kernel used to read is
+24 bits, so placement 16,777,216 shaded with placement 0's material and
+transform. And a scene over the device's `maxInstanceCount` (16,777,215 on
+the RTX 5060 Ti and on Intel) is now refused before anything is uploaded,
+naming both numbers, rather than built in violation of the specification.
+The whole island is such a scene, at 49,087,499.
+
+**Measured** on the island without `isBeach` and `isDunesB` (deactivated in an
+override layer): 5,977,743 placements, 13.5 billion instanced triangles,
+rendered at a 9.5 GB peak. `instanceTable` is 143 MB where 248-byte records
+would have been 1.48 GB. Per placement the device now holds 283 bytes: the
+top-level structure's own storage, 179 -- 1.07 GB here, and the largest
+per-placement cost left -- its 64-byte instance input, the 24-byte record and
+16 bytes of link, cull and pick words.

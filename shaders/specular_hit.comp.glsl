@@ -41,7 +41,7 @@ void specular_trace(vec3 origin, vec3 direction, float tMin, float tMax,
     while (rayQueryProceedEXT(query))
     {
         int candidateInstance =
-            rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
+            rayQueryGetIntersectionInstanceIdEXT(query, false);
         // Only reached by the exception query; see extend.comp.glsl.
         if (rayQueryGetIntersectionTypeEXT(query, false) ==
             gl_RayQueryCandidateIntersectionTriangleEXT)
@@ -59,7 +59,7 @@ void specular_trace(vec3 origin, vec3 direction, float tMin, float tMax,
         {
             continue;
         }
-        InstanceGeometry candidateGeometry = instances.values[candidateInstance];
+        InstanceGeometry candidateGeometry = hdclaude_instance(int(candidateInstance));
         if (candidateGeometry.segments == 0ul)
         {
             continue;

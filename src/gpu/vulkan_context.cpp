@@ -672,6 +672,7 @@ void VulkanContext::SelectPhysicalDevice(const VulkanContextOptions& options)
             capabilities.scratchAlignment =
                 accelerationProperties.minAccelerationStructureScratchOffsetAlignment;
         }
+        capabilities.maxInstanceCount = accelerationProperties.maxInstanceCount;
 
         // Discrete first, then device-local memory. An explicit name preference
         // dominates both, so a workstation with an integrated GPU alongside the

@@ -837,9 +837,27 @@ void TopLevelStructure::Build(
     // not. Vulkan permits a top-level build of zero instances, so the buffer
     // carries one zeroed entry purely to have an address and the build is told
     // there are none.
-    const std::vector<VkAccelerationStructureInstanceKHR> uploaded =
-        instances.empty() ? std::vector<VkAccelerationStructureInstanceKHR>(1)
-                          : instances;
+    //
+    // Refused, not attempted, past the device's limit: a build over more
+    // instances than `maxInstanceCount` is invalid usage, and what a driver
+    // does with one is not something to find out from a picture.
+    const std::uint64_t limit = context.Capabilities().maxInstanceCount;
+    if (limit != 0 && instances.size() > limit) {
+        throw VulkanError(
+            VK_ERROR_FEATURE_NOT_PRESENT,
+            "the scene has " + std::to_string(instances.size()) +
+                " instances and this device builds at most " +
+                std::to_string(limit) +
+                " into one top-level acceleration structure "
+                "(VkPhysicalDeviceAccelerationStructurePropertiesKHR::"
+                "maxInstanceCount)");
+    }
+    // Not a copy of the instances: on a production stage that is gigabytes of
+    // host memory held only to be uploaded.
+    const std::vector<VkAccelerationStructureInstanceKHR> placeholder(
+        instances.empty() ? 1 : 0);
+    const std::vector<VkAccelerationStructureInstanceKHR>& uploaded =
+        instances.empty() ? placeholder : instances;
 
     // Built into locals; the existing structure stays traversable until the
     // replacement is complete.
@@ -847,8 +865,12 @@ void TopLevelStructure::Build(
     VulkanBuffer storage;
     VulkanBuffer instanceBuffer;
 
-    instanceBuffer = UploadDeviceLocal(context, allocator, uploaded,
-                                       kBuildInputUsage, "tlas.instances");
+    // A copy source as well as a build input: once a frame has used a moved
+    // instance's history, its current placement is copied from here over its
+    // previous one (PathTracer, after the frame's readback).
+    instanceBuffer = UploadDeviceLocal(
+        context, allocator, uploaded,
+        kBuildInputUsage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, "tlas.instances");
 
     VkAccelerationStructureGeometryKHR geometry{
         VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
@@ -1150,22 +1172,37 @@ void SceneAccelerator::Update(const Scene& scene, const std::vector<bool>& nonOp
     std::vector<VkAccelerationStructureInstanceKHR> instances;
     instances.reserve(scene.instances.size());
 
+    //
+    // One entry per scene placement, in scene order, including a placement
+    // whose prototype has no structure: that one is *inactive*, with a null
+    // reference and no mask bits, which the specification allows (Inactive
+    // Primitives and Instances; VUID 12281 says a null reference is valid).
+    // Keeping it in place is what lets a kernel use the instance's position in
+    // this array -- rayQueryGetIntersectionInstanceIdEXT -- as its index into
+    // every per-instance table. The custom index cannot be that index: it is
+    // 24 bits, so placement 16,777,216 would read placement 0's material and
+    // transform.
     for (const MeshInstance& instance : scene.instances) {
-        if (instance.prototype >= _prototypeFingerprints.size()) {
-            continue;
-        }
-        const std::uint64_t fingerprint = _prototypeFingerprints[instance.prototype];
-        auto found = _byFingerprint.find(fingerprint);
-        if (fingerprint == 0 || found == _byFingerprint.end()) {
-            continue;
+        const BottomLevelStructure* blas = nullptr;
+        if (instance.prototype < _prototypeFingerprints.size()) {
+            const std::uint64_t fingerprint =
+                _prototypeFingerprints[instance.prototype];
+            auto found = _byFingerprint.find(fingerprint);
+            if (fingerprint != 0 && found != _byFingerprint.end()) {
+                blas = &found->second;
+            }
         }
 
         VkAccelerationStructureInstanceKHR entry{};
         std::memcpy(&entry.transform, instance.transform.m, sizeof(instance.transform.m));
-        // The custom index is how a shading kernel recovers which instance it
-        // hit, and through it the material and the geometry buffers.
+        // Still written, for a test kernel that reads it, but no shading
+        // kernel does: see above.
         entry.instanceCustomIndex =
             static_cast<std::uint32_t>(&instance - scene.instances.data()) & 0xFFFFFF;
+        if (blas == nullptr) {
+            instances.push_back(entry);
+            continue;
+        }
         // Which rays meet it: none when it is invisible, and otherwise every
         // ray, through either its regular or its exception bit for each kind
         // (scene.h, CullInstanceMask). A ray that asks for 0xFF still meets
@@ -1183,7 +1220,7 @@ void SceneAccelerator::Update(const Scene& scene, const std::vector<bool>& nonOp
         if (index < nonOpaque.size() && nonOpaque[index]) {
             entry.flags |= VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR;
         }
-        entry.accelerationStructureReference = found->second.DeviceAddress();
+        entry.accelerationStructureReference = blas->DeviceAddress();
         instances.push_back(entry);
     }
 
@@ -1192,15 +1229,15 @@ void SceneAccelerator::Update(const Scene& scene, const std::vector<bool>& nonOp
     // table in this order (path_tracer.cpp).
     for (std::size_t i = 0; i < scene.splatInstances.size(); ++i) {
         const SplatInstance& instance = scene.splatInstances[i];
-        if (instance.prototype >= _splatPrototypeFingerprints.size()) {
-            continue;
-        }
-        const std::uint64_t fingerprint =
-            _splatPrototypeFingerprints[instance.prototype];
-        auto found = _bySplatFingerprint.find(fingerprint);
-        if (fingerprint == 0 || found == _bySplatFingerprint.end() ||
-            !found->second.Valid()) {
-            continue;
+        const BottomLevelStructure* blas = nullptr;
+        if (instance.prototype < _splatPrototypeFingerprints.size()) {
+            const std::uint64_t fingerprint =
+                _splatPrototypeFingerprints[instance.prototype];
+            auto found = _bySplatFingerprint.find(fingerprint);
+            if (fingerprint != 0 && found != _bySplatFingerprint.end() &&
+                found->second.Valid()) {
+                blas = &found->second;
+            }
         }
 
         VkAccelerationStructureInstanceKHR entry{};
@@ -1208,6 +1245,10 @@ void SceneAccelerator::Update(const Scene& scene, const std::vector<bool>& nonOp
                     sizeof(instance.transform.m));
         entry.instanceCustomIndex =
             static_cast<std::uint32_t>(scene.instances.size() + i) & 0xFFFFFF;
+        if (blas == nullptr) {
+            instances.push_back(entry);
+            continue;
+        }
         entry.mask = instance.visible
                          ? CullInstanceMask(instance.cullLinks,
                                             scene.cullPrimaryVolumes,
@@ -1215,7 +1256,7 @@ void SceneAccelerator::Update(const Scene& scene, const std::vector<bool>& nonOp
                          : 0x00;
         entry.instanceShaderBindingTableRecordOffset = 0;
         entry.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
-        entry.accelerationStructureReference = found->second.DeviceAddress();
+        entry.accelerationStructureReference = blas->DeviceAddress();
         instances.push_back(entry);
     }
 
@@ -1230,6 +1271,9 @@ void SceneAccelerator::Update(const Scene& scene, const std::vector<bool>& nonOp
         float lo[3] = {1e30f, 1e30f, 1e30f};
         float hi[3] = {-1e30f, -1e30f, -1e30f};
         for (const auto& entry : instances) {
+            if (entry.accelerationStructureReference == 0) {
+                continue;
+            }
             for (int axis = 0; axis < 3; ++axis) {
                 const float t = entry.transform.matrix[axis][3];
                 lo[axis] = std::min(lo[axis], t);

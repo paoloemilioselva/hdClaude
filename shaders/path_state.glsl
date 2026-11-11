@@ -384,8 +384,16 @@ layout(buffer_reference, scalar) readonly buffer GridOffsetBuffer { uint values[
 layout(buffer_reference, scalar) readonly buffer GridIndexBuffer { uint values[]; };
 layout(buffer_reference, scalar) readonly buffer HarmonicBuffer { float values[]; };
 
-/// Per-instance geometry, reached by device address so that adding a prototype
-/// does not touch any descriptor set.
+/// Everything a kernel knows about one placement, assembled by
+/// `hdclaude_instance` from the three things that are actually stored: the
+/// placement's own record, its prototype's record, and its entry in the
+/// top-level structure's instance array.
+///
+/// Not stored like this. It used to be, at 248 bytes a placement, and on a
+/// production stage that is the largest allocation there is: the Moana island's
+/// 49 million placements made it 12.2 GB, of which every byte but the material,
+/// the colour and one transform was either the same for every placement of a
+/// prototype or derivable (docs/implementation-notes.md, 2026-11-11).
 struct InstanceGeometry {
     uint64_t positions;
     uint64_t indices;
@@ -485,9 +493,144 @@ uint hdclaude_material_of(InstanceGeometry geometry, int primitive)
     }
     return geometry.material;
 }
+/// What every placement of one prototype shares. Mirrors PrototypeGeometry in
+/// path_tracer.cpp: nine addresses and four words, 88 bytes.
+struct PrototypeGeometry {
+    uint64_t positions;
+    uint64_t indices;
+    uint64_t segments;
+    uint64_t normals;
+    uint64_t uvs;
+    uint64_t triangleMaterials;
+    uint64_t splats;
+    uint64_t harmonics;
+    uint64_t splatVolume;
+    uint uvsPerCorner;
+    uint normalsPerCorner;
+    uint harmonicsDegree;
+    uint splatKernel;
+};
+
+/// What is a placement's own. Mirrors InstanceRecord in path_tracer.cpp: 24
+/// bytes. `history` indexes the previous-placement table, or is
+/// HDCLAUDE_NO_HISTORY when the placement has not moved, which is nearly all of
+/// them.
+struct InstanceRecord {
+    uint prototype;
+    uint material;
+    uint history;
+    vec3 displayColor;
+};
+
+const uint HDCLAUDE_NO_HISTORY = 0xFFFFFFFFu;
+
+/// VkAccelerationStructureInstanceKHR, as the top-level build read it. Only the
+/// transform is used: it is the placement's object-to-world, row-major 3x4,
+/// which is how every `mat3x4` here is stored.
+struct TopLevelInstance {
+    mat3x4 transform;
+    uint customIndexAndMask;
+    uint bindingOffsetAndFlags;
+    uint64_t structure;
+};
+
+layout(buffer_reference, scalar) readonly buffer PrototypeTable { PrototypeGeometry values[]; };
+layout(buffer_reference, scalar) readonly buffer PlacementTable { TopLevelInstance values[]; };
+layout(buffer_reference, scalar) readonly buffer HistoryTable   { mat3x4 values[]; };
+
+/// Indexed by rayQueryGetIntersectionInstanceIdEXT -- the placement's position
+/// in the top-level instance array, which the accelerator keeps in scene order
+/// -- and never by the 24-bit custom index.
 layout(set = 0, binding = 14, scalar) readonly buffer InstanceTable {
-    InstanceGeometry values[];
+    uint64_t prototypes;
+    uint64_t placements;
+    uint64_t history;
+    uint64_t reserved;
+    InstanceRecord records[];
 } instances;
+
+/// The inverse of an affine row-major 3x4, in the order of operations
+/// InvertTransform3x4 in path_tracer.cpp uses, which is what computed it
+/// before it was computed here. A singular transform inverts to zero there and
+/// here alike.
+mat3x4 hdclaude_invert_transform(mat3x4 m)
+{
+    float a = m[0][0], b = m[0][1], c = m[0][2];
+    float d = m[1][0], e = m[1][1], f = m[1][2];
+    float g = m[2][0], h = m[2][1], i = m[2][2];
+
+    precise float det =
+        a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    float inv = det != 0.0 ? 1.0 / det : 0.0;
+
+    precise mat3x4 o;
+    o[0][0] = (e * i - f * h) * inv;
+    o[0][1] = (c * h - b * i) * inv;
+    o[0][2] = (b * f - c * e) * inv;
+    o[1][0] = (f * g - d * i) * inv;
+    o[1][1] = (a * i - c * g) * inv;
+    o[1][2] = (c * d - a * f) * inv;
+    o[2][0] = (d * h - e * g) * inv;
+    o[2][1] = (b * g - a * h) * inv;
+    o[2][2] = (a * e - b * d) * inv;
+
+    float tx = m[0][3], ty = m[1][3], tz = m[2][3];
+    o[0][3] = -(o[0][0] * tx + o[0][1] * ty + o[0][2] * tz);
+    o[1][3] = -(o[1][0] * tx + o[1][1] * ty + o[1][2] * tz);
+    o[2][3] = -(o[2][0] * tx + o[2][1] * ty + o[2][2] * tz);
+    return o;
+}
+
+/// Placement `index`, as one struct. What a kernel does not read of it costs
+/// nothing: the loads and the inverse are dead code to the compiler.
+InstanceGeometry hdclaude_instance(int index)
+{
+    InstanceRecord record = instances.records[index];
+    PrototypeGeometry prototype =
+        PrototypeTable(instances.prototypes).values[record.prototype];
+    mat3x4 objectToWorld =
+        PlacementTable(instances.placements).values[index].transform;
+
+    InstanceGeometry geometry;
+    geometry.positions = prototype.positions;
+    geometry.indices = prototype.indices;
+    geometry.segments = prototype.segments;
+    geometry.normals = prototype.normals;
+    geometry.uvs = prototype.uvs;
+    geometry.triangleMaterials = prototype.triangleMaterials;
+    geometry.splats = prototype.splats;
+    geometry.harmonics = prototype.harmonics;
+    geometry.splatVolume = prototype.splatVolume;
+    geometry.objectToWorld = objectToWorld;
+    geometry.worldToObject = hdclaude_invert_transform(objectToWorld);
+    geometry.previousObjectToWorld =
+        record.history == HDCLAUDE_NO_HISTORY
+            ? objectToWorld
+            : HistoryTable(instances.history).values[record.history];
+    geometry.material = record.material;
+    geometry.uvsPerCorner = prototype.uvsPerCorner;
+    geometry.normalsPerCorner = prototype.normalsPerCorner;
+    geometry.harmonicsDegree = prototype.harmonicsDegree;
+    geometry.splatKernel = prototype.splatKernel;
+    geometry.displayColor = record.displayColor;
+    return geometry;
+}
+
+/// Placement `index`'s material and the address of its prototype's
+/// per-primitive materials: all the material sort needs, without assembling
+/// the rest.
+uint hdclaude_instance_material(int index, int primitive)
+{
+    InstanceRecord record = instances.records[index];
+    uint64_t perPrimitive =
+        PrototypeTable(instances.prototypes).values[record.prototype]
+            .triangleMaterials;
+    if (perPrimitive != 0ul)
+    {
+        return TriMaterialBuffer(perPrimitive).values[primitive];
+    }
+    return record.material;
+}
 
 // --- Lights -----------------------------------------------------------------
 //

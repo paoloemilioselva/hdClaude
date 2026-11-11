@@ -165,6 +165,12 @@ class TopLevelStructure {
     VkDeviceAddress DeviceAddress() const { return _address; }
     std::uint32_t InstanceCount() const { return _instanceCount; }
 
+    /// The instances the structure was built over, one 64-byte
+    /// VkAccelerationStructureInstanceKHR per scene placement, in the order of
+    /// the instance table. Kept after the build because shading reads each
+    /// placement's transform from here rather than from a second copy of it.
+    const VulkanBuffer& InstanceBuffer() const { return _instanceBuffer; }
+
     /// Build, replacing whatever was here.
     ///
     /// Built into locals and swapped in on success, so a failure leaves the

@@ -367,21 +367,24 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
                 << "startupFallbackMs "
                 << stages.startupFallbackMs.load(std::memory_order_relaxed)
                 << '\n';
-            // What the device-local peak was made of. Four columns rather
-            // than `key value`, so a reader that takes only `key value` lines
-            // passes over them.
+            // What the device-local peak was made of: per category, its
+            // bytes and allocation count at the peak and its bytes now. Still
+            // one `key number` a line, which is the whole of this file's
+            // contract with the scripts that read it; a category is part of
+            // the key, in brackets, and never contains a space.
             if (_allocator) {
                 out << "deviceBytesAllocatedPeak "
                     << _allocator->DeviceLocalAllocatedPeak() << '\n';
-                out << "# deviceMemory <bytesAtPeak> <countAtPeak> "
-                       "<bytesAtExit> <category>\n";
                 for (const auto& category : _allocator->DeviceLocalBreakdown()) {
                     if (category.bytesAtPeak == 0 && category.bytes == 0) {
                         continue;
                     }
-                    out << "deviceMemory " << category.bytesAtPeak << ' '
-                        << category.countAtPeak << ' ' << category.bytes << ' '
-                        << category.name << '\n';
+                    out << "deviceMemoryPeak[" << category.name << "] "
+                        << category.bytesAtPeak << '\n'
+                        << "deviceMemoryPeakCount[" << category.name << "] "
+                        << category.countAtPeak << '\n'
+                        << "deviceMemoryExit[" << category.name << "] "
+                        << category.bytes << '\n';
                 }
             }
         } else {

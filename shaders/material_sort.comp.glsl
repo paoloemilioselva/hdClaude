@@ -39,7 +39,7 @@ void main()
         return;   // missed; not a shading path
     }
 
-    uint material = hdclaude_material_of(instances.values[record.x], record.y);
+    uint material = hdclaude_instance_material(record.x, record.y);
     if (material >= frame.materialCount)
     {
         // A material index with no compiled pipeline. It cannot be shaded, and

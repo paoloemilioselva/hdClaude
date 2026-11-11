@@ -57,7 +57,7 @@ bool shadow_occluded(ShadowRay ray, float tMin, float tMax, uint cullMask,
             // cut-out placement. The implementation has already placed the hit
             // inside the ray's interval.
             int candidateInstance =
-                rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
+                rayQueryGetIntersectionInstanceIdEXT(query, false);
             float candidateT = rayQueryGetIntersectionTEXT(query, false);
             if (hdclaude_linked(candidateInstance, ray.shadowLink) &&
                 !(exceptions &&
@@ -82,9 +82,9 @@ bool shadow_occluded(ShadowRay ray, float tMin, float tMax, uint cullMask,
             gl_RayQueryCandidateIntersectionAABBEXT)
         {
             int candidateInstance =
-                rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
+                rayQueryGetIntersectionInstanceIdEXT(query, false);
             InstanceGeometry candidateGeometry =
-                instances.values[candidateInstance];
+                hdclaude_instance(int(candidateInstance));
             if (candidateGeometry.splats != 0ul &&
                 frame.splatTransport == HDCLAUDE_SPLAT_COVERAGE)
             {
@@ -262,7 +262,7 @@ void main()
         for (uint i = 0u; i < frame.splatInstanceCount && !blockedByVolume; ++i)
         {
             InstanceGeometry cloud =
-                instances.values[frame.splatInstanceBegin + i];
+                hdclaude_instance(int(frame.splatInstanceBegin + i));
             if (cloud.splats == 0ul || cloud.splatVolume == 0ul ||
                 !hdclaude_linked(int(frame.splatInstanceBegin + i),
                                  ray.shadowLink))

@@ -62,7 +62,7 @@ struct SurfacePoint {
 SurfacePoint hdclaude_reconstruct(ivec4 record, vec3 rayDirection, vec3 hitPosition)
 {
     SurfacePoint point;
-    InstanceGeometry geometry = instances.values[record.x];
+    InstanceGeometry geometry = hdclaude_instance(int(record.x));
 
     // A curve has no triangle to interpolate over. Its surface is the segment
     // itself, and everything the shading needs -- the normal, the frame, the

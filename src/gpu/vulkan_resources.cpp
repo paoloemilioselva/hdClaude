@@ -36,7 +36,9 @@ std::string MemoryCategoryOf(const std::string& name)
     const bool perObject = name.find_first_of("/\\") != std::string::npos ||
                            name.rfind("hdclaude_", 0) == 0;
     if (!perObject) {
-        return name;
+        std::string kind = name;
+        std::replace(kind.begin(), kind.end(), ' ', '_');
+        return kind;
     }
     const std::size_t separator = name.find_last_of("/\\");
     const std::size_t dot = name.find_last_of('.');
