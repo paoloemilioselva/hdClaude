@@ -50,14 +50,15 @@ layout(push_constant) uniform ExtendParams {
 // the loop to ask that material whether the ray meets it (cutout.glsl).
 //
 // `key` names this traversal for the cut-out coin.
-void extend_trace(vec3 origin, vec3 direction, float tMin, float tMax,
-                  uint cullMask, bool exceptions, uint volumes, uint path,
-                  uint key, inout bool hitGeometry, inout float tGeometry,
-                  inout vec2 barycentrics, inout int instance,
-                  inout int primitive)
+void extend_trace_chunk(uint chunk, vec3 origin, vec3 direction, float tMin,
+                        float tMax, uint cullMask, bool exceptions,
+                        uint volumes, uint path, uint key,
+                        inout bool hitGeometry, inout float tGeometry,
+                        inout vec2 barycentrics, inout int instance,
+                        inout int primitive)
 {
     rayQueryEXT query;
-    rayQueryInitializeEXT(query, sceneTlas,
+    rayQueryInitializeEXT(query, hdclaude_chunk(chunk),
                           exceptions ? gl_RayFlagsNoOpaqueEXT
                                      : gl_RayFlagsNoneEXT,
                           cullMask, origin, tMin, direction, tMax);
@@ -70,7 +71,7 @@ void extend_trace(vec3 origin, vec3 direction, float tMin, float tMax,
             gl_RayQueryCandidateIntersectionTriangleEXT)
         {
             int candidateInstance =
-                rayQueryGetIntersectionInstanceIdEXT(query, false);
+                (hdclaude_chunk_base(chunk) + rayQueryGetIntersectionInstanceIdEXT(query, false));
             float candidateT = rayQueryGetIntersectionTEXT(query, false);
             if (!(exceptions &&
                   hdclaude_cull_point(
@@ -94,7 +95,7 @@ void extend_trace(vec3 origin, vec3 direction, float tMin, float tMax,
             gl_RayQueryCandidateIntersectionAABBEXT)
         {
             int candidateInstance =
-                rayQueryGetIntersectionInstanceIdEXT(query, false);
+                (hdclaude_chunk_base(chunk) + rayQueryGetIntersectionInstanceIdEXT(query, false));
             InstanceGeometry candidateGeometry =
                 hdclaude_instance(int(candidateInstance));
             if (candidateGeometry.splats != 0ul &&
@@ -242,8 +243,31 @@ void extend_trace(vec3 origin, vec3 direction, float tMin, float tMax,
             committed == gl_RayQueryCommittedIntersectionTriangleEXT
                 ? rayQueryGetIntersectionBarycentricsEXT(query, true)
                 : vec2(0.0);
-        instance = rayQueryGetIntersectionInstanceIdEXT(query, true);
+        instance = (hdclaude_chunk_base(chunk) + rayQueryGetIntersectionInstanceIdEXT(query, true));
         primitive = rayQueryGetIntersectionPrimitiveIndexEXT(query, true);
+    }
+}
+
+// extend_trace_chunk through every chunk of the stage, each one asked only
+// for a hit nearer than the nearest found so far. With one chunk -- every stage
+// of fewer than 16.7 million placements at the default -- this is the single
+// query it always was.
+void extend_trace(vec3 origin, vec3 direction, float tMin, float tMax,
+                  uint cullMask, bool exceptions, uint volumes, uint path,
+                  uint key, inout bool hitGeometry, inout float tGeometry,
+                  inout vec2 barycentrics, inout int instance,
+                  inout int primitive)
+{
+    for (uint chunk = 0u; chunk < instances.chunkCount; ++chunk)
+    {
+        float nearest = hitGeometry ? min(tMax, tGeometry) : tMax;
+        if (!(nearest > tMin))
+        {
+            break;
+        }
+        extend_trace_chunk(chunk, origin, direction, tMin, nearest, cullMask,
+                           exceptions, volumes, path, key, hitGeometry,
+                           tGeometry, barycentrics, instance, primitive);
     }
 }
 

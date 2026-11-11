@@ -1440,6 +1440,27 @@ int main()
                         centre.g, centre.b);
             CHECK(centre.r > centre.g * 2.0f);
             CHECK(left.g > left.r * 0.5f);
+
+            // The same placements through several top-level structures: one
+            // placement a chunk, and three, so the last chunk is short and the
+            // inactive entry sits at a chunk's edge. Each ray is traced
+            // through every chunk keeping the nearest hit, and a placement's
+            // index is its chunk's base plus its index within it, so the
+            // picture must not move.
+            for (const std::uint32_t chunk : {1u, 3u}) {
+                scene.tlasChunkSize = chunk;
+                tracer.SetScene(scene, materials);
+                const std::vector<float> chunked =
+                    tracer.Render(kWidth, kHeight, LookDownZ(6.0f), settings);
+                std::printf("  chunks of %u: %s\n", chunk,
+                            std::memcmp(chunked.data(), host.data(),
+                                        host.size() * sizeof(float)) == 0
+                                ? "identical"
+                                : "DIFFERENT");
+                CHECK(chunked.size() == host.size());
+                CHECK(std::memcmp(chunked.data(), host.data(),
+                                  host.size() * sizeof(float)) == 0);
+            }
         }
 
         // --- 16-bit and 32-bit indices shade the same triangles ---------------

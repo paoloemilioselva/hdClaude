@@ -186,6 +186,11 @@ class TopLevelStructure {
     void Build(const VulkanContext& context, VulkanAllocator& allocator,
                const std::vector<VkAccelerationStructureInstanceKHR>& instances,
                bool hostResident = false);
+    /// The same, over `count` instances at `instances`: one chunk of a
+    /// stage's instance array, without copying it out first.
+    void Build(const VulkanContext& context, VulkanAllocator& allocator,
+               const VkAccelerationStructureInstanceKHR* instances,
+               std::size_t count, bool hostResident = false);
 
     void Reset();
 
@@ -217,7 +222,19 @@ class SceneAccelerator {
     /// becomes cut out then rebuilds no BLAS. Empty marks none.
     void Update(const Scene& scene, const std::vector<bool>& nonOpaque = {});
 
-    const TopLevelStructure& Tlas() const { return _tlas; }
+    /// The first top-level structure, which is the only one unless the stage
+    /// has more placements than a chunk holds.
+    const TopLevelStructure& Tlas() const { return _chunks.front(); }
+    /// Every top-level structure, in order: chunk `c` holds placements
+    /// [c * ChunkSize(), (c + 1) * ChunkSize()), the last one fewer. A
+    /// placement's index in the scene is its chunk's base plus its index
+    /// within the chunk, which is what a ray query reports.
+    const std::vector<TopLevelStructure>& Chunks() const { return _chunks; }
+    std::uint32_t ChunkSize() const { return _chunkSize; }
+
+    /// The most chunks a stage may have, which is the number the kernels
+    /// trace through (path_state.glsl, HDCLAUDE_MAX_TLAS_CHUNKS).
+    static constexpr std::uint32_t kMaxChunks = 8;
     const BottomLevelStructure* Blas(std::uint32_t prototype) const;
     /// The structure built over splat prototype `prototype`, or null.
     ///
@@ -237,7 +254,10 @@ class SceneAccelerator {
   private:
     const VulkanContext& _context;
     VulkanAllocator& _allocator;
-    TopLevelStructure _tlas;
+    /// Never empty: a stage with nothing in it still has one, built over no
+    /// instances, because the kernels need a structure to trace.
+    std::vector<TopLevelStructure> _chunks = std::vector<TopLevelStructure>(1);
+    std::uint32_t _chunkSize = 1;
     /// Keyed by fingerprint, so reuse follows geometry rather than position in
     /// the prototype list.
     std::unordered_map<std::uint64_t, BottomLevelStructure> _byFingerprint;

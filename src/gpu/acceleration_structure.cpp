@@ -16,15 +16,15 @@ namespace {
 /// Upload a host vector into a device-local buffer through a staging copy.
 template <typename T>
 VulkanBuffer UploadDeviceLocal(const VulkanContext& context,
-                               VulkanAllocator& allocator,
-                               const std::vector<T>& data,
-                               VkBufferUsageFlags usage, const char* name)
+                               VulkanAllocator& allocator, const T* data,
+                               std::size_t count, VkBufferUsageFlags usage,
+                               const char* name)
 {
-    if (data.empty()) {
+    if (count == 0) {
         return VulkanBuffer{};
     }
 
-    const VkDeviceSize size = data.size() * sizeof(T);
+    const VkDeviceSize size = count * sizeof(T);
 
     BufferDescription stagingDescription;
     stagingDescription.size = size;
@@ -32,7 +32,7 @@ VulkanBuffer UploadDeviceLocal(const VulkanContext& context,
     stagingDescription.domain = BufferDomain::HostUpload;
     stagingDescription.debugName = std::string(name) + ".staging";
     VulkanBuffer staging(allocator, stagingDescription);
-    staging.Write(data.data(), size);
+    staging.Write(data, size);
 
     BufferDescription deviceDescription;
     deviceDescription.size = size;
@@ -48,6 +48,16 @@ VulkanBuffer UploadDeviceLocal(const VulkanContext& context,
     });
 
     return device;
+}
+
+template <typename T>
+VulkanBuffer UploadDeviceLocal(const VulkanContext& context,
+                               VulkanAllocator& allocator,
+                               const std::vector<T>& data,
+                               VkBufferUsageFlags usage, const char* name)
+{
+    return UploadDeviceLocal(context, allocator, data.data(), data.size(),
+                             usage, name);
 }
 
 /// Usage bits a buffer needs to be read by an acceleration-structure build.
@@ -985,6 +995,14 @@ void TopLevelStructure::Build(
     const std::vector<VkAccelerationStructureInstanceKHR>& instances,
     bool hostResident)
 {
+    Build(context, allocator, instances.data(), instances.size(), hostResident);
+}
+
+void TopLevelStructure::Build(
+    const VulkanContext& context, VulkanAllocator& allocator,
+    const VkAccelerationStructureInstanceKHR* instanceData,
+    std::size_t instanceTotal, bool hostResident)
+{
     context.RequireLive("TopLevelStructure::Build");
 
     // A scene with no geometry is still a scene, and is built rather than
@@ -1000,10 +1018,10 @@ void TopLevelStructure::Build(
     // instances than `maxInstanceCount` is invalid usage, and what a driver
     // does with one is not something to find out from a picture.
     const std::uint64_t limit = context.Capabilities().maxInstanceCount;
-    if (limit != 0 && instances.size() > limit) {
+    if (limit != 0 && instanceTotal > limit) {
         throw VulkanError(
             VK_ERROR_FEATURE_NOT_PRESENT,
-            "the scene has " + std::to_string(instances.size()) +
+            "the scene has " + std::to_string(instanceTotal) +
                 " instances and this device builds at most " +
                 std::to_string(limit) +
                 " into one top-level acceleration structure "
@@ -1012,10 +1030,10 @@ void TopLevelStructure::Build(
     }
     // Not a copy of the instances: on a production stage that is gigabytes of
     // host memory held only to be uploaded.
-    const std::vector<VkAccelerationStructureInstanceKHR> placeholder(
-        instances.empty() ? 1 : 0);
-    const std::vector<VkAccelerationStructureInstanceKHR>& uploaded =
-        instances.empty() ? placeholder : instances;
+    const VkAccelerationStructureInstanceKHR placeholder{};
+    const VkAccelerationStructureInstanceKHR* uploaded =
+        instanceTotal == 0 ? &placeholder : instanceData;
+    const std::size_t uploadedCount = instanceTotal == 0 ? 1 : instanceTotal;
 
     // Built into locals; the existing structure stays traversable until the
     // replacement is complete.
@@ -1032,15 +1050,15 @@ void TopLevelStructure::Build(
         // shading once a hit (Scene::hostInstanceData). Named apart from the
         // device form so the memory breakdown says which a scene used.
         BufferDescription host;
-        host.size = uploaded.size() * sizeof(VkAccelerationStructureInstanceKHR);
+        host.size = uploadedCount * sizeof(VkAccelerationStructureInstanceKHR);
         host.usage = kBuildInputUsage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
         host.domain = BufferDomain::HostUpload;
         host.debugName = "tlas.instances.host";
         instanceBuffer = VulkanBuffer(allocator, host);
-        instanceBuffer.Write(uploaded.data(), host.size);
+        instanceBuffer.Write(uploaded, host.size);
     } else {
         instanceBuffer = UploadDeviceLocal(
-            context, allocator, uploaded,
+            context, allocator, uploaded, uploadedCount,
             kBuildInputUsage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             "tlas.instances");
     }
@@ -1053,7 +1071,7 @@ void TopLevelStructure::Build(
     geometry.geometry.instances.arrayOfPointers = VK_FALSE;
     geometry.geometry.instances.data.deviceAddress = instanceBuffer.DeviceAddress();
 
-    const auto instanceCount = static_cast<std::uint32_t>(instances.size());
+    const auto instanceCount = static_cast<std::uint32_t>(instanceTotal);
 
     VkAccelerationStructureBuildGeometryInfoKHR buildInfo{
         VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
@@ -1497,7 +1515,40 @@ void SceneAccelerator::Update(const Scene& scene, const std::vector<bool>& nonOp
                      instances.size(), lo[0], lo[1], lo[2], hi[0],
                      hi[1], hi[2]);
     }
-    _tlas.Build(_context, _allocator, instances, scene.hostInstanceData);
+    // Chunks of at most the device's limit, or of the setting's size when
+    // that is smaller, built one after another into a new list and swapped
+    // in whole, so the previous chunks stay traversable until every new one
+    // exists (docs/architecture.md 6 rule 1). Every chunk but the last holds
+    // exactly `chunkSize` placements, which is what lets a kernel find a
+    // placement's chunk by division.
+    const std::uint64_t limit = _context.Capabilities().maxInstanceCount;
+    std::uint64_t chunkSize = limit != 0 ? limit : instances.size();
+    if (scene.tlasChunkSize != 0) {
+        chunkSize = std::min<std::uint64_t>(chunkSize, scene.tlasChunkSize);
+    }
+    chunkSize = std::max<std::uint64_t>(chunkSize, 1);
+    const std::size_t chunkCount = std::max<std::size_t>(
+        1, (instances.size() + chunkSize - 1) / chunkSize);
+    if (chunkCount > kMaxChunks) {
+        throw VulkanError(
+            VK_ERROR_FEATURE_NOT_PRESENT,
+            "the scene has " + std::to_string(instances.size()) +
+                " instances, which is " + std::to_string(chunkCount) +
+                " top-level structures of " + std::to_string(chunkSize) +
+                " and more than the " + std::to_string(kMaxChunks) +
+                " the kernels trace through");
+    }
+    std::vector<TopLevelStructure> chunks(chunkCount);
+    for (std::size_t c = 0; c < chunkCount; ++c) {
+        const std::size_t first = c * chunkSize;
+        const std::size_t count =
+            std::min<std::size_t>(chunkSize, instances.size() - std::min(first, instances.size()));
+        chunks[c].Build(_context, _allocator,
+                        instances.empty() ? nullptr : instances.data() + first,
+                        count, scene.hostInstanceData);
+    }
+    _chunks = std::move(chunks);
+    _chunkSize = static_cast<std::uint32_t>(chunkSize);
 }
 
 const BottomLevelStructure* SceneAccelerator::Blas(std::uint32_t prototype) const

@@ -193,6 +193,15 @@ void HdClaudeSceneStore::SetHostInstanceData(bool host)
     }
 }
 
+void HdClaudeSceneStore::SetTlasChunkSize(std::uint32_t size)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (size != _tlasChunkSize) {
+        _tlasChunkSize = size;
+        ++_revision;
+    }
+}
+
 std::uint64_t HdClaudeSceneStore::CullRevision() const
 {
     std::lock_guard<std::mutex> lock(_mutex);
@@ -615,6 +624,7 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
     }
 
     scene.hostInstanceData = _hostInstanceData;
+    scene.tlasChunkSize = _tlasChunkSize;
     scene.revision = _revision;
     // This snapshot becomes the next one's past once a frame of it has been
     // rendered (CommitHistory), and not before. Recorded for every mesh

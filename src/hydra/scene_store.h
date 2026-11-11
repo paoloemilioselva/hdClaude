@@ -271,6 +271,9 @@ class HdClaudeSceneStore {
     /// it decides where the next top-level build puts its instance array.
     void SetHostInstanceData(bool host);
 
+    /// The `tlasChunkSize` render setting. A change republishes.
+    void SetTlasChunkSize(std::uint32_t size);
+
     // --- Consumption, from the render pass ------------------------------------
 
     /// Bumped by every publication. The render pass compares it to decide
@@ -351,6 +354,7 @@ class HdClaudeSceneStore {
     HdSceneIndexBaseRefPtr _sceneIndex;
     bool _cullVolumesEnabled = true;
     bool _hostInstanceData = true;
+    std::uint32_t _tlasChunkSize = 0;
     std::uint64_t _cullRevision = 1;
     /// The volumes past kMaxCullVolumes the last snapshot ignored, so the
     /// report is made when that set changes rather than on every snapshot.

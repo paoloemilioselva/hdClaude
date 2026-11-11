@@ -8394,3 +8394,32 @@ did. A render test pads a quad past 65,536 vertices and requires the same
 image to the bit. On the island subset: indices 554 MB to 414 MB (the large
 meshes keep 32-bit), the boxes (418 MB) gone from the peak, and the device
 peak 6.84 GB to 6.32 GB.
+
+## 2026-11-11 -- Several top-level structures
+
+A device builds at most `maxInstanceCount` placements into one top-level
+structure (16,777,215 here); the Moana island has 49,087,499. The accelerator
+now builds the placements in chunks of at most that many -- or of the
+`tlasChunkSize` setting, a diagnostic -- each a top-level structure over its
+own slice of the instance array, every chunk but the last exactly full. The
+instance table's header carries each chunk's structure and instance-array
+addresses; kernels build the structure from its address
+(`accelerationStructureEXT(uint64_t)`, which GL_EXT_ray_query alone allows,
+so no descriptor array and no indexing feature), trace a ray through each
+chunk in turn asking only for a hit nearer than the nearest so far (a shadow
+ray stops at the first chunk that occludes), and add the chunk's base to the
+reported instance id. A placement's transform is found by dividing its index
+by the chunk size. Up to eight chunks, 134 million placements; more is
+refused, naming the counts.
+
+Tested three ways: a render test draws four placements, one inactive, through
+chunks of 1 and of 3 and requires the single-structure image to the bit; and
+the USD tests were run with `HDCLAUDE_TLAS_CHUNK_SIZE=2`, which sends each
+through several structures. All passed except `usd_instancing`, whose 41
+placements make 21 chunks and are refused as they should be; at 6, seven
+chunks, it passes.
+
+The chunked run also found a defect left by the shared attributes:
+`specular_hit.comp.glsl` still read the cull word by placement index from a
+table now indexed by attribute. It affected only the specular-ray guide in a
+stage with cull-volume exceptions.

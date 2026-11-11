@@ -351,18 +351,23 @@ static_assert(sizeof(InstanceAttributes) == 20,
               "InstanceAttributes must be 20 bytes with no implicit padding; "
               "path_state.glsl mirrors this layout member for member");
 
-/// The instance table's header: where the other tables are, and where the
-/// placements' transforms are. Then the records.
+/// The instance table's header: where the other tables are, and the
+/// top-level structures with their instance arrays, one per chunk. Then the
+/// records.
 struct InstanceTableHeader {
     std::uint64_t prototypes;
-    std::uint64_t placements;
     std::uint64_t history;
     std::uint64_t attributes;
+    std::uint32_t chunkCount;
+    /// Placements in every chunk but the last, which a kernel divides by.
+    std::uint32_t chunkSize;
+    std::uint64_t structures[SceneAccelerator::kMaxChunks];
+    std::uint64_t placements[SceneAccelerator::kMaxChunks];
 };
 
 /// What a pick reports for a placement with no instance index of its own.
 constexpr std::int32_t kNoPickInstance = std::numeric_limits<std::int32_t>::min();
-static_assert(sizeof(InstanceTableHeader) == 32,
+static_assert(sizeof(InstanceTableHeader) == 32 + 16 * SceneAccelerator::kMaxChunks,
               "InstanceTableHeader mirrors the head of InstanceTable in "
               "path_state.glsl");
 
@@ -1510,11 +1515,17 @@ void PathTracer::SetScene(const Scene& publishedScene,
                     attributes.size() * sizeof(InstanceAttributes),
                     "attributeTable");
 
-    const VulkanBuffer& placementsBuffer = _accelerator->Tlas().InstanceBuffer();
     InstanceTableHeader header{};
     header.prototypes = _prototypeTable.DeviceAddress();
-    header.placements =
-        placementsBuffer.Valid() ? placementsBuffer.DeviceAddress() : 0;
+    const std::vector<TopLevelStructure>& chunks = _accelerator->Chunks();
+    header.chunkCount = static_cast<std::uint32_t>(chunks.size());
+    header.chunkSize = _accelerator->ChunkSize();
+    for (std::size_t c = 0; c < chunks.size(); ++c) {
+        header.structures[c] = chunks[c].DeviceAddress();
+        header.placements[c] = chunks[c].InstanceBuffer().Valid()
+                                   ? chunks[c].InstanceBuffer().DeviceAddress()
+                                   : 0;
+    }
     header.history = _historyTable.Valid() ? _historyTable.DeviceAddress() : 0;
     header.attributes = _attributeTable.DeviceAddress();
     {
@@ -3331,26 +3342,37 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     // The current placement is the first 48 bytes of the instance's top-level
     // entry, and its history slot is the `moved`-th 48 bytes of the history
     // table, in the order the list was built.
-    const VulkanBuffer& placementsBuffer = _accelerator->Tlas().InstanceBuffer();
-    if (!_instancesWithHistory.empty() && _historyTable.Valid() &&
-        placementsBuffer.Valid()) {
-        std::vector<VkBufferCopy> regions;
-        regions.reserve(_instancesWithHistory.size());
+    //
+    // A placement's entry is in its chunk's array, at its index within the
+    // chunk; the copies are grouped by chunk, one copy command each.
+    const std::vector<TopLevelStructure>& chunks = _accelerator->Chunks();
+    const std::uint32_t chunkSize = std::max(_accelerator->ChunkSize(), 1u);
+    if (!_instancesWithHistory.empty() && _historyTable.Valid()) {
+        std::vector<std::vector<VkBufferCopy>> regions(chunks.size());
         for (std::size_t moved = 0; moved < _instancesWithHistory.size(); ++moved) {
+            const std::uint32_t index = _instancesWithHistory[moved];
+            const std::size_t chunk = index / chunkSize;
+            if (chunk >= chunks.size() || !chunks[chunk].InstanceBuffer().Valid()) {
+                continue;
+            }
             VkBufferCopy region{};
-            region.srcOffset =
-                static_cast<VkDeviceSize>(_instancesWithHistory[moved]) *
-                sizeof(VkAccelerationStructureInstanceKHR);
+            region.srcOffset = static_cast<VkDeviceSize>(index % chunkSize) *
+                               sizeof(VkAccelerationStructureInstanceKHR);
             region.dstOffset =
                 static_cast<VkDeviceSize>(moved) * 12 * sizeof(float);
             region.size = 12 * sizeof(float);
-            regions.push_back(region);
+            regions[chunk].push_back(region);
         }
         _context.SubmitImmediate([&](VkCommandBuffer command) {
-            vkCmdCopyBuffer(command, placementsBuffer.Handle(),
-                            _historyTable.Handle(),
-                            static_cast<std::uint32_t>(regions.size()),
-                            regions.data());
+            for (std::size_t c = 0; c < chunks.size(); ++c) {
+                if (regions[c].empty()) {
+                    continue;
+                }
+                vkCmdCopyBuffer(command, chunks[c].InstanceBuffer().Handle(),
+                                _historyTable.Handle(),
+                                static_cast<std::uint32_t>(regions[c].size()),
+                                regions[c].data());
+            }
         });
         _instancesWithHistory.clear();
     }

@@ -57,6 +57,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (lightGeometry)
                          (cullVolumes)
                          (hostInstanceData)
+                         (tlasChunkSize)
                          (splatTransport)
                          (curveGeometry)
                          (curveSides)
@@ -822,6 +823,8 @@ void HdClaudeRenderPass::_Execute(
         _renderDelegate->GetRenderSetting<bool>(_tokens->cullVolumes, true));
     store->SetHostInstanceData(
         _renderDelegate->GetRenderSetting<bool>(_tokens->hostInstanceData, true));
+    store->SetTlasChunkSize(static_cast<std::uint32_t>(std::max(
+        0, _renderDelegate->GetRenderSetting<int>(_tokens->tlasChunkSize, 0))));
 
     Framing framing;
     framing.camera = cameraResult.camera;

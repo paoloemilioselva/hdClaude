@@ -58,7 +58,7 @@ FOLDERS = [
     ("Diagnostics", ["device", "shaderDirectory", "statsReport",
                      "vulkanValidation", "trace", "profileKernels",
                      "poisonPathState", "dumpShaders", "frameLog",
-                     "repeatRenders", "republishAt"]),
+                     "repeatRenders", "republishAt", "tlasChunkSize"]),
 ]
 
 # Folders shown in the viewport's Display Options. Diagnostics are for a

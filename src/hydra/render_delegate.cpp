@@ -52,6 +52,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (lightGeometry)
                          (cullVolumes)
                          (hostInstanceData)
+                         (tlasChunkSize)
                          ((cullVolumePrimType, "cullVolume"))
                          (curveGeometry)
                          (splatTransport)
@@ -105,6 +106,7 @@ const std::vector<std::pair<TfToken, std::string>>& HdClaudeEnvironmentSettings(
         {_tokens->lightGeometry, "HDCLAUDE_LIGHT_GEOMETRY"},
         {_tokens->cullVolumes, "HDCLAUDE_CULL_VOLUMES"},
         {_tokens->hostInstanceData, "HDCLAUDE_HOST_INSTANCE_DATA"},
+        {_tokens->tlasChunkSize, "HDCLAUDE_TLAS_CHUNK_SIZE"},
         {_tokens->textureQuality, "HDCLAUDE_TEXTURE_QUALITY"},
         {_tokens->curveGeometry, "HDCLAUDE_CURVE_GEOMETRY"},
         {_tokens->curveSides, "HDCLAUDE_CURVE_SIDES"},
@@ -1063,6 +1065,12 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         // per cent of speed matters more than the memory.
         {"Instance data in system memory", _tokens->hostInstanceData,
          VtValue(TfGetenvBool("HDCLAUDE_HOST_INSTANCE_DATA", true))},
+        // Placements one top-level structure holds at most; 0 is the
+        // device's own limit, 16,777,215 on current hardware. A stage with
+        // more is traced through several. A diagnostic: a small value sends
+        // an ordinary stage down the path a production stage takes.
+        {"TLAS chunk size", _tokens->tlasChunkSize,
+         VtValue(TfGetenvInt("HDCLAUDE_TLAS_CHUNK_SIZE", 0))},
 
         // Reconstruction, and which model reconstructs.
         //

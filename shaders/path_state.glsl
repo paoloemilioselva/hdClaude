@@ -547,16 +547,41 @@ layout(buffer_reference, scalar) readonly buffer PlacementTable { TopLevelInstan
 layout(buffer_reference, scalar) readonly buffer HistoryTable   { mat3x4 values[]; };
 layout(buffer_reference, scalar) readonly buffer AttributeTable { InstanceAttributes values[]; };
 
-/// Indexed by rayQueryGetIntersectionInstanceIdEXT -- the placement's position
-/// in the top-level instance array, which the accelerator keeps in scene order
-/// -- and never by the 24-bit custom index.
+/// Indexed by a placement's scene index: its chunk's base plus
+/// rayQueryGetIntersectionInstanceIdEXT, its position in the chunk's instance
+/// array, which the accelerator keeps in scene order -- and never by the
+/// 24-bit custom index.
+/// The most top-level structures a stage is traced through. Mirrors
+/// SceneAccelerator::kMaxChunks.
+const uint HDCLAUDE_MAX_TLAS_CHUNKS = 8u;
+
 layout(set = 0, binding = 14, scalar) readonly buffer InstanceTable {
     uint64_t prototypes;
-    uint64_t placements;
     uint64_t history;
     uint64_t attributes;
+    /// Top-level structures, one per chunk of placements: chunk c holds
+    /// placements [c * chunkSize, (c + 1) * chunkSize), the last one fewer.
+    /// A ray is traced through each in turn; a ray query reports a
+    /// placement's index within its chunk, and the chunk's base is added.
+    uint chunkCount;
+    uint chunkSize;
+    uint64_t structures[HDCLAUDE_MAX_TLAS_CHUNKS];
+    /// Each chunk's instance array, which holds its placements' transforms.
+    uint64_t placements[HDCLAUDE_MAX_TLAS_CHUNKS];
     InstanceRecord records[];
 } instances;
+
+/// Chunk `chunk`'s top-level structure, from its address.
+accelerationStructureEXT hdclaude_chunk(uint chunk)
+{
+    return accelerationStructureEXT(instances.structures[chunk]);
+}
+
+/// The scene index of the first placement in chunk `chunk`.
+int hdclaude_chunk_base(uint chunk)
+{
+    return int(chunk * instances.chunkSize);
+}
 
 /// Placement `index`'s attribute: the row of every per-attribute table that
 /// describes it.
@@ -606,8 +631,11 @@ InstanceGeometry hdclaude_instance(int index)
         PrototypeTable(instances.prototypes).values[record.prototype];
     InstanceAttributes attributes =
         AttributeTable(instances.attributes).values[record.attributeIndex];
+    uint chunk = uint(index) / instances.chunkSize;
     mat3x4 objectToWorld =
-        PlacementTable(instances.placements).values[index].transform;
+        PlacementTable(instances.placements[chunk])
+            .values[uint(index) - chunk * instances.chunkSize]
+            .transform;
 
     InstanceGeometry geometry;
     geometry.positions = prototype.positions;

@@ -974,4 +974,26 @@
         parmtag { "usdvaluetype" "int" }
         disablewhen "{ republishAt_control == block } { republishAt_control == none }"
     }
+    parm {
+        name    "tlasChunkSize_control"
+        label   "TLAS chunk size"
+        type    string
+        default { "none" }
+        menujoin {
+            [ "import loputils" ]
+            [ "return loputils.createEditPropertiesControlMenu(kwargs, 'int')" ]
+            language python
+        }
+        parmtag { "sidefx::look" "icon" }
+    }
+    parm {
+        name    "tlasChunkSize"
+        label   "TLAS chunk size"
+        type    int
+        size    1
+        default { 0 }
+        parmtag { "spare_category" "Diagnostics" }
+        parmtag { "usdvaluetype" "int" }
+        disablewhen "{ tlasChunkSize_control == block } { tlasChunkSize_control == none }"
+    }
 }
