@@ -120,7 +120,14 @@ file(GENERATE
     OUTPUT "${CMAKE_BINARY_DIR}/plugin/usd/plugInfo.json"
     CONTENT "{\n    \"Includes\": [ \"*/resources/\" ]\n}\n")
 
-add_custom_command(TARGET hdClaude POST_BUILD
+# A target of its own that runs on every build, not a POST_BUILD step of the
+# library. The kernels are read at run time, so a change to a .glsl file
+# relinks nothing, and a step attached to the link never ran for one: the
+# build-tree plugin kept the previous kernels, and the USD tests -- which load
+# the build tree -- tested those while the install had the new ones
+# (docs/implementation-notes.md, 2026-11-11). Copying a few dozen files on
+# every build is cheaper than finding that out again.
+add_custom_target(hdClaudePluginResources ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_SOURCE_DIR}/shaders"
             "${HDCLAUDE_PLUGIN_RESOURCES}/shaders"
@@ -130,6 +137,7 @@ add_custom_command(TARGET hdClaude POST_BUILD
     COMMENT "hdClaude: assembling the plugin tree in ${CMAKE_BINARY_DIR}/plugin/usd"
     VERBATIM
 )
+add_dependencies(hdClaude hdClaudePluginResources)
 
 set(_plugins "${HDCLAUDE_PLUGIN_INSTALL_DIR}")
 install(TARGETS hdClaude
