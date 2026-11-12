@@ -2738,9 +2738,20 @@ vec3 hdclaude_any_perpendicular(vec3 n)
 /// the spheres are what make consecutive segments join without a gap or a
 /// crease -- a bare cone would leave both wherever the curve bends.
 ///
-/// Returns the nearest positive distance, or -1 when the ray misses. `pa`, `ra`
-/// and `pb`, `rb` are the two ends; the ray is in the same space as they are,
-/// which for this renderer is the instance's object space.
+/// Returns the nearest positive ray parameter, or -1 when the ray misses. `pa`,
+/// `ra` and `pb`, `rb` are the two ends; the ray is in the same space as they
+/// are, which for this renderer is the instance's object space.
+///
+/// That space is why the direction is normalised here. The algebra below holds
+/// only for a unit direction -- every term that should carry |d|^2 has dropped
+/// it -- and an object-space direction is unit only when the instance is
+/// unscaled: a placement scaled by s hands over a direction of length 1/s. The
+/// error grows with distance along the ray, so a scale of 0.93 turned the Moana
+/// island's 0.4-unit palm leaflets into a solid shell around each crown
+/// (docs/implementation-notes.md, 2026-11-12). The distance found along the
+/// unit direction is divided by the length to return the caller's own
+/// parameter, which is the world ray's t, since the object ray is the world ray
+/// transformed.
 ///
 /// The algebra is the standard one: the cone's surface is where the distance
 /// from the axis equals the linearly interpolated radius, which after squaring
@@ -2748,9 +2759,16 @@ vec3 hdclaude_any_perpendicular(vec3 n)
 /// difference, and it is what makes the slanted surface rather than a cylinder.
 /// The caps are two spheres, tried only when the quadratic's root falls outside
 /// the truncated part -- which is exactly where the surface *is* a cap.
-float hdclaude_intersect_segment(vec3 origin, vec3 direction, vec3 pa, float ra,
-                                 vec3 pb, float rb)
+float hdclaude_intersect_segment(vec3 origin, vec3 objectDirection, vec3 pa,
+                                 float ra, vec3 pb, float rb)
 {
+    float scale = length(objectDirection);
+    if (!(scale > 0.0))
+    {
+        return -1.0;
+    }
+    vec3 direction = objectDirection / scale;
+
     vec3 ba = pb - pa;
     vec3 oa = origin - pa;
     vec3 ob = origin - pb;
@@ -2777,7 +2795,7 @@ float hdclaude_intersect_segment(vec3 origin, vec3 direction, vec3 pa, float ra,
         // Between the two ends: the hit is on the slanted surface itself.
         if (y > 0.0 && y < d2 && t > 0.0)
         {
-            return t;
+            return t / scale;
         }
     }
 
@@ -2801,7 +2819,7 @@ float hdclaude_intersect_segment(vec3 origin, vec3 direction, vec3 pa, float ra,
             best = t;
         }
     }
-    return best;
+    return best < 0.0 ? best : best / scale;
 }
 
 /// The outward normal at a point on a segment, and how far along it that point

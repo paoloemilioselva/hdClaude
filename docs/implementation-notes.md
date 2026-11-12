@@ -8486,47 +8486,48 @@ Ptex is a separate gap: about 3,768 of the island's materials take colour or
 displacement from 7,288 `.ptx` maps (14 GB on disk), and there is no Ptex
 reader, nor a Ptex library in the USD builds here.
 
-## 2026-11-12 -- Why the island's hero palms render flat
+## 2026-11-12 -- Scaled curves grew until crowns were solid
 
-Under the stand-in sky, through palmsCam and beachCam, the `isPalmRig` palms
-and some canopies render as flat colour without shading or shadows: fronds
-teal, trunks purple, sheaths dark red, and the colour shifts as the camera
-moves. It looked like a defect of the several top-level structures, of shared
-attributes, or of a large-bounds BVH. It is none of them: it is what the
-stage asks for, shaded with displayColor.
+Under the stand-in sky, through palmsCam and beachCam, the island's hero palms
+and several canopies rendered as flat, shadowless shapes whose colour moved
+with the camera. The palm fronds' own file, loaded alone, rendered correctly.
 
-Established on the island with its lights deactivated, 16 samples, by pixel
-measurements in the linear renders:
+**The cause.** `hdclaude_intersect_segment`, the closed-form intersection of a
+curve segment's capsule, assumed a unit ray direction: every term that should
+carry |d|^2 had dropped it. The kernels hand it the *object-space* ray, whose
+direction is unit only for an unscaled placement; one scaled by s gives 1/s.
+The end-sphere test then reads `dist^2 - (|d|^2 - 1) along^2 < r^2`, an error
+that grows with distance along the ray. The island places every `isPalmRig`
+at a scale of 0.93 (|d| = 1.075), so about 200 units from the camera a segment
+within some 79 units of the ray was hit: 0.4-unit leaflets filled every gap
+and each crown became one solid shell, shaded like a single surface facing
+the viewer. A scale above 1 shrinks curves instead. The frond file alone is
+unscaled, which is why it rendered correctly, and `HDCLAUDE_CURVE_GEOMETRY=swept`
+rendered the same crown correctly in the island, which is what isolated it.
 
-* The picks are right. TestIntersection at the flat pixels returns
-  `/island/isPalmRig/...` prims, so the hit placement and its attribute row
-  are correct.
-* Not the chunks. `isPalmRig` alone (2,046 placements) through 7 chunks of 300
-  matches one structure within noise.
-* Bisecting the elements, the change follows `osOcean` alone, and either of its
-  meshes alone does it (`ocean_geo`, 14.9 M faces; `ocean_geo1`, 684 K), so it
-  is not one corrupt structure. Both lie *below* every palm: under the palms'
-  footprint they span y -1200 to -5, and `ocean_geo1`'s only vertices above
-  y 20 are 40-55 km away.
-* palmsCam sees only the undersides of the crowns. The palms alone render the
-  same with the sun at 0 and at 1, so the visible fronds are lit entirely from
-  below.
-* Both ocean meshes author `displayColor (0, 0, 1)`. The island's ocean is a
-  RenderMan water material over `deepWaterVolume.vdb`, which hdClaude cannot
-  use, so it is shaded as an opaque diffuse surface of reflectance 1 in blue
-  and 0 elsewhere. It replaces the grey lower sky as the light from below, and
-  returns only blue: the fronds go from (47, 101, 64) to (10, 63, 86) in sRGB,
-  and with the sun off as well to (12, 56, 60). The sun's bounce off the ocean
-  is the extra blue.
+The direction is now normalised in the function and the distance divided back
+by its length, so the result is still the caller's ray parameter. A render
+test places one segment through instances scaled by 0.93, 0.5 and 2 with its
+geometry divided to match, and requires the unscaled depths: before the fix
+3,313, 3,285 and 2,784 of 36,864 differed; after, none. palmsCam and beachCam
+render leaflets, needles and self-shadowing again.
 
-So the transport is right for the input. The flat look is shading lit only by
-diffuse bounce, and the colour is a pure-blue Lambertian sea. A render that
-wants the island's look needs the ocean overridden: deactivated, given a
-displayColor of real water's diffuse albedo, or kept away from secondary rays
-with a cull volume.
+**Ruled out on the way**, each by measurement on the island with its lights
+deactivated: the hit placement (TestIntersection at the flat pixels returns
+the right `/island/isPalmRig/...` prims); the several top-level structures
+(`isPalmRig` through 7 chunks of 300 matches one structure); and a corrupt or
+large-bounds structure.
 
-One real deviation was seen on the way. The fronds are `BasisCurves` with
-authored `normals`, which UsdGeomBasisCurves defines as ribbons facing those
-normals. hdClaude renders every curve as a round tube and ignores curve
-normals (surface_point.glsl). It does not cause the flat colour, but it does
-change how a frond catches light.
+**A separate effect that looked like part of it.** In the first renders the
+flat palms were teal and their trunks purple. That is `osOcean`: both its
+meshes author `displayColor (0, 0, 1)`, and with its RenderMan water material
+unusable the sea is an opaque diffuse surface reflecting all blue and nothing
+else. palmsCam sees the crowns' undersides, lit from below, so they took the
+sea's colour -- fronds (47, 101, 64) without it, (10, 63, 86) with it, (12, 56,
+60) with the sun off too. That transport is right for the input; a render that
+wants the island's look needs the ocean overridden.
+
+**An open deviation.** The fronds, pandanus leaves and beach grass are
+`BasisCurves` with authored `normals`, which UsdGeomBasisCurves defines as
+ribbons facing them. hdClaude renders every curve as a round tube and ignores
+curve normals (surface_point.glsl).

@@ -5147,6 +5147,73 @@ int main()
             CHECK_EQ(differing, std::size_t(0));
         }
 
+        // --- A scaled curve is the curve it describes ------------------------
+        //
+        // A segment placed through an instance scaled by `s`, with its points
+        // and radii divided by `s`, is the same capsule in world space as the
+        // unscaled one, and must render the same depths. The traversal kernels
+        // intersect a curve with the *object-space* ray, whose direction a
+        // scaled instance leaves at length 1/s, so this is where an intersection
+        // that assumed a unit direction shows. It did: the Moana island's palms
+        // are placed at a scale of 0.93, and their fronds' leaflets grew until
+        // each crown rendered as one solid, flat shell
+        // (docs/implementation-notes.md, 2026-11-12).
+        {
+            constexpr std::uint32_t kSize = 192;
+            constexpr float kRadius = 0.25f;
+
+            const auto depthOf = [&](float scale, std::uint64_t revision) {
+                Scene scene;
+                MeshPrototype strand;
+                strand.debugName = "scaled";
+                const float k = 1.0f / scale;
+                strand.segments = {
+                    0.0f, -1.0f * k, 0.0f, kRadius * k, 0.0f,
+                    0.0f,  1.0f * k, 0.0f, kRadius * k, 1.0f,
+                };
+                scene.prototypes.push_back(strand);
+                Transform3x4 placement;
+                placement.m[0] = scale;
+                placement.m[5] = scale;
+                placement.m[10] = scale;
+                scene.instances.push_back({0, placement, 0, true});
+                tracer.SetScene(scene, {materials[1]});
+
+                hdclaude::FrameDescription frame;
+                frame.width = kSize;
+                frame.height = kSize;
+                frame.camera = LookDownZWithClip(4.0f, 0.1f, 100.0f);
+                frame.mode = hdclaude::RenderMode::Reference;
+                frame.sceneRevision = revision;
+                frame.settings.samplesPerPixel = 1;
+                frame.settings.maxBounces = 1;
+                return tracer.EndFrame(tracer.BeginFrame(frame)).depth;
+            };
+
+            const std::vector<float> reference = depthOf(1.0f, 53);
+            CHECK_EQ(reference.size(), std::size_t(kSize) * kSize);
+            std::uint64_t revision = 54;
+            for (const float scale : {0.93f, 0.5f, 2.0f}) {
+                const std::vector<float> scaled = depthOf(scale, revision++);
+                CHECK_EQ(scaled.size(), reference.size());
+                std::size_t differing = 0;
+                double worst = 0.0;
+                for (std::size_t i = 0;
+                     i < std::min(scaled.size(), reference.size()); ++i) {
+                    const double delta =
+                        std::abs(double(scaled[i]) - double(reference[i]));
+                    if (delta > 1.0e-4) {
+                        ++differing;
+                        worst = std::max(worst, delta);
+                    }
+                }
+                std::printf("  curve under scale %.2f: %zu of %zu depths differ, "
+                            "worst %.6f\n",
+                            scale, differing, reference.size(), worst);
+                CHECK_EQ(differing, std::size_t(0));
+            }
+        }
+
         // --- The primary surface's reconstruction guides ----------------------
         //
         // What the integrator writes for Ray Reconstruction, checked against
