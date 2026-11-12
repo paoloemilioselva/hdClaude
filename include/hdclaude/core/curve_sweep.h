@@ -18,6 +18,7 @@
 // No USD here, and no Vulkan: this is arithmetic on flat arrays, so it is
 // testable without a device or a stage.
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -82,6 +83,19 @@ enum class CurveBasis {
     Bezier,
 };
 
+/// How a curve primvar's values are laid out over a curve set, as Hydra's
+/// interpolation tokens say. UsdGeomBasisCurves defines all four for curves,
+/// and `Varying` is the one that does not follow the vertices: on a cubic
+/// curve it is one value per segment end, interpolated linearly across each
+/// segment, and its count follows the segment-count table rather than the
+/// vertex count ("Primvar Interpolation" in UsdGeomBasisCurves).
+enum class CurveInterpolation {
+    Constant,
+    Uniform,
+    Varying,
+    Vertex,
+};
+
 /// A curve set reduced to polylines, ready for `SweepCurves`.
 struct CurvePolylines {
     std::vector<int> vertexCounts;
@@ -92,6 +106,10 @@ struct CurvePolylines {
     /// after evaluation, and only a per-vertex one has to be evaluated with the
     /// positions.
     std::vector<float> widths;
+    /// Interleaved xyz, one per point, when the set authors normals, and empty
+    /// when it does not. Unnormalised: an interpolated normal is a direction
+    /// only once `RibbonCurves` has made it perpendicular to the curve.
+    std::vector<float> normals;
 
     bool Valid() const { return !vertexCounts.empty(); }
 };
@@ -148,5 +166,52 @@ CurvePolylines EvaluateCurves(const std::vector<int>& vertexCounts,
                               const std::vector<float>& widths,
                               CurveBasis basis, bool periodic,
                               int samplesPerSegment, std::string* reason);
+
+/// The same, carrying the set's authored normals through the evaluation.
+///
+/// `normals` is interleaved xyz laid out as `normalsInterpolation` says, and
+/// its count must be the one UsdGeomBasisCurves gives that interpolation:
+/// one, one per curve, one per vertex, or the varying count (a nonperiodic
+/// curve's segments plus one, a periodic curve's segments). Any other count is
+/// refused by name. Vertex normals are evaluated through the basis exactly as
+/// the positions are; varying ones are interpolated linearly across each
+/// segment; constant and uniform ones are repeated. An empty `normals` is a
+/// set with none, and leaves `normals` empty in the result.
+CurvePolylines EvaluateCurves(const std::vector<int>& vertexCounts,
+                              const std::vector<float>& points,
+                              const std::vector<float>& widths,
+                              const std::vector<float>& normals,
+                              CurveInterpolation normalsInterpolation,
+                              CurveBasis basis, bool periodic,
+                              int samplesPerSegment, std::string* reason);
+
+/// Curves as ribbons: what UsdGeomBasisCurves draws when a set authors
+/// normals ("Tubes and Ribbons": curves with widths and normals are "imaged as
+/// ribbons oriented in the direction of the interpolated normal vectors", and
+/// their widths are the ribbon's width rather than a tube's diameter).
+///
+/// Each point of each polyline becomes two vertices, half the width either
+/// side of the curve along `cross(N, T)` -- where T is the curve's tangent and
+/// N its normal made perpendicular to it -- so the ribbon lies across the
+/// curve and faces N. Consecutive points are joined by two triangles, the
+/// strip Storm draws, and each vertex carries N as its shading normal and
+/// (u across, v along) as its texture coordinate, u running 0 to 1 the way
+/// `SweepCurves`' u runs around a tube.
+///
+/// A point whose orientation is undefined -- a normal that is zero or parallel
+/// to the curve, or a curve with no direction there -- is given no width: the
+/// ribbon narrows to nothing rather than taking an orientation the asset did
+/// not author. How many there were is returned in `unoriented` so the caller
+/// can report them against the prim.
+///
+/// `normals` is per point, as `EvaluateCurves` returns them; `widths` is read
+/// as `SweepCurves` reads it. Returns an empty mesh, and sets `reason`, when
+/// the input cannot be built.
+CurveMesh RibbonCurves(const std::vector<int>& vertexCounts,
+                       const std::vector<float>& points,
+                       const std::vector<float>& widths,
+                       const std::vector<float>& normals, float fallbackWidth,
+                       bool periodic, std::size_t* unoriented,
+                       std::string* reason);
 
 }  // namespace hdclaude

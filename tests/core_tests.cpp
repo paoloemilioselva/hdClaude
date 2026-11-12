@@ -968,6 +968,195 @@ void TestCurveSweepRefusesWhatItCannotSweep()
     std::printf("  curve sweep refuses bad input by name\n");
 }
 
+/// A ribbon lies across its curve and faces its normal (UsdGeomBasisCurves,
+/// Tubes and Ribbons): a straight curve along x with normal +z and width 2
+/// is the strip y in [-1, 1] in the plane z = 0, every vertex carries +z as
+/// its shading normal, and every triangle's own normal is +z too -- so the
+/// geometric and shading normals agree and neither shading side is guessed.
+/// The normal is authored tilted towards the curve, which the ribbon must
+/// take perpendicular to it rather than lean along it.
+void TestCurveRibbonsFaceTheirNormals()
+{
+    const std::vector<int> counts = {3};
+    const std::vector<float> points = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                                       2.0f, 0.0f, 0.0f};
+    const std::vector<float> normals = {0.5f, 0.0f, 1.0f, 0.5f, 0.0f, 1.0f,
+                                        0.5f, 0.0f, 1.0f};
+    std::size_t unoriented = 99;
+    std::string reason;
+    const hdclaude::CurveMesh ribbon = hdclaude::RibbonCurves(
+        counts, points, {2.0f}, normals, 1.0f, false, &unoriented, &reason);
+    CHECK(ribbon.Valid());
+    CHECK_EQ(unoriented, std::size_t(0));
+    CHECK_EQ(ribbon.positions.size(), std::size_t(3 * 2 * 3));
+    CHECK_EQ(ribbon.indices.size(), std::size_t(2 * 2 * 3));
+
+    for (std::size_t vertex = 0; vertex < ribbon.positions.size() / 3; ++vertex) {
+        const float x = ribbon.positions[vertex * 3 + 0];
+        const float y = ribbon.positions[vertex * 3 + 1];
+        const float z = ribbon.positions[vertex * 3 + 2];
+        CHECK_NEAR(x, float(vertex / 2), 1.0e-6);
+        CHECK_NEAR(std::abs(y), 1.0f, 1.0e-6);
+        CHECK_NEAR(z, 0.0f, 1.0e-6);
+        CHECK_NEAR(ribbon.normals[vertex * 3 + 0], 0.0f, 1.0e-6);
+        CHECK_NEAR(ribbon.normals[vertex * 3 + 1], 0.0f, 1.0e-6);
+        CHECK_NEAR(ribbon.normals[vertex * 3 + 2], 1.0f, 1.0e-6);
+        // u across the ribbon, v along the curve.
+        CHECK_NEAR(ribbon.uvs[vertex * 2 + 0], float(vertex % 2), 1.0e-6);
+        CHECK_NEAR(ribbon.uvs[vertex * 2 + 1], float(vertex / 2) * 0.5f, 1.0e-6);
+    }
+    for (std::size_t triangle = 0; triangle < ribbon.indices.size() / 3;
+         ++triangle) {
+        float p[3][3];
+        for (int corner = 0; corner < 3; ++corner) {
+            const std::uint32_t index = ribbon.indices[triangle * 3 + corner];
+            for (int axis = 0; axis < 3; ++axis) {
+                p[corner][axis] = ribbon.positions[index * 3 + axis];
+            }
+        }
+        const float e1[3] = {p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]};
+        const float e2[3] = {p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]};
+        const float nz = e1[0] * e2[1] - e1[1] * e2[0];
+        const float nx = e1[1] * e2[2] - e1[2] * e2[1];
+        const float ny = e1[2] * e2[0] - e1[0] * e2[2];
+        CHECK(nz > 0.0f);
+        CHECK_NEAR(nx, 0.0f, 1.0e-6);
+        CHECK_NEAR(ny, 0.0f, 1.0e-6);
+    }
+    std::printf("  curve ribbon: %zu triangles across y in [-1, 1], facing +z\n",
+                ribbon.indices.size() / 3);
+}
+
+/// What a ribbon cannot be built from is reported, not repaired. A normal
+/// along the curve gives no orientation, so the ribbon has no width there
+/// and the point is counted for the caller to report; a normals array of the
+/// wrong length for the points is refused.
+void TestCurveRibbonsReportWhatTheyCannotOrient()
+{
+    const std::vector<int> counts = {3};
+    const std::vector<float> points = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                                       2.0f, 0.0f, 0.0f};
+    // The middle normal is along x, which is the curve's own direction.
+    const std::vector<float> normals = {0.0f, 0.0f, 1.0f, 3.0f, 0.0f, 0.0f,
+                                        0.0f, 0.0f, 1.0f};
+    std::size_t unoriented = 0;
+    std::string reason;
+    const hdclaude::CurveMesh ribbon = hdclaude::RibbonCurves(
+        counts, points, {2.0f}, normals, 1.0f, false, &unoriented, &reason);
+    CHECK(ribbon.Valid());
+    CHECK_EQ(unoriented, std::size_t(1));
+    // The middle pair of vertices coincide on the curve.
+    CHECK_NEAR(ribbon.positions[2 * 3 + 1], 0.0f, 1.0e-6);
+    CHECK_NEAR(ribbon.positions[3 * 3 + 1], 0.0f, 1.0e-6);
+    // Its neighbours keep their width.
+    CHECK_NEAR(std::abs(ribbon.positions[0 * 3 + 1]), 1.0f, 1.0e-6);
+
+    reason.clear();
+    const hdclaude::CurveMesh shortNormals = hdclaude::RibbonCurves(
+        counts, points, {2.0f}, {0.0f, 0.0f, 1.0f}, 1.0f, false, nullptr,
+        &reason);
+    CHECK(!shortNormals.Valid());
+    CHECK(!reason.empty());
+    std::printf("  curve ribbon: %zu unoriented point narrowed, short normals "
+                "refused: %s\n",
+                unoriented, reason.c_str());
+}
+
+/// Normals follow their interpolation through a cubic evaluation as
+/// UsdGeomBasisCurves defines it ("Primvar Interpolation"). Vertex normals go
+/// through the basis like the positions: a uniform B-spline starts at
+/// (N0 + 4 N1 + N2) / 6. Varying ones are one per segment end -- a
+/// nonperiodic curve's segments plus one, the "+ 1" the schema warns is easy
+/// to remove by mistake -- and linear across each segment. Constant and
+/// uniform ones are repeated. A count matching none of these is refused.
+void TestCurveNormalsFollowTheirInterpolation()
+{
+    // Six collinear vertices: three B-spline segments.
+    std::vector<float> points;
+    for (int i = 0; i < 6; ++i) {
+        points.insert(points.end(), {float(i), 0.0f, 0.0f});
+    }
+    const std::vector<int> counts = {6};
+
+    // Vertex: each vertex's normal is (0, i, 1).
+    {
+        std::vector<float> normals;
+        for (int i = 0; i < 6; ++i) {
+            normals.insert(normals.end(), {0.0f, float(i), 1.0f});
+        }
+        std::string reason;
+        const hdclaude::CurvePolylines spline = hdclaude::EvaluateCurves(
+            counts, points, {}, normals, hdclaude::CurveInterpolation::Vertex,
+            hdclaude::CurveBasis::BSpline, false, 1, &reason);
+        CHECK(spline.Valid());
+        CHECK_EQ(spline.normals.size(), spline.points.size());
+        // (0 + 4 * 1 + 2) / 6 = 1 at the start, and each evaluated point one
+        // further on, as the positions are.
+        for (std::size_t point = 0; point < spline.normals.size() / 3; ++point) {
+            CHECK_NEAR(spline.normals[point * 3 + 1], 1.0f + float(point), 1.0e-5);
+            CHECK_NEAR(spline.normals[point * 3 + 2], 1.0f, 1.0e-5);
+        }
+    }
+
+    // Varying: four values for three segments, sampled twice a segment, so
+    // the midpoints are the averages of each segment's two ends.
+    {
+        const std::vector<float> normals = {0.0f, 0.0f, 1.0f, 0.0f, 2.0f, 1.0f,
+                                            0.0f, 2.0f, 1.0f, 0.0f, 6.0f, 1.0f};
+        std::string reason;
+        const hdclaude::CurvePolylines spline = hdclaude::EvaluateCurves(
+            counts, points, {}, normals, hdclaude::CurveInterpolation::Varying,
+            hdclaude::CurveBasis::BSpline, false, 2, &reason);
+        CHECK(spline.Valid());
+        const float expected[] = {0.0f, 1.0f, 2.0f, 2.0f, 2.0f, 4.0f, 6.0f};
+        CHECK_EQ(spline.normals.size(), std::size_t(7 * 3));
+        for (std::size_t point = 0; point < 7 && point * 3 < spline.normals.size();
+             ++point) {
+            CHECK_NEAR(spline.normals[point * 3 + 1], expected[point], 1.0e-5);
+        }
+
+        // Three, as though varying were per segment, is refused by name.
+        std::string countReason;
+        const hdclaude::CurvePolylines refused = hdclaude::EvaluateCurves(
+            counts, points, {},
+            std::vector<float>(normals.begin(), normals.begin() + 9),
+            hdclaude::CurveInterpolation::Varying, hdclaude::CurveBasis::BSpline,
+            false, 1, &countReason);
+        CHECK(!refused.Valid());
+        CHECK(!countReason.empty());
+        std::printf("  curve normals: varying count refused: %s\n",
+                    countReason.c_str());
+    }
+
+    // Uniform, over two curves, and constant: repeated onto every point.
+    {
+        const std::vector<int> two = {4, 4};
+        std::vector<float> eight;
+        for (int i = 0; i < 8; ++i) {
+            eight.insert(eight.end(), {float(i % 4), float(i / 4), 0.0f});
+        }
+        std::string reason;
+        const hdclaude::CurvePolylines uniform = hdclaude::EvaluateCurves(
+            two, eight, {}, {0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f},
+            hdclaude::CurveInterpolation::Uniform, hdclaude::CurveBasis::Bezier,
+            false, 2, &reason);
+        CHECK(uniform.Valid());
+        CHECK_EQ(uniform.normals.size(), uniform.points.size());
+        const std::size_t perCurve = uniform.normals.size() / 6;
+        CHECK_NEAR(uniform.normals[2], 1.0f, 1.0e-6);
+        CHECK_NEAR(uniform.normals[perCurve * 3 + 1], 1.0f, 1.0e-6);
+
+        const hdclaude::CurvePolylines linear = hdclaude::EvaluateCurves(
+            two, eight, {}, {1.0f, 0.0f, 0.0f},
+            hdclaude::CurveInterpolation::Constant, hdclaude::CurveBasis::Linear,
+            false, 1, &reason);
+        CHECK(linear.Valid());
+        CHECK_EQ(linear.normals.size(), eight.size());
+        CHECK_NEAR(linear.normals[eight.size() - 3], 1.0f, 1.0e-6);
+    }
+    std::printf("  curve normals follow vertex, varying, uniform and constant\n");
+}
+
 /// SSIM against the cases where its value is known without measuring it.
 ///
 /// A metric that is only ever run on renders can be wrong in a direction that
@@ -3001,6 +3190,9 @@ int main()
     TestCurveSweepIsARadiusFromItsAxis();
     TestCurveSweepIndicesAreInRange();
     TestCurveSweepRefusesWhatItCannotSweep();
+    TestCurveRibbonsFaceTheirNormals();
+    TestCurveRibbonsReportWhatTheyCannotOrient();
+    TestCurveNormalsFollowTheirInterpolation();
     TestCubicCurveBasesMatchTheirDefinitions();
     TestSsimMatchesItsDefinition();
     TestTemporalInstabilityMeasuresFlicker();

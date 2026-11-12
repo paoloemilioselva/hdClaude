@@ -179,6 +179,7 @@ if(HDCLAUDE_ENABLE_MATERIALX)
             "usd_material_edits|material_edits"
             "usd_purposes|purposes"
             "usd_unusable_materials|unusable_materials"
+            "usd_ribbon_curves|ribbon_curves"
             "usd_depth|depth"
             "usd_houdini_parameters|houdini_parameters")
       string(REPLACE "|" ";" _usd_test "${_usd_test}")

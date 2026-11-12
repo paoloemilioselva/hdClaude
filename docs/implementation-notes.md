@@ -8527,7 +8527,38 @@ sea's colour -- fronds (47, 101, 64) without it, (10, 63, 86) with it, (12, 56,
 60) with the sun off too. That transport is right for the input; a render that
 wants the island's look needs the ocean overridden.
 
-**An open deviation.** The fronds, pandanus leaves and beach grass are
-`BasisCurves` with authored `normals`, which UsdGeomBasisCurves defines as
-ribbons facing them. hdClaude renders every curve as a round tube and ignores
-curve normals (surface_point.glsl).
+## 2026-11-12 -- Ribbons
+
+The fronds, pandanus leaves and beach grass are `BasisCurves` with authored
+`normals`, which UsdGeomBasisCurves defines as ribbons: "curves with both
+widths and normals are imaged as ribbons oriented in the direction of the
+interpolated normal vectors", and a ribbon's width is its full width. hdClaude
+drew every curve as a tube and never read curve normals.
+
+Now a set that authors normals is built as ribbons in either curve mode
+(`RibbonCurves`, curve_sweep.cpp). Each evaluated point becomes two vertices
+half the width either side of the curve along cross(N, T), with N first made
+perpendicular to the tangent, and consecutive points are joined by two
+triangles wound so their own normal is N. That is the strip Storm draws, and
+because a ribbon is flat it is the ribbon rather than an approximation of one,
+up to the curve's own evaluation. It goes through the mesh path, so it is
+intersected, two-sided and shaded with N as the per-vertex shading normal,
+with u across and v along as a tube's texture coordinate runs.
+
+Normals are evaluated with the curve: vertex ones through the basis's weights
+like the positions, varying ones linearly across each segment, constant and
+uniform ones repeated. The varying count is the schema's segments plus one for
+a nonperiodic curve -- the "+ 1" its documentation says is easy to remove by
+mistake -- and a count matching none of the four is refused by name. A point
+where the normal is zero or along the curve leaves the ribbon no orientation;
+it is given no width there and the count goes into the prim's warning.
+
+Tests: core checks that a ribbon lies across its curve at the right width and
+faces its normal, triangles included, that an unorientable point narrows and is
+counted, and that each interpolation evaluates as defined; `usd_ribbon_curves`
+renders a ribbon facing the camera, the same ribbon edge-on, a tube and a
+varying-normal B-spline ribbon through usdrecord in both curve modes, and
+requires the edge-on one alone to leave the background open 0.8 units beside
+its centre line. On the island the palms are leaflet blades with a lit and a
+shadowed side, no ribbon is reported unorientable, and the ribbons add about
+10 M triangles and 270 MB at the device peak (12.58 to 12.85 GB).
