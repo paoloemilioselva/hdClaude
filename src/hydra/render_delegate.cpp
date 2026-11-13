@@ -51,6 +51,8 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (reconstructionAutoExposure)
                          (lightGeometry)
                          (cullVolumes)
+                         (hostInstanceData)
+                         (tlasChunkSize)
                          ((cullVolumePrimType, "cullVolume"))
                          (curveGeometry)
                          (splatTransport)
@@ -103,6 +105,8 @@ const std::vector<std::pair<TfToken, std::string>>& HdClaudeEnvironmentSettings(
         {_tokens->sunIntensity, "HDCLAUDE_SUN_INTENSITY"},
         {_tokens->lightGeometry, "HDCLAUDE_LIGHT_GEOMETRY"},
         {_tokens->cullVolumes, "HDCLAUDE_CULL_VOLUMES"},
+        {_tokens->hostInstanceData, "HDCLAUDE_HOST_INSTANCE_DATA"},
+        {_tokens->tlasChunkSize, "HDCLAUDE_TLAS_CHUNK_SIZE"},
         {_tokens->textureQuality, "HDCLAUDE_TEXTURE_QUALITY"},
         {_tokens->curveGeometry, "HDCLAUDE_CURVE_GEOMETRY"},
         {_tokens->curveSides, "HDCLAUDE_CURVE_SIDES"},
@@ -367,6 +371,26 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
                 << "startupFallbackMs "
                 << stages.startupFallbackMs.load(std::memory_order_relaxed)
                 << '\n';
+            // What the device-local peak was made of: per category, its
+            // bytes and allocation count at the peak and its bytes now. Still
+            // one `key number` a line, which is the whole of this file's
+            // contract with the scripts that read it; a category is part of
+            // the key, in brackets, and never contains a space.
+            if (_allocator) {
+                out << "deviceBytesAllocatedPeak "
+                    << _allocator->DeviceLocalAllocatedPeak() << '\n';
+                for (const auto& category : _allocator->DeviceLocalBreakdown()) {
+                    if (category.bytesAtPeak == 0 && category.bytes == 0) {
+                        continue;
+                    }
+                    out << "deviceMemoryPeak[" << category.name << "] "
+                        << category.bytesAtPeak << '\n'
+                        << "deviceMemoryPeakCount[" << category.name << "] "
+                        << category.countAtPeak << '\n'
+                        << "deviceMemoryExit[" << category.name << "] "
+                        << category.bytes << '\n';
+                }
+            }
         } else {
             TF_WARN("hdClaude: could not write the stats report to '%s'",
                     path.c_str());
@@ -857,7 +881,8 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         // The refinement depth. A ceiling rather than the answer once
         // `Adaptive subdivision` is on.
         {"Subdivision level", _tokens->subdivisionLevel,
-         VtValue(TfGetenvInt("HDCLAUDE_SUBDIVISION_LEVEL", 2))},
+         VtValue(TfGetenvInt("HDCLAUDE_SUBDIVISION_LEVEL",
+                             kHdClaudeDefaultSubdivisionLevel))},
 
         // Whether each mesh gets the level its projected size earns.
         //
@@ -1032,6 +1057,20 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         // them without editing the stage (docs/cull-volumes.md 4).
         {"Cull volumes", _tokens->cullVolumes,
          VtValue(TfGetenvBool("HDCLAUDE_CULL_VOLUMES", true))},
+        // On by default. The top-level instance array is read once a hit
+        // after its build, for the transform, and from system memory that
+        // cost 3.6% of trace time on 5.98 M island placements and nothing
+        // measurable on the Kitchen Set, against 64 bytes of device memory
+        // a placement. Off keeps it on the device, for a stage where every
+        // per cent of speed matters more than the memory.
+        {"Instance data in system memory", _tokens->hostInstanceData,
+         VtValue(TfGetenvBool("HDCLAUDE_HOST_INSTANCE_DATA", true))},
+        // Placements one top-level structure holds at most; 0 is the
+        // device's own limit, 16,777,215 on current hardware. A stage with
+        // more is traced through several. A diagnostic: a small value sends
+        // an ordinary stage down the path a production stage takes.
+        {"TLAS chunk size", _tokens->tlasChunkSize,
+         VtValue(TfGetenvInt("HDCLAUDE_TLAS_CHUNK_SIZE", 0))},
 
         // Reconstruction, and which model reconstructs.
         //

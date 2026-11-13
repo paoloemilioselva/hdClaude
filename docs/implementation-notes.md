@@ -8267,3 +8267,358 @@ the blocks compressed would mean BC formats in `TexelFormat` and a reducer that
 can halve them; it is worth doing if DDS-heavy scenes run out of memory. A
 two-channel BC5 normal map arrives as (R, G, 0), as a two-channel PNG would;
 nothing reconstructs Z.
+
+## 2026-11-11 -- What the Moana island holds on the device
+
+**The question.** Disney's Moana island (USD v2.1) does not load on a 16 GB
+RTX 5060 Ti. Peak bytes alone say that it is full, not what filled it, so the
+allocator now tallies device-local bytes by category -- the debug name with
+any per-object prefix folded away, so every prim's positions count as
+`*.positions` -- and `HDCLAUDE_STATS_REPORT` writes each category's share at
+the moment the sum peaked as `deviceMemoryPeak[<category>]` lines.
+
+**Measured** at subdivision level 0, `shotCam`, 512 px, with 6 GB of the card
+held by other applications: 49,087,499 instances of 49,346 bottom-level
+structures, 27.1 billion instanced triangles. Publish failed with
+`vmaCreateBuffer(tlas): VK_ERROR_OUT_OF_DEVICE_MEMORY` with 10.6 GB live:
+
+| category | bytes at peak | count |
+| --- | --- | --- |
+| `*.blas` | 3.71 GB | 49,346 |
+| `tlas.instances` | 3.14 GB | 1 |
+| `*.exr` | 0.82 GB | 1 |
+| `*.segments` | 0.75 GB | 177 |
+| `*.indices` | 0.57 GB | 49,169 |
+| `*.png` | 0.54 GB | 1 |
+| `*.aabbs` | 0.45 GB | 177 |
+| `*.positions` | 0.31 GB | 49,169 |
+| `*.normals` | 0.30 GB | 49,169 |
+
+The TLAS itself and its scratch had not been allocated yet, and neither had
+the instance table that follows it: `InstanceGeometry` is 248 bytes, so 49.1
+million of them are another 12.2 GB. Most of each record is the same for
+every instance of a prototype -- nine buffer addresses and four flags -- and
+two of its three transforms are derivable or usually absent. That table, not
+the geometry, is what keeps an instanced production stage off a 16 GB card.
+
+The island's 7,288 `.ptx` maps reach none of this: there is no Ptex reader.
+
+**Changed.** The instance table is now a 24-byte record per placement --
+prototype, material, history index, displayColor -- behind a header that
+points at a per-prototype table (88 bytes each) and at the top-level
+structure's own instance array, from which shaders read the transform.
+`worldToObject` is inverted where it is read, in InvertTransform3x4's order of
+operations; a previous placement is stored only for a placement that moved.
+Kernels index all of it by `rayQueryGetIntersectionInstanceIdEXT`, and the
+accelerator emits an inactive entry (null reference, VUID 12281) for a
+placement with no structure, so that index is the scene's.
+
+That also closes a silent defect: the custom index a kernel used to read is
+24 bits, so placement 16,777,216 shaded with placement 0's material and
+transform. And a scene over the device's `maxInstanceCount` (16,777,215 on
+the RTX 5060 Ti and on Intel) is now refused before anything is uploaded,
+naming both numbers, rather than built in violation of the specification.
+The whole island is such a scene, at 49,087,499.
+
+**Measured** on the island without `isBeach` and `isDunesB` (deactivated in an
+override layer): 5,977,743 placements, 13.5 billion instanced triangles,
+rendered at a 9.5 GB peak. `instanceTable` is 143 MB where 248-byte records
+would have been 1.48 GB. Per placement the device now holds 283 bytes: the
+top-level structure's own storage, 179 -- 1.07 GB here, and the largest
+per-placement cost left -- its 64-byte instance input, the 24-byte record and
+16 bytes of link, cull and pick words.
+
+## 2026-11-11 -- Compaction, measured
+
+**Bottom level: compacted.** Each mesh, curve and splat structure is built
+with ALLOW_COMPACTION, its compacted size queried in the same submission,
+and copied into a buffer of exactly that size; the original and its scratch
+are released at once, so only one structure is ever held twice. A structure
+built to be refitted is not compacted. On the island without `isBeach` and
+`isDunesB` (49,125 structures) the bottom level went from 3.60 GB to
+1.35 GB, the device peak from 9.54 GB to 7.26 GB, tracing was no slower, and
+publishing took 88 s rather than 73 s for the extra submission each.
+
+**Top level: not compacted.** The size a top-level build asks for is 179
+bytes an instance on the RTX 5060 Ti (driver 616.92), and the preference
+flags barely move it: LOW_MEMORY changes nothing, PREFER_FAST_BUILD saves 3%.
+Compacted, it came to 162 bytes -- 9% -- and for the length of the copy both
+are held, so the subset's top level peaked at 2.04 GB instead of 1.07 GB. On
+a stage whose largest allocation is its top level, compaction raises the
+peak that decides whether it fits. `HDCLAUDE_TRACE` prints what each
+preference would cost.
+
+**Two ways to lose the device, both made here first.** The size query must
+see ALLOW_COMPACTION: a compactable build can need more than the query
+without it reported, and building into the smaller size overran it on the
+first structure. And a barrier around the compacting copy must name the
+build stage, not ACCELERATION_STRUCTURE_COPY, which exists only with
+rayTracingMaintenance1 (VUID-VkMemoryBarrier2-srcStageMask-10752).
+`BuildAndCompact` refuses a build whose flags lack compaction.
+
+## 2026-11-11 -- The instance array, read from system memory
+
+After its build, the top-level structure's instance array is read only for a
+hit's transform: once a hit, by shading, and never by traversal. So it was
+tried in system memory (host-visible, not device-local; PCIe 5.0 x8 on this
+machine), at 1024 px and 32 samples, subdivision 0:
+
+| | in VRAM | in system memory |
+| --- | --- | --- |
+| island without `isBeach`, `isDunesB` (5.98 M placements), trace | 710 ms | 736 ms (+3.6%) |
+| -- extend / shade / shadow kernels | 10.23 / 3.08 / 4.59 ms | 10.50 / 3.08 / 5.12 ms |
+| -- device peak | 7.63 GB | 7.25 GB |
+| Kitchen Set (1,788 placements), trace | 334 ms | 311 ms |
+
+Identical traced-ray counts, so the same paths. The shadow kernel's share is
+its cut-out candidate loop, which assembles the candidate's instance. The
+Kitchen Set's difference is run-to-run noise: 114 KB stays in cache wherever
+it lives. It is now the `hostInstanceData` render setting
+(`HDCLAUDE_HOST_INSTANCE_DATA`), on by default, and its 64 bytes a placement
+are 3.1 GB on the whole island.
+
+A first attempt at this measurement rendered the island at subdivision 2 by
+mistake and traced for 32 s: the refined geometry no longer fitted beside
+what other applications held, and the device paged. Check the level before
+reading a time.
+
+## 2026-11-11 -- A kernel edit that did not reach the tests
+
+The build-tree plugin's kernels were copied by a POST_BUILD step of the
+`hdClaude` library, which runs only when the library links. A change to a
+`.glsl` file links nothing, so after one the build tree kept the previous
+kernels while the install had the new ones -- and the USD tests load the
+build tree. Found when `glsl_compiler` (which reads `shaders/`) passed and
+`usd_picking` reported a syntax error from a line already fixed. The copy is
+now the `hdClaudePluginResources` target, run on every build. Earlier runs in
+which kernels and C++ changed together were not affected: the link ran.
+
+## 2026-11-11 -- Per-placement attributes, shared
+
+A placement's record is now its prototype and an *attribute*: material,
+history index and displayColor in an attribute table, and the light-link
+words, cull word and pick ids in their bindings, all indexed by attribute.
+Placements that agree on every one of them share one, keyed on the bytes the
+shaders read, with the pick instance keyed as `index - pickInstance` so the
+placements of one instancer laid out in order agree. On the island subset:
+
+| | before | after |
+| --- | --- | --- |
+| records | 143.5 MB (24 B) | 47.8 MB (8 B) |
+| link, cull and pick words | 95.6 MB (16 B) | 0.9 MB |
+| attribute table | -- | 1.1 MB, 54,308 attributes |
+| device peak | 7.25 GB | 6.84 GB |
+
+All of it stays in device memory. Moving the records to system memory was
+measured first and made the material sort, which reads every path's record
+each bounce, six times slower; the link, cull and pick words cost nothing
+measurable there, but sharing them saves twice as much without leaving the
+device.
+
+The render test's timed check (one heavy material's share of shading,
+bound 0.75) read 0.85 in the commit before this and in this one alike, at
+216 s for the test against 185 s earlier in the day: the GPU's state, not the
+change. Every functional check passed in both.
+
+## 2026-11-11 -- Build-only boxes, and 16-bit indices
+
+A curve set's and a splat cloud's boxes are a build input and nothing else --
+intersection reads the segments and the particles, and neither is refitted --
+so they are released once the build has read them. A mesh of at most 65,536
+vertices stores 16-bit indices, padded to a whole word, and
+`surface_point.glsl` reads them as halves of 32-bit words, so the device needs
+no 16-bit storage access; a refit describes the same index type its build
+did. A render test pads a quad past 65,536 vertices and requires the same
+image to the bit. On the island subset: indices 554 MB to 414 MB (the large
+meshes keep 32-bit), the boxes (418 MB) gone from the peak, and the device
+peak 6.84 GB to 6.32 GB.
+
+## 2026-11-11 -- Several top-level structures
+
+A device builds at most `maxInstanceCount` placements into one top-level
+structure (16,777,215 here); the Moana island has 49,087,499. The accelerator
+now builds the placements in chunks of at most that many -- or of the
+`tlasChunkSize` setting, a diagnostic -- each a top-level structure over its
+own slice of the instance array, every chunk but the last exactly full. The
+instance table's header carries each chunk's structure and instance-array
+addresses; kernels build the structure from its address
+(`accelerationStructureEXT(uint64_t)`, which GL_EXT_ray_query alone allows,
+so no descriptor array and no indexing feature), trace a ray through each
+chunk in turn asking only for a hit nearer than the nearest so far (a shadow
+ray stops at the first chunk that occludes), and add the chunk's base to the
+reported instance id. A placement's transform is found by dividing its index
+by the chunk size. Up to eight chunks, 134 million placements; more is
+refused, naming the counts.
+
+Tested three ways: a render test draws four placements, one inactive, through
+chunks of 1 and of 3 and requires the single-structure image to the bit; and
+the USD tests were run with `HDCLAUDE_TLAS_CHUNK_SIZE=2`, which sends each
+through several structures. All passed except `usd_instancing`, whose 41
+placements make 21 chunks and are refused as they should be; at 6, seven
+chunks, it passes.
+
+The chunked run also found a defect left by the shared attributes:
+`specular_hit.comp.glsl` still read the cull word by placement index from a
+table now indexed by attribute. It affected only the specular-ray guide in a
+stage with cull-volume exceptions.
+
+## 2026-11-11 -- The whole Moana island, rendered
+
+With the changes of this day the whole island renders on the RTX 5060 Ti
+(16 GB, about 5 GB of it held by other applications at the time): 49,087,499
+placements of 49,346 prototypes, 27.1 billion instanced triangles, three
+top-level structures, subdivision 0. Through one engine and all seven of its
+cameras at 1024 px and 64 samples: publish 108 s, ingest 20 s, then 8.6 to
+12.9 s a camera, device peak 14.41 GB, nothing spilled. The top-level
+structures are 8.61 GB of that peak, the largest thing on the device by far.
+At the start of the day the same stage needed an estimated 25 GB and could
+not have been built at all past 16,777,215 placements.
+
+The island is shaded by the fallback: its materials are RenderMan networks
+with Ptex maps, which carry no HdMaterialNetworkMap hdClaude reads.
+
+Recording through `UsdAppUtils.FrameRecorder` at `Usd.TimeCode.Default()`
+rather than at time 0, as `usdrecord` does, published 3.65 million placements
+fewer: some of the island's attributes exist only as time samples, which have
+no value at the default time. A recording script must name a time.
+
+## 2026-11-11 -- A material hdClaude cannot use is no material
+
+The island's renders were one gold-grey. None of its 17,343 materials reaches
+hdClaude: each inherits `BaseMaterial` (`usd/materials/material.usda`), whose
+only surfaces are `outputs:ri:surface` (a `PxrDisneyBsdf`) and
+`outputs:glslfx:surface` (a `UsdPreviewSurface` fed by `HwPtexTexture_1`),
+and hdClaude asks Hydra for the `mtlx` context alone, so every material
+arrives with no HdMaterialNetworkMap -- including the ones with no Ptex map,
+which set only constant Disney parameters. A bound material that could not be
+used was shaded with material index 0, a 50% grey, and the island's key
+lights are `(1, 0.57, 0.17)`: hence gold. Its meshes do author
+`displayColor` (the mountain's is a dark green), and it was ignored because a
+material was bound.
+
+That contradicted architecture.md 1.1, which already said a terminal MaterialX
+does not declare is reported and shaded with `displayColor`, and the
+compiler's own message, which said "shaded with displayColor instead" while
+compiling a grey diffuse. A material hdClaude cannot use is, to the renderer,
+no material, so what binds it now falls back as unbound geometry does: the
+snapshot gives such a material no index, and a binding with no index resolves
+to the shared `displayColor` material. Index 0's grey is left for when that
+material itself is missing. The compiler no longer builds a grey program for
+each network it rejects -- nothing would use it -- so `Compile` loses its
+fallback colour and a rejected network's result carries only its reason.
+
+`usd_unusable_materials` binds red-`displayColor` cubes to a glslfx-only, a
+RenderMan-only and a non-MaterialX-surface material, and requires each to
+render as the unbound cube does, beside a MaterialX cube that must keep its
+own blue. A DistantLight would not do to light it: hdClaude reads its
+intensity as radiance over the 0.53-degree disc, so intensity 3 lights
+nothing visible (the island's sun has exposure 13.6); a uniform dome renders
+an unoccluded diffuse face at its albedo.
+
+Rendered again through all seven cameras, the island reads as itself -- a
+green mountain and canopy, brown trunks and sand, a blue ocean -- at the same
+14.41 GB device peak. What remains is noise (64 samples, no denoiser) and
+everything a Ptex map would add.
+
+Ptex is a separate gap: about 3,768 of the island's materials take colour or
+displacement from 7,288 `.ptx` maps (14 GB on disk), and there is no Ptex
+reader, nor a Ptex library in the USD builds here.
+
+## 2026-11-12 -- Scaled curves grew until crowns were solid
+
+Under the stand-in sky, through palmsCam and beachCam, the island's hero palms
+and several canopies rendered as flat, shadowless shapes whose colour moved
+with the camera. The palm fronds' own file, loaded alone, rendered correctly.
+
+**The cause.** `hdclaude_intersect_segment`, the closed-form intersection of a
+curve segment's capsule, assumed a unit ray direction: every term that should
+carry |d|^2 had dropped it. The kernels hand it the *object-space* ray, whose
+direction is unit only for an unscaled placement; one scaled by s gives 1/s.
+The end-sphere test then reads `dist^2 - (|d|^2 - 1) along^2 < r^2`, an error
+that grows with distance along the ray. The island places every `isPalmRig`
+at a scale of 0.93 (|d| = 1.075), so about 200 units from the camera a segment
+within some 79 units of the ray was hit: 0.4-unit leaflets filled every gap
+and each crown became one solid shell, shaded like a single surface facing
+the viewer. A scale above 1 shrinks curves instead. The frond file alone is
+unscaled, which is why it rendered correctly, and `HDCLAUDE_CURVE_GEOMETRY=swept`
+rendered the same crown correctly in the island, which is what isolated it.
+
+The direction is now normalised in the function and the distance divided back
+by its length, so the result is still the caller's ray parameter. A render
+test places one segment through instances scaled by 0.93, 0.5 and 2 with its
+geometry divided to match, and requires the unscaled depths: before the fix
+3,313, 3,285 and 2,784 of 36,864 differed; after, none. palmsCam and beachCam
+render leaflets, needles and self-shadowing again.
+
+**Ruled out on the way**, each by measurement on the island with its lights
+deactivated: the hit placement (TestIntersection at the flat pixels returns
+the right `/island/isPalmRig/...` prims); the several top-level structures
+(`isPalmRig` through 7 chunks of 300 matches one structure); and a corrupt or
+large-bounds structure.
+
+**A separate effect that looked like part of it.** In the first renders the
+flat palms were teal and their trunks purple. That is `osOcean`: both its
+meshes author `displayColor (0, 0, 1)`, and with its RenderMan water material
+unusable the sea is an opaque diffuse surface reflecting all blue and nothing
+else. palmsCam sees the crowns' undersides, lit from below, so they took the
+sea's colour -- fronds (47, 101, 64) without it, (10, 63, 86) with it, (12, 56,
+60) with the sun off too. That transport is right for the input; a render that
+wants the island's look needs the ocean overridden.
+
+## 2026-11-12 -- Ribbons
+
+The fronds, pandanus leaves and beach grass are `BasisCurves` with authored
+`normals`, which UsdGeomBasisCurves defines as ribbons: "curves with both
+widths and normals are imaged as ribbons oriented in the direction of the
+interpolated normal vectors", and a ribbon's width is its full width. hdClaude
+drew every curve as a tube and never read curve normals.
+
+Now a set that authors normals is built as ribbons in either curve mode
+(`RibbonCurves`, curve_sweep.cpp). Each evaluated point becomes two vertices
+half the width either side of the curve along cross(N, T), with N first made
+perpendicular to the tangent, and consecutive points are joined by two
+triangles wound so their own normal is N. That is the strip Storm draws, and
+because a ribbon is flat it is the ribbon rather than an approximation of one,
+up to the curve's own evaluation. It goes through the mesh path, so it is
+intersected, two-sided and shaded with N as the per-vertex shading normal,
+with u across and v along as a tube's texture coordinate runs.
+
+Normals are evaluated with the curve: vertex ones through the basis's weights
+like the positions, varying ones linearly across each segment, constant and
+uniform ones repeated. The varying count is the schema's segments plus one for
+a nonperiodic curve -- the "+ 1" its documentation says is easy to remove by
+mistake -- and a count matching none of the four is refused by name. A point
+where the normal is zero or along the curve leaves the ribbon no orientation;
+it is given no width there and the count goes into the prim's warning.
+
+Tests: core checks that a ribbon lies across its curve at the right width and
+faces its normal, triangles included, that an unorientable point narrows and is
+counted, and that each interpolation evaluates as defined; `usd_ribbon_curves`
+renders a ribbon facing the camera, the same ribbon edge-on, a tube and a
+varying-normal B-spline ribbon through usdrecord in both curve modes, and
+requires the edge-on one alone to leave the background open 0.8 units beside
+its centre line. On the island the palms are leaflet blades with a lit and a
+shadowed side, no ribbon is reported unorientable, and the ribbons add about
+10 M triangles and 270 MB at the device peak (12.58 to 12.85 GB).
+
+## 2026-11-13 -- Merging fog volumes into the shared instance table
+
+The fog volumes (2026-11-03) and the Moana island's instance-table work
+(2026-11-11) were written on separate branches, and the merge applied cleanly
+apart from five textual conflicts. Two defects did not show as conflicts:
+
+- `fog.glsl` traced its boundary crossings through `sceneTlas` alone, read the
+  hit placement from the 24-bit custom index, and read a volume's transform
+  from `instances.values[]`, a table that no longer exists. Its crossings now
+  go through every top-level chunk, as `extend` does, asking each for a hit
+  nearer than the nearest so far, with the placement taken as the chunk's base
+  plus `rayQueryGetIntersectionInstanceIdEXT`; transforms come from
+  `hdclaude_instance`.
+- A fog boundary's material was compiled as a diffuse of `Compile`'s fallback
+  colour, a parameter the unusable-material change had removed. The colour is
+  now a constant: the boundary carries only `kInstanceMaskFog`, so no ray
+  shades it.
+
+All 23 tests pass, and `usd_fog_volumes`, `usd_ray_visibility` and
+`usd_cull_volumes` pass again with `HDCLAUDE_TLAS_CHUNK_SIZE=2`, which sends each
+scene through several top-level structures.

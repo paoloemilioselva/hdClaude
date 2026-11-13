@@ -50,6 +50,7 @@ FOLDERS = [
                   "curveSegmentSamples", "sphereRadial", "sphereAxial",
                   "splatTransport", "cullVolumes"]),
     ("Textures", ["textureQuality"]),
+    ("Memory", ["hostInstanceData"]),
     ("Reconstruction", ["reconstruction", "reconstructionModel",
                         "reconstructionPreset", "reconstructionAutoExposure",
                         "dlssRuntimeDirectory"]),
@@ -57,7 +58,7 @@ FOLDERS = [
     ("Diagnostics", ["device", "shaderDirectory", "statsReport",
                      "vulkanValidation", "trace", "profileKernels",
                      "poisonPathState", "dumpShaders", "frameLog",
-                     "repeatRenders", "republishAt"]),
+                     "repeatRenders", "republishAt", "tlasChunkSize"]),
 ]
 
 # Folders shown in the viewport's Display Options. Diagnostics are for a
@@ -66,7 +67,7 @@ FOLDERS = [
 # is what the viewport itself reads: the package sets the depth style to the
 # one UsdRenderers.json declares, and a viewport control could only break it.
 VIEWPORT_FOLDERS = {"Sampling", "Lighting", "Geometry", "Textures",
-                    "Reconstruction"}
+                    "Memory", "Reconstruction"}
 
 # The values a string setting accepts, as the delegate parses them.
 MENUS = {

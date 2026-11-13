@@ -387,8 +387,16 @@ layout(buffer_reference, scalar) readonly buffer GridOffsetBuffer { uint values[
 layout(buffer_reference, scalar) readonly buffer GridIndexBuffer { uint values[]; };
 layout(buffer_reference, scalar) readonly buffer HarmonicBuffer { float values[]; };
 
-/// Per-instance geometry, reached by device address so that adding a prototype
-/// does not touch any descriptor set.
+/// Everything a kernel knows about one placement, assembled by
+/// `hdclaude_instance` from the three things that are actually stored: the
+/// placement's own record, its prototype's record, and its entry in the
+/// top-level structure's instance array.
+///
+/// Not stored like this. It used to be, at 248 bytes a placement, and on a
+/// production stage that is the largest allocation there is: the Moana island's
+/// 49 million placements made it 12.2 GB, of which every byte but the material,
+/// the colour and one transform was either the same for every placement of a
+/// prototype or derivable (docs/implementation-notes.md, 2026-11-11).
 struct InstanceGeometry {
     uint64_t positions;
     uint64_t indices;
@@ -435,15 +443,13 @@ struct InstanceGeometry {
     /// `hdclaude::SplatKernel`: 0 ellipsoid, 1 Gaussian surflet, 2 constant
     /// surflet.
     uint splatKernel;
+    /// 1 when `indices` are 16-bit, two to a word (surface_point.glsl).
+    uint indices16;
     /// The placement's displayColor, which the shared material for unbound
-    /// geometry reads through a `displayColor` geomprop. Carried per instance
+    /// geometry reads through a `displayColor` geomprop. Carried per placement
     /// rather than baked into a material: one material per colour cost a
     /// MaterialX generation, a SPIR-V compile and a pipeline for every unbound
     /// mesh in the stage.
-    ///
-    /// Also what keeps this struct free of *implicit* padding: nine addresses,
-    /// three matrices, five words and three floats, 248 bytes. See the mirror
-    /// in path_tracer.cpp for why that matters.
     vec3 displayColor;
 };
 
@@ -495,9 +501,193 @@ uint hdclaude_material_of(InstanceGeometry geometry, int primitive)
     }
     return geometry.material;
 }
+/// What every placement of one prototype shares. Mirrors PrototypeGeometry in
+/// path_tracer.cpp: nine addresses and six words, 96 bytes.
+struct PrototypeGeometry {
+    uint64_t positions;
+    uint64_t indices;
+    uint64_t segments;
+    uint64_t normals;
+    uint64_t uvs;
+    uint64_t triangleMaterials;
+    uint64_t splats;
+    uint64_t harmonics;
+    uint64_t splatVolume;
+    uint uvsPerCorner;
+    uint normalsPerCorner;
+    uint harmonicsDegree;
+    uint splatKernel;
+    uint indices16;
+    uint reserved;
+};
+
+/// What is a placement's own: its prototype, and the attributes it shares
+/// with every placement that agrees with it on all of them. Mirrors
+/// InstanceRecord in path_tracer.cpp: 8 bytes.
+struct InstanceRecord {
+    uint prototype;
+    uint attributeIndex;
+};
+
+/// What placements share. Mirrors InstanceAttributes in path_tracer.cpp: 20
+/// bytes. `history` indexes the previous-placement table, or is
+/// HDCLAUDE_NO_HISTORY when the placement has not moved, which is nearly all
+/// of them. The same index reaches the attribute's light-link words, cull word
+/// and pick ids in their own bindings.
+struct InstanceAttributes {
+    uint material;
+    uint history;
+    vec3 displayColor;
+};
+
+const uint HDCLAUDE_NO_HISTORY = 0xFFFFFFFFu;
+
+/// VkAccelerationStructureInstanceKHR, as the top-level build read it. Only the
+/// transform is used: it is the placement's object-to-world, row-major 3x4,
+/// which is how every `mat3x4` here is stored.
+struct TopLevelInstance {
+    mat3x4 transform;
+    uint customIndexAndMask;
+    uint bindingOffsetAndFlags;
+    uint64_t structure;
+};
+
+layout(buffer_reference, scalar) readonly buffer PrototypeTable { PrototypeGeometry values[]; };
+layout(buffer_reference, scalar) readonly buffer PlacementTable { TopLevelInstance values[]; };
+layout(buffer_reference, scalar) readonly buffer HistoryTable   { mat3x4 values[]; };
+layout(buffer_reference, scalar) readonly buffer AttributeTable { InstanceAttributes values[]; };
+
+/// Indexed by a placement's scene index: its chunk's base plus
+/// rayQueryGetIntersectionInstanceIdEXT, its position in the chunk's instance
+/// array, which the accelerator keeps in scene order -- and never by the
+/// 24-bit custom index.
+/// The most top-level structures a stage is traced through. Mirrors
+/// SceneAccelerator::kMaxChunks.
+const uint HDCLAUDE_MAX_TLAS_CHUNKS = 8u;
+
 layout(set = 0, binding = 14, scalar) readonly buffer InstanceTable {
-    InstanceGeometry values[];
+    uint64_t prototypes;
+    uint64_t history;
+    uint64_t attributes;
+    /// Top-level structures, one per chunk of placements: chunk c holds
+    /// placements [c * chunkSize, (c + 1) * chunkSize), the last one fewer.
+    /// A ray is traced through each in turn; a ray query reports a
+    /// placement's index within its chunk, and the chunk's base is added.
+    uint chunkCount;
+    uint chunkSize;
+    uint64_t structures[HDCLAUDE_MAX_TLAS_CHUNKS];
+    /// Each chunk's instance array, which holds its placements' transforms.
+    uint64_t placements[HDCLAUDE_MAX_TLAS_CHUNKS];
+    InstanceRecord records[];
 } instances;
+
+/// Chunk `chunk`'s top-level structure, from its address.
+accelerationStructureEXT hdclaude_chunk(uint chunk)
+{
+    return accelerationStructureEXT(instances.structures[chunk]);
+}
+
+/// The scene index of the first placement in chunk `chunk`.
+int hdclaude_chunk_base(uint chunk)
+{
+    return int(chunk * instances.chunkSize);
+}
+
+/// Placement `index`'s attribute: the row of every per-attribute table that
+/// describes it.
+uint hdclaude_attribute(int index)
+{
+    return instances.records[index].attributeIndex;
+}
+
+/// The inverse of an affine row-major 3x4, in the order of operations
+/// InvertTransform3x4 in path_tracer.cpp uses, which is what computed it
+/// before it was computed here. A singular transform inverts to zero there and
+/// here alike.
+mat3x4 hdclaude_invert_transform(mat3x4 m)
+{
+    float a = m[0][0], b = m[0][1], c = m[0][2];
+    float d = m[1][0], e = m[1][1], f = m[1][2];
+    float g = m[2][0], h = m[2][1], i = m[2][2];
+
+    precise float det =
+        a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    float inv = det != 0.0 ? 1.0 / det : 0.0;
+
+    precise mat3x4 o;
+    o[0][0] = (e * i - f * h) * inv;
+    o[0][1] = (c * h - b * i) * inv;
+    o[0][2] = (b * f - c * e) * inv;
+    o[1][0] = (f * g - d * i) * inv;
+    o[1][1] = (a * i - c * g) * inv;
+    o[1][2] = (c * d - a * f) * inv;
+    o[2][0] = (d * h - e * g) * inv;
+    o[2][1] = (b * g - a * h) * inv;
+    o[2][2] = (a * e - b * d) * inv;
+
+    float tx = m[0][3], ty = m[1][3], tz = m[2][3];
+    o[0][3] = -(o[0][0] * tx + o[0][1] * ty + o[0][2] * tz);
+    o[1][3] = -(o[1][0] * tx + o[1][1] * ty + o[1][2] * tz);
+    o[2][3] = -(o[2][0] * tx + o[2][1] * ty + o[2][2] * tz);
+    return o;
+}
+
+/// Placement `index`, as one struct. What a kernel does not read of it costs
+/// nothing: the loads and the inverse are dead code to the compiler.
+InstanceGeometry hdclaude_instance(int index)
+{
+    InstanceRecord record = instances.records[index];
+    PrototypeGeometry prototype =
+        PrototypeTable(instances.prototypes).values[record.prototype];
+    InstanceAttributes attributes =
+        AttributeTable(instances.attributes).values[record.attributeIndex];
+    uint chunk = uint(index) / instances.chunkSize;
+    mat3x4 objectToWorld =
+        PlacementTable(instances.placements[chunk])
+            .values[uint(index) - chunk * instances.chunkSize]
+            .transform;
+
+    InstanceGeometry geometry;
+    geometry.positions = prototype.positions;
+    geometry.indices = prototype.indices;
+    geometry.segments = prototype.segments;
+    geometry.normals = prototype.normals;
+    geometry.uvs = prototype.uvs;
+    geometry.triangleMaterials = prototype.triangleMaterials;
+    geometry.splats = prototype.splats;
+    geometry.harmonics = prototype.harmonics;
+    geometry.splatVolume = prototype.splatVolume;
+    geometry.objectToWorld = objectToWorld;
+    geometry.worldToObject = hdclaude_invert_transform(objectToWorld);
+    geometry.previousObjectToWorld =
+        attributes.history == HDCLAUDE_NO_HISTORY
+            ? objectToWorld
+            : HistoryTable(instances.history).values[attributes.history];
+    geometry.material = attributes.material;
+    geometry.uvsPerCorner = prototype.uvsPerCorner;
+    geometry.normalsPerCorner = prototype.normalsPerCorner;
+    geometry.harmonicsDegree = prototype.harmonicsDegree;
+    geometry.splatKernel = prototype.splatKernel;
+    geometry.indices16 = prototype.indices16;
+    geometry.displayColor = attributes.displayColor;
+    return geometry;
+}
+
+/// Placement `index`'s material and the address of its prototype's
+/// per-primitive materials: all the material sort needs, without assembling
+/// the rest.
+uint hdclaude_instance_material(int index, int primitive)
+{
+    InstanceRecord record = instances.records[index];
+    uint64_t perPrimitive =
+        PrototypeTable(instances.prototypes).values[record.prototype]
+            .triangleMaterials;
+    if (perPrimitive != 0ul)
+    {
+        return TriMaterialBuffer(perPrimitive).values[primitive];
+    }
+    return AttributeTable(instances.attributes).values[record.attributeIndex].material;
+}
 
 // --- Lights -----------------------------------------------------------------
 //
@@ -565,8 +755,8 @@ layout(set = 0, binding = 15, scalar) readonly buffer LightTable {
 // and tells every rprim which categories include it; a light names a category
 // by index, and -1 is the collection that includes everything.
 //
-// Membership is one bit a category, `frame.linkWords` words an instance,
-// indexed by the instance's custom index.
+// Membership is one bit a category, `frame.linkWords` words an attribute,
+// reached through the placement's record (hdclaude_attribute).
 layout(set = 0, binding = 31, scalar) readonly buffer InstanceLinks {
     uint values[];
 } instanceLinks;
@@ -590,7 +780,7 @@ bool hdclaude_linked(int instance, int category)
     {
         return true;
     }
-    uint word = instanceLinks.values[uint(instance) * frame.linkWords +
+    uint word = instanceLinks.values[hdclaude_attribute(instance) * frame.linkWords +
                                      uint(category) / 32u];
     return ((word >> (uint(category) % 32u)) & 1u) != 0u;
 }
@@ -660,18 +850,25 @@ layout(set = 0, binding = 33, scalar) readonly buffer CullVolumes {
     CullVolume values[];
 } cullVolumes;
 
-// Which volumes cull each placement, one bit a volume, by custom index.
+// Which volumes cull each placement, one bit a volume, by attribute.
 layout(set = 0, binding = 34, scalar) readonly buffer InstanceCullLinks {
     uint values[];
 } instanceCullLinks;
 
 // --- Picking ----------------------------------------------------------------
 
-// What the host calls each placement, two ints by custom index: Hydra's prim
-// id and instance index. Opaque here; the guides kernel copies them out.
+// What the host calls each placement, two ints by attribute: Hydra's prim id,
+// and the base the placement's instance index is counted from -- the index is
+// the placement's own index minus it, which is what lets every placement of
+// an instancer share one attribute. Opaque otherwise; the guides kernel
+// reports them.
 layout(set = 0, binding = 35, scalar) readonly buffer InstancePicks {
     ivec2 values[];
 } instancePicks;
+
+/// A pick base meaning the placement has no pick instance: it reports -1.
+/// Any other base is subtracted from the placement's index to give it.
+const int HDCLAUDE_NO_PICK_INSTANCE = int(0x80000000u);
 
 // The primary hit's pick ids, one ivec2 per pixel, (-1, -1) for a miss. A guide
 // like depth: the last sample wins.
@@ -2603,9 +2800,20 @@ vec3 hdclaude_any_perpendicular(vec3 n)
 /// the spheres are what make consecutive segments join without a gap or a
 /// crease -- a bare cone would leave both wherever the curve bends.
 ///
-/// Returns the nearest positive distance, or -1 when the ray misses. `pa`, `ra`
-/// and `pb`, `rb` are the two ends; the ray is in the same space as they are,
-/// which for this renderer is the instance's object space.
+/// Returns the nearest positive ray parameter, or -1 when the ray misses. `pa`,
+/// `ra` and `pb`, `rb` are the two ends; the ray is in the same space as they
+/// are, which for this renderer is the instance's object space.
+///
+/// That space is why the direction is normalised here. The algebra below holds
+/// only for a unit direction -- every term that should carry |d|^2 has dropped
+/// it -- and an object-space direction is unit only when the instance is
+/// unscaled: a placement scaled by s hands over a direction of length 1/s. The
+/// error grows with distance along the ray, so a scale of 0.93 turned the Moana
+/// island's 0.4-unit palm leaflets into a solid shell around each crown
+/// (docs/implementation-notes.md, 2026-11-12). The distance found along the
+/// unit direction is divided by the length to return the caller's own
+/// parameter, which is the world ray's t, since the object ray is the world ray
+/// transformed.
 ///
 /// The algebra is the standard one: the cone's surface is where the distance
 /// from the axis equals the linearly interpolated radius, which after squaring
@@ -2613,9 +2821,16 @@ vec3 hdclaude_any_perpendicular(vec3 n)
 /// difference, and it is what makes the slanted surface rather than a cylinder.
 /// The caps are two spheres, tried only when the quadratic's root falls outside
 /// the truncated part -- which is exactly where the surface *is* a cap.
-float hdclaude_intersect_segment(vec3 origin, vec3 direction, vec3 pa, float ra,
-                                 vec3 pb, float rb)
+float hdclaude_intersect_segment(vec3 origin, vec3 objectDirection, vec3 pa,
+                                 float ra, vec3 pb, float rb)
 {
+    float scale = length(objectDirection);
+    if (!(scale > 0.0))
+    {
+        return -1.0;
+    }
+    vec3 direction = objectDirection / scale;
+
     vec3 ba = pb - pa;
     vec3 oa = origin - pa;
     vec3 ob = origin - pb;
@@ -2642,7 +2857,7 @@ float hdclaude_intersect_segment(vec3 origin, vec3 direction, vec3 pa, float ra,
         // Between the two ends: the hit is on the slanted surface itself.
         if (y > 0.0 && y < d2 && t > 0.0)
         {
-            return t;
+            return t / scale;
         }
     }
 
@@ -2666,7 +2881,7 @@ float hdclaude_intersect_segment(vec3 origin, vec3 direction, vec3 pa, float ra,
             best = t;
         }
     }
-    return best;
+    return best < 0.0 ? best : best / scale;
 }
 
 /// The outward normal at a point on a segment, and how far along it that point

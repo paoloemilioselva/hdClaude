@@ -871,7 +871,18 @@ class PathTracer {
     std::vector<std::uint32_t> _traversalTextureSlots;
 
     std::unique_ptr<SceneAccelerator> _accelerator;
+    /// A header of three addresses, then one 24-byte record per placement.
     VulkanBuffer _instanceTable;
+    /// One record per mesh prototype, then per splat prototype, then a zeroed
+    /// one that a placement without a structure points at.
+    VulkanBuffer _prototypeTable;
+    /// The previous placement of each instance in `_instancesWithHistory`, in
+    /// that order; absent when nothing moved.
+    VulkanBuffer _historyTable;
+    /// What placements share: one record per distinct material, history,
+    /// colour, link, cull and pick combination.
+    VulkanBuffer _attributeTable;
+    std::uint32_t _attributeCount = 0;
     std::uint32_t _instanceCount = 0;
     VulkanBuffer _triangleMaterials;
     /// One majorant-grid record per splat prototype, pointed at by every
@@ -1108,6 +1119,9 @@ class PathTracer {
     /// current placement copied over its previous one on the device, as the
     /// camera's history is advanced, and the list is emptied.
     std::vector<std::uint32_t> _instancesWithHistory;
+    /// The size of the history table those entries were published with,
+    /// kept because the list is emptied once a frame consumes it.
+    std::size_t _historySlots = 0;
 
     /// Whether a reference render has already been told that the fixed
     /// sub-pixel offset it asked for is not something a reference render has.

@@ -133,20 +133,31 @@ int hdclaude_fog_crossings(vec3 origin, vec3 direction,
     float t = 0.0;
     for (int k = 0; k < HDCLAUDE_FOG_MAX_CROSSINGS; ++k)
     {
-        rayQueryEXT query;
-        rayQueryInitializeEXT(query, sceneTlas, gl_RayFlagsOpaqueEXT,
-                              HDCLAUDE_MASK_FOG, origin, t, direction, 1.0e30);
-        while (rayQueryProceedEXT(query))
+        // The nearest boundary across every top-level chunk, each asked only
+        // for a hit nearer than the nearest so far.
+        float hit = 1.0e30;
+        int instance = -1;
+        for (uint chunk = 0u; chunk < instances.chunkCount; ++chunk)
         {
+            rayQueryEXT query;
+            rayQueryInitializeEXT(query, hdclaude_chunk(chunk), gl_RayFlagsOpaqueEXT,
+                                  HDCLAUDE_MASK_FOG, origin, t, direction, hit);
+            while (rayQueryProceedEXT(query))
+            {
+            }
+            if (rayQueryGetIntersectionTypeEXT(query, true) !=
+                gl_RayQueryCommittedIntersectionNoneEXT)
+            {
+                hit = rayQueryGetIntersectionTEXT(query, true);
+                instance = hdclaude_chunk_base(chunk) +
+                           rayQueryGetIntersectionInstanceIdEXT(query, true);
+            }
         }
-        if (rayQueryGetIntersectionTypeEXT(query, true) ==
-            gl_RayQueryCommittedIntersectionNoneEXT)
+        if (instance < 0)
         {
             break;
         }
-        float hit = rayQueryGetIntersectionTEXT(query, true);
-        int volume =
-            hdclaude_fog_of(rayQueryGetIntersectionInstanceCustomIndexEXT(query, true));
+        int volume = hdclaude_fog_of(instance);
         if (volume >= 0)
         {
             crossings[count] = hit;
@@ -164,7 +175,7 @@ int hdclaude_fog_crossings(vec3 origin, vec3 direction,
 HdclaudeMedium hdclaude_fog_medium(uint fog, vec3 position)
 {
     FogVolume volume = fogVolumes.values[fog];
-    InstanceGeometry geometry = instances.values[volume.instance];
+    InstanceGeometry geometry = hdclaude_instance(int(volume.instance));
     vec3 objectPosition = vec4(position, 1.0) * geometry.worldToObject;
     // A point in a medium has a position and nothing else; the frame is any
     // orthonormal one, so a graph that reads a normal gets a unit vector
@@ -479,7 +490,7 @@ void hdclaude_fog_build_majorant(uint invocation)
                        index / (resolution * resolution));
 
     FogVolume volume = fogVolumes.values[fog];
-    InstanceGeometry geometry = instances.values[volume.instance];
+    InstanceGeometry geometry = hdclaude_instance(int(volume.instance));
 
     uint seed = invocation * 2654435761u + 0x9e3779b9u;
     vec3 jitter = vec3(hdclaude_random(seed), hdclaude_random(seed),

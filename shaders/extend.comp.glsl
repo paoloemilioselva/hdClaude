@@ -62,14 +62,15 @@ layout(push_constant) uniform ExtendParams {
 // the loop to ask that material whether the ray meets it (cutout.glsl).
 //
 // `key` names this traversal for the cut-out coin.
-void extend_trace(vec3 origin, vec3 direction, float tMin, float tMax,
-                  uint cullMask, bool exceptions, uint volumes, uint path,
-                  uint key, inout bool hitGeometry, inout float tGeometry,
-                  inout vec2 barycentrics, inout int instance,
-                  inout int primitive)
+void extend_trace_chunk(uint chunk, vec3 origin, vec3 direction, float tMin,
+                        float tMax, uint cullMask, bool exceptions,
+                        uint volumes, uint path, uint key,
+                        inout bool hitGeometry, inout float tGeometry,
+                        inout vec2 barycentrics, inout int instance,
+                        inout int primitive)
 {
     rayQueryEXT query;
-    rayQueryInitializeEXT(query, sceneTlas,
+    rayQueryInitializeEXT(query, hdclaude_chunk(chunk),
                           exceptions ? gl_RayFlagsNoOpaqueEXT
                                      : gl_RayFlagsNoneEXT,
                           cullMask, origin, tMin, direction, tMax);
@@ -82,12 +83,12 @@ void extend_trace(vec3 origin, vec3 direction, float tMin, float tMax,
             gl_RayQueryCandidateIntersectionTriangleEXT)
         {
             int candidateInstance =
-                rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
+                (hdclaude_chunk_base(chunk) + rayQueryGetIntersectionInstanceIdEXT(query, false));
             float candidateT = rayQueryGetIntersectionTEXT(query, false);
             if (!(exceptions &&
                   hdclaude_cull_point(
                       candidateT,
-                      instanceCullLinks.values[candidateInstance] & volumes)) &&
+                      instanceCullLinks.values[hdclaude_attribute(int(candidateInstance))] & volumes)) &&
                 hdclaude_candidate_present(
                     key, candidateInstance,
                     rayQueryGetIntersectionPrimitiveIndexEXT(query, false),
@@ -106,9 +107,9 @@ void extend_trace(vec3 origin, vec3 direction, float tMin, float tMax,
             gl_RayQueryCandidateIntersectionAABBEXT)
         {
             int candidateInstance =
-                rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
+                (hdclaude_chunk_base(chunk) + rayQueryGetIntersectionInstanceIdEXT(query, false));
             InstanceGeometry candidateGeometry =
-                instances.values[candidateInstance];
+                hdclaude_instance(int(candidateInstance));
             if (candidateGeometry.splats != 0ul &&
                 frame.splatTransport == HDCLAUDE_SPLAT_COVERAGE)
             {
@@ -156,7 +157,7 @@ void extend_trace(vec3 origin, vec3 direction, float tMin, float tMax,
                     hit < min(committedT, tMax) &&
                     !(exceptions &&
                       hdclaude_cull_point(
-                          hit, instanceCullLinks.values[candidateInstance] &
+                          hit, instanceCullLinks.values[hdclaude_attribute(int(candidateInstance))] &
                                    volumes)))
                 {
                     // Clamped because this is a probability. The opacity is
@@ -229,7 +230,7 @@ void extend_trace(vec3 origin, vec3 direction, float tMin, float tMax,
                     hit < min(committedT, tMax) &&
                     !(exceptions &&
                       hdclaude_cull_point(
-                          hit, instanceCullLinks.values[candidateInstance] &
+                          hit, instanceCullLinks.values[hdclaude_attribute(int(candidateInstance))] &
                                    volumes)) &&
                     hdclaude_candidate_present(key, candidateInstance,
                                                candidateSegment, vec2(0.0),
@@ -254,8 +255,31 @@ void extend_trace(vec3 origin, vec3 direction, float tMin, float tMax,
             committed == gl_RayQueryCommittedIntersectionTriangleEXT
                 ? rayQueryGetIntersectionBarycentricsEXT(query, true)
                 : vec2(0.0);
-        instance = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
+        instance = (hdclaude_chunk_base(chunk) + rayQueryGetIntersectionInstanceIdEXT(query, true));
         primitive = rayQueryGetIntersectionPrimitiveIndexEXT(query, true);
+    }
+}
+
+// extend_trace_chunk through every chunk of the stage, each one asked only
+// for a hit nearer than the nearest found so far. With one chunk -- every stage
+// of fewer than 16.7 million placements at the default -- this is the single
+// query it always was.
+void extend_trace(vec3 origin, vec3 direction, float tMin, float tMax,
+                  uint cullMask, bool exceptions, uint volumes, uint path,
+                  uint key, inout bool hitGeometry, inout float tGeometry,
+                  inout vec2 barycentrics, inout int instance,
+                  inout int primitive)
+{
+    for (uint chunk = 0u; chunk < instances.chunkCount; ++chunk)
+    {
+        float nearest = hitGeometry ? min(tMax, tGeometry) : tMax;
+        if (!(nearest > tMin))
+        {
+            break;
+        }
+        extend_trace_chunk(chunk, origin, direction, tMin, nearest, cullMask,
+                           exceptions, volumes, path, key, hitGeometry,
+                           tGeometry, barycentrics, instance, primitive);
     }
 }
 
@@ -644,7 +668,7 @@ void main()
         for (uint i = 0u; i < frame.splatInstanceCount; ++i)
         {
             uint index = frame.splatInstanceBegin + i;
-            InstanceGeometry cloud = instances.values[index];
+            InstanceGeometry cloud = hdclaude_instance(int(index));
             if (cloud.splats == 0ul || cloud.splatVolume == 0ul)
             {
                 continue;
@@ -655,7 +679,7 @@ void main()
             // (README semantics rule 7). Free flights are memoryless, so a
             // walk over each kept stretch in turn is the walk over the kept
             // part of the ray, and the first collision found is the nearest.
-            uint cloudVolumes = cullVolumes_ & instanceCullLinks.values[index];
+            uint cloudVolumes = cullVolumes_ & instanceCullLinks.values[hdclaude_attribute(int(index))];
             float collision;
             vec3 emitted;
             bool collided = false;
@@ -815,7 +839,7 @@ void main()
         // light to recover the distance and normal the density needs.
         record.x = -2 - light;
     }
-    else if (hitGeometry && instances.values[instance].splats != 0ul)
+    else if (hitGeometry && hdclaude_instance(int(instance)).splats != 0ul)
     {
         // A Gaussian splat that accepted the ray. Recorded in a band of its own
         // so the per-material sort skips it: there is no material to sort it

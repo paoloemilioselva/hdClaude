@@ -220,6 +220,166 @@ CurveMesh SweepCurves(const std::vector<int>& vertexCounts,
     return mesh;
 }
 
+CurveMesh RibbonCurves(const std::vector<int>& vertexCounts,
+                       const std::vector<float>& points,
+                       const std::vector<float>& widths,
+                       const std::vector<float>& normals, float fallbackWidth,
+                       bool periodic, std::size_t* unoriented,
+                       std::string* reason)
+{
+    if (unoriented != nullptr) {
+        *unoriented = 0;
+    }
+    const auto fail = [&](const char* text) {
+        if (reason != nullptr) {
+            *reason = text;
+        }
+        return CurveMesh{};
+    };
+
+    if (points.size() < 6 || points.size() % 3 != 0) {
+        return fail("fewer than two points, or a points array that is not whole");
+    }
+    if (vertexCounts.empty()) {
+        return fail("no curve vertex counts");
+    }
+    if (normals.size() != points.size()) {
+        return fail("a ribbon needs one normal for every point");
+    }
+    const std::size_t pointCount = points.size() / 3;
+    std::size_t total = 0;
+    for (const int count : vertexCounts) {
+        if (count < 2) {
+            return fail("a curve with fewer than two vertices");
+        }
+        total += static_cast<std::size_t>(count);
+    }
+    if (total != pointCount) {
+        return fail("vertex counts that do not add up to the point count");
+    }
+
+    CurveWidths widthKind = CurveWidths::Constant;
+    if (widths.size() == pointCount) {
+        widthKind = CurveWidths::PerPoint;
+    } else if (widths.size() == vertexCounts.size()) {
+        widthKind = CurveWidths::PerCurve;
+    } else if (widths.size() > 1) {
+        return fail("a widths array matching neither the points nor the curves");
+    }
+
+    CurveMesh mesh;
+    mesh.positions.reserve(pointCount * 6);
+    mesh.normals.reserve(pointCount * 6);
+    mesh.uvs.reserve(pointCount * 4);
+
+    std::size_t first = 0;
+    for (std::size_t curve = 0; curve < vertexCounts.size(); ++curve) {
+        const auto vertices = static_cast<std::size_t>(vertexCounts[curve]);
+        // A periodic ribbon repeats its first point at the end, so the strip
+        // closes in texture space as a swept tube's rings do.
+        const std::size_t rows = periodic ? vertices + 1 : vertices;
+        const auto rowBase = static_cast<std::uint32_t>(mesh.positions.size() / 3);
+
+        for (std::size_t row = 0; row < rows; ++row) {
+            const std::size_t index = first + (row % vertices);
+            const Vec3 centre = At(points, index);
+
+            // The tangent as the sweep takes it, from the neighbours on either
+            // side.
+            Vec3 tangent{0.0f, 0.0f, 0.0f};
+            if (periodic || row > 0) {
+                const std::size_t previous =
+                    first + ((row + vertices - 1) % vertices);
+                tangent = Add(tangent, Subtract(centre, At(points, previous)));
+            }
+            if (periodic || row + 1 < vertices) {
+                const std::size_t next = first + ((row + 1) % vertices);
+                tangent = Add(tangent, Subtract(At(points, next), centre));
+            }
+
+            float width = fallbackWidth;
+            if (widthKind == CurveWidths::PerPoint) {
+                width = widths[index];
+            } else if (widthKind == CurveWidths::PerCurve) {
+                width = widths[curve];
+            } else if (widths.size() == 1) {
+                width = widths[0];
+            }
+            float half = std::max(0.0f, width) * 0.5f;
+
+            // The normal, made perpendicular to the curve: the ribbon faces it
+            // and lies across the curve along cross(N, T). Where either is
+            // missing, or they are parallel, nothing says which way the
+            // ribbon lies, and it is given no width there.
+            const Vec3 authored = At(normals, index);
+            Vec3 normal = authored;
+            Vec3 across{0.0f, 0.0f, 0.0f};
+            const float tangentLength = Length(tangent);
+            bool oriented = tangentLength > 1e-12f;
+            if (oriented) {
+                const Vec3 t = Scale(tangent, 1.0f / tangentLength);
+                const float along =
+                    normal.x * t.x + normal.y * t.y + normal.z * t.z;
+                normal = Subtract(normal, Scale(t, along));
+                const float normalLength = Length(normal);
+                oriented = normalLength > 1e-6f * Length(authored) &&
+                           normalLength > 1e-20f;
+                if (oriented) {
+                    normal = Scale(normal, 1.0f / normalLength);
+                    across = Cross(normal, t);
+                }
+            }
+            if (!oriented) {
+                half = 0.0f;
+                if (unoriented != nullptr) {
+                    ++*unoriented;
+                }
+                // Still a unit vector, so the shading normal stays defined at
+                // a vertex that now spans nothing.
+                normal = tangentLength > 1e-12f
+                             ? Perpendicular(Scale(tangent, 1.0f / tangentLength))
+                             : Vec3{0.0f, 0.0f, 1.0f};
+            }
+
+            const float v = rows > 1 ? static_cast<float>(row) /
+                                           static_cast<float>(rows - 1)
+                                     : 0.0f;
+            for (int edge = 0; edge < 2; ++edge) {
+                const Vec3 position =
+                    Add(centre, Scale(across, edge == 0 ? -half : half));
+                mesh.positions.push_back(position.x);
+                mesh.positions.push_back(position.y);
+                mesh.positions.push_back(position.z);
+                mesh.normals.push_back(normal.x);
+                mesh.normals.push_back(normal.y);
+                mesh.normals.push_back(normal.z);
+                mesh.uvs.push_back(static_cast<float>(edge));
+                mesh.uvs.push_back(v);
+            }
+        }
+
+        // Wound so each triangle's own normal agrees with N. With the left
+        // edge at -cross(N, T) and the right at +cross(N, T), going along the
+        // curve then across is T x cross(N, T) = N.
+        for (std::size_t row = 0; row + 1 < rows; ++row) {
+            const std::uint32_t a = rowBase + static_cast<std::uint32_t>(row) * 2u;
+            const std::uint32_t b = a + 2u;
+            mesh.indices.push_back(a);
+            mesh.indices.push_back(b);
+            mesh.indices.push_back(a + 1u);
+            mesh.indices.push_back(a + 1u);
+            mesh.indices.push_back(b);
+            mesh.indices.push_back(b + 1u);
+        }
+        first += vertices;
+    }
+
+    if (mesh.indices.empty()) {
+        return fail("no triangles, which means every curve was degenerate");
+    }
+    return mesh;
+}
+
 std::vector<float> CurveSegments(const std::vector<int>& vertexCounts,
                                  const std::vector<float>& points,
                                  const std::vector<float>& widths,
@@ -379,6 +539,21 @@ void BasisWeights(CurveBasis basis, double t, double weight[4])
     weight[3] = 0.0;
 }
 
+/// How many segments a curve of `count` vertices has, or -1 when the count
+/// describes no whole number of them: UsdGeomBasisCurves' segment-count
+/// table, the same rules the evaluation below applies.
+int SegmentCount(int count, CurveBasis basis, bool periodic)
+{
+    if (basis == CurveBasis::Linear) {
+        return periodic ? count : count - 1;
+    }
+    const int step = VertexStep(basis);
+    if (periodic) {
+        return (count >= 4 && count % step == 0) ? count / step : -1;
+    }
+    return (count >= 4 && (count - 4) % step == 0) ? (count - 4) / step + 1 : -1;
+}
+
 const char* BasisName(CurveBasis basis)
 {
     switch (basis) {
@@ -395,6 +570,19 @@ const char* BasisName(CurveBasis basis)
 CurvePolylines EvaluateCurves(const std::vector<int>& vertexCounts,
                               const std::vector<float>& points,
                               const std::vector<float>& widths,
+                              CurveBasis basis, bool periodic,
+                              int samplesPerSegment, std::string* reason)
+{
+    return EvaluateCurves(vertexCounts, points, widths, {},
+                          CurveInterpolation::Vertex, basis, periodic,
+                          samplesPerSegment, reason);
+}
+
+CurvePolylines EvaluateCurves(const std::vector<int>& vertexCounts,
+                              const std::vector<float>& points,
+                              const std::vector<float>& widths,
+                              const std::vector<float>& normals,
+                              CurveInterpolation normalsInterpolation,
                               CurveBasis basis, bool periodic,
                               int samplesPerSegment, std::string* reason)
 {
@@ -425,6 +613,102 @@ CurvePolylines EvaluateCurves(const std::vector<int>& vertexCounts,
                     " points but " + std::to_string(pointCount) + " were given");
     }
 
+    // The normals' count, against the one their interpolation implies. A
+    // mismatch is the asset's to fix, so it is named rather than read past or
+    // reinterpreted as some other interpolation.
+    if (normals.size() % 3 != 0) {
+        return fail("normals array is not a whole number of xyz triples");
+    }
+    const std::size_t normalCount = normals.size() / 3;
+    if (normalCount != 0) {
+        std::size_t expected = 0;
+        const char* name = "vertex";
+        switch (normalsInterpolation) {
+            case CurveInterpolation::Constant:
+                expected = 1;
+                name = "constant";
+                break;
+            case CurveInterpolation::Uniform:
+                expected = vertexCounts.size();
+                name = "uniform";
+                break;
+            case CurveInterpolation::Vertex:
+                expected = pointCount;
+                break;
+            case CurveInterpolation::Varying:
+                name = "varying";
+                for (const int count : vertexCounts) {
+                    const int segments = SegmentCount(count, basis, periodic);
+                    if (segments < 0) {
+                        // The evaluation below reports the curve by name.
+                        expected = normalCount;
+                        break;
+                    }
+                    expected += static_cast<std::size_t>(
+                        periodic ? segments : segments + 1);
+                }
+                break;
+        }
+        if (normalCount != expected) {
+            return fail(std::to_string(normalCount) + " " + name +
+                        " normals where the curves need " +
+                        std::to_string(expected));
+        }
+    }
+
+    // One normal for the evaluated point at segment `segment`, parameter `t`,
+    // of a curve whose vertices start at `base`, whose varying values start
+    // at `varyingBase`, and of which there are `count` vertices and
+    // `segments` segments. Vertex normals go through the basis's weights like
+    // the positions; varying ones are linear between the segment's two ends.
+    const auto normalAt = [&](std::size_t curve, std::size_t base,
+                              std::size_t varyingBase, int count, int segments,
+                              int segment, const double weight[4], double t,
+                              int step, std::vector<float>& out) {
+        double n[3] = {0.0, 0.0, 0.0};
+        switch (normalsInterpolation) {
+            case CurveInterpolation::Constant:
+            case CurveInterpolation::Uniform: {
+                const std::size_t at =
+                    normalsInterpolation == CurveInterpolation::Constant ? 0
+                                                                         : curve;
+                for (int axis = 0; axis < 3; ++axis) {
+                    n[axis] = normals[at * 3 + axis];
+                }
+                break;
+            }
+            case CurveInterpolation::Varying: {
+                const int values = periodic ? segments : segments + 1;
+                const std::size_t a =
+                    varyingBase + static_cast<std::size_t>(segment);
+                const std::size_t b =
+                    varyingBase +
+                    static_cast<std::size_t>((segment + 1) % values);
+                for (int axis = 0; axis < 3; ++axis) {
+                    n[axis] = (1.0 - t) * normals[a * 3 + axis] +
+                              t * normals[b * 3 + axis];
+                }
+                break;
+            }
+            case CurveInterpolation::Vertex:
+                for (int control = 0; control < 4; ++control) {
+                    std::size_t index =
+                        static_cast<std::size_t>(segment * step + control);
+                    if (periodic) {
+                        index %= static_cast<std::size_t>(count);
+                    }
+                    const std::size_t at = base + index;
+                    for (int axis = 0; axis < 3; ++axis) {
+                        n[axis] += weight[control] * normals[at * 3 + axis];
+                    }
+                }
+                break;
+        }
+        for (int axis = 0; axis < 3; ++axis) {
+            out.push_back(static_cast<float>(n[axis]));
+        }
+    };
+
     // A linear set is already a polyline. Returned rather than refused so a
     // caller can hand every set through without first asking which basis it is.
     if (basis == CurveBasis::Linear) {
@@ -432,6 +716,28 @@ CurvePolylines EvaluateCurves(const std::vector<int>& vertexCounts,
         through.vertexCounts = vertexCounts;
         through.points = points;
         through.widths = widths;
+        if (normalCount != 0) {
+            // On a linear curve varying and vertex data are both one value a
+            // vertex, and constant and uniform ones are repeated onto every
+            // vertex they cover.
+            if (normalsInterpolation == CurveInterpolation::Vertex ||
+                normalsInterpolation == CurveInterpolation::Varying) {
+                through.normals = normals;
+            } else {
+                through.normals.reserve(pointCount * 3);
+                for (std::size_t curve = 0; curve < vertexCounts.size(); ++curve) {
+                    const std::size_t at =
+                        normalsInterpolation == CurveInterpolation::Constant
+                            ? 0
+                            : curve;
+                    for (int i = 0; i < vertexCounts[curve]; ++i) {
+                        through.normals.insert(through.normals.end(),
+                                               normals.begin() + at * 3,
+                                               normals.begin() + at * 3 + 3);
+                    }
+                }
+            }
+        }
         return through;
     }
 
@@ -446,6 +752,7 @@ CurvePolylines EvaluateCurves(const std::vector<int>& vertexCounts,
     result.vertexCounts.reserve(vertexCounts.size());
 
     std::size_t base = 0;
+    std::size_t varyingBase = 0;
     for (std::size_t curve = 0; curve < vertexCounts.size(); ++curve) {
         const int count = vertexCounts[curve];
 
@@ -519,9 +826,15 @@ CurvePolylines EvaluateCurves(const std::vector<int>& vertexCounts,
                     result.widths.push_back(
                         static_cast<float>(width > 0.0 ? width : 0.0));
                 }
+                if (normalCount != 0) {
+                    normalAt(curve, base, varyingBase, count, segments, segment,
+                             weight, t, step, result.normals);
+                }
             }
         }
         base += static_cast<std::size_t>(count);
+        varyingBase +=
+            static_cast<std::size_t>(periodic ? segments : segments + 1);
     }
 
     if (!widthsPerPoint) {

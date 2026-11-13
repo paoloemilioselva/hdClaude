@@ -208,7 +208,7 @@
         label   "Subdivision level"
         type    int
         size    1
-        default { 2 }
+        default { 0 }
         parmtag { "spare_category" "Geometry" }
         parmtag { "usdvaluetype" "int" }
         disablewhen "{ subdivisionLevel_control == block } { subdivisionLevel_control == none }"
@@ -555,6 +555,28 @@
             "low" "low"
         }
         disablewhen "{ textureQuality_control == block } { textureQuality_control == none }"
+    }
+    parm {
+        name    "hostInstanceData_control"
+        label   "Instance data in system memory"
+        type    string
+        default { "none" }
+        menujoin {
+            [ "import loputils" ]
+            [ "return loputils.createEditPropertiesControlMenu(kwargs, 'bool')" ]
+            language python
+        }
+        parmtag { "sidefx::look" "icon" }
+    }
+    parm {
+        name    "hostInstanceData"
+        label   "Instance data in system memory"
+        type    toggle
+        size    1
+        default { 1 }
+        parmtag { "spare_category" "Memory" }
+        parmtag { "usdvaluetype" "bool" }
+        disablewhen "{ hostInstanceData_control == block } { hostInstanceData_control == none }"
     }
     parm {
         name    "reconstruction_control"
@@ -951,5 +973,27 @@
         parmtag { "spare_category" "Diagnostics" }
         parmtag { "usdvaluetype" "int" }
         disablewhen "{ republishAt_control == block } { republishAt_control == none }"
+    }
+    parm {
+        name    "tlasChunkSize_control"
+        label   "TLAS chunk size"
+        type    string
+        default { "none" }
+        menujoin {
+            [ "import loputils" ]
+            [ "return loputils.createEditPropertiesControlMenu(kwargs, 'int')" ]
+            language python
+        }
+        parmtag { "sidefx::look" "icon" }
+    }
+    parm {
+        name    "tlasChunkSize"
+        label   "TLAS chunk size"
+        type    int
+        size    1
+        default { 0 }
+        parmtag { "spare_category" "Diagnostics" }
+        parmtag { "usdvaluetype" "int" }
+        disablewhen "{ tlasChunkSize_control == block } { tlasChunkSize_control == none }"
     }
 }

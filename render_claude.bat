@@ -37,7 +37,7 @@ IF "%~1"=="" (
   ECHO   HDCLAUDE_SAMPLES_PER_PIXEL     default 64    samples in the image
   ECHO   HDCLAUDE_SAMPLES_PER_FRAME     default 4     samples per progressive update
   ECHO   HDCLAUDE_MAX_BOUNCES           default 8     path length
-  ECHO   HDCLAUDE_SUBDIVISION_LEVEL     0-10, default 2, 0 disables refinement
+  ECHO   HDCLAUDE_SUBDIVISION_LEVEL     0-10, default 0, 0 disables refinement
   ECHO   HDCLAUDE_ADAPTIVE_SUBDIVISION  default off; the level per mesh from its
   ECHO                                  projected size, the above as a ceiling
   ECHO   HDCLAUDE_PER_FACE_SUBDIVISION  default off; a rate per face side from
@@ -74,6 +74,9 @@ IF "%~1"=="" (
   ECHO   HDCLAUDE_CULL_VOLUMES          default on. Off ignores every cull
   ECHO                                  volume in the stage, to compare a render
   ECHO                                  with and without them
+  ECHO   HDCLAUDE_HOST_INSTANCE_DATA    default on. The top-level instance array
+  ECHO                                  in system memory: 64 bytes a placement
+  ECHO                                  off the GPU for a few per cent of trace
   ECHO   HDCLAUDE_DEVICE                substring of the GPU to select
   ECHO.
   ECHO Reconstruction. Off renders the progressive reference this delegate has

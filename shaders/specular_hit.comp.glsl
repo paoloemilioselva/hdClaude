@@ -29,26 +29,26 @@ const float kNoHit = 65504.0;
 // shares a bit with `cullMask`, into `tGeometry` when there is one. With
 // `exceptions`, a hit must also survive the placement's own cull volumes among
 // `volumes`, as in `extend`.
-void specular_trace(vec3 origin, vec3 direction, float tMin, float tMax,
-                    uint cullMask, bool exceptions, uint volumes,
-                    inout float tGeometry)
+void specular_trace_chunk(uint chunk, vec3 origin, vec3 direction,
+                          float tMin, float tMax, uint cullMask,
+                          bool exceptions, uint volumes, inout float tGeometry)
 {
     rayQueryEXT query;
-    rayQueryInitializeEXT(query, sceneTlas,
+    rayQueryInitializeEXT(query, hdclaude_chunk(chunk),
                           exceptions ? gl_RayFlagsNoOpaqueEXT
                                      : gl_RayFlagsOpaqueEXT,
                           cullMask, origin, tMin, direction, tMax);
     while (rayQueryProceedEXT(query))
     {
         int candidateInstance =
-            rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
+            (hdclaude_chunk_base(chunk) + rayQueryGetIntersectionInstanceIdEXT(query, false));
         // Only reached by the exception query; see extend.comp.glsl.
         if (rayQueryGetIntersectionTypeEXT(query, false) ==
             gl_RayQueryCandidateIntersectionTriangleEXT)
         {
             if (!hdclaude_cull_point(
                     rayQueryGetIntersectionTEXT(query, false),
-                    instanceCullLinks.values[candidateInstance] & volumes))
+                    instanceCullLinks.values[hdclaude_attribute(int(candidateInstance))] & volumes))
             {
                 rayQueryConfirmIntersectionEXT(query);
             }
@@ -59,7 +59,7 @@ void specular_trace(vec3 origin, vec3 direction, float tMin, float tMax,
         {
             continue;
         }
-        InstanceGeometry candidateGeometry = instances.values[candidateInstance];
+        InstanceGeometry candidateGeometry = hdclaude_instance(int(candidateInstance));
         if (candidateGeometry.segments == 0ul)
         {
             continue;
@@ -87,7 +87,7 @@ void specular_trace(vec3 origin, vec3 direction, float tMin, float tMax,
         if (hit >= rayQueryGetRayTMinEXT(query) && hit < min(committedT, tMax) &&
             !(exceptions &&
               hdclaude_cull_point(
-                  hit, instanceCullLinks.values[candidateInstance] & volumes)))
+                  hit, instanceCullLinks.values[hdclaude_attribute(int(candidateInstance))] & volumes)))
         {
             rayQueryGenerateIntersectionEXT(query, hit);
         }
@@ -98,6 +98,24 @@ void specular_trace(vec3 origin, vec3 direction, float tMin, float tMax,
         committed == gl_RayQueryCommittedIntersectionGeneratedEXT)
     {
         tGeometry = rayQueryGetIntersectionTEXT(query, true);
+    }
+}
+
+// specular_trace_chunk through every chunk, each asked only for a hit nearer
+// than the nearest so far.
+void specular_trace(vec3 origin, vec3 direction, float tMin, float tMax,
+                    uint cullMask, bool exceptions, uint volumes,
+                    inout float tGeometry)
+{
+    for (uint chunk = 0u; chunk < instances.chunkCount; ++chunk)
+    {
+        float nearest = min(tMax, tGeometry);
+        if (!(nearest > tMin))
+        {
+            break;
+        }
+        specular_trace_chunk(chunk, origin, direction, tMin, nearest, cullMask,
+                             exceptions, volumes, tGeometry);
     }
 }
 

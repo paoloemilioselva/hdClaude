@@ -55,7 +55,7 @@ bool hdclaude_candidate_present(uint key, int instance, int primitive,
                                 vec3 direction, float t)
 {
 #ifdef HDCLAUDE_TRAVERSAL_OPACITY
-    InstanceGeometry geometry = instances.values[instance];
+    InstanceGeometry geometry = hdclaude_instance(int(instance));
     uint material = hdclaude_material_of(geometry, primitive);
     // An opaque material on a placement that is marked non-opaque for another
     // of its materials: a GeomSubset, or a prototype shared between bindings.

@@ -89,7 +89,7 @@ void main()
                              point.bitangent, point.objectPosition,
                              point.objectNormal, point.objectTangent,
                              point.objectBitangent, point.uv,
-                             instances.values[record.x].displayColor,
+                             hdclaude_instance(int(record.x)).displayColor,
                              rayDirection);
     // The path's own hero wavelengths, not a fixed quartet. Nothing reads this
     // yet, which is exactly why it was able to sit here wrong: a closure that

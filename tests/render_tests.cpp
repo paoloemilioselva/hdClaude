@@ -1394,6 +1394,116 @@ int main()
             CHECK_NEAR(centre.r / centre.g, 1.0, 0.25);
         }
 
+        // --- The instance array reads the same from either memory ------------
+        //
+        // Scene::hostInstanceData moves the top-level instance array to system
+        // memory, where shading reads each hit's transform across the bus. The
+        // bytes are the same, so the picture must be the same to the bit. A
+        // turned, unevenly scaled placement makes the transform matter, and a
+        // placement naming a prototype that does not exist sits between the
+        // others: it is an inactive entry in the instance array, and the red
+        // placement after it is only red if indices still line up past it.
+        {
+            Scene scene;
+            scene.prototypes.push_back(MakeQuad());
+            Transform3x4 turned = Transform(1.0f, 1.0f, 1.0f, 1.4f, 0.0f, 0.0f);
+            // A quarter turn about z of a quad scaled 0.5 by 0.3.
+            const float rows[12] = {0.0f, -0.3f, 0.0f, 1.4f,
+                                    0.5f, 0.0f,  0.0f, 0.0f,
+                                    0.0f, 0.0f,  1.0f, 0.0f};
+            std::memcpy(turned.m, rows, sizeof(rows));
+            scene.instances.push_back(
+                {0, Transform(0.4f, 0.4f, 1.0f, -1.4f, 0.0f, 0.0f), 0, true});
+            scene.instances.push_back({0, turned, 1, true});
+            scene.instances.push_back(
+                {7, Transform(1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f), 0, true});
+            scene.instances.push_back(
+                {0, Transform(0.4f, 0.4f, 1.0f, 0.0f, 0.0f, 0.0f), 1, true});
+
+            scene.hostInstanceData = false;
+            tracer.SetScene(scene, materials);
+            const std::vector<float> device =
+                tracer.Render(kWidth, kHeight, LookDownZ(6.0f), settings);
+            scene.hostInstanceData = true;
+            tracer.SetScene(scene, materials);
+            const std::vector<float> host =
+                tracer.Render(kWidth, kHeight, LookDownZ(6.0f), settings);
+            SavePpm(host, "host-instance-data");
+
+            CHECK(device.size() == host.size());
+            CHECK(std::memcmp(device.data(), host.data(),
+                              device.size() * sizeof(float)) == 0);
+
+            const Pixel centre = At(host, 0.5f, 0.5f);
+            const Pixel left = At(host, 0.19f, 0.5f);
+            std::printf("  past the inactive entry %.4f %.4f %.4f\n", centre.r,
+                        centre.g, centre.b);
+            CHECK(centre.r > centre.g * 2.0f);
+            CHECK(left.g > left.r * 0.5f);
+
+            // The same placements through several top-level structures: one
+            // placement a chunk, and three, so the last chunk is short and the
+            // inactive entry sits at a chunk's edge. Each ray is traced
+            // through every chunk keeping the nearest hit, and a placement's
+            // index is its chunk's base plus its index within it, so the
+            // picture must not move.
+            for (const std::uint32_t chunk : {1u, 3u}) {
+                scene.tlasChunkSize = chunk;
+                tracer.SetScene(scene, materials);
+                const std::vector<float> chunked =
+                    tracer.Render(kWidth, kHeight, LookDownZ(6.0f), settings);
+                std::printf("  chunks of %u: %s\n", chunk,
+                            std::memcmp(chunked.data(), host.data(),
+                                        host.size() * sizeof(float)) == 0
+                                ? "identical"
+                                : "DIFFERENT");
+                CHECK(chunked.size() == host.size());
+                CHECK(std::memcmp(chunked.data(), host.data(),
+                                  host.size() * sizeof(float)) == 0);
+            }
+        }
+
+        // --- 16-bit and 32-bit indices shade the same triangles ---------------
+        //
+        // A mesh of at most 65,536 vertices is stored with 16-bit indices, two
+        // to a word, and read back by halves in surface_point.glsl; a larger
+        // one keeps 32-bit indices. The same quad with 70,000 unused vertices
+        // appended crosses the line without changing a triangle, so the two
+        // must render to the bit.
+        {
+            Scene narrow;
+            narrow.prototypes.push_back(MakeQuad());
+            narrow.instances.push_back({0, Transform3x4{}, 0, true});
+            tracer.SetScene(narrow, materials);
+            const std::vector<float> sixteen =
+                tracer.Render(kWidth, kHeight, LookDownZ(4.0f), settings);
+
+            Scene wide = narrow;
+            MeshPrototype& padded = wide.prototypes[0];
+            const std::size_t extra = 70000;
+            const bool hasNormals = !padded.normals.empty();
+            const bool hasUvs = !padded.uvs.empty() && !padded.uvsPerCorner;
+            for (std::size_t i = 0; i < extra; ++i) {
+                padded.positions.insert(padded.positions.end(), {0.0f, 0.0f, -50.0f});
+                if (hasNormals) {
+                    padded.normals.insert(padded.normals.end(), {0.0f, 0.0f, 1.0f});
+                }
+                if (hasUvs) {
+                    padded.uvs.insert(padded.uvs.end(), {0.0f, 0.0f});
+                }
+            }
+            CHECK(padded.VertexCount() > 65536);
+            tracer.SetScene(wide, materials);
+            const std::vector<float> thirtyTwo =
+                tracer.Render(kWidth, kHeight, LookDownZ(4.0f), settings);
+
+            CHECK(sixteen.size() == thirtyTwo.size());
+            CHECK(std::memcmp(sixteen.data(), thirtyTwo.data(),
+                              sixteen.size() * sizeof(float)) == 0);
+            const Pixel centre = At(thirtyTwo, 0.5f, 0.5f);
+            CHECK(Luminance(centre) > 0.0f);
+        }
+
         // --- Material identity is per instance -------------------------------
         {
             Scene scene;
@@ -5035,6 +5145,73 @@ int main()
             // this driver did not, and the kernel now makes the comparison
             // itself. Reverting that check brings back exactly 656.
             CHECK_EQ(differing, std::size_t(0));
+        }
+
+        // --- A scaled curve is the curve it describes ------------------------
+        //
+        // A segment placed through an instance scaled by `s`, with its points
+        // and radii divided by `s`, is the same capsule in world space as the
+        // unscaled one, and must render the same depths. The traversal kernels
+        // intersect a curve with the *object-space* ray, whose direction a
+        // scaled instance leaves at length 1/s, so this is where an intersection
+        // that assumed a unit direction shows. It did: the Moana island's palms
+        // are placed at a scale of 0.93, and their fronds' leaflets grew until
+        // each crown rendered as one solid, flat shell
+        // (docs/implementation-notes.md, 2026-11-12).
+        {
+            constexpr std::uint32_t kSize = 192;
+            constexpr float kRadius = 0.25f;
+
+            const auto depthOf = [&](float scale, std::uint64_t revision) {
+                Scene scene;
+                MeshPrototype strand;
+                strand.debugName = "scaled";
+                const float k = 1.0f / scale;
+                strand.segments = {
+                    0.0f, -1.0f * k, 0.0f, kRadius * k, 0.0f,
+                    0.0f,  1.0f * k, 0.0f, kRadius * k, 1.0f,
+                };
+                scene.prototypes.push_back(strand);
+                Transform3x4 placement;
+                placement.m[0] = scale;
+                placement.m[5] = scale;
+                placement.m[10] = scale;
+                scene.instances.push_back({0, placement, 0, true});
+                tracer.SetScene(scene, {materials[1]});
+
+                hdclaude::FrameDescription frame;
+                frame.width = kSize;
+                frame.height = kSize;
+                frame.camera = LookDownZWithClip(4.0f, 0.1f, 100.0f);
+                frame.mode = hdclaude::RenderMode::Reference;
+                frame.sceneRevision = revision;
+                frame.settings.samplesPerPixel = 1;
+                frame.settings.maxBounces = 1;
+                return tracer.EndFrame(tracer.BeginFrame(frame)).depth;
+            };
+
+            const std::vector<float> reference = depthOf(1.0f, 53);
+            CHECK_EQ(reference.size(), std::size_t(kSize) * kSize);
+            std::uint64_t revision = 54;
+            for (const float scale : {0.93f, 0.5f, 2.0f}) {
+                const std::vector<float> scaled = depthOf(scale, revision++);
+                CHECK_EQ(scaled.size(), reference.size());
+                std::size_t differing = 0;
+                double worst = 0.0;
+                for (std::size_t i = 0;
+                     i < std::min(scaled.size(), reference.size()); ++i) {
+                    const double delta =
+                        std::abs(double(scaled[i]) - double(reference[i]));
+                    if (delta > 1.0e-4) {
+                        ++differing;
+                        worst = std::max(worst, delta);
+                    }
+                }
+                std::printf("  curve under scale %.2f: %zu of %zu depths differ, "
+                            "worst %.6f\n",
+                            scale, differing, reference.size(), worst);
+                CHECK_EQ(differing, std::size_t(0));
+            }
         }
 
         // --- The primary surface's reconstruction guides ----------------------

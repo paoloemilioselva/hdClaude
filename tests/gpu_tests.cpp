@@ -270,6 +270,48 @@ void TestMoveSemanticsTransferOwnership(VulkanAllocator& allocator)
     CHECK(!moved.Valid());
 }
 
+std::uint64_t CategoryBytes(const VulkanAllocator& allocator,
+                            const std::string& name, bool atPeak)
+{
+    for (const auto& category : allocator.DeviceLocalBreakdown()) {
+        if (category.name == name) {
+            return atPeak ? category.bytesAtPeak : category.bytes;
+        }
+    }
+    return 0;
+}
+
+void TestDeviceMemoryIsTalliedByCategory(VulkanAllocator& allocator)
+{
+    // The breakdown is how a scene that does not fit is diagnosed, so it has
+    // to name the right kind and give the memory back when it is released.
+    // Two prims' positions are one category, `*.positions`; a fixed name is
+    // its own.
+    const std::uint64_t before = CategoryBytes(allocator, "*.positions", false);
+
+    BufferDescription description;
+    description.size = 1 << 20;
+    description.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    description.debugName = "/World/a.positions";
+    VulkanBuffer a(allocator, description);
+    description.debugName = "/World/b.positions";
+    VulkanBuffer b(allocator, description);
+    description.debugName = "test.tally";
+    VulkanBuffer fixed(allocator, description);
+
+    const std::uint64_t held = CategoryBytes(allocator, "*.positions", false);
+    CHECK(held >= before + 2 * description.size);
+    CHECK(CategoryBytes(allocator, "test.tally", false) >= description.size);
+    CHECK(CategoryBytes(allocator, "/World/a.positions", false) == 0);
+    CHECK(allocator.DeviceLocalAllocatedPeak() >= 3 * description.size);
+
+    a.Reset();
+    b.Reset();
+    fixed.Reset();
+    CHECK_EQ(CategoryBytes(allocator, "*.positions", false), before);
+    CHECK_EQ(CategoryBytes(allocator, "test.tally", false), std::uint64_t(0));
+}
+
 void TestDeviceLossLatchRefusesWork()
 {
     // hdCodex had no latch, so every call issued after a fault ran against a
@@ -821,6 +863,7 @@ int main()
         TestDeviceLocalCopyIsObservedOnTheDevice(*context, allocator);
         TestImageCreationChecksFormatSupport(allocator);
         TestMoveSemanticsTransferOwnership(allocator);
+        TestDeviceMemoryIsTalliedByCategory(allocator);
         // Inside the allocator's scope, so the images this creates are
         // destroyed before the device is -- the ordering the comment
         // opening this block was written about.

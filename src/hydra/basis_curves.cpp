@@ -19,6 +19,7 @@
 #include "instancer.h"
 
 #include <string>
+#include <utility>
 #include <vector>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -79,6 +80,13 @@ void ExtractWidths(const VtValue& value, std::vector<float>& out)
     }
 }
 
+/// Normals, whatever precision they arrive in, as interleaved xyz.
+bool ExtractNormals(const VtValue& value, std::vector<float>& out)
+{
+    // Points and normals are both arrays of 3-vectors, and read the same way.
+    return ExtractPoints(value, out);
+}
+
 GfVec3f DisplayColor(HdSceneDelegate* delegate, const SdfPath& id)
 {
     const VtValue value = delegate->Get(id, HdTokens->displayColor);
@@ -100,7 +108,8 @@ HdClaudeBasisCurves::~HdClaudeBasisCurves() = default;
 HdDirtyBits HdClaudeBasisCurves::GetInitialDirtyBitsMask() const
 {
     return HdChangeTracker::DirtyTopology | HdChangeTracker::DirtyPoints |
-           HdChangeTracker::DirtyWidths | HdChangeTracker::DirtyPrimvar |
+           HdChangeTracker::DirtyWidths | HdChangeTracker::DirtyNormals |
+           HdChangeTracker::DirtyPrimvar |
            HdChangeTracker::DirtyTransform | HdChangeTracker::DirtyVisibility |
            HdChangeTracker::DirtyMaterialId | HdChangeTracker::DirtyInstancer |
            HdChangeTracker::DirtyCategories;
@@ -221,11 +230,59 @@ void HdClaudeBasisCurves::Sync(HdSceneDelegate* sceneDelegate,
 
     std::string reason;
 
+    // Normals make the set ribbons rather than tubes: "Curves with both widths
+    // and normals are imaged as ribbons oriented in the direction of the
+    // interpolated normal vectors" (UsdGeomBasisCurves, Tubes and Ribbons).
+    // Read with their interpolation, which on a cubic curve decides how they
+    // are interpolated -- vertex through the basis, varying linearly across
+    // each segment -- and how many there must be. A set with normals and no
+    // widths is still a ribbon, at the default width, as Storm draws it.
+    std::vector<float> normals;
+    hdclaude::CurveInterpolation normalsInterpolation =
+        hdclaude::CurveInterpolation::Vertex;
+    {
+        const std::pair<HdInterpolation, hdclaude::CurveInterpolation> kinds[] = {
+            {HdInterpolationVertex, hdclaude::CurveInterpolation::Vertex},
+            {HdInterpolationVarying, hdclaude::CurveInterpolation::Varying},
+            {HdInterpolationUniform, hdclaude::CurveInterpolation::Uniform},
+            {HdInterpolationConstant, hdclaude::CurveInterpolation::Constant},
+            {HdInterpolationFaceVarying, hdclaude::CurveInterpolation::Vertex},
+        };
+        for (const auto& [interpolation, kind] : kinds) {
+            for (const HdPrimvarDescriptor& descriptor :
+                 GetPrimvarDescriptors(sceneDelegate, interpolation)) {
+                if (descriptor.name != HdTokens->normals) {
+                    continue;
+                }
+                if (interpolation == HdInterpolationFaceVarying) {
+                    // Curves have no faces, so UsdGeomBasisCurves defines no
+                    // face-varying data for them.
+                    TF_WARN("hdClaude: curves <%s> author face-varying "
+                            "normals, which curves do not have; they are not "
+                            "drawn",
+                            id.GetText());
+                    param->SceneStore()->RemoveMesh(id);
+                    *dirtyBits = HdChangeTracker::Clean;
+                    return;
+                }
+                if (ExtractNormals(sceneDelegate->Get(id, descriptor.name),
+                                   normals) &&
+                    !normals.empty()) {
+                    normalsInterpolation = kind;
+                }
+            }
+            if (!normals.empty()) {
+                break;
+            }
+        }
+    }
+    const bool ribbons = !normals.empty();
+
     // The cubic bases evaluated to polylines, which is what the sweep takes.
     // A linear set passes through untouched, so this is unconditional.
     const hdclaude::CurvePolylines evaluated = hdclaude::EvaluateCurves(
-        vertexCounts, points, widths, basis, periodic,
-        param->CurveSegmentSamples(), &reason);
+        vertexCounts, points, widths, normals, normalsInterpolation, basis,
+        periodic, param->CurveSegmentSamples(), &reason);
     if (!evaluated.Valid()) {
         TF_WARN("hdClaude: curves <%s> were not evaluated: %s", id.GetText(),
                 reason.c_str());
@@ -238,7 +295,37 @@ void HdClaudeBasisCurves::Sync(HdSceneDelegate* sceneDelegate,
     entry.primId = GetPrimId();
     entry.prototype.debugName = id.GetString();
 
-    if (param->ImplicitCurves()) {
+    if (ribbons) {
+        // A ribbon is flat, so a span of one is a quad across the curve: two
+        // triangles, the strip Storm draws, whichever way tubes are drawn.
+        // Built as a mesh, it is intersected, shaded and two-sided as every
+        // mesh is, with the authored normal as its shading normal.
+        std::size_t unoriented = 0;
+        const hdclaude::CurveMesh ribbon = hdclaude::RibbonCurves(
+            evaluated.vertexCounts, evaluated.points, evaluated.widths,
+            evaluated.normals, kDefaultWidth, periodic, &unoriented, &reason);
+        if (!ribbon.Valid()) {
+            TF_WARN("hdClaude: curves <%s> were not built as ribbons: %s",
+                    id.GetText(), reason.c_str());
+            param->SceneStore()->RemoveMesh(id);
+            *dirtyBits = HdChangeTracker::Clean;
+            return;
+        }
+        if (unoriented != 0) {
+            // Drawn, but with no width where the asset gives no orientation,
+            // and said so: the normals are the asset's to fix.
+            TF_WARN("hdClaude: curves <%s> have %zu of %zu evaluated points "
+                    "whose normal is zero or along the curve, so the ribbon "
+                    "has no orientation there and is drawn with no width",
+                    id.GetText(), unoriented, evaluated.points.size() / 3);
+        }
+        entry.prototype.positions = ribbon.positions;
+        entry.prototype.indices = ribbon.indices;
+        entry.prototype.normals = ribbon.normals;
+        entry.prototype.normalsPerCorner = false;
+        entry.prototype.uvs = ribbon.uvs;
+        entry.prototype.uvsPerCorner = false;
+    } else if (param->ImplicitCurves()) {
         // The segments themselves, intersected in the traversal kernel: no
         // triangles, no `sides`, and no facets. A strand is a cone with a
         // sphere at each end and the renderer hits that shape rather than an

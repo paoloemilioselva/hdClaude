@@ -627,6 +627,24 @@ struct Scene {
     /// knows not to apply its stand-in on top.
     bool hasDomeLight = false;
 
+    /// Where the top-level structure's instance array lives once built: in
+    /// system memory when true, read across the bus, and in device memory
+    /// otherwise. The `hostInstanceData` render setting.
+    ///
+    /// After the build the array is read only for a hit's transform, once a
+    /// hit, so it costs a few per cent of trace time in system memory and 64
+    /// bytes a placement of device memory anywhere else: 3.1 GB on the Moana
+    /// island (docs/implementation-notes.md, 2026-11-11).
+    bool hostInstanceData = true;
+
+    /// How many placements one top-level structure holds at most; zero for
+    /// the device's own limit (`maxInstanceCount`). A stage with more
+    /// placements than that is traced through several, one after another.
+    /// The `tlasChunkSize` render setting, a diagnostic: a small value makes
+    /// a small stage trace through several structures, which is how that
+    /// path is tested without a stage of 17 million placements.
+    std::uint32_t tlasChunkSize = 0;
+
     /// Latitude-longitude environment map, if the dome light has one. Index
     /// into `textures`, or -1.
     int domeTexture = -1;

@@ -19,8 +19,11 @@
 #ifndef HDCLAUDE_GPU_VULKAN_RESOURCES_H
 #define HDCLAUDE_GPU_VULKAN_RESOURCES_H
 
+#include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <volk.h>
@@ -200,10 +203,45 @@ class VulkanAllocator {
     /// error at creation rather than a validation message at first use.
     bool SupportsImageFormat(VkFormat format, VkImageUsageFlags usage) const;
 
+    /// What device-local memory is holding, by kind of allocation.
+    ///
+    /// The budget above says how full the heap is; this says what filled it.
+    /// Each buffer and image is counted under a category derived from its
+    /// debug name -- a prim's `/World/geo.positions` and a texture's
+    /// `C:/maps/bark.png` count as `*.positions` and `*.png` -- so a scene
+    /// with a million prims still reports a few dozen lines. `bytesAtPeak` is
+    /// each category's share at the moment the sum of them was largest, which
+    /// is the moment a scene that does not fit stops fitting; `bytes` is what
+    /// it holds now.
+    struct MemoryCategory {
+        std::string name;
+        std::uint64_t bytes = 0;
+        std::uint64_t count = 0;
+        std::uint64_t bytesAtPeak = 0;
+        std::uint64_t countAtPeak = 0;
+    };
+    std::vector<MemoryCategory> DeviceLocalBreakdown() const;
+    std::uint64_t DeviceLocalAllocatedPeak() const;
+
+    /// Called by VulkanBuffer and VulkanImage; not for anyone else.
+    void NoteAllocation(const std::string& debugName, std::uint64_t bytes);
+    void NoteRelease(const std::string& debugName, std::uint64_t bytes);
+
   private:
     const VulkanContext& _context;
     void* _allocator = nullptr;  // VmaAllocator
     mutable std::atomic<std::uint64_t> _spilledBytes{0};
+
+    struct Tally {
+        std::uint64_t bytes = 0;
+        std::uint64_t count = 0;
+        std::uint64_t bytesAtPeak = 0;
+        std::uint64_t countAtPeak = 0;
+    };
+    mutable std::mutex _tallyMutex;
+    std::unordered_map<std::string, Tally> _tallies;
+    std::uint64_t _allocatedBytes = 0;
+    std::uint64_t _allocatedPeak = 0;
 };
 
 // ---------------------------------------------------------------------------

@@ -107,6 +107,9 @@ class BottomLevelStructure {
     const VulkanBuffer& GridIndices() const { return _gridIndices; }
     const SplatGridShape& GridShape() const { return _gridShape; }
     bool IsCurve() const { return _curve; }
+    /// True when the indices are 16-bit, which they are for any mesh of at
+    /// most 65,536 vertices: half the bytes, and the same triangles.
+    bool Indices16() const { return _indices16; }
     bool IsSplat() const { return _splat; }
     /// The degree every particle of this cloud shares.
     std::uint32_t HarmonicsDegree() const { return _harmonicsDegree; }
@@ -128,8 +131,8 @@ class BottomLevelStructure {
     VulkanBuffer _uvs;
     VulkanBuffer _segments;
     VulkanBuffer _segmentMaterials;
-    /// The boxes the structure is partitioned over. Held because the structure
-    /// references them and a refit rewrites them.
+    /// The boxes the structure is partitioned over: a build input, released
+    /// once the build has read it, because nothing reads it again.
     VulkanBuffer _aabbs;
     VulkanBuffer _splats;
     VulkanBuffer _harmonics;
@@ -139,6 +142,7 @@ class BottomLevelStructure {
     SplatGridShape _gridShape;
     bool _curve = false;
     bool _splat = false;
+    bool _indices16 = false;
     std::uint32_t _harmonicsDegree = 0;
     SplatKernel _kernel = SplatKernel::GaussianEllipsoid;
     std::uint32_t _triangleCount = 0;
@@ -165,13 +169,28 @@ class TopLevelStructure {
     VkDeviceAddress DeviceAddress() const { return _address; }
     std::uint32_t InstanceCount() const { return _instanceCount; }
 
+    /// The instances the structure was built over, one 64-byte
+    /// VkAccelerationStructureInstanceKHR per scene placement, in the order of
+    /// the instance table. Kept after the build because shading reads each
+    /// placement's transform from here rather than from a second copy of it.
+    const VulkanBuffer& InstanceBuffer() const { return _instanceBuffer; }
+
     /// Build, replacing whatever was here.
     ///
     /// Built into locals and swapped in on success, so a failure leaves the
     /// previous structure intact and still traversable rather than leaving the
     /// renderer with nothing to trace against (docs/architecture.md 6 rule 1).
+    ///
+    /// `hostResident` puts the instance array in system memory, read by the
+    /// build and by shading across the bus (Scene::hostInstanceData).
     void Build(const VulkanContext& context, VulkanAllocator& allocator,
-               const std::vector<VkAccelerationStructureInstanceKHR>& instances);
+               const std::vector<VkAccelerationStructureInstanceKHR>& instances,
+               bool hostResident = false);
+    /// The same, over `count` instances at `instances`: one chunk of a
+    /// stage's instance array, without copying it out first.
+    void Build(const VulkanContext& context, VulkanAllocator& allocator,
+               const VkAccelerationStructureInstanceKHR* instances,
+               std::size_t count, bool hostResident = false);
 
     void Reset();
 
@@ -208,7 +227,19 @@ class SceneAccelerator {
     void Update(const Scene& scene, const std::vector<bool>& nonOpaque = {},
                 const std::vector<bool>& fog = {});
 
-    const TopLevelStructure& Tlas() const { return _tlas; }
+    /// The first top-level structure, which is the only one unless the stage
+    /// has more placements than a chunk holds.
+    const TopLevelStructure& Tlas() const { return _chunks.front(); }
+    /// Every top-level structure, in order: chunk `c` holds placements
+    /// [c * ChunkSize(), (c + 1) * ChunkSize()), the last one fewer. A
+    /// placement's index in the scene is its chunk's base plus its index
+    /// within the chunk, which is what a ray query reports.
+    const std::vector<TopLevelStructure>& Chunks() const { return _chunks; }
+    std::uint32_t ChunkSize() const { return _chunkSize; }
+
+    /// The most chunks a stage may have, which is the number the kernels
+    /// trace through (path_state.glsl, HDCLAUDE_MAX_TLAS_CHUNKS).
+    static constexpr std::uint32_t kMaxChunks = 8;
     const BottomLevelStructure* Blas(std::uint32_t prototype) const;
     /// The structure built over splat prototype `prototype`, or null.
     ///
@@ -228,7 +259,10 @@ class SceneAccelerator {
   private:
     const VulkanContext& _context;
     VulkanAllocator& _allocator;
-    TopLevelStructure _tlas;
+    /// Never empty: a stage with nothing in it still has one, built over no
+    /// instances, because the kernels need a structure to trace.
+    std::vector<TopLevelStructure> _chunks = std::vector<TopLevelStructure>(1);
+    std::uint32_t _chunkSize = 1;
     /// Keyed by fingerprint, so reuse follows geometry rather than position in
     /// the prototype list.
     std::unordered_map<std::uint64_t, BottomLevelStructure> _byFingerprint;

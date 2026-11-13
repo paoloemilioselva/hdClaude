@@ -21,8 +21,9 @@ layout(local_size_x = 64) in;
 // `volumes` that link the hit placement (docs/cull-volumes.md 2.1). Without
 // it, the stretch is one the volumes already keep for every placement it can
 // meet.
-bool shadow_occluded(ShadowRay ray, float tMin, float tMax, uint cullMask,
-                     bool exceptions, uint volumes, uint key)
+bool shadow_occluded_chunk(uint chunk, ShadowRay ray, float tMin, float tMax,
+                           uint cullMask, bool exceptions, uint volumes,
+                           uint key)
 {
     // A light with a shadow link is occluded only by the geometry in it
     // (UsdLux `collection:shadowLink`). Membership is a property of the
@@ -47,7 +48,7 @@ bool shadow_occluded(ShadowRay ray, float tMin, float tMax, uint cullMask,
                                        : gl_RayFlagsNoneEXT);
 
     rayQueryEXT query;
-    rayQueryInitializeEXT(query, sceneTlas, flags, cullMask, ray.origin, tMin,
+    rayQueryInitializeEXT(query, hdclaude_chunk(chunk), flags, cullMask, ray.origin, tMin,
                           ray.direction, tMax);
     while (rayQueryProceedEXT(query))
     {
@@ -58,13 +59,13 @@ bool shadow_occluded(ShadowRay ray, float tMin, float tMax, uint cullMask,
             // cut-out placement. The implementation has already placed the hit
             // inside the ray's interval.
             int candidateInstance =
-                rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
+                (hdclaude_chunk_base(chunk) + rayQueryGetIntersectionInstanceIdEXT(query, false));
             float candidateT = rayQueryGetIntersectionTEXT(query, false);
             if (hdclaude_linked(candidateInstance, ray.shadowLink) &&
                 !(exceptions &&
                   hdclaude_cull_point(
                       candidateT,
-                      instanceCullLinks.values[candidateInstance] & volumes)) &&
+                      instanceCullLinks.values[hdclaude_attribute(int(candidateInstance))] & volumes)) &&
                 hdclaude_candidate_present(
                     key, candidateInstance,
                     rayQueryGetIntersectionPrimitiveIndexEXT(query, false),
@@ -83,9 +84,9 @@ bool shadow_occluded(ShadowRay ray, float tMin, float tMax, uint cullMask,
             gl_RayQueryCandidateIntersectionAABBEXT)
         {
             int candidateInstance =
-                rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
+                (hdclaude_chunk_base(chunk) + rayQueryGetIntersectionInstanceIdEXT(query, false));
             InstanceGeometry candidateGeometry =
-                instances.values[candidateInstance];
+                hdclaude_instance(int(candidateInstance));
             if (candidateGeometry.splats != 0ul &&
                 frame.splatTransport == HDCLAUDE_SPLAT_COVERAGE)
             {
@@ -124,7 +125,7 @@ bool shadow_occluded(ShadowRay ray, float tMin, float tMax, uint cullMask,
                     hdclaude_linked(candidateInstance, ray.shadowLink) &&
                     !(exceptions &&
                       hdclaude_cull_point(
-                          hit, instanceCullLinks.values[candidateInstance] &
+                          hit, instanceCullLinks.values[hdclaude_attribute(int(candidateInstance))] &
                                    volumes)))
                 {
                     float alpha = clamp(splat.opacity * response, 0.0, 1.0);
@@ -188,7 +189,7 @@ bool shadow_occluded(ShadowRay ray, float tMin, float tMax, uint cullMask,
                     hdclaude_linked(candidateInstance, ray.shadowLink) &&
                     !(exceptions &&
                       hdclaude_cull_point(
-                          hit, instanceCullLinks.values[candidateInstance] &
+                          hit, instanceCullLinks.values[hdclaude_attribute(int(candidateInstance))] &
                                    volumes)) &&
                     hdclaude_candidate_present(key, candidateInstance,
                                                candidateSegment, vec2(0.0),
@@ -202,6 +203,22 @@ bool shadow_occluded(ShadowRay ray, float tMin, float tMax, uint cullMask,
 
     return rayQueryGetIntersectionTypeEXT(query, true) !=
            gl_RayQueryCommittedIntersectionNoneEXT;
+}
+
+// shadow_occluded_chunk through every chunk, stopping at the first that has
+// anything in the way: an occluder in any chunk occludes.
+bool shadow_occluded(ShadowRay ray, float tMin, float tMax, uint cullMask,
+                     bool exceptions, uint volumes, uint key)
+{
+    for (uint chunk = 0u; chunk < instances.chunkCount; ++chunk)
+    {
+        if (shadow_occluded_chunk(chunk, ray, tMin, tMax, cullMask, exceptions,
+                                  volumes, key))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 void main()
@@ -263,7 +280,7 @@ void main()
         for (uint i = 0u; i < frame.splatInstanceCount && !blockedByVolume; ++i)
         {
             InstanceGeometry cloud =
-                instances.values[frame.splatInstanceBegin + i];
+                hdclaude_instance(int(frame.splatInstanceBegin + i));
             if (cloud.splats == 0ul || cloud.splatVolume == 0ul ||
                 !hdclaude_linked(int(frame.splatInstanceBegin + i),
                                  ray.shadowLink))
@@ -276,7 +293,7 @@ void main()
             // Only over the stretches this cloud's cull volumes keep, as in
             // `extend`.
             uint cloudVolumes =
-                volumes & instanceCullLinks.values[frame.splatInstanceBegin + i];
+                volumes & instanceCullLinks.values[hdclaude_attribute(int(frame.splatInstanceBegin + i))];
             if (cloudVolumes == 0u)
             {
                 blockedByVolume = hdclaude_splat_volume_collision(

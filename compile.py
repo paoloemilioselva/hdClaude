@@ -6,6 +6,11 @@ Usage:
   python compile.py core-only    build only the dependency-free core and its tests
   python compile.py dev-validation  the full delegate, building the validation layer
   python compile.py dev-dlss     build with the optional NVIDIA DLSS backend (Windows)
+  python compile.py dev-usd-26.05  the full delegate in its own build tree, against
+                                 whichever OpenUSD USDROOT names: set USDROOT to
+                                 the 26.05 install and USDEXTRA to its own install
+                                 prefix, so the 26.03 build and install are left
+                                 alone
   python compile.py houdini-22.0 build against the USD inside Houdini 22.0, and
                                  install it as a Houdini package
   python compile.py clean        remove the build tree, then build "dev"

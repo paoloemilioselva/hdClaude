@@ -184,6 +184,24 @@ void HdClaudeSceneStore::SetCullVolumesEnabled(bool enabled)
     }
 }
 
+void HdClaudeSceneStore::SetHostInstanceData(bool host)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (host != _hostInstanceData) {
+        _hostInstanceData = host;
+        ++_revision;
+    }
+}
+
+void HdClaudeSceneStore::SetTlasChunkSize(std::uint32_t size)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (size != _tlasChunkSize) {
+        _tlasChunkSize = size;
+        ++_revision;
+    }
+}
+
 std::uint64_t HdClaudeSceneStore::CullRevision() const
 {
     std::lock_guard<std::mutex> lock(_mutex);
@@ -261,9 +279,11 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
     hdclaude::Scene scene;
     materials.clear();
 
-    // Index 0 is the fallback. A mesh whose material failed to compile, or that
-    // has none, still renders -- a dropped prim is much harder to diagnose than
-    // an obviously untextured one.
+    // Index 0 is the fallback, a plain grey, reached only when the
+    // displayColor material itself is missing: everything else that binds no
+    // usable material is shaded with its displayColor (below). A prim still
+    // renders either way -- a dropped prim is much harder to diagnose than an
+    // obviously untextured one.
     materials.push_back(_fallback);
 
     // Cull volumes: which affect each kind of ray, and which geometry each
@@ -349,7 +369,11 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
     std::map<SdfPath, std::uint32_t> materialIndex;
     std::map<std::string, std::uint32_t> sharedIndex;
     for (const auto& [path, entry] : _materials) {
-        if (entry.compiled.spirv.empty()) {
+        // A material that cannot be used as authored -- no network hdClaude
+        // reads (a glslfx- or RenderMan-only material), a surface that is not
+        // MaterialX, a network that did not compile -- takes no index, and
+        // resolves below as a binding to nothing.
+        if (entry.compiled.spirv.empty() || !entry.fallbackReason.empty()) {
             continue;
         }
         // A material that compiled from the same network as one already in the
@@ -375,15 +399,25 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
         materials.push_back(entry.compiled);
     }
 
+    const auto displayColorEntry =
+        materialIndex.find(HdClaudeDisplayColorMaterialPath());
+    const std::uint32_t displayColorIndex =
+        displayColorEntry == materialIndex.end() ? 0u
+                                                 : displayColorEntry->second;
+
     scene.prototypes.reserve(_meshes.size());
     for (const auto& [path, mesh] : _meshes) {
         if ((mesh.prototype.indices.empty() && mesh.prototype.segments.empty()) ||
             !mesh.visible || !selection.IncludesRprim(path)) {
             continue;
         }
+        // A binding to no usable material is a binding to nothing: the prim
+        // is shaded as an unbound one is, by its displayColor, and the
+        // material's own report says why.
         auto resolve = [&](const SdfPath& binding) -> std::uint32_t {
             const auto found = materialIndex.find(binding);
-            return found == materialIndex.end() ? 0u : found->second;
+            return found == materialIndex.end() ? displayColorIndex
+                                                : found->second;
         };
 
         const auto prototype = static_cast<std::uint32_t>(scene.prototypes.size());
@@ -607,6 +641,8 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
         scene.environmentColor[2] = 0.0f;
     }
 
+    scene.hostInstanceData = _hostInstanceData;
+    scene.tlasChunkSize = _tlasChunkSize;
     scene.revision = _revision;
     // This snapshot becomes the next one's past once a frame of it has been
     // rendered (CommitHistory), and not before. Recorded for every mesh

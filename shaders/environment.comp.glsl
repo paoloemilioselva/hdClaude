@@ -86,7 +86,7 @@ void main()
     if (record == HDCLAUDE_HIT_SPLAT)
     {
         ivec4 hit = hits.values[path];
-        InstanceGeometry geometry = instances.values[hit.y];
+        InstanceGeometry geometry = hdclaude_instance(int(hit.y));
 
         // Toward the viewer, which is the direction hdClaude evaluates the
         // harmonics in and the one thing about them the schema does not state

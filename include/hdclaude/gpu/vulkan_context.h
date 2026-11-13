@@ -127,6 +127,11 @@ struct VulkanCapabilities {
     /// one is what an allocator hands back most of the time and a device loss
     /// is what the driver does about it.
     std::uint32_t scratchAlignment = 128;
+    /// The most instances one top-level structure may be built over.
+    ///
+    /// 16,777,215 on current NVIDIA and Intel drivers. A build over more is
+    /// invalid usage rather than a slow one, so the accelerator refuses it.
+    std::uint64_t maxInstanceCount = 0;
     std::uint64_t deviceLocalMemory = 0;
     std::string deviceName;
     std::string driverVersion;

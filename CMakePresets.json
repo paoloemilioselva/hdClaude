@@ -46,6 +46,12 @@
       }
     },
     {
+      "name": "dev-usd-26.05",
+      "displayName": "Developer build against OpenUSD 26.05 (set USDROOT and USDEXTRA; see compile.py)",
+      "inherits": "dev",
+      "binaryDir": "${sourceDir}/build/dev-usd-26.05"
+    },
+    {
       "name": "houdini-22.0",
       "displayName": "Full delegate against Houdini 22.0's USD (cmake/HoudiniUSD.cmake)",
       "inherits": "dev",
@@ -72,6 +78,10 @@
     {
       "name": "dev-dlss",
       "configurePreset": "dev-dlss"
+    },
+    {
+      "name": "dev-usd-26.05",
+      "configurePreset": "dev-usd-26.05"
     },
     {
       "name": "houdini-22.0",
@@ -103,6 +113,13 @@
     {
       "name": "dev-validation",
       "configurePreset": "dev-validation",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "dev-usd-26.05",
+      "configurePreset": "dev-usd-26.05",
       "output": {
         "outputOnFailure": true
       }

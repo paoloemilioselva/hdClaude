@@ -51,7 +51,9 @@ void main()
 
     // Named for the host before anything below can return: a hit behind the
     // camera is still what this pixel's ray met first.
-    guidePick.values[index] = instancePicks.values[record.x];
+    ivec2 pick = instancePicks.values[hdclaude_attribute(record.x)];
+    guidePick.values[index] = ivec2(
+        pick.x, pick.y == HDCLAUDE_NO_PICK_INSTANCE ? -1 : record.x - pick.y);
 
     // Cleared for a hit as for a miss, and before anything below can return:
     // `shade` overwrites the surface guides and records a probe for a hit whose
@@ -88,7 +90,7 @@ void main()
     // Rigid only: a mesh whose points changed moved in a way no matrix
     // describes, and this reports the rigid part rather than pretending to the
     // rest.
-    InstanceGeometry geometry = instances.values[record.x];
+    InstanceGeometry geometry = hdclaude_instance(int(record.x));
     vec3 objectPoint = vec4(hitWorld, 1.0) * geometry.worldToObject;
     vec3 previousWorld = vec4(objectPoint, 1.0) * geometry.previousObjectToWorld;
     vec4 previousClip = frame.previousWorldToClip * vec4(previousWorld, 1.0);

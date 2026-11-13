@@ -56,6 +56,8 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (reconstructionAutoExposure)
                          (lightGeometry)
                          (cullVolumes)
+                         (hostInstanceData)
+                         (tlasChunkSize)
                          (splatTransport)
                          (curveGeometry)
                          (curveSides)
@@ -618,7 +620,8 @@ void HdClaudeRenderPass::_Execute(
             1, 32);
         HdClaudeTessellationSettings tessellation;
         tessellation.level =
-            _renderDelegate->GetRenderSetting<int>(_tokens->subdivisionLevel, 2);
+            _renderDelegate->GetRenderSetting<int>(_tokens->subdivisionLevel,
+                                                   kHdClaudeDefaultSubdivisionLevel);
         tessellation.perFace = _renderDelegate->GetRenderSetting<bool>(
             _tokens->perFaceSubdivision, false);
         // Per-face needs a sampled view exactly as per-mesh does, so it turns
@@ -819,6 +822,10 @@ void HdClaudeRenderPass::_Execute(
     // this frame's snapshot rather than a reason to take another.
     store->SetCullVolumesEnabled(
         _renderDelegate->GetRenderSetting<bool>(_tokens->cullVolumes, true));
+    store->SetHostInstanceData(
+        _renderDelegate->GetRenderSetting<bool>(_tokens->hostInstanceData, true));
+    store->SetTlasChunkSize(static_cast<std::uint32_t>(std::max(
+        0, _renderDelegate->GetRenderSetting<int>(_tokens->tlasChunkSize, 0))));
 
     Framing framing;
     framing.camera = cameraResult.camera;
