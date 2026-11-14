@@ -622,6 +622,20 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
             hdclaude::Light light = entry.light;
             light.lightLink = categoryOf(entry.lightLink);
             light.shadowLink = categoryOf(entry.shadowLink);
+            if (!entry.emissionSpectrum.wavelengths.empty()) {
+                // Appended as [n, wavelengths, values] and referred to by its
+                // offset, negated and shifted so that zero stays D65.
+                const std::size_t offset = scene.emitterSpectra.size();
+                const std::size_t count = entry.emissionSpectrum.wavelengths.size();
+                scene.emitterSpectra.push_back(static_cast<float>(count));
+                scene.emitterSpectra.insert(scene.emitterSpectra.end(),
+                                            entry.emissionSpectrum.wavelengths.begin(),
+                                            entry.emissionSpectrum.wavelengths.end());
+                scene.emitterSpectra.insert(scene.emitterSpectra.end(),
+                                            entry.emissionSpectrum.values.begin(),
+                                            entry.emissionSpectrum.values.end());
+                light.colorTemperature = -static_cast<float>(offset + 1);
+            }
             scene.lights.push_back(light);
         }
     }

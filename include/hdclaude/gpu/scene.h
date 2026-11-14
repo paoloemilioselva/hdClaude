@@ -459,16 +459,24 @@ struct Light {
     /// Focus exponent, sharpening emission about the axis. 0 is uniform.
     float focus = 0.0f;
 
-    /// Blackbody temperature in kelvin, or zero when the light does not use
-    /// one.
+    /// The illuminant this light's colour is referred to.
+    ///
+    /// Positive: a blackbody temperature in kelvin. Zero: D65, the default.
+    /// Negative: a tabulated spectrum, `-(offset + 1)`, where `offset` is the
+    /// spectrum's record in `Scene::emitterSpectra` -- the measured emission
+    /// an `hdclaude:spectrum` light authors (docs/spectral-rendering.md 6).
+    /// One field for the three, because all three answer the same question,
+    /// and every kernel that resolves a light's emission already asks it.
     ///
     /// Carried rather than resolved to a colour on the host, because a
     /// temperature *is* a spectrum: a light at 2700 K emits Planck's law, and
     /// collapsing that to an RGB tint before transport is exactly the
-    /// approximation a spectral renderer exists to avoid.
+    /// approximation a spectral renderer exists to avoid. A measured spectrum
+    /// is the same argument with no closed form behind it.
     float colorTemperature = 0.0f;
-    /// Multiplies the peak-normalised blackbody so it carries the same luminous
-    /// power as the default illuminant. `BlackbodyLuminousScale`.
+    /// Multiplies the peak-normalised blackbody, or the tabulated spectrum, so
+    /// it carries the same luminous power as the default illuminant.
+    /// `BlackbodyLuminousScale`, `TabulatedLuminousScale`.
     float temperatureScale = 1.0f;
 
     /// Whether this light's own shape is rendered, as the asset asked for it.
@@ -595,6 +603,14 @@ struct Scene {
     std::vector<MeshPrototype> prototypes;
     std::vector<MeshInstance> instances;
     std::vector<Light> lights;
+
+    /// The tabulated emission spectra the lights refer to, one record each:
+    /// the sample count `n`, then `n` wavelengths in nanometres, then `n`
+    /// values -- `[n, l0 .. l(n-1), v0 .. v(n-1)]` -- with `n` stored as a
+    /// float, which is exact far beyond any table's length. A light reaches
+    /// its record through a negative `Light::colorTemperature`. Empty when no
+    /// light authors one.
+    std::vector<float> emitterSpectra;
 
     /// Gaussian splat clouds, and their placements. Separate lists from the
     /// mesh ones because they build a different kind of acceleration structure

@@ -108,6 +108,7 @@ std::vector<BindingDescription> KernelBindings()
     bindings.push_back(storage(36, "guidePick"));
     bindings.push_back(storage(37, "fogVolumes"));
     bindings.push_back(storage(38, "fogMajorants"));
+    bindings.push_back(storage(39, "emitterSpectra"));
 
     return bindings;
 }
@@ -1700,6 +1701,35 @@ void PathTracer::SetScene(const Scene& publishedScene,
         _lightCount = static_cast<std::uint32_t>(scene.lights.size());
     }
 
+    // --- Tabulated emission spectra -------------------------------------------
+    // The measured spectra lights refer to through a negative colour
+    // temperature (Scene::emitterSpectra). Allocated even when empty, for the
+    // reason the light table is: the binding must point at a real buffer, and
+    // no light refers into a placeholder.
+    {
+        std::vector<float> spectra = scene.emitterSpectra;
+        if (spectra.empty()) {
+            spectra.push_back(0.0f);
+        }
+        const VkDeviceSize size = spectra.size() * sizeof(float);
+
+        BufferDescription staging;
+        staging.size = size;
+        staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        staging.domain = BufferDomain::HostUpload;
+        staging.debugName = "emitterSpectra.staging";
+        VulkanBuffer upload(_allocator, staging);
+        upload.Write(spectra.data(), size);
+
+        _emitterSpectra = MakeStorage(_allocator, size, "emitterSpectra");
+        _context.SubmitImmediate([&](VkCommandBuffer command) {
+            VkBufferCopy region{};
+            region.size = size;
+            vkCmdCopyBuffer(command, upload.Handle(), _emitterSpectra.Handle(), 1,
+                            &region);
+        });
+    }
+
     // --- Light links, cull links, pick ids --------------------------------------
     // Per attribute, built with the instance table above: one bit a category
     // and `_linkWords` words an attribute, one cull word an attribute, and a
@@ -2116,6 +2146,7 @@ void PathTracer::WriteDescriptors(VkDescriptorSet set,
     pipeline.WriteBuffer(set, 36, slot.guidePick);
     pipeline.WriteBuffer(set, 37, _fogVolumes);
     pipeline.WriteBuffer(set, 38, slot.fogMajorants);
+    pipeline.WriteBuffer(set, 39, _emitterSpectra);
 }
 
 void PathTracer::SetCullVolumes(const std::vector<CullVolume>& volumes)

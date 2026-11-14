@@ -928,6 +928,8 @@ class PathTracer {
     /// object-space bounds. Always at least one entry, so the descriptor is
     /// valid in a scene with none. See shaders/fog.glsl.
     VulkanBuffer _fogVolumes;
+    /// Scene::emitterSpectra, on binding 39.
+    VulkanBuffer _emitterSpectra;
     std::uint32_t _fogVolumeCount = 0;
 
     // The scene's texture pool: each distinct image once, referred to by a

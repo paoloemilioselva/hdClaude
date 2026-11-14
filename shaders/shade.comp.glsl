@@ -53,6 +53,56 @@ layout(push_constant) uniform ShadeParams {
     uint thinWalled;
 } shadeParams;
 
+// --- A measured reflectance --------------------------------------------------
+//
+// A material whose colour input authors a tabulated spectrum reads that input
+// through a value this kernel sets (kSpectralGeomProp, docs/spectral-rendering.md
+// 6). Transport evaluates it at white, which `hdclaude_set_surface_hit` resets
+// it to at every hit, and sampling does too, so a lobe is chosen and its density
+// computed against one and the same material.
+//
+// The material compiler admits such an input only where it reaches the BSDFs
+// through operations linear in it, channel by channel, so the response is
+// affine in it: r(c) = r(0) + (r(1) - r(0)) c. That is what makes it exact to
+// replace `c` by the measured spectrum after the fact -- the part of the response
+// the input does not touch is upsampled as any response is, and the part it
+// scales is upsampled and multiplied by the spectrum at each lane's own
+// wavelength, rather than by the colour the spectrum projects to under one
+// illuminant. Two evaluations instead of one, and only for such a material:
+// for every other the constant flag folds both helpers to what they replace.
+
+/// The response with the spectral input at zero, evaluated before the real
+/// evaluation so the globals that one leaves are the ones the caller reads. The
+/// same `hdclaude_sample_u`, so a stochastic choice inside a combinator is the
+/// same choice twice. Zero for a material with no spectral input.
+vec3 hdclaude_spectral_offset(ClosureData data)
+{
+    if (!hdclaude_spectral_material)
+    {
+        return vec3(0.0);
+    }
+    hdclaude_set_spectral_value(vec3(0.0));
+    hdclaude_material_shade(data);
+    vec3 offset = hdclaude_bsdf.response;
+    hdclaude_set_spectral_value(vec3(1.0));
+    return offset;
+}
+
+/// The response the last evaluation left, as a spectrum on the four lanes.
+vec4 hdclaude_response_spectrum(vec3 offset, vec4 lambda)
+{
+    if (!hdclaude_spectral_material)
+    {
+        return hdclaude_upsample(hdclaude_bsdf.response, lambda);
+    }
+    vec4 measured = vec4(hdclaude_spectral_reflectance(lambda.x),
+                         hdclaude_spectral_reflectance(lambda.y),
+                         hdclaude_spectral_reflectance(lambda.z),
+                         hdclaude_spectral_reflectance(lambda.w));
+    return hdclaude_upsample(offset, lambda) +
+           hdclaude_upsample(hdclaude_bsdf.response - offset, lambda) * measured;
+}
+
 void main()
 {
     // This material's group of the sorted queue. The sort has already
@@ -159,7 +209,12 @@ void main()
         ClosureData guideData = ClosureData(CLOSURE_TYPE_PT_SAMPLE, vec3(0.0), V,
                                             point.shadingNormal, point.position,
                                             1.0);
+        // The guides are RGB, so a spectral input is given the colour its
+        // spectrum projects to under D65 -- the albedo a reconstructor
+        // demodulates by -- and put back to the white transport reads it at.
+        hdclaude_set_spectral_value(hdclaude_spectral_reference);
         hdclaude_material_shade(guideData);
+        hdclaude_set_spectral_value(vec3(1.0));
 
         // The closures' shading normal, which is where a normal map lands. A
         // material with no scattering lobe -- an emitter alone -- reports none,
@@ -322,6 +377,7 @@ void main()
                              : CLOSURE_TYPE_TRANSMISSION,
                 lightSample.direction, V, point.shadingNormal, point.position,
                 1.0);
+            vec3 lightOffset = hdclaude_spectral_offset(lightData);
             hdclaude_material_shade(lightData);
 
             // A delta closure has no finite response at any single direction,
@@ -380,7 +436,7 @@ void main()
                 // against. Multiplying two reflectances would render every lit
                 // surface under an equal-energy sky nobody authored.
                 vec4 lightResponse =
-                    hdclaude_upsample(hdclaude_bsdf.response, lambda);
+                    hdclaude_response_spectrum(lightOffset, lambda);
 
                 // The interior the shadow ray crosses, if it crosses one.
                 //
@@ -549,6 +605,7 @@ void main()
 
     ClosureData evalData = ClosureData(scatterClosure, L, V,
                                        point.shadingNormal, point.position, 1.0);
+    vec3 scatterOffset = hdclaude_spectral_offset(evalData);
     hdclaude_material_shade(evalData);
 
     float pdf = hdclaude_bsdf.pdf;
@@ -562,7 +619,7 @@ void main()
         return;
     }
 
-    throughput *= hdclaude_upsample(hdclaude_bsdf.response, lambda) / pdf;
+    throughput *= hdclaude_response_spectrum(scatterOffset, lambda) / pdf;
 
     // --- Crossing into or out of an interior medium --------------------------
     //

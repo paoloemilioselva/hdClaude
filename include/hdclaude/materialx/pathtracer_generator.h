@@ -30,6 +30,7 @@
 #include <MaterialXGenGlsl/VkSyntax.h>
 #include <MaterialXGenShader/HwShaderGenerator.h>
 
+#include <array>
 #include <cstdint>
 
 #include <map>
@@ -46,10 +47,38 @@ namespace mx = MaterialX;
 /// Bumped whenever the entry-point signature, the BSDF struct, or the ClosureData
 /// struct changes. It is part of the shader cache key, so a change here
 /// invalidates every cached module by construction rather than by remembering.
-inline constexpr std::uint32_t kMaterialAbiVersion = 3;
+inline constexpr std::uint32_t kMaterialAbiVersion = 4;
 
 /// Name of the generated entry point the `shade` kernel calls.
 inline constexpr const char* kMaterialShadeEntryPoint = "hdclaude_material_shade";
+
+/// The primvar name a material's spectral input is read through.
+///
+/// A material whose colour input authors a measured reflectance
+/// (`hdclaude:spectrum:*`, docs/spectral-rendering.md 6) has that input
+/// connected, before generation, to a `geompropvalue` node reading this name.
+/// No mesh carries such a primvar: the generator recognises the name and
+/// routes the node to a value the `shade` kernel sets, which is how the kernel
+/// evaluates the material's response with the input at zero and at white and
+/// rebuilds it spectrally from the two. A `geompropvalue` rather than a custom
+/// node because that is already the one way a value reaches a MaterialX graph
+/// from the integrator.
+inline constexpr const char* kSpectralGeomProp = "hdclaude_spectral_input";
+
+/// `void hdclaude_set_spectral_value(vec3 value)`: sets what the spectral input
+/// reads, until the next call or the next `hdclaude_set_surface_hit`, which
+/// resets it to white. Emitted for every material; a no-op for one without a
+/// spectral input.
+inline constexpr const char* kSpectralValueSetter = "hdclaude_set_spectral_value";
+
+/// `const bool hdclaude_spectral_material`: whether this material has one.
+inline constexpr const char* kSpectralMaterialFlag = "hdclaude_spectral_material";
+
+/// `float hdclaude_spectral_reflectance(float lambda)`: the measured spectrum,
+/// baked into the program -- linear between samples and zero outside them, as
+/// `EvaluateTabulated` defines it. Zero everywhere for a material without one.
+inline constexpr const char* kSpectralReflectanceFunction =
+    "hdclaude_spectral_reflectance";
 
 /// Name of the generated entry point the `displace` kernel calls.
 ///
@@ -257,6 +286,25 @@ class PathTracerShaderGenerator : public mx::VkShaderGenerator {
         _udimTiles = std::move(tiles);
     }
 
+    /// The measured reflectance the material's spectral input carries, as
+    /// strictly increasing wavelengths in nanometres and their values. Set
+    /// before generation, and only together with the `geompropvalue` node
+    /// reading `kSpectralGeomProp` that the caller connects it through; the
+    /// generated program then bakes the table in and says it is spectral.
+    ///
+    /// `reference` is the linear sRGB the spectrum projects to under D65
+    /// (`TabulatedReflectanceToLinearSrgb`), baked as
+    /// `const vec3 hdclaude_spectral_reference` for whatever must stay RGB --
+    /// the reconstruction guides' albedo.
+    void SetSpectralReflectance(std::vector<float> wavelengths,
+                                std::vector<float> values,
+                                std::array<float, 3> reference) const
+    {
+        _spectralWavelengths = std::move(wavelengths);
+        _spectralValues = std::move(values);
+        _spectralReference = reference;
+    }
+
   protected:
 
     void emitInputs(mx::GenContext& context, mx::ShaderStage& stage) const override;
@@ -272,6 +320,11 @@ class PathTracerShaderGenerator : public mx::VkShaderGenerator {
 
     /// Set by the caller before generation; see SetUdimTiles.
     mutable std::map<std::string, std::vector<int>> _udimTiles;
+
+    /// Set by the caller before generation; see SetSpectralReflectance.
+    mutable std::vector<float> _spectralWavelengths;
+    mutable std::vector<float> _spectralValues;
+    mutable std::array<float, 3> _spectralReference{1.0f, 1.0f, 1.0f};
 };
 
 

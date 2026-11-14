@@ -1226,6 +1226,13 @@ layout(set = 0, binding = 24, scalar) readonly buffer SpectralTables {
     float values[];
 } spectralTables;
 
+/// The measured emission spectra lights refer to, `Scene::emitterSpectra`:
+/// records of `[n, l0 .. l(n-1), v0 .. v(n-1)]`, reached through a negative
+/// `Light::colorTemperature` (docs/spectral-rendering.md 6).
+layout(set = 0, binding = 39, scalar) readonly buffer EmitterSpectra {
+    float values[];
+} emitterSpectra;
+
 // --- Spectral -----------------------------------------------------------
 
 const float kHdclaudeLambdaMin = 360.0;
@@ -1409,13 +1416,53 @@ float hdclaude_blackbody(float lambda, float kelvin)
     return l * l * l * l * l * (exp(xPeak) - 1.0) / (exp(x) - 1.0);
 }
 
+/// A tabulated emission spectrum at one wavelength.
+///
+/// `record` is the offset of `[n, wavelengths, values]` in `emitterSpectra`.
+/// Linear between samples and zero outside them -- `EvaluateTabulated` on the
+/// host, which is the definition and the one the unit tests hold. A binary
+/// search, since a measured table runs to hundreds of samples.
+float hdclaude_emitter_spectrum(uint record, float lambda)
+{
+    uint count = uint(emitterSpectra.values[record]);
+    uint wavelengths = record + 1u;
+    uint values = wavelengths + count;
+    if (count < 2u ||
+        lambda < emitterSpectra.values[wavelengths] ||
+        lambda > emitterSpectra.values[wavelengths + count - 1u])
+    {
+        return 0.0;
+    }
+    // The last sample at or below lambda, in [0, count - 2].
+    uint low = 0u;
+    uint high = count - 1u;
+    while (high - low > 1u)
+    {
+        uint middle = (low + high) / 2u;
+        if (emitterSpectra.values[wavelengths + middle] <= lambda)
+        {
+            low = middle;
+        }
+        else
+        {
+            high = middle;
+        }
+    }
+    float l0 = emitterSpectra.values[wavelengths + low];
+    float l1 = emitterSpectra.values[wavelengths + high];
+    float v0 = emitterSpectra.values[values + low];
+    float v1 = emitterSpectra.values[values + high];
+    return mix(v0, v1, (lambda - l0) / (l1 - l0));
+}
+
 /// The illuminant an emitter's authored RGB is referred to.
 ///
 /// D65 by default, because that is what an RGB colour means in an sRGB
 /// pipeline. A light with a colour temperature is referred to its *blackbody*
 /// instead -- it emits Planck's law, tinted by whatever colour was authored --
 /// and the scale keeps its luminous power the same, so the control tints
-/// without brightening.
+/// without brightening. A light with a measured spectrum (`kelvin` negative,
+/// naming its record) is referred to that spectrum, scaled the same way.
 ///
 /// Replacing the illuminant rather than multiplying by it is the point. A light
 /// at 2700 K does not emit daylight through an amber filter; it emits a 2700 K
@@ -1423,6 +1470,14 @@ float hdclaude_blackbody(float lambda, float kelvin)
 /// across the spectrum, which is every real one.
 vec4 hdclaude_emitter_illuminant(vec4 lambda, float kelvin, float scale)
 {
+    if (kelvin < 0.0)
+    {
+        uint record = uint(-kelvin - 0.5);
+        return scale * vec4(hdclaude_emitter_spectrum(record, lambda.x),
+                            hdclaude_emitter_spectrum(record, lambda.y),
+                            hdclaude_emitter_spectrum(record, lambda.z),
+                            hdclaude_emitter_spectrum(record, lambda.w));
+    }
     if (kelvin > 0.0)
     {
         return scale * vec4(hdclaude_blackbody(lambda.x, kelvin),

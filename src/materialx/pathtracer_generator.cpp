@@ -18,6 +18,7 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <map>
 #include <optional>
 #include <set>
@@ -150,6 +151,32 @@ bool IsDisplayColorGeomProp(const string& loweredVariable, const ShaderPort* por
     const std::size_t at = loweredVariable.find(marker);
     return at != string::npos &&
            loweredVariable.substr(at + marker.size()) == "displaycolor";
+}
+
+/// True when a vertex-data port is the material's spectral input: a
+/// `geompropvalue` reading `kSpectralGeomProp`, as a colour. Matched exactly,
+/// for the reason IsUvGeomProp gives.
+bool IsSpectralGeomProp(const string& loweredVariable, const ShaderPort* port)
+{
+    if (port == nullptr || port->getType() != Type::COLOR3) {
+        return false;
+    }
+    const string marker = "geomprop_";
+    const std::size_t at = loweredVariable.find(marker);
+    return at != string::npos &&
+           loweredVariable.substr(at + marker.size()) == kSpectralGeomProp;
+}
+
+/// A float as a GLSL literal that reads back as the same float.
+string FloatLiteral(float value)
+{
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "%.9g", static_cast<double>(value));
+    string text = buffer;
+    if (text.find_first_of(".eE") == string::npos) {
+        text += ".0";
+    }
+    return text;
 }
 
 }  // namespace
@@ -657,6 +684,11 @@ void PathTracerShaderGenerator::emitInputs(GenContext& context,
             emitScopeBegin(stage);
             emitScopeEnd(stage);
             emitLineBreak(stage);
+            emitLine("void " + string(kSpectralValueSetter) + "(vec3 value)",
+                     stage, false);
+            emitScopeBegin(stage);
+            emitScopeEnd(stage);
+            emitLineBreak(stage);
             return;
         }
 
@@ -700,11 +732,18 @@ void PathTracerShaderGenerator::emitInputs(GenContext& context,
                 return result;
             };
 
+            std::vector<string> spectralMembers;
             for (std::size_t i = 0; i < vertexData.size(); ++i) {
                 const ShaderPort* port = vertexData[i];
                 const string& variable = port->getVariable();
                 const string key = lowered(variable);
-                if (variable == HW::T_POSITION_WORLD ||
+                if (IsSpectralGeomProp(key, port)) {
+                    // The spectral input, reset to white at every hit: the
+                    // value the response is evaluated at unless the kernel
+                    // asks for another (kSpectralGeomProp).
+                    spectralMembers.push_back(instance + "." + variable);
+                    emitLine(instance + "." + variable + " = vec3(1.0)", stage);
+                } else if (variable == HW::T_POSITION_WORLD ||
                     key.find("positionworld") != string::npos) {
                     emitLine(instance + "." + variable + " = P", stage);
                 } else if (variable == HW::T_NORMAL_WORLD ||
@@ -786,6 +825,17 @@ void PathTracerShaderGenerator::emitInputs(GenContext& context,
                     emitLine(eye->getVariable() + " = P - I", stage);
                     break;
                 }
+            }
+            emitScopeEnd(stage);
+            emitLineBreak(stage);
+
+            emitComment("What the spectral input reads; see kSpectralGeomProp",
+                        stage);
+            emitLine("void " + string(kSpectralValueSetter) + "(vec3 value)",
+                     stage, false);
+            emitScopeBegin(stage);
+            for (const string& member : spectralMembers) {
+                emitLine(member + " = value", stage);
             }
             emitScopeEnd(stage);
             emitLineBreak(stage);
@@ -885,6 +935,68 @@ void PathTracerShaderGenerator::emitPixelStage(const ShaderGraph& graph,
                  " = displacementshader(vec3(0.0), 1.0)",
              stage);
     emitLineBreak(stage);
+
+    // The measured reflectance of the material's spectral input, baked in
+    // (kSpectralGeomProp). Declared for every material, as the displacement
+    // is: a material without one says so with a constant the kernel's branch
+    // on it folds away, and its table is a placeholder nothing reads.
+    {
+        const bool spectral = _spectralWavelengths.size() >= 2 &&
+                              _spectralWavelengths.size() == _spectralValues.size();
+        const std::vector<float> wavelengths =
+            spectral ? _spectralWavelengths : std::vector<float>{0.0f, 1.0f};
+        const std::vector<float> values =
+            spectral ? _spectralValues : std::vector<float>{0.0f, 0.0f};
+        const string count = std::to_string(wavelengths.size());
+        auto table = [](const std::vector<float>& samples) {
+            string text = "float[](";
+            for (std::size_t i = 0; i < samples.size(); ++i) {
+                text += (i == 0 ? "" : ", ") + FloatLiteral(samples[i]);
+            }
+            return text + ")";
+        };
+        emitComment("The spectral input's measured reflectance; see "
+                    "docs/spectral-rendering.md 6",
+                    stage);
+        emitLine(string("const bool ") + kSpectralMaterialFlag + " = " +
+                     (spectral ? "true" : "false"),
+                 stage);
+        emitLine("const float hdclaude_spectral_wavelengths[" + count + "] = " +
+                     table(wavelengths),
+                 stage);
+        emitLine("const float hdclaude_spectral_values[" + count + "] = " +
+                     table(values),
+                 stage);
+        emitLine("const vec3 hdclaude_spectral_reference = vec3(" +
+                     FloatLiteral(spectral ? _spectralReference[0] : 1.0f) + ", " +
+                     FloatLiteral(spectral ? _spectralReference[1] : 1.0f) + ", " +
+                     FloatLiteral(spectral ? _spectralReference[2] : 1.0f) + ")",
+                 stage);
+        emitLineBreak(stage);
+        // Linear between samples, zero outside them: EvaluateTabulated.
+        emitLine(string("float ") + kSpectralReflectanceFunction + "(float lambda)",
+                 stage, false);
+        emitScopeBegin(stage);
+        emitLine("if (!" + string(kSpectralMaterialFlag) +
+                     " || lambda < hdclaude_spectral_wavelengths[0] || "
+                     "lambda > hdclaude_spectral_wavelengths[" + count +
+                     " - 1]) return 0.0",
+                 stage);
+        emitLine("int low = 0", stage);
+        emitLine("int high = " + count + " - 1", stage);
+        emitLine("while (high - low > 1) { int middle = (low + high) / 2; "
+                 "if (hdclaude_spectral_wavelengths[middle] <= lambda) low = middle; "
+                 "else high = middle; }",
+                 stage);
+        emitLine("return mix(hdclaude_spectral_values[low], "
+                 "hdclaude_spectral_values[high], "
+                 "(lambda - hdclaude_spectral_wavelengths[low]) / "
+                 "(hdclaude_spectral_wavelengths[high] - "
+                 "hdclaude_spectral_wavelengths[low]))",
+                 stage);
+        emitScopeEnd(stage);
+        emitLineBreak(stage);
+    }
 
     // --- Token substitutions ---------------------------------------------------
     //

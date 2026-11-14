@@ -26,8 +26,12 @@
 #include "pxr/imaging/hd/tokens.h"
 #include "pxr/imaging/hdMtlx/hdMtlx.h"
 
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <map>
+#include <optional>
+#include <set>
 #include <fstream>
 #include <stdexcept>
 #include <utility>
@@ -625,6 +629,320 @@ void PruneUndeclaredInputs(const mx::DocumentPtr& document, const std::string& n
     }
 }
 
+// ---------------------------------------------------------------------------
+// Measured reflectance (docs/spectral-rendering.md 6)
+// ---------------------------------------------------------------------------
+
+/// A measured reflectance a shader node authors on one of its colour inputs:
+/// `inputs:hdclaude:spectrum:<input>:wavelengths` and `...:values`.
+struct AuthoredSpectralInput {
+    SdfPath node;
+    std::string input;
+    hdclaude::TabulatedSpectrum spectrum;
+};
+
+constexpr const char* kSpectrumPrefix = "hdclaude:spectrum:";
+
+/// The floats a parameter holds, from either precision.
+std::vector<float> FloatArray(const VtValue& value)
+{
+    if (value.IsHolding<VtFloatArray>()) {
+        const VtFloatArray& floats = value.UncheckedGet<VtFloatArray>();
+        return std::vector<float>(floats.begin(), floats.end());
+    }
+    if (value.IsHolding<VtDoubleArray>()) {
+        const VtDoubleArray& doubles = value.UncheckedGet<VtDoubleArray>();
+        return std::vector<float>(doubles.begin(), doubles.end());
+    }
+    return {};
+}
+
+/// Takes every `hdclaude:spectrum:*` parameter off the network's nodes and
+/// returns the spectra they author.
+///
+/// Taken off, not only read, because they are hdClaude's own attributes and
+/// no MaterialX node declares them: left in, hdMtlx would carry them into the
+/// document and `PruneUndeclaredInputs` would report each as a version
+/// mismatch, which it is not. A pair that is malformed -- one half missing, a
+/// name that is not `<input>:wavelengths` or `<input>:values`, a table that
+/// fails validation -- is reported by name and not used.
+std::vector<AuthoredSpectralInput> TakeSpectralInputs(HdMaterialNetwork2* network,
+                                                      const SdfPath& material)
+{
+    std::vector<AuthoredSpectralInput> found;
+    const std::string prefix = kSpectrumPrefix;
+    for (auto& [path, node] : network->nodes) {
+        std::map<std::string, std::pair<std::vector<float>, std::vector<float>>> tables;
+        std::map<std::string, std::pair<bool, bool>> authored;
+        for (auto it = node.parameters.begin(); it != node.parameters.end();) {
+            const std::string name = it->first.GetString();
+            if (name.rfind(prefix, 0) != 0) {
+                ++it;
+                continue;
+            }
+            const std::string rest = name.substr(prefix.size());
+            const std::size_t split = rest.rfind(':');
+            const std::string input =
+                split == std::string::npos ? std::string() : rest.substr(0, split);
+            const std::string half =
+                split == std::string::npos ? rest : rest.substr(split + 1);
+            if (input.empty() || (half != "wavelengths" && half != "values")) {
+                TF_WARN("hdClaude: material <%s>: node <%s> authors '%s', which "
+                        "is not hdclaude:spectrum:<input>:wavelengths or "
+                        ":values; it is ignored",
+                        material.GetText(), path.GetText(), name.c_str());
+            } else if (half == "wavelengths") {
+                tables[input].first = FloatArray(it->second);
+                authored[input].first = true;
+            } else {
+                tables[input].second = FloatArray(it->second);
+                authored[input].second = true;
+            }
+            it = node.parameters.erase(it);
+        }
+        for (auto& [input, table] : tables) {
+            if (!authored[input].first || !authored[input].second) {
+                TF_WARN("hdClaude: material <%s>: node <%s> authors only half of "
+                        "hdclaude:spectrum:%s -- both :wavelengths and :values "
+                        "are needed -- so the input keeps its colour",
+                        material.GetText(), path.GetText(), input.c_str());
+                continue;
+            }
+            hdclaude::TabulatedSpectrum spectrum{std::move(table.first),
+                                                 std::move(table.second)};
+            const std::string invalid =
+                hdclaude::ValidateTabulatedSpectrum(spectrum, true);
+            if (!invalid.empty()) {
+                TF_WARN("hdClaude: material <%s>: node <%s> input '%s': its "
+                        "measured reflectance %s, so it is not used and the "
+                        "input keeps its colour",
+                        material.GetText(), path.GetText(), input.c_str(),
+                        invalid.c_str());
+                continue;
+            }
+            found.push_back({path, input, std::move(spectrum)});
+        }
+    }
+    return found;
+}
+
+/// The nodes the material itself authors.
+///
+/// The document also holds every library MaterialX and hdClaude load, as
+/// includes, and those are full of implementation graphs whose nodes have
+/// ordinary names -- `standard_surface`'s graph has a `mix` called `diffuse`.
+/// A library element carries the file it came from; the material's own do
+/// not.
+std::vector<mx::NodePtr> AuthoredNodes(const mx::DocumentPtr& document)
+{
+    std::vector<mx::NodePtr> nodes;
+    for (const mx::ElementPtr& element : document->traverseTree()) {
+        mx::NodePtr node = element ? element->asA<mx::Node>() : nullptr;
+        if (node && node->getActiveSourceUri().empty()) {
+            nodes.push_back(node);
+        }
+    }
+    return nodes;
+}
+
+/// The node an input takes its value from, through a nodegraph output if
+/// that is how it is connected.
+mx::NodePtr UpstreamNode(const mx::InputPtr& input)
+{
+    if (mx::NodePtr node = input->getConnectedNode()) {
+        return node;
+    }
+    if (mx::OutputPtr output = input->getConnectedOutput()) {
+        return output->getConnectedNode();
+    }
+    return nullptr;
+}
+
+/// Whether a node's response is linear, channel by channel, in one input.
+///
+/// The closed list of what is admitted, and every entry is a statement about
+/// the node's specification rather than about its implementation:
+///
+/// - The diffuse lobes scale their whole response by `color`.
+/// - `multiply`, `add`, `subtract` and `mix`'s `fg`/`bg` are linear in each
+///   operand, per channel, for colours and closures alike -- MaterialX
+///   defines `mix` of BSDFs as the same weighted sum. `mix`'s *factor* is
+///   not admitted: a colour there would weight the two sides by itself.
+/// - `layer` is linear in its `base`, which the top attenuates by a factor
+///   that does not depend on it. Not in its `top`: the base sees whatever
+///   the top does not reflect, which depends on the top's colour.
+/// - `surface` passes its `bsdf` through.
+/// - `dot` is the identity.
+///
+/// Anything else -- a conductor, whose response is a nonlinear function of
+/// its colour; a dielectric's tint, which layering reads as albedo; an
+/// emission, an opacity, a subsurface walk -- is refused, and the material
+/// keeps its RGB.
+bool LinearIn(const std::string& category, const std::string& input)
+{
+    static const std::set<std::pair<std::string, std::string>> admitted = {
+        {"oren_nayar_diffuse_bsdf", "color"},
+        {"burley_diffuse_bsdf", "color"},
+        {"translucent_bsdf", "color"},
+        {"multiply", "in1"},
+        {"multiply", "in2"},
+        {"add", "in1"},
+        {"add", "in2"},
+        {"subtract", "in1"},
+        {"subtract", "in2"},
+        {"mix", "fg"},
+        {"mix", "bg"},
+        {"layer", "base"},
+        {"surface", "bsdf"},
+        {"dot", "in"},
+    };
+    return admitted.count({category, input}) != 0;
+}
+
+/// Whether the material's response is affine in `node`'s input `input`.
+///
+/// Walks every path from the input to the material and requires each step to
+/// be one `LinearIn` admits, with no node reached by two of them -- a product
+/// of two terms that both depend on the input is quadratic in it. The walk
+/// ends at the `surfacematerial`. On refusal `why` names the step.
+bool AffineInInput(const mx::DocumentPtr& document, const mx::NodePtr& node,
+                   const std::string& input, std::string* why)
+{
+    if (!LinearIn(node->getCategory(), input)) {
+        *why = "'" + node->getCategory() + "' is not linear in its '" + input +
+               "' input";
+        return false;
+    }
+
+    const std::vector<mx::NodePtr> nodes = AuthoredNodes(document);
+
+    std::set<mx::NodePtr> dependent{node};
+    std::vector<mx::NodePtr> frontier{node};
+    while (!frontier.empty()) {
+        const mx::NodePtr current = frontier.back();
+        frontier.pop_back();
+        for (const mx::NodePtr& consumer : nodes) {
+            std::vector<std::string> fed;
+            std::size_t dependentInputs = 0;
+            for (const mx::InputPtr& consumerInput : consumer->getInputs()) {
+                const mx::NodePtr upstream = UpstreamNode(consumerInput);
+                if (upstream == current) {
+                    fed.push_back(consumerInput->getName());
+                }
+                if (upstream && dependent.count(upstream) != 0) {
+                    ++dependentInputs;
+                }
+            }
+            if (fed.empty()) {
+                continue;
+            }
+            if (consumer->getCategory() == "surfacematerial") {
+                continue;
+            }
+            for (const std::string& name : fed) {
+                if (!LinearIn(consumer->getCategory(), name)) {
+                    *why = "it reaches '" + consumer->getName() + "' (" +
+                           consumer->getCategory() + ") through '" + name +
+                           "', which is not linear in it";
+                    return false;
+                }
+            }
+            if (dependentInputs > 1) {
+                *why = "it reaches '" + consumer->getName() + "' (" +
+                       consumer->getCategory() +
+                       ") through more than one input, so the response is not "
+                       "linear in it";
+                return false;
+            }
+            if (dependent.insert(consumer).second) {
+                frontier.push_back(consumer);
+            }
+        }
+    }
+    return true;
+}
+
+/// Connects a spectral input to the `geompropvalue` the shade kernel sets.
+///
+/// Returns false, and says why, when the input cannot carry a spectrum: it
+/// does not exist or is not a colour, it is connected to something (a
+/// spectrum is a value, and a texture's texels have none), or the response is
+/// not affine in it. On success the authored colour, if any, is checked
+/// against the colour the spectrum projects to under D65, and a disagreement
+/// is reported -- the spectrum is what is rendered, and the colour is the
+/// portable statement of it that every other renderer reads, so the two
+/// should say the same thing.
+bool RouteSpectralInput(const mx::DocumentPtr& document,
+                        const AuthoredSpectralInput& spectral,
+                        const hdclaude::Vec3& reference, const std::string& name,
+                        std::string* why)
+{
+    const std::string nodeName = spectral.node.GetName();
+    mx::NodePtr node;
+    for (const mx::NodePtr& candidate : AuthoredNodes(document)) {
+        if (candidate->getName() == nodeName) {
+            node = candidate;
+            break;
+        }
+    }
+    if (!node) {
+        *why = "the node is not part of the surface's graph";
+        return false;
+    }
+    const mx::NodeDefPtr definition = node->getNodeDef();
+    const mx::InputPtr declared =
+        definition ? definition->getActiveInput(spectral.input) : nullptr;
+    if (!declared || declared->getType() != "color3") {
+        *why = "'" + node->getCategory() + "' has no color3 input named '" +
+               spectral.input + "'";
+        return false;
+    }
+    mx::InputPtr input = node->getInput(spectral.input);
+    if (input && (UpstreamNode(input) || input->hasInterfaceName())) {
+        *why = "the input is connected, and a spectrum replaces a value";
+        return false;
+    }
+    if (!AffineInInput(document, node, spectral.input, why)) {
+        return false;
+    }
+
+    if (input && input->hasValue()) {
+        const mx::ValuePtr value = input->getValue();
+        if (value && value->isA<mx::Color3>()) {
+            const mx::Color3 authored = value->asA<mx::Color3>();
+            const float difference =
+                std::max({std::abs(authored[0] - reference.x),
+                          std::abs(authored[1] - reference.y),
+                          std::abs(authored[2] - reference.z)});
+            if (difference > 2.0e-3f) {
+                TF_WARN("hdClaude: material %s: node '%s' input '%s' authors "
+                        "(%.4f, %.4f, %.4f), and its measured reflectance "
+                        "projects to (%.4f, %.4f, %.4f) under D65; the spectrum "
+                        "is rendered, and the colour other renderers read "
+                        "disagrees with it",
+                        name.c_str(), nodeName.c_str(), spectral.input.c_str(),
+                        authored[0], authored[1], authored[2], reference.x,
+                        reference.y, reference.z);
+            }
+        }
+    }
+
+    mx::GraphElementPtr parent = node->getParent()->asA<mx::GraphElement>();
+    mx::NodePtr reader = parent->addNode(
+        "geompropvalue", parent->createValidChildName(hdclaude::kSpectralGeomProp),
+        "color3");
+    reader->setNodeDefString("ND_geompropvalue_color3");
+    reader->setInputValue("geomprop", std::string(hdclaude::kSpectralGeomProp),
+                          "string");
+    reader->setInputValue("default", mx::Color3(reference.x, reference.y, reference.z));
+    if (!input) {
+        input = node->addInput(spectral.input, "color3");
+    }
+    input->removeAttribute(mx::ValueElement::VALUE_ATTRIBUTE);
+    input->setConnectedNode(reader);
+    return true;
+}
+
 /// Tell the generator which UDIM tiles each `filename` input resolves to.
 ///
 /// This has to happen *before* generation, because a UDIM set takes one array
@@ -781,7 +1099,8 @@ HdClaudeMaterialCompiler::HdClaudeMaterialCompiler(std::string shadeKernel,
 hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
     mx::DocumentPtr document, const std::string& name, std::string* error,
     std::vector<TextureRequest>* texturePaths,
-    const std::map<std::string, std::string>* resolvedTextures)
+    const std::map<std::string, std::string>* resolvedTextures,
+    const SpectralReflectance* spectral)
 {
     // Caller holds _mutex: this touches the shared library document, the
     // generator, and glslang, none of which are thread-safe.
@@ -834,6 +1153,16 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
         // the two cannot disagree about which image is which.
         TellGeneratorAboutUdimSets(document, name, resolvedTextures,
                                    generator.get(), &udimSubstitution);
+        if (spectral != nullptr) {
+            if (auto* ptGenerator =
+                    dynamic_cast<hdclaude::PathTracerShaderGenerator*>(
+                        generator.get())) {
+                ptGenerator->SetSpectralReflectance(
+                    spectral->spectrum.wavelengths, spectral->spectrum.values,
+                    {spectral->reference.x, spectral->reference.y,
+                     spectral->reference.z});
+            }
+        }
 
         const std::vector<mx::TypedElementPtr> renderable =
             mx::findRenderableElements(document);
@@ -1263,7 +1592,29 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::CompileUncached(
     // Hoisted out of the try below because the displacement terminal is built
     // from the same translated network: the two terminals are two graphs of
     // one material, and translating twice could translate them differently.
-    const HdMaterialNetwork2 translated = TranslateUsdNodeTypes(network);
+    HdMaterialNetwork2 translated = TranslateUsdNodeTypes(network);
+
+    // hdClaude's own spectral attributes come off the network before hdMtlx
+    // sees it, and go back on as a routing once the document exists.
+    std::vector<AuthoredSpectralInput> spectralInputs =
+        TakeSpectralInputs(&translated, path);
+    if (spectralInputs.size() > 1) {
+        // Each spectral input is an evaluation of the material, and two
+        // inputs that meet in one lobe are not affine in either alone. One is
+        // what the decomposition is exact for; the others are said.
+        for (std::size_t i = 1; i < spectralInputs.size(); ++i) {
+            TF_WARN("hdClaude: material <%s>: node <%s> input '%s' authors a "
+                    "measured reflectance, and hdClaude honours one per "
+                    "material; <%s> input '%s' is used and this one keeps its "
+                    "colour",
+                    path.GetText(), spectralInputs[i].node.GetText(),
+                    spectralInputs[i].input.c_str(),
+                    spectralInputs[0].node.GetText(),
+                    spectralInputs[0].input.c_str());
+        }
+        spectralInputs.resize(1);
+    }
+    std::optional<SpectralReflectance> spectral;
 
     mx::DocumentPtr document;
     std::map<std::string, std::string> resolvedTextures;
@@ -1276,6 +1627,28 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::CompileUncached(
         resolvedTextures = ResolvedTexturePaths(translated, mxHdData);
         ResolvePrimvarReaders(document, name);
         PruneUndeclaredInputs(document, name);
+        if (!spectralInputs.empty()) {
+            const AuthoredSpectralInput& authored = spectralInputs.front();
+            const hdclaude::Vec3 reference =
+                hdclaude::TabulatedReflectanceToLinearSrgb(authored.spectrum);
+            std::string why;
+            if (RouteSpectralInput(document, authored, reference, name, &why)) {
+                spectral = SpectralReflectance{authored.spectrum, reference};
+                HdClaudeTrace("material <%s>: <%s> '%s' carries a measured "
+                              "reflectance of %zu samples, (%.4f, %.4f, %.4f) "
+                              "under D65",
+                              path.GetText(), authored.node.GetText(),
+                              authored.input.c_str(),
+                              authored.spectrum.wavelengths.size(), reference.x,
+                              reference.y, reference.z);
+            } else {
+                TF_WARN("hdClaude: material <%s>: node <%s> input '%s' authors a "
+                        "measured reflectance that is not honoured: %s; the "
+                        "input keeps its colour",
+                        path.GetText(), authored.node.GetText(),
+                        authored.input.c_str(), why.c_str());
+            }
+        }
     } catch (const std::exception& error) {
         result.fallbackReason =
             std::string("could not build a MaterialX document: ") + error.what();
@@ -1291,7 +1664,8 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::CompileUncached(
 
     std::string error;
     result.material = CompileDocument(document, name, &error,
-                                      &result.texturePaths, &resolvedTextures);
+                                      &result.texturePaths, &resolvedTextures,
+                                      spectral ? &*spectral : nullptr);
     if (result.material.spirv.empty()) {
         // A material that fails to compile names itself, the prim, and the
         // compiler message. It is not silently replaced with something that

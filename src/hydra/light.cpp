@@ -156,6 +156,72 @@ std::string UnhonouredInputs(HdSceneDelegate* delegate, const SdfPath& id)
     return report;
 }
 
+/// A float array light parameter, as floats, or empty when not authored.
+///
+/// Asked for by its base name, which is how UsdImaging names a light's
+/// `inputs:` properties to a render delegate, and failing that by its full
+/// property name, so the read does not depend on which of the two a given
+/// OpenUSD's light data source uses.
+VtFloatArray ParamFloatArray(HdSceneDelegate* delegate, const SdfPath& id,
+                             const std::string& name)
+{
+    for (const std::string& candidate : {name, "inputs:" + name}) {
+        const VtValue value = delegate->GetLightParamValue(id, TfToken(candidate));
+        if (value.IsHolding<VtFloatArray>()) {
+            return value.UncheckedGet<VtFloatArray>();
+        }
+        if (value.IsHolding<VtDoubleArray>()) {
+            const VtDoubleArray& doubles = value.UncheckedGet<VtDoubleArray>();
+            return VtFloatArray(doubles.begin(), doubles.end());
+        }
+    }
+    return {};
+}
+
+/// The measured emission spectrum a light authors, if it authors one.
+///
+/// `inputs:hdclaude:spectrum:wavelengths` (nm) and
+/// `inputs:hdclaude:spectrum:values`, both `float[]`: hdClaude's own extension,
+/// because UsdLux, like the rest of OpenUSD, has no type for a spectrum
+/// (docs/spectral-rendering.md 6). The spectrum replaces the illuminant the
+/// light's `color` is referred to -- exactly what `enableColorTemperature`
+/// does with a blackbody -- so `color` still tints it and `intensity`,
+/// `exposure` and `normalize` still scale it.
+///
+/// Returns false when nothing is authored. A table that is authored and
+/// unusable is reported and not used, and the light falls back to its colour:
+/// the RGB is the portable statement of the light, the one every other
+/// renderer reads, and the report is what says the measured one was refused.
+bool ReadEmissionSpectrum(HdSceneDelegate* delegate, const SdfPath& id,
+                          hdclaude::TabulatedSpectrum* spectrum,
+                          std::string* report)
+{
+    const VtFloatArray wavelengths =
+        ParamFloatArray(delegate, id, "hdclaude:spectrum:wavelengths");
+    const VtFloatArray values =
+        ParamFloatArray(delegate, id, "hdclaude:spectrum:values");
+    if (wavelengths.empty() && values.empty()) {
+        return false;
+    }
+    hdclaude::TabulatedSpectrum candidate{
+        std::vector<float>(wavelengths.begin(), wavelengths.end()),
+        std::vector<float>(values.begin(), values.end())};
+    const std::string invalid = hdclaude::ValidateTabulatedSpectrum(candidate, false);
+    if (!invalid.empty()) {
+        Unhonoured(report, "inputs:hdclaude:spectrum " + invalid +
+                               ", so it is not used and the light emits its colour");
+        return false;
+    }
+    if (!(hdclaude::TabulatedLuminousScale(candidate) > 0.0f)) {
+        Unhonoured(report,
+                   "inputs:hdclaude:spectrum emits nothing the eye can see, so "
+                   "it has no luminous power to scale to and is not used");
+        return false;
+    }
+    *spectrum = std::move(candidate);
+    return true;
+}
+
 /// UsdLux's `sizeFactor` for a distant light with `normalize` on.
 ///
 /// Quoted from `UsdLuxLightAPI::GetNormalizeAttr`: with the half-angle
@@ -261,6 +327,29 @@ void HdClaudeLight::Sync(HdSceneDelegate* sceneDelegate,
     std::string entryReport = UnhonouredInputs(sceneDelegate, id);
     const TfToken lightLink = LinkParam(sceneDelegate, id, HdTokens->lightLink);
     const TfToken shadowLink = LinkParam(sceneDelegate, id, HdTokens->shadowLink);
+
+    // A measured spectrum replaces whichever illuminant the colour would have
+    // been referred to. Its place in the scene's spectrum table is assigned at
+    // snapshot; only the luminous scale is known here.
+    hdclaude::TabulatedSpectrum emissionSpectrum;
+    if (ReadEmissionSpectrum(sceneDelegate, id, &emissionSpectrum, &entryReport)) {
+        if (_lightType == HdPrimTypeTokens->domeLight) {
+            Unhonoured(&entryReport,
+                       "inputs:hdclaude:spectrum is not honoured on a dome light; "
+                       "the environment emits its colour");
+            emissionSpectrum = {};
+        } else {
+            if (colorTemperature > 0.0f) {
+                Unhonoured(&entryReport,
+                           "inputs:enableColorTemperature is not honoured, because "
+                           "inputs:hdclaude:spectrum says what the light emits; "
+                           "the two are alternatives, and the measured spectrum "
+                           "is used");
+            }
+            colorTemperature = 0.0f;
+            temperatureScale = hdclaude::TabulatedLuminousScale(emissionSpectrum);
+        }
+    }
 
     hdclaude::Light light;
     light.colorTemperature = colorTemperature;
@@ -481,12 +570,16 @@ void HdClaudeLight::Sync(HdSceneDelegate* sceneDelegate,
     entry.lightLink = lightLink;
     entry.shadowLink = shadowLink;
     entry.report = entryReport;
+    const std::size_t spectrumSamples = emissionSpectrum.wavelengths.size();
+    entry.emissionSpectrum = std::move(emissionSpectrum);
     param->SceneStore()->PublishLight(id, std::move(entry));
 
     HdClaudeTrace(
-        "light <%s>: type %u, radiance %.3f %.3f %.3f, area %.4f, shadows %s",
+        "light <%s>: type %u, radiance %.3f %.3f %.3f, area %.4f, shadows %s, "
+        "tabulated spectrum %zu samples (luminous scale %g)",
         id.GetText(), light.type, light.radiance[0], light.radiance[1],
-        light.radiance[2], light.area, light.castsShadows ? "yes" : "no");
+        light.radiance[2], light.area, light.castsShadows ? "yes" : "no",
+        spectrumSamples, spectrumSamples > 0 ? light.temperatureScale : 0.0f);
 
     // And what this light asked for that it did not get. The report already
     // travels to `GetRenderStats`, which is where a host reads it, but that is

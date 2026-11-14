@@ -10,6 +10,7 @@
 // prototype and material index. Nothing below it knows about OpenUSD, and
 // nothing above it knows about Vulkan.
 
+#include "hdclaude/core/spectrum.h"
 #include "hdclaude/gpu/path_tracer.h"
 #include "hdclaude/gpu/scene.h"
 
@@ -158,6 +159,12 @@ struct HdClaudeLightEntry {
     float domeTemperatureScale = 1.0f;
     float domeWorldToLight[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     float domeLightToWorld[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    /// The measured emission spectrum the light authors through
+    /// `inputs:hdclaude:spectrum:*`, validated, or empty. Its place in
+    /// `Scene::emitterSpectra` is decided when the scene is snapshotted, since
+    /// that table is built afresh each time; `light.temperatureScale` already
+    /// carries its luminous scale.
+    hdclaude::TabulatedSpectrum emissionSpectrum;
     /// What about this light is not honoured as authored, if anything.
     std::string report;
 

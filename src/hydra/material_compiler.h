@@ -14,6 +14,7 @@
 
 #include "texture_loader.h"
 
+#include "hdclaude/core/spectrum.h"
 #include "hdclaude/gpu/glsl_compiler.h"
 #include "hdclaude/gpu/path_tracer.h"
 
@@ -53,6 +54,14 @@ class HdClaudeMaterialCompiler {
     struct TextureRequest {
         std::string path;
         HdClaudeTextureColorSpace colorSpace = HdClaudeTextureColorSpace::Auto;
+    };
+
+    /// A measured reflectance a material's colour input carries, once it has
+    /// been routed through `kSpectralGeomProp`: the table the program bakes in,
+    /// and the colour it projects to under D65 for what must stay RGB.
+    struct SpectralReflectance {
+        hdclaude::TabulatedSpectrum spectrum;
+        hdclaude::Vec3 reference;
     };
 
     struct Result {
@@ -134,7 +143,8 @@ class HdClaudeMaterialCompiler {
         MaterialX::DocumentPtr document, const std::string& name,
         std::string* error,
         std::vector<TextureRequest>* texturePaths = nullptr,
-        const std::map<std::string, std::string>* resolvedTextures = nullptr);
+        const std::map<std::string, std::string>* resolvedTextures = nullptr,
+        const SpectralReflectance* spectral = nullptr);
 
     /// Generate and compile a document's *displacement* terminal.
     ///

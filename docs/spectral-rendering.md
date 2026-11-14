@@ -1,6 +1,7 @@
 # Spectral rendering
 
-Status: design of record. Last revised 2026-09-07.
+Status: design of record. Last revised 2026-11-14, when measured spectra (6)
+landed with the Cornell box.
 
 hdClaude transports light spectrally. RGB is an asset-input and display-output
 format; it is never the path throughput representation. This document specifies
@@ -149,7 +150,99 @@ CIE 1931 2-degree colour matching functions are used, tabulated at 1 nm and
 evaluated by linear interpolation, held in the core library as data so the
 sensor is testable with no GPU.
 
-## 6. What is deliberately not done
+## 6. Measured spectra
+
+A colour is a statement about what a surface or a light looks like under one
+illuminant. A *measured* spectrum is the thing itself, and where an asset has
+one -- the Cornell box publishes its paints at every 4 nm and its light at four
+wavelengths -- reducing it to RGB and upsampling the RGB back to a sigmoid
+replaces it with a metamer that agrees only under D65. Under any other light
+the two differ, and the Cornell box's light is not D65: rendered with its paints
+as RGB, the box's red wall misses the spectral answer by 5%
+(`tests/usd/cornell_box_reference.py`).
+
+Neither OpenUSD nor MaterialX has a type for a spectrum, so hdClaude reads one
+from attributes in its own namespace. Every renderer still reads the authored
+colour; hdClaude alone replaces it.
+
+**The table.** Wavelengths in nanometres, strictly increasing, and values,
+both `float[]` of one length and at least two samples. Linear between samples
+and **zero outside them** -- a measurement says nothing about what it did not
+measure, zero invents no energy, and it is what pbrt-v4's
+`PiecewiseLinearSpectrum` means, so a table authored for one renderer means the
+same in the other (`TabulatedSpectrum`, `EvaluateTabulated`). A table that is
+malformed, negative, or a reflectance above one is reported by name and not
+used. It is never clamped or repaired.
+
+**On a light**:
+
+```text
+float[] inputs:hdclaude:spectrum:wavelengths
+float[] inputs:hdclaude:spectrum:values
+```
+
+The spectrum replaces the illuminant the light's `color` is referred to, which
+is exactly what `enableColorTemperature` does with a blackbody (4), and it is
+scaled the same way: to D65's luminous power, so the table's units, which a
+published measurement often leaves unstated, cancel. `color` still tints it and
+`intensity`, `exposure` and `normalize` still scale it, so a light authored
+white at intensity 40 has a luminance of 40 whatever its spectrum is. A light
+with both a spectrum and a colour temperature uses the spectrum and says so. A
+dome light reports the spectrum as not honoured.
+
+On the GPU the light's `colorTemperature` carries the choice: positive is
+kelvin, zero is D65, negative names the spectrum's record in the scene's
+emitter-spectrum table. Every kernel that resolves an emission already asks
+that field, so none of them changed.
+
+**On a material**, beside the colour input it measures:
+
+```text
+color3f inputs:color = (0.4893, 0.0503, 0.0510)
+float[] inputs:hdclaude:spectrum:color:wavelengths
+float[] inputs:hdclaude:spectrum:color:values
+```
+
+The authored colour should be the spectrum's projection under D65
+(`TabulatedReflectanceToLinearSrgb`), which is what other renderers then
+render; a colour that disagrees by more than 0.002 is reported.
+
+A material's response is a whole MaterialX graph evaluated in RGB (2), so a
+spectrum cannot simply be substituted for a colour inside it. What *is* exact
+is this: if the response is affine in the input, `r(c) = r(0) + (r(1) - r(0)) c`
+channel by channel, then the spectral response at a wavelength is the
+upsampled `r(0)` plus the upsampled `r(1) - r(0)` times the measured
+reflectance there. So the input is connected to a `geompropvalue` reading the
+reserved name `hdclaude_spectral_input`, which the generator routes to a value
+the shade kernel sets, and the kernel evaluates the material twice: at zero,
+for the part the input does not touch, and at white, for the rest. Sampling
+also sees white, so a lobe is chosen and its density computed against one and
+the same material. The guides, which are RGB, see the D65 projection.
+
+That is exact only where the response *is* affine in the input, and the
+compiler checks it by walking from the input to the material. Every step must
+be one MaterialX defines as linear, per channel, in the operand it arrives on,
+and no node may be reached twice:
+
+| Node | Inputs |
+| --- | --- |
+| `oren_nayar_diffuse_bsdf`, `burley_diffuse_bsdf`, `translucent_bsdf` | `color` |
+| `multiply`, `add`, `subtract` | `in1`, `in2` |
+| `mix` | `fg`, `bg` (not `mix`) |
+| `layer` | `base` (not `top`, whose albedo the base sees) |
+| `surface` | `bsdf` |
+| `dot` | `in` |
+
+Anything else, such as a conductor, a dielectric's tint, an emission, an
+opacity, or a connected input, is reported and keeps its RGB. One spectral input is
+honoured per material. Two inputs meeting in one lobe are not affine in
+either alone, so the others are reported.
+
+The cost is the second evaluation, and only for a material with a spectral
+input. For every other one, a constant the generated program declares folds
+both paths back to what they were.
+
+## 7. What is deliberately not done
 
 - **No spectral upsampling of normals, roughness, or other non-colour inputs.**
   They are not colours.
