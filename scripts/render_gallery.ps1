@@ -81,7 +81,8 @@ $scenes = @(
     [pscustomobject]@{ Key = 'subdivision_features';  Title = 'Subdivision Feature Matrix';   Camera = 'camera';            Purposes = $null;   Subdivision = 2; UpAxis = 'Y' },
     [pscustomobject]@{ Key = 'newzealand_heightmap';  Title = 'New Zealand Height Map';       Camera = 'camera';            Purposes = $null;   Subdivision = 6; UpAxis = 'Y' },
     [pscustomobject]@{ Key = 'sphere_refinement';      Title = 'Sphere Refinement';            Camera = 'camera';            Purposes = $null;   Subdivision = 6; UpAxis = 'Y'; Adaptive = $true; PerFace = $true; SphereRadial = 24; SphereAxial = 16 },
-    [pscustomobject]@{ Key = 'cull_volumes';           Title = 'Cull Volumes';                 Camera = 'camera';            Purposes = $null;   Subdivision = 2; UpAxis = 'Y' }
+    [pscustomobject]@{ Key = 'cull_volumes';           Title = 'Cull Volumes';                 Camera = 'camera';            Purposes = $null;   Subdivision = 2; UpAxis = 'Y' },
+    [pscustomobject]@{ Key = 'cornell_box';            Title = 'Cornell Box';                  Camera = 'camera';            Purposes = $null;   Subdivision = 2; UpAxis = 'Y' }
 )
 
 function Read-Timings {

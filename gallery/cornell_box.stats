@@ -1,0 +1,48 @@
+# hdClaude render stats -- cornell_box.usda
+#
+# Reported by the renderer through GetRenderStats(), not measured
+# from outside: only it knows what it is holding, and only it knows
+# the moment a frame holds all of it at once.
+#
+# Times are total work summed across Hydra's worker threads, so a
+# stage can exceed the frame's wall time -- that is threads working
+# at once, not an error.
+#
+# traceMs is the path tracing itself, summed over the progressive
+# calls. outsideSeconds is the wall time that trace, ingest and
+# publish do not claim: opening the stage, plugin discovery, the
+# scene index, writing the EXR and
+# tearing the device down, none of which the renderer can see.
+#
+# Regenerate with: render_gallery.bat -Scene cornell_box
+
+[scene]
+settings              1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2
+instances             7
+triangles             44
+blasBuilt             7
+blasReused            0
+meshesRefined         0
+subdivideInputPoints  0
+subdivideOutputPoints 0
+materialsCompiled     3
+texturesLoaded        0
+textureBytes          0
+cameraRays            1073741824
+tracedRays            3073325079
+shadowRays            901010436
+rayHash               8394324966188206591
+hitHash               13942052545750941738
+deviceBytesPeak       872415232
+
+[cost]
+device                NVIDIA GeForce RTX 5060 Ti
+measured              2026-11-14
+wallSeconds           17.853
+traceMs               12620
+ingestMs              0
+publishMs             17
+subdivideMs           0
+materialMs            244
+textureMs             0
+outsideSeconds        5.217

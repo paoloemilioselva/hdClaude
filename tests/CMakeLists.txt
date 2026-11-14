@@ -184,7 +184,8 @@ if(HDCLAUDE_ENABLE_MATERIALX)
             "usd_unusable_materials|unusable_materials"
             "usd_ribbon_curves|ribbon_curves"
             "usd_depth|depth"
-            "usd_houdini_parameters|houdini_parameters")
+            "usd_houdini_parameters|houdini_parameters"
+            "usd_cornell_box|cornell_box_reference")
       string(REPLACE "|" ";" _usd_test "${_usd_test}")
       list(GET _usd_test 0 _name)
       list(GET _usd_test 1 _script)
