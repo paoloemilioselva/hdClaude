@@ -8648,7 +8648,7 @@ OpenUSD nor MaterialX can carry; they are hdClaude's own attributes now
   defect would be wrong: the film is D65-referred, and this is what D65-referred
   means under an incandescent-like light.
 - **The paints as RGB are a measurable error.** Given only their D65 colours,
-  the paints miss the spectral answer by 5.15% on the red wall and 2 to 4%
+  the paints miss the spectral answer by 5.39% on the red wall and 2 to 5%
   elsewhere, which is why the control in `usd_cornell_box` exists and why the
   material path evaluates twice rather than approximating.
 - **The light is drawn in the gallery and not in the photographs.** Both 1991
@@ -8671,3 +8671,38 @@ OpenUSD nor MaterialX can carry; they are hdClaude's own attributes now
   the blocks, which the page lists as holes, is also cut out exactly, since it
   is never seen. Patch size then moves no window by more than 0.27% between 80
   and 60 mm.
+
+## 2026-11-15 -- Light spectra follow the draft UsdLux proposal
+
+The measured light spectrum of 2026-11-14 used hdClaude's own attribute names,
+with no proposal yet known. One exists: the draft UsdLux physical-lighting
+proposal's `PhysicalLightIlluminantAPI`. Light spectra are now read as it names
+them, and [usd-proposals.md](usd-proposals.md) tracks that proposal, the
+physical-camera one, and the absence of any for material spectra. What the
+change turned up:
+
+- **A plain-coloured dome ignored its colour temperature.** The snapshot took
+  the environment's illuminant only from a dome with a map, inside the branch
+  that picks the map. A dome with a colour and `enableColorTemperature`
+  therefore emitted D65 whatever it authored, and nothing checked it. The first
+  dome now supplies the illuminant with or without a map, and two domes that
+  disagree are reported (`usd_physical_illuminant`, `dome_legacy`).
+- **The draft's "ASTM-E308" resampling changes the Cornell light.** Its four
+  samples, 100 nm apart, are now joined by cubic Lagrange rather than straight
+  lines. The curve bows up between them, the luminous scale falls from 7.98 to
+  7.83, and the box's windows move by up to 0.5%. The radiosity reference
+  resamples the same way and still agrees to 0.6%. The draft does not name
+  the interpolant; E308 delegates abridged data to E2022, whose rule is the
+  one used.
+- **CIE illuminant D reproduces the CIE D65 table at 6504 K** to 0.04% at every
+  5 nm sample, and to 2e-5 in chromaticity, with unrounded M1 and M2. The
+  daylight basis comes from colour-science's dataset (S0, S1, S2 at 5 nm),
+  parsed as text rather than imported.
+- **Light reports reach a terminal only through the trace.** A light's report
+  goes to `GetRenderStats`, which usdrecord does not print, and to
+  `HDCLAUDE_TRACE`. `usd_physical_illuminant` turns the trace on to see them.
+  No test read them before.
+- **Unregistered applied schemas are accepted silently.**
+  `prepend apiSchemas = ["PhysicalLightIlluminantAPI"]` composes and renders
+  with no warning from OpenUSD 26.03, so authoring the draft's schema costs a
+  scene nothing in any other renderer.

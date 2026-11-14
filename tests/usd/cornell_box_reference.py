@@ -346,13 +346,16 @@ def spectrum_on(spectrum, wavelengths):
 
 
 def emitted_radiance(wavelengths):
-    """The light's spectral radiance as hdClaude emits it.
+    """The light's spectral radiance as the scene authors it.
 
-    intensity * colour * the tabulated spectrum scaled to D65's luminous power.
-    The colour is white, which the upsampling turns into a flat spectrum.
+    The measured emission is a `physical:customIlluminant`, which the draft
+    UsdLux proposal resamples to 5 nm by ASTM E308 and which is then scaled to
+    D65's luminous power: intensity * colour * that spectrum. The colour is
+    white, which the upsampling turns into a flat spectrum.
     """
-    scale = box.luminous_scale(box.LIGHT_EMISSION)
-    return box.LIGHT_INTENSITY * scale * spectrum_on(box.LIGHT_EMISSION, wavelengths)
+    emission = box.resample_to_5nm(box.LIGHT_EMISSION)
+    scale = box.luminous_scale(emission)
+    return box.LIGHT_INTENSITY * scale * spectrum_on(emission, wavelengths)
 
 
 def film_matrix(wavelengths):

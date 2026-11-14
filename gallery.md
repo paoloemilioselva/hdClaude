@@ -185,7 +185,7 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 | New Zealand Height Map | 2026-09-21 | 11.812 s (0m 11.812s) | 480.0 MiB | `e1801d60c65f221bbbc27bec010774632b2fbc62447498566a69e6e2f886afb6` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 6 |
 | Sphere Refinement | 2026-09-21 | 15.602 s (0m 15.602s) | 602.4 MiB | `75102b4e2842547d4f867063b451e7da1b52df2c4c449e94533bdbe931a70abc` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 6 |
 | Cull Volumes | 2026-10-22 | 8.897 s (0m 8.897s) | 565.3 MiB | `ea1bb5b8a40561b61f3cc84366300f930bf865d11ed910adfa8677870f76e266` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Cornell Box | 2026-11-14 | 17.853 s (0m 17.853s) | 832.0 MiB | `50d181240c0075d5640128ac48f8de6abd96eda44cc20493a234d143fcf0e49f` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Cornell Box | 2026-11-15 | 18.122 s (0m 18.122s) | 832.0 MiB | `ba9d50df2043f1e88ca19e7e41400325a30e76b6cbaa695a931f93e7e9ad8bdf` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 <!-- gallery-timings:end -->
 
 ## Against hdCodex
@@ -850,12 +850,16 @@ millimetres. The camera is the published 35 mm lens on a 25 mm film, 800 mm in
 front of the open side. The paints are Lambertian MaterialX diffuses, and the
 light is a 130 x 105 mm `RectLight` in a hole cut in the ceiling.
 
-**Spectral as measured.** Each paint carries its measured reflectance (76
-samples, 400-700 nm) and the light its measured emission (four samples). They
-use hdClaude's `hdclaude:spectrum:*` attributes
-([spectral-rendering.md](docs/spectral-rendering.md) 6), beside the D65 colour
-any other renderer reads. The light's emission is nothing at 400 nm and rises to
-its peak at 700, which is why the white paint renders orange. The 1991
+**Spectral as measured.** The light carries its measured emission (four
+samples) through the draft UsdLux physical-lighting proposal's
+`PhysicalLightIlluminantAPI` -- `physical:illuminant = "custom"` and
+`physical:customIlluminant` -- which resamples it to 5 nm by ASTM E308
+([usd-proposals.md](docs/usd-proposals.md)). Each paint carries its measured
+reflectance (76 samples, 400-700 nm) through hdClaude's own
+`hdclaude:spectrum:*`, since no proposal covers material spectra yet
+([spectral-rendering.md](docs/spectral-rendering.md) 6). Both sit beside the
+colour any other renderer reads. The light's emission is nothing at 400 nm and
+rises to its peak at 700, which is why the white paint renders orange. The 1991
 photograph is warm for the same reason, and this is not a white-balance error:
 the film is D65-referred.
 
@@ -875,18 +879,18 @@ pixel of eight windows and compares the linear EXR at 64 bounces:
 
 | Window | Reference (linear sRGB) | Render | Off by |
 | --- | --- | --- | --- |
-| Light, seen directly | 66.675, 35.191, 8.933 | 66.544, 35.238, 8.916 | 0.20% |
-| Ceiling | 0.3280, 0.1219, 0.0265 | 0.3291, 0.1213, 0.0263 | 0.48% |
-| Back wall | 0.8947, 0.4594, 0.1093 | 0.8960, 0.4614, 0.1095 | 0.44% |
-| Red wall | 0.4629, 0.0208, 0.0007 | 0.4649, 0.0208, 0.0007 | 0.43% |
-| Green wall | 0.1306, 0.2120, 0.0027 | 0.1307, 0.2114, 0.0027 | 0.29% |
-| Floor | 0.6708, 0.3134, 0.0784 | 0.6686, 0.3128, 0.0782 | 0.34% |
-| Short block, top | 0.6006, 0.3160, 0.0765 | 0.6040, 0.3157, 0.0763 | 0.57% |
-| Tall block, front | 0.2702, 0.1369, 0.0306 | 0.2696, 0.1368, 0.0305 | 0.46% |
+| Light, seen directly | 66.704, 35.196, 8.800 | 66.575, 35.243, 8.783 | 0.19% |
+| Ceiling | 0.3285, 0.1219, 0.0261 | 0.3295, 0.1213, 0.0258 | 0.49% |
+| Back wall | 0.8952, 0.4594, 0.1076 | 0.8965, 0.4615, 0.1078 | 0.44% |
+| Red wall | 0.4645, 0.0205, 0.0006 | 0.4665, 0.0205, 0.0006 | 0.43% |
+| Green wall | 0.1305, 0.2123, 0.0024 | 0.1306, 0.2117, 0.0024 | 0.29% |
+| Floor | 0.6713, 0.3134, 0.0772 | 0.6691, 0.3128, 0.0770 | 0.33% |
+| Short block, top | 0.6009, 0.3160, 0.0753 | 0.6043, 0.3158, 0.0751 | 0.57% |
+| Tall block, front | 0.2703, 0.1370, 0.0301 | 0.2698, 0.1368, 0.0300 | 0.47% |
 
 "Off by" is the worst channel carrying at least a tenth of the window's
 brightest, relative to itself. The gate is 1.5%. The same box with the paints
-given only their D65 colours misses by up to 5.15%, on the red wall. That is
+given only their D65 colours misses by up to 5.39%, on the red wall. That is
 the test's control: it shows the comparison can see whether the measured
 spectra are used. RGB and spectrum agree under D65, and this light is not D65.
 
@@ -902,7 +906,7 @@ What the image does not have that the physical box does:
 The light's opening is drawn because the gallery turns light geometry on. Both
 1991 photographs show it black.
 
-70,478 pixels of the linear image go slightly negative, down to -0.008. The
+82,880 pixels of the linear image go slightly negative, down to -0.008. The
 first the scan reports lie along the box's outer edge, where it meets the black
 outside, and the rest wherever a channel is truly near zero, such as the red
 wall's blue at 0.0007. There a single hero-wavelength sample taken through the

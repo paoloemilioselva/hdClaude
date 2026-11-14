@@ -20,9 +20,14 @@ where it is made:
   shape is what is rendered; its magnitude is the light's `intensity`, and
   hdClaude scales a tabulated emission to D65's luminous power
   (docs/spectral-rendering.md 6), so the unit cancels.
-- Spectra are linear between their samples and zero outside them, which is
-  how hdClaude and pbrt-v4 read a table. The reflectances stop at 400 and 700
-  nm and so does the light, so nothing outside that range is lit.
+- The light's emission is authored through the draft UsdLux
+  physical-lighting proposal's `PhysicalLightIlluminantAPI`
+  (`physical:illuminant = "custom"`, `physical:customIlluminant`), which
+  resamples it to 5 nm by ASTM E308 -- cubic Lagrange between the published
+  four samples rather than straight lines. The paints' reflectances, which no
+  proposal covers yet, are hdClaude's `hdclaude:spectrum:*`, linear between
+  their samples. Both are zero outside their range; the reflectances stop at
+  400 and 700 nm and so does the light, so nothing outside that range is lit.
 - The page gives the light a "constant reflectance of 0.78". A UsdLux light is
   not a surface and reflects nothing, so the rendered light reflects nothing;
   `cornell_box_reference.py` measures what the 0.78 would add.
@@ -333,6 +338,50 @@ def reflectance_to_linear_srgb(spectrum):
     return xyz_to_linear_srgb(*[xyz[c] / normalisation * scale[c] for c in range(3)])
 
 
+def resample_to_5nm(spectrum):
+    """ResampleTo5nm: the draft UsdLux proposal's "resampled to 5nm intervals
+    according to ASTM-E308" -- Lagrange through the nearest samples, cubic in
+    interior intervals and quadratic in the first and last, keeping the bounds,
+    with any dip below zero clamped."""
+    xs, ys = spectrum
+    n = len(xs)
+
+    def lagrange(first, count, at):
+        total = 0.0
+        for i in range(first, first + count):
+            term = ys[i]
+            for j in range(first, first + count):
+                if j != i:
+                    term *= (at - xs[j]) / (xs[i] - xs[j])
+            total += term
+        return total
+
+    def evaluate(at):
+        k = 0
+        while k < n - 2 and xs[k + 1] <= at:
+            k += 1
+        if xs[k] == at:
+            return ys[k]
+        if n == 2:
+            return lagrange(0, 2, at)
+        if n == 3 or k == 0:
+            return lagrange(0, 3, at)
+        if k == n - 2:
+            return lagrange(n - 3, 3, at)
+        return lagrange(k - 1, 4, at)
+
+    out_x, out_y = [xs[0]], [ys[0]]
+    lam = math.floor(xs[0] / 5.0) * 5.0 + 5.0
+    while lam < xs[-1]:
+        if lam > xs[0]:
+            out_x.append(lam)
+            out_y.append(max(0.0, evaluate(lam)))
+        lam += 5.0
+    out_x.append(xs[-1])
+    out_y.append(ys[-1])
+    return (out_x, out_y)
+
+
 def luminous_scale(spectrum):
     """TabulatedLuminousScale: what scales an emission to D65's luminous power."""
     reference = sum(d65(l) * cie_xyz_bar(l)[1] for l in grid()) * INTEGRATION_STEP
@@ -439,12 +488,16 @@ def write_stage(path, measured_paints=True):
     light.CreateColorAttr(Gf.Vec3f(1.0, 1.0, 1.0))
     light.CreateIntensityAttr(LIGHT_INTENSITY)
     light.CreateNormalizeAttr(False)
+    # The measured emission through the draft UsdLux physical-lighting
+    # proposal's PhysicalLightIlluminantAPI (docs/usd-proposals.md). The schema
+    # is not registered yet, so it is applied by name and its attributes are
+    # authored as the proposal declares them.
+    light.GetPrim().AddAppliedSchema("PhysicalLightIlluminantAPI")
     light.GetPrim().CreateAttribute(
-        "inputs:hdclaude:spectrum:wavelengths", Sdf.ValueTypeNames.FloatArray
-    ).Set(Vt.FloatArray(LIGHT_EMISSION[0]))
+        "physical:illuminant", Sdf.ValueTypeNames.Token).Set("custom")
     light.GetPrim().CreateAttribute(
-        "inputs:hdclaude:spectrum:values", Sdf.ValueTypeNames.FloatArray
-    ).Set(Vt.FloatArray(LIGHT_EMISSION[1]))
+        "physical:customIlluminant", Sdf.ValueTypeNames.Float2Array
+    ).Set(Vt.Vec2fArray([Gf.Vec2f(l, v) for l, v in zip(*LIGHT_EMISSION)]))
     light.AddTransformOp().Set(Gf.Matrix4d(
         1.0, 0.0, 0.0, 0.0,
         0.0, 0.0, -1.0, 0.0,

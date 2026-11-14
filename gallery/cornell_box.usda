@@ -177,15 +177,17 @@ def Xform "World"
         }
     }
 
-    def RectLight "light"
+    def RectLight "light" (
+        prepend apiSchemas = ["PhysicalLightIlluminantAPI"]
+    )
     {
         color3f inputs:color = (1, 1, 1)
-        custom float[] inputs:hdclaude:spectrum:values = [0, 8, 15.6, 18.4]
-        custom float[] inputs:hdclaude:spectrum:wavelengths = [400, 500, 600, 700]
         float inputs:height = 105
         float inputs:intensity = 40
         bool inputs:normalize = 0
         float inputs:width = 130
+        custom float2[] physical:customIlluminant = [(400, 0), (500, 8), (600, 15.6), (700, 18.4)]
+        custom token physical:illuminant = "custom"
         matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 0, -1, 0), (0, 1, 0, 0), (278, 548.8, 279.5, 1) )
         uniform token[] xformOpOrder = ["xformOp:transform"]
     }
