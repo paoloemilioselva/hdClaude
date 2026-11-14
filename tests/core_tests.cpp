@@ -770,6 +770,106 @@ void TestTabulatedLuminousScaleMatchesD65()
     CHECK_NEAR(TabulatedLuminousScale({{900.0f, 950.0f}, {1.0f, 1.0f}}), 0.0, 0.0);
 }
 
+/// The CIE daylight method reproduces the CIE's own D65 table at 6504 K: to
+/// 0.04% at every 5 nm sample from 380 to 780, measured, so 0.1% is the bound,
+/// and to 5e-5 in chromaticity through the film's colour matching functions.
+/// Outside 4000-25000 K the method is undefined and returns nothing.
+void TestIlluminantDReproducesD65()
+{
+    for (float lambda = kIlluminantFirst; lambda <= kIlluminantLast; lambda += 5.0f) {
+        CHECK_NEAR(IlluminantD(lambda, 6504.0f) / IlluminantD65(lambda), 1.0, 1e-3);
+    }
+    const auto chromaticity = [](auto&& spectrum) {
+        Vec3 xyz;
+        for (float lambda = kIlluminantFirst; lambda <= kIlluminantLast; lambda += 5.0f) {
+            xyz += CieXyzBar(lambda) * spectrum(lambda);
+        }
+        return XyzToChromaticity(xyz);
+    };
+    const Vec3 computed = chromaticity([](float l) { return IlluminantD(l, 6504.0f); });
+    const Vec3 table = chromaticity([](float l) { return IlluminantD65(l); });
+    CHECK_NEAR(computed.x, table.x, 5e-5);
+    CHECK_NEAR(computed.y, table.y, 5e-5);
+
+    CHECK(!IlluminantDDefined(3999.0f));
+    CHECK(!IlluminantDDefined(25001.0f));
+    CHECK(DaylightIlluminant(3000.0f).wavelengths.empty());
+    const TabulatedSpectrum d50 = DaylightIlluminant(5003.0f);
+    CHECK(d50.wavelengths.size() == 81u);
+    CHECK_NEAR(d50.wavelengths.front(), 380.0, 0.0);
+    CHECK_NEAR(d50.wavelengths.back(), 780.0, 0.0);
+
+    const TabulatedSpectrum white = WhiteIlluminant();
+    CHECK(white.wavelengths.size() == 81u);
+    CHECK_NEAR(EvaluateTabulated(white, 560.0f), 100.0, 1e-4);
+    CHECK(BlackbodyIlluminant(0.0f).wavelengths.empty());
+    CHECK_NEAR(EvaluateTabulated(BlackbodyIlluminant(2700.0f), 600.0f),
+               NormalizedBlackbody(600.0f, 2700.0f), 1e-6);
+}
+
+/// Resampling to 5 nm keeps what a table says and interpolates the rest by the
+/// ASTM E308 / E2022 rule: cubic Lagrange inside, quadratic at the two ends.
+/// A cubic is therefore reproduced exactly in interior intervals and a
+/// quadratic everywhere, even from unevenly spaced samples; a table already at
+/// 5 nm comes back unchanged; the authored bounds survive when they are not
+/// multiples of 5; and a dip below zero is clamped and counted.
+void TestResampleTo5nmFollowsAstmE308()
+{
+    const std::vector<float> uneven = {402.0f, 430.0f, 470.0f, 500.0f, 545.0f,
+                                       580.0f, 640.0f, 698.0f};
+    const auto cubic = [](float l) {
+        const double t = (l - 550.0) / 100.0;
+        return static_cast<float>(2.0 + 0.5 * t - 0.3 * t * t + 0.2 * t * t * t);
+    };
+    const auto quadratic = [](float l) {
+        const double t = (l - 550.0) / 100.0;
+        return static_cast<float>(2.0 + 0.5 * t - 0.3 * t * t);
+    };
+    TabulatedSpectrum c{uneven, {}};
+    TabulatedSpectrum q{uneven, {}};
+    for (float l : uneven) {
+        c.values.push_back(cubic(l));
+        q.values.push_back(quadratic(l));
+    }
+    const TabulatedSpectrum cr = ResampleTo5nm(c);
+    const TabulatedSpectrum qr = ResampleTo5nm(q);
+    CHECK_NEAR(cr.wavelengths.front(), 402.0, 0.0);
+    CHECK_NEAR(cr.wavelengths[1], 405.0, 0.0);
+    CHECK_NEAR(cr.wavelengths.back(), 698.0, 0.0);
+    CHECK_NEAR(cr.wavelengths[cr.wavelengths.size() - 2], 695.0, 0.0);
+    for (std::size_t i = 0; i < qr.wavelengths.size(); ++i) {
+        CHECK_NEAR(qr.values[i], quadratic(qr.wavelengths[i]), 1e-5);
+    }
+    for (std::size_t i = 0; i < cr.wavelengths.size(); ++i) {
+        const float l = cr.wavelengths[i];
+        if (l >= uneven[1] && l <= uneven[uneven.size() - 2]) {
+            CHECK_NEAR(cr.values[i], cubic(l), 1e-5);
+        }
+    }
+
+    TabulatedSpectrum grid;
+    for (float l = 400.0f; l <= 700.0f; l += 5.0f) {
+        grid.wavelengths.push_back(l);
+        grid.values.push_back(0.5f + 0.001f * (l - 400.0f));
+    }
+    const TabulatedSpectrum same = ResampleTo5nm(grid);
+    CHECK(same.wavelengths == grid.wavelengths);
+    CHECK(same.values == grid.values);
+
+    const TabulatedSpectrum line = ResampleTo5nm({{400.0f, 500.0f}, {0.0f, 10.0f}});
+    CHECK_NEAR(EvaluateTabulated(line, 450.0f), 5.0, 1e-5);
+
+    // A step: zero, then a jump. The cubic through it rings below zero.
+    int negatives = 0;
+    const TabulatedSpectrum step = ResampleTo5nm(
+        {{400.0f, 450.0f, 500.0f, 550.0f, 600.0f}, {0.0f, 0.0f, 0.0f, 1.0f, 1.0f}},
+        &negatives);
+    CHECK(negatives > 0);
+    for (float value : step.values) {
+        CHECK(value >= 0.0f);
+    }
+}
+
 /// The dispersion curve has to reproduce the two numbers that defined it.
 ///
 /// An Abbe number is not a free parameter of a fit; it *is* a measurement, and
@@ -3362,6 +3462,8 @@ int main()
     TestTabulatedSpectrumValidation();
     TestTabulatedReflectanceProjectsUnderD65();
     TestTabulatedLuminousScaleMatchesD65();
+    TestIlluminantDReproducesD65();
+    TestResampleTo5nmFollowsAstmE308();
     TestDisplayTransformLeavesTheDiffuseRangeAlone();
     TestDisplayTransformCompressesRatherThanClips();
     TestDisplayTransformSanitisesAndExposes();

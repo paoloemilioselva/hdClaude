@@ -161,9 +161,12 @@ the two differ, and the Cornell box's light is not D65: rendered with its paints
 as RGB, the box's red wall misses the spectral answer by 5%
 (`tests/usd/cornell_box_reference.py`).
 
-Neither OpenUSD nor MaterialX has a type for a spectrum, so hdClaude reads one
-from attributes in its own namespace. Every renderer still reads the authored
-colour; hdClaude alone replaces it.
+OpenUSD has no spectral type yet, and MaterialX has none at all. For lights,
+a draft UsdLux proposal defines one, and hdClaude reads it as drafted; for
+materials nothing is proposed, and hdClaude reads its own namespace. In both
+cases every renderer still reads the authored colour, and hdClaude alone
+replaces it. Where those proposals stand, and how hdClaude's support follows
+them, is tracked in [usd-proposals.md](usd-proposals.md).
 
 **The table.** Wavelengths in nanometres, strictly increasing, and values,
 both `float[]` of one length and at least two samples. Linear between samples
@@ -174,21 +177,40 @@ same in the other (`TabulatedSpectrum`, `EvaluateTabulated`). A table that is
 malformed, negative, or a reflectance above one is reported by name and not
 used. It is never clamped or repaired.
 
-**On a light**:
+**On a light**, the draft UsdLux `PhysicalLightIlluminantAPI`:
 
 ```text
-float[] inputs:hdclaude:spectrum:wavelengths
-float[] inputs:hdclaude:spectrum:values
+prepend apiSchemas = ["PhysicalLightIlluminantAPI"]
+token physical:illuminant = "custom"        # white | blackbody | illuminant D | custom
+float2[] physical:customIlluminant = [(400, 0), (500, 8), (600, 15.6), (700, 18.4)]
 ```
 
-The spectrum replaces the illuminant the light's `color` is referred to, which
-is exactly what `enableColorTemperature` does with a blackbody (4), and it is
-scaled the same way: to D65's luminous power, so the table's units, which a
+| `physical:illuminant` | Spectrum |
+| --- | --- |
+| `white` | the film's white point, D65, at 5 nm over 380-780 |
+| `blackbody` | Planck's law at `inputs:colorTemperature`, 5 nm over 380-780 |
+| `illuminant D` | CIE daylight at `inputs:colorTemperature` (D65 is 6504 K), 4000-25000 K, same grid |
+| `custom` | `physical:customIlluminant`, (nm, radiance) pairs, zero outside them, resampled to 5 nm by ASTM E308 |
+
+The schema is not registered, so it counts as applied when
+`physical:illuminant` has a value. Each illuminant becomes a tabulated spectrum
+on the host, and one path renders all four. The resampling the proposal names
+is the ASTM E308 / E2022 rule for abridged data: Lagrange interpolation, cubic
+in interior intervals and quadratic in the first and last
+(`ResampleTo5nm`). A dip below zero, which a cubic can make next to a steep
+edge, is clamped and reported.
+
+The illuminant replaces the one the light's `color` is referred to, which is
+exactly what `enableColorTemperature` does with a blackbody (4), and it is
+scaled the same way: to D65's luminous power. The table's units, which a
 published measurement often leaves unstated, cancel. `color` still tints it and
 `intensity`, `exposure` and `normalize` still scale it, so a light authored
-white at intensity 40 has a luminance of 40 whatever its spectrum is. A light
-with both a spectrum and a colour temperature uses the spectrum and says so. A
-dome light reports the spectrum as not honoured.
+white at intensity 40 has a luminance of 40 whatever its illuminant is. That is
+the proposal's definition of a light's luminance, and `usd_physical_illuminant`
+checks it, with each illuminant's chromaticity against the CIE's published
+values. Dome lights take an illuminant too. An illuminant that is unusable is
+reported by name, such as daylight outside 4000-25000 K or an unknown token, and
+the light emits its colour against D65.
 
 On the GPU the light's `colorTemperature` carries the choice: positive is
 kelvin, zero is D65, negative names the spectrum's record in the scene's

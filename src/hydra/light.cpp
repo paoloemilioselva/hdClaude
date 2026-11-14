@@ -8,6 +8,8 @@
 #include "hdclaude/core/spectrum.h"
 
 #include "pxr/base/gf/matrix4d.h"
+#include "pxr/base/gf/vec2d.h"
+#include "pxr/base/gf/vec2f.h"
 #include "pxr/base/tf/stringUtils.h"
 #include "pxr/base/gf/vec3d.h"
 #include "pxr/base/gf/vec3f.h"
@@ -156,67 +158,149 @@ std::string UnhonouredInputs(HdSceneDelegate* delegate, const SdfPath& id)
     return report;
 }
 
-/// A float array light parameter, as floats, or empty when not authored.
+/// A light parameter by any of the names it can arrive under.
 ///
-/// Asked for by its base name, which is how UsdImaging names a light's
-/// `inputs:` properties to a render delegate, and failing that by its full
-/// property name, so the read does not depend on which of the two a given
-/// OpenUSD's light data source uses.
-VtFloatArray ParamFloatArray(HdSceneDelegate* delegate, const SdfPath& id,
-                             const std::string& name)
+/// UsdImaging hands a light's `inputs:` properties to a render delegate by their
+/// base name, and its other properties by their full name; the draft
+/// physical-lighting schema's attributes are not `inputs:`, but an author may
+/// write them as inputs, and an unregistered schema gives no declaration to
+/// settle it. So each name is asked for as written and with `inputs:` added.
+VtValue ParamAnyName(HdSceneDelegate* delegate, const SdfPath& id,
+                     const std::string& name)
 {
     for (const std::string& candidate : {name, "inputs:" + name}) {
-        const VtValue value = delegate->GetLightParamValue(id, TfToken(candidate));
-        if (value.IsHolding<VtFloatArray>()) {
-            return value.UncheckedGet<VtFloatArray>();
-        }
-        if (value.IsHolding<VtDoubleArray>()) {
-            const VtDoubleArray& doubles = value.UncheckedGet<VtDoubleArray>();
-            return VtFloatArray(doubles.begin(), doubles.end());
+        VtValue value = delegate->GetLightParamValue(id, TfToken(candidate));
+        if (!value.IsEmpty()) {
+            return value;
         }
     }
     return {};
 }
 
-/// The measured emission spectrum a light authors, if it authors one.
+/// The illuminant a light authors through the draft UsdLux
+/// `PhysicalLightIlluminantAPI` (docs/usd-proposals.md), if it authors one.
 ///
-/// `inputs:hdclaude:spectrum:wavelengths` (nm) and
-/// `inputs:hdclaude:spectrum:values`, both `float[]`: hdClaude's own extension,
-/// because UsdLux, like the rest of OpenUSD, has no type for a spectrum
-/// (docs/spectral-rendering.md 6). The spectrum replaces the illuminant the
-/// light's `color` is referred to -- exactly what `enableColorTemperature`
-/// does with a blackbody -- so `color` still tints it and `intensity`,
-/// `exposure` and `normalize` still scale it.
+/// `physical:illuminant` picks the spectrum the light's `color` is referred to:
 ///
-/// Returns false when nothing is authored. A table that is authored and
-/// unusable is reported and not used, and the light falls back to its colour:
-/// the RGB is the portable statement of the light, the one every other
-/// renderer reads, and the report is what says the measured one was refused.
-bool ReadEmissionSpectrum(HdSceneDelegate* delegate, const SdfPath& id,
-                          hdclaude::TabulatedSpectrum* spectrum,
-                          std::string* report)
+///   white         the rendering colour space's white point, D65 here
+///   blackbody     Planck's law at `inputs:colorTemperature`
+///   illuminant D  CIE daylight at `inputs:colorTemperature` (D65 is 6504 K)
+///   custom        `physical:customIlluminant`, (nm, radiance) pairs, zero
+///                 outside their range, resampled to 5 nm per ASTM E308
+///
+/// "white", "blackbody" and "illuminant D" are tabulated at 5 nm over 380-780,
+/// where the proposal defines the first two. Each becomes a tabulated spectrum,
+/// so one path renders all four. `color` still tints it and `intensity`,
+/// `exposure` and `normalize` still scale it; the spectrum is scaled to D65's
+/// luminous power, so a light's luminance is its colour's times its intensity
+/// whichever illuminant it has -- the proposal's definition.
+///
+/// The schema is a proposal and not registered, so whether it is applied is
+/// read from whether `physical:illuminant` has a value. Returns false when it
+/// does not, and the light keeps UsdLux's own colour temperature. An
+/// illuminant that is authored and unusable is reported and not used, and the
+/// light falls back to its colour against D65: the colour is the portable
+/// statement of the light, the one every other renderer reads.
+bool ReadPhysicalIlluminant(HdSceneDelegate* delegate, const SdfPath& id,
+                            hdclaude::TabulatedSpectrum* spectrum,
+                            std::string* report)
 {
-    const VtFloatArray wavelengths =
-        ParamFloatArray(delegate, id, "hdclaude:spectrum:wavelengths");
-    const VtFloatArray values =
-        ParamFloatArray(delegate, id, "hdclaude:spectrum:values");
-    if (wavelengths.empty() && values.empty()) {
+    const VtValue illuminantValue = ParamAnyName(delegate, id, "physical:illuminant");
+    if (illuminantValue.IsEmpty()) {
         return false;
     }
-    hdclaude::TabulatedSpectrum candidate{
-        std::vector<float>(wavelengths.begin(), wavelengths.end()),
-        std::vector<float>(values.begin(), values.end())};
-    const std::string invalid = hdclaude::ValidateTabulatedSpectrum(candidate, false);
-    if (!invalid.empty()) {
-        Unhonoured(report, "inputs:hdclaude:spectrum " + invalid +
-                               ", so it is not used and the light emits its colour");
+    std::string illuminant;
+    if (illuminantValue.IsHolding<TfToken>()) {
+        illuminant = illuminantValue.UncheckedGet<TfToken>().GetString();
+    } else if (illuminantValue.IsHolding<std::string>()) {
+        illuminant = illuminantValue.UncheckedGet<std::string>();
+    } else {
+        Unhonoured(report, "physical:illuminant is a " +
+                               illuminantValue.GetTypeName() +
+                               " where the proposal declares a token; the light "
+                               "emits its colour");
         return false;
     }
+
+    const float kelvin =
+        Param<float>(delegate, id, HdLightTokens->colorTemperature, 6500.0f);
+    hdclaude::TabulatedSpectrum candidate;
+    if (illuminant == "white") {
+        candidate = hdclaude::WhiteIlluminant();
+    } else if (illuminant == "blackbody") {
+        candidate = hdclaude::BlackbodyIlluminant(kelvin);
+        if (candidate.wavelengths.empty()) {
+            Unhonoured(report, TfStringPrintf(
+                                   "physical:illuminant is blackbody at %g K, which "
+                                   "has no spectrum; the light emits its colour",
+                                   kelvin));
+            return false;
+        }
+    } else if (illuminant == "illuminant D") {
+        if (!hdclaude::IlluminantDDefined(kelvin)) {
+            Unhonoured(report,
+                       TfStringPrintf("physical:illuminant is illuminant D at %g K, "
+                                      "outside the 4000-25000 K over which CIE "
+                                      "defines daylight; the light emits its colour",
+                                      kelvin));
+            return false;
+        }
+        candidate = hdclaude::DaylightIlluminant(kelvin);
+    } else if (illuminant == "custom") {
+        const VtValue pairs = ParamAnyName(delegate, id, "physical:customIlluminant");
+        hdclaude::TabulatedSpectrum authored;
+        if (pairs.IsHolding<VtVec2fArray>()) {
+            for (const GfVec2f& pair : pairs.UncheckedGet<VtVec2fArray>()) {
+                authored.wavelengths.push_back(pair[0]);
+                authored.values.push_back(pair[1]);
+            }
+        } else if (pairs.IsHolding<VtVec2dArray>()) {
+            for (const GfVec2d& pair : pairs.UncheckedGet<VtVec2dArray>()) {
+                authored.wavelengths.push_back(static_cast<float>(pair[0]));
+                authored.values.push_back(static_cast<float>(pair[1]));
+            }
+        } else if (!pairs.IsEmpty()) {
+            Unhonoured(report, "physical:customIlluminant is a " + pairs.GetTypeName() +
+                                   " where the proposal declares float2[]; the "
+                                   "light emits its colour");
+            return false;
+        }
+        const std::string invalid = hdclaude::ValidateTabulatedSpectrum(authored, false);
+        if (!invalid.empty()) {
+            Unhonoured(report, "physical:illuminant is custom, and "
+                               "physical:customIlluminant " + invalid +
+                               "; the light emits its colour");
+            return false;
+        }
+        int negatives = 0;
+        candidate = hdclaude::ResampleTo5nm(authored, &negatives);
+        if (negatives > 0) {
+            // A property of the resampling the proposal prescribes, not of the
+            // data; said, because the rendered spectrum is then not exactly
+            // the interpolant.
+            Unhonoured(report,
+                       TfStringPrintf("resampling physical:customIlluminant to 5 nm "
+                                      "dips below zero at %d wavelength(s), where "
+                                      "the emission is taken as zero",
+                                      negatives));
+        }
+    } else {
+        Unhonoured(report, "physical:illuminant = \"" + illuminant +
+                               "\" is not one of white, blackbody, illuminant D "
+                               "or custom; the light emits its colour");
+        return false;
+    }
+
     if (!(hdclaude::TabulatedLuminousScale(candidate) > 0.0f)) {
-        Unhonoured(report,
-                   "inputs:hdclaude:spectrum emits nothing the eye can see, so "
-                   "it has no luminous power to scale to and is not used");
+        Unhonoured(report, "physical:illuminant emits nothing the eye can see, so "
+                           "it has no luminous power to scale to and is not used");
         return false;
+    }
+    if (Param<bool>(delegate, id, HdLightTokens->enableColorTemperature, false) &&
+        illuminant != "blackbody" && illuminant != "illuminant D") {
+        Unhonoured(report, "inputs:enableColorTemperature is not honoured, because "
+                           "physical:illuminant = " + illuminant +
+                           " says what the light emits");
     }
     *spectrum = std::move(candidate);
     return true;
@@ -328,27 +412,14 @@ void HdClaudeLight::Sync(HdSceneDelegate* sceneDelegate,
     const TfToken lightLink = LinkParam(sceneDelegate, id, HdTokens->lightLink);
     const TfToken shadowLink = LinkParam(sceneDelegate, id, HdTokens->shadowLink);
 
-    // A measured spectrum replaces whichever illuminant the colour would have
-    // been referred to. Its place in the scene's spectrum table is assigned at
-    // snapshot; only the luminous scale is known here.
+    // The draft physical-lighting illuminant replaces whichever illuminant the
+    // colour would have been referred to, on every kind of light. Its place in
+    // the scene's spectrum table is assigned at snapshot; only the luminous
+    // scale is known here.
     hdclaude::TabulatedSpectrum emissionSpectrum;
-    if (ReadEmissionSpectrum(sceneDelegate, id, &emissionSpectrum, &entryReport)) {
-        if (_lightType == HdPrimTypeTokens->domeLight) {
-            Unhonoured(&entryReport,
-                       "inputs:hdclaude:spectrum is not honoured on a dome light; "
-                       "the environment emits its colour");
-            emissionSpectrum = {};
-        } else {
-            if (colorTemperature > 0.0f) {
-                Unhonoured(&entryReport,
-                           "inputs:enableColorTemperature is not honoured, because "
-                           "inputs:hdclaude:spectrum says what the light emits; "
-                           "the two are alternatives, and the measured spectrum "
-                           "is used");
-            }
-            colorTemperature = 0.0f;
-            temperatureScale = hdclaude::TabulatedLuminousScale(emissionSpectrum);
-        }
+    if (ReadPhysicalIlluminant(sceneDelegate, id, &emissionSpectrum, &entryReport)) {
+        colorTemperature = 0.0f;
+        temperatureScale = hdclaude::TabulatedLuminousScale(emissionSpectrum);
     }
 
     hdclaude::Light light;
@@ -386,6 +457,7 @@ void HdClaudeLight::Sync(HdSceneDelegate* sceneDelegate,
         entry.shadowLink = shadowLink;
         entry.domeColorTemperature = colorTemperature;
         entry.domeTemperatureScale = temperatureScale;
+        entry.emissionSpectrum = emissionSpectrum;
         StoreVector(entry.environmentColor, radiance);
 
         // The map is loaded through the same pool as a material's textures, so

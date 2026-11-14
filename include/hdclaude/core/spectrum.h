@@ -327,6 +327,60 @@ Vec3 TabulatedReflectanceToLinearSrgb(const TabulatedSpectrum& spectrum);
 float TabulatedLuminousScale(const TabulatedSpectrum& spectrum);
 
 // ---------------------------------------------------------------------------
+// Illuminants as the draft UsdLux physical-lighting proposal defines them
+// ---------------------------------------------------------------------------
+//
+// `PhysicalLightIlluminantAPI` (docs/usd-proposals.md) names four illuminants,
+// and hdClaude turns each into a tabulated spectrum on the host, so that one
+// path -- `EvaluateTabulated`, `TabulatedLuminousScale`, the GPU's emitter
+// table -- carries all of them.
+
+/// Where the proposal defines "white" and "blackbody": 380 to 780 nm at 5 nm.
+/// "illuminant D" is tabulated on the same grid, which the proposal does not
+/// say and is the consistent reading.
+inline constexpr float kIlluminantFirst = 380.0f;
+inline constexpr float kIlluminantLast = 780.0f;
+inline constexpr float kIlluminantStep = 5.0f;
+
+/// `physical:illuminant = "white"`: the rendering colour space's white point,
+/// which for hdClaude's linear sRGB film is D65, tabulated on the grid above.
+TabulatedSpectrum WhiteIlluminant();
+
+/// `physical:illuminant = "blackbody"`: Planck's law at `kelvin`, peak one,
+/// on the grid above. Zero samples for a temperature that is not positive.
+TabulatedSpectrum BlackbodyIlluminant(float kelvin);
+
+/// The CIE daylight illuminant D at a correlated colour temperature, by the
+/// CIE 015 method: chromaticity from the temperature, then S0 + M1 S1 + M2 S2.
+/// Defined from 4000 K to 25000 K, and zero outside that range. D65 is 6504 K,
+/// as the proposal says, and this reproduces the tabulated D65 there.
+float IlluminantD(float lambda, float kelvin);
+
+/// Whether `IlluminantD` is defined at `kelvin`.
+bool IlluminantDDefined(float kelvin);
+
+/// `physical:illuminant = "illuminant D"` on the grid above. Zero samples
+/// where `IlluminantDDefined` is false.
+TabulatedSpectrum DaylightIlluminant(float kelvin);
+
+/// A table resampled to 5 nm, as `physical:customIlluminant` is to be.
+///
+/// The proposal says "according to ASTM-E308". The procedure is the
+/// abridged-data interpolation of ASTM E308 and its companion E2022:
+/// Lagrange interpolation through the nearest authored samples, four-point
+/// (cubic) in every interval but the first and the last, which take three
+/// points (quadratic); a table of two samples is linear and one of three is a
+/// single quadratic. The result keeps the authored bounds as its first and last
+/// samples -- emission is zero outside them -- and every multiple of 5 nm
+/// strictly between them. Wavelengths need not be evenly spaced. A cubic can
+/// dip below zero between samples near a steep edge; `negatives`, when given,
+/// counts the samples that did, which are clamped to zero.
+///
+/// `spectrum` must be valid (`ValidateTabulatedSpectrum`).
+TabulatedSpectrum ResampleTo5nm(const TabulatedSpectrum& spectrum,
+                                int* negatives = nullptr);
+
+// ---------------------------------------------------------------------------
 // The chromaticity table
 // ---------------------------------------------------------------------------
 

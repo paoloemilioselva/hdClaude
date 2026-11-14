@@ -799,6 +799,218 @@ float TabulatedLuminousScale(const TabulatedSpectrum& spectrum)
 }
 
 // ---------------------------------------------------------------------------
+// Illuminants as the draft UsdLux physical-lighting proposal defines them
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// The CIE daylight basis S0, S1, S2 (CIE 015), 300 to 830 nm at 5 nm: the
+/// CIE's 10 nm values with the 5 nm entries linearly interpolated, which is
+/// what CIE 015 prescribes for 5 nm work. Taken from the colour-science
+/// dataset `DATA_BASIS_FUNCTIONS_CIE_ILLUMINANT_D_SERIES`, which cites
+/// Wyszecki and Stiles (2000).
+constexpr float kDaylightStart = 300.0f;
+constexpr float kDaylightStep = 5.0f;
+constexpr float kDaylightS0[] = {
+    0.04f, 3.02f, 6.0f, 17.8f, 29.6f, 42.45f, 55.3f, 56.3f,
+    57.3f, 59.55f, 61.8f, 61.65f, 61.5f, 65.15f, 68.8f, 66.1f,
+    63.4f, 64.6f, 65.8f, 80.3f, 94.8f, 99.8f, 104.8f, 105.35f,
+    105.9f, 101.35f, 96.8f, 105.35f, 113.9f, 119.75f, 125.6f, 125.55f,
+    125.5f, 123.4f, 121.3f, 121.3f, 121.3f, 117.4f, 113.5f, 113.3f,
+    113.1f, 111.95f, 110.8f, 108.65f, 106.5f, 107.65f, 108.8f, 107.05f,
+    105.3f, 104.85f, 104.4f, 102.2f, 100.0f, 98.0f, 96.0f, 95.55f,
+    95.1f, 92.1f, 89.1f, 89.8f, 90.5f, 90.4f, 90.3f, 89.35f,
+    88.4f, 86.2f, 84.0f, 84.55f, 85.1f, 83.5f, 81.9f, 82.25f,
+    82.6f, 83.75f, 84.9f, 83.1f, 81.3f, 76.6f, 71.9f, 73.1f,
+    74.3f, 75.35f, 76.4f, 69.85f, 63.3f, 67.5f, 71.7f, 74.35f,
+    77.0f, 71.1f, 65.2f, 56.45f, 47.7f, 58.15f, 68.6f, 66.8f,
+    65.0f, 65.5f, 66.0f, 63.5f, 61.0f, 57.15f, 53.3f, 56.1f,
+    58.9f, 60.4f, 61.9f,
+};
+constexpr float kDaylightS1[] = {
+    0.02f, 2.26f, 4.5f, 13.45f, 22.4f, 32.2f, 42.0f, 41.3f,
+    40.6f, 41.1f, 41.6f, 39.8f, 38.0f, 40.2f, 42.4f, 40.45f,
+    38.5f, 36.75f, 35.0f, 39.2f, 43.4f, 44.85f, 46.3f, 45.1f,
+    43.9f, 40.5f, 37.1f, 36.9f, 36.7f, 36.3f, 35.9f, 34.25f,
+    32.6f, 30.25f, 27.9f, 26.1f, 24.3f, 22.2f, 20.1f, 18.15f,
+    16.2f, 14.7f, 13.2f, 10.9f, 8.6f, 7.35f, 6.1f, 5.15f,
+    4.2f, 3.05f, 1.9f, 0.95f, 0.0f, -0.8f, -1.6f, -2.55f,
+    -3.5f, -3.5f, -3.5f, -4.65f, -5.8f, -6.5f, -7.2f, -7.9f,
+    -8.6f, -9.05f, -9.5f, -10.2f, -10.9f, -10.8f, -10.7f, -11.35f,
+    -12.0f, -13.0f, -14.0f, -13.8f, -13.6f, -12.8f, -12.0f, -12.65f,
+    -13.3f, -13.1f, -12.9f, -11.75f, -10.6f, -11.1f, -11.6f, -11.9f,
+    -12.2f, -11.2f, -10.2f, -9.0f, -7.8f, -9.5f, -11.2f, -10.8f,
+    -10.4f, -10.5f, -10.6f, -10.15f, -9.7f, -9.0f, -8.3f, -8.8f,
+    -9.3f, -9.55f, -9.8f,
+};
+constexpr float kDaylightS2[] = {
+    0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 6.25f, 8.5f, 8.15f,
+    7.8f, 7.25f, 6.7f, 6.0f, 5.3f, 5.7f, 6.1f, 4.55f,
+    3.0f, 2.1f, 1.2f, 0.05f, -1.1f, -0.8f, -0.5f, -0.6f,
+    -0.7f, -0.95f, -1.2f, -1.9f, -2.6f, -2.75f, -2.9f, -2.85f,
+    -2.8f, -2.7f, -2.6f, -2.6f, -2.6f, -2.2f, -1.8f, -1.65f,
+    -1.5f, -1.4f, -1.3f, -1.25f, -1.2f, -1.1f, -1.0f, -0.75f,
+    -0.5f, -0.4f, -0.3f, -0.15f, 0.0f, 0.1f, 0.2f, 0.35f,
+    0.5f, 1.3f, 2.1f, 2.65f, 3.2f, 3.65f, 4.1f, 4.4f,
+    4.7f, 4.9f, 5.1f, 5.9f, 6.7f, 7.0f, 7.3f, 7.95f,
+    8.6f, 9.2f, 9.8f, 10.0f, 10.2f, 9.25f, 8.3f, 8.95f,
+    9.6f, 9.05f, 8.5f, 7.75f, 7.0f, 7.3f, 7.6f, 7.8f,
+    8.0f, 7.35f, 6.7f, 5.95f, 5.2f, 6.3f, 7.4f, 7.1f,
+    6.8f, 6.9f, 7.0f, 6.7f, 6.4f, 5.95f, 5.5f, 5.8f,
+    6.1f, 6.3f, 6.5f,
+};
+constexpr int kDaylightCount = static_cast<int>(sizeof(kDaylightS0) / sizeof(float));
+static_assert(sizeof(kDaylightS1) == sizeof(kDaylightS0) &&
+                  sizeof(kDaylightS2) == sizeof(kDaylightS0),
+              "the daylight basis functions share one grid");
+
+float DaylightBasis(const float* table, float lambda)
+{
+    const float position = (lambda - kDaylightStart) / kDaylightStep;
+    if (position < 0.0f || position > static_cast<float>(kDaylightCount - 1)) {
+        return 0.0f;
+    }
+    const int index = std::min(static_cast<int>(position), kDaylightCount - 2);
+    const float t = position - static_cast<float>(index);
+    return table[index] * (1.0f - t) + table[index + 1] * t;
+}
+
+TabulatedSpectrum Tabulate(float (*sample)(float, float), float parameter)
+{
+    TabulatedSpectrum spectrum;
+    for (float lambda = kIlluminantFirst; lambda <= kIlluminantLast + 0.5f;
+         lambda += kIlluminantStep) {
+        spectrum.wavelengths.push_back(lambda);
+        spectrum.values.push_back(sample(lambda, parameter));
+    }
+    return spectrum;
+}
+
+}  // namespace
+
+TabulatedSpectrum WhiteIlluminant()
+{
+    return Tabulate([](float lambda, float) { return IlluminantD65(lambda); }, 0.0f);
+}
+
+TabulatedSpectrum BlackbodyIlluminant(float kelvin)
+{
+    if (!(kelvin > 0.0f)) {
+        return {};
+    }
+    return Tabulate([](float lambda, float k) { return NormalizedBlackbody(lambda, k); },
+                    kelvin);
+}
+
+bool IlluminantDDefined(float kelvin)
+{
+    return kelvin >= 4000.0f && kelvin <= 25000.0f;
+}
+
+float IlluminantD(float lambda, float kelvin)
+{
+    if (!IlluminantDDefined(kelvin)) {
+        return 0.0f;
+    }
+    // CIE 015: the daylight locus, in two pieces, then the weights of the
+    // basis. Unrounded M1 and M2.
+    const double t = static_cast<double>(kelvin);
+    const double x =
+        kelvin <= 7000.0f
+            ? -4.6070e9 / (t * t * t) + 2.9678e6 / (t * t) + 0.09911e3 / t + 0.244063
+            : -2.0064e9 / (t * t * t) + 1.9018e6 / (t * t) + 0.24748e3 / t + 0.237040;
+    const double y = -3.000 * x * x + 2.870 * x - 0.275;
+    const double m = 0.0241 + 0.2562 * x - 0.7341 * y;
+    const double m1 = (-1.3515 - 1.7703 * x + 5.9114 * y) / m;
+    const double m2 = (0.0300 - 31.4424 * x + 30.0717 * y) / m;
+    return static_cast<float>(DaylightBasis(kDaylightS0, lambda) +
+                              m1 * DaylightBasis(kDaylightS1, lambda) +
+                              m2 * DaylightBasis(kDaylightS2, lambda));
+}
+
+TabulatedSpectrum DaylightIlluminant(float kelvin)
+{
+    if (!IlluminantDDefined(kelvin)) {
+        return {};
+    }
+    return Tabulate([](float lambda, float k) { return IlluminantD(lambda, k); }, kelvin);
+}
+
+TabulatedSpectrum ResampleTo5nm(const TabulatedSpectrum& spectrum, int* negatives)
+{
+    if (negatives) {
+        *negatives = 0;
+    }
+    const std::vector<float>& x = spectrum.wavelengths;
+    const std::vector<float>& y = spectrum.values;
+    const std::size_t n = x.size();
+    if (n < 2 || n != y.size()) {
+        return {};
+    }
+
+    // The Lagrange polynomial through samples [first, first + count).
+    const auto lagrange = [&](std::size_t first, std::size_t count, double at) {
+        double total = 0.0;
+        for (std::size_t i = first; i < first + count; ++i) {
+            double term = static_cast<double>(y[i]);
+            for (std::size_t j = first; j < first + count; ++j) {
+                if (j != i) {
+                    term *= (at - static_cast<double>(x[j])) /
+                            (static_cast<double>(x[i]) - static_cast<double>(x[j]));
+                }
+            }
+            total += term;
+        }
+        return total;
+    };
+
+    const auto evaluate = [&](double at) {
+        // The interval [x[k], x[k + 1]] holding `at`.
+        std::size_t k = static_cast<std::size_t>(
+            std::upper_bound(x.begin(), x.end(), static_cast<float>(at)) - x.begin());
+        k = k == 0 ? 0 : std::min(k - 1, n - 2);
+        if (static_cast<double>(x[k]) == at) {
+            return static_cast<double>(y[k]);   // a sample is its own value
+        }
+        if (n == 2) {
+            return lagrange(0, 2, at);
+        }
+        if (n == 3) {
+            return lagrange(0, 3, at);
+        }
+        if (k == 0) {
+            return lagrange(0, 3, at);          // first interval: quadratic
+        }
+        if (k == n - 2) {
+            return lagrange(n - 3, 3, at);      // last interval: quadratic
+        }
+        return lagrange(k - 1, 4, at);          // interior: cubic
+    };
+
+    TabulatedSpectrum result;
+    const auto push = [&](float lambda, double value) {
+        if (value < 0.0) {
+            if (negatives) {
+                ++*negatives;
+            }
+            value = 0.0;
+        }
+        result.wavelengths.push_back(lambda);
+        result.values.push_back(static_cast<float>(value));
+    };
+
+    push(x.front(), static_cast<double>(y.front()));
+    const float firstGrid = std::floor(x.front() / 5.0f) * 5.0f + 5.0f;
+    for (float lambda = firstGrid; lambda < x.back(); lambda += 5.0f) {
+        if (lambda > x.front()) {
+            push(lambda, evaluate(static_cast<double>(lambda)));
+        }
+    }
+    push(x.back(), static_cast<double>(y.back()));
+    return result;
+}
+
+// ---------------------------------------------------------------------------
 // The chromaticity table
 // ---------------------------------------------------------------------------
 

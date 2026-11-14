@@ -576,6 +576,27 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
     // real emitter would arrive at, rather than silently honouring one.
     _snapshotReports.clear();
     const SdfPath* linkedDome = nullptr;
+
+    // A light's tabulated illuminant, appended to the scene's table as
+    // [n, wavelengths, values] and referred to by its offset, negated and
+    // shifted so that zero stays D65 (Light::colorTemperature).
+    const auto appendSpectrum = [&scene](const hdclaude::TabulatedSpectrum& spectrum) {
+        const std::size_t offset = scene.emitterSpectra.size();
+        scene.emitterSpectra.push_back(static_cast<float>(spectrum.wavelengths.size()));
+        scene.emitterSpectra.insert(scene.emitterSpectra.end(),
+                                    spectrum.wavelengths.begin(),
+                                    spectrum.wavelengths.end());
+        scene.emitterSpectra.insert(scene.emitterSpectra.end(),
+                                    spectrum.values.begin(), spectrum.values.end());
+        return -static_cast<float>(offset + 1);
+    };
+
+    // The environment has one illuminant, so the first dome supplies it, with
+    // or without a map. It used to be taken only from a dome with a map, which
+    // left a plain-coloured dome's colour temperature unread: such a dome
+    // emitted D65 whatever it authored.
+    const SdfPath* illuminantDome = nullptr;
+    const HdClaudeLightEntry* illuminantEntry = nullptr;
     for (const auto& [path, entry] : _lights) {
         if (entry.isDome) {
             // Several domes sum into one environment, and one environment has
@@ -604,13 +625,33 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
             for (int i = 0; i < 3; ++i) {
                 scene.environmentColor[i] += entry.environmentColor[i];
             }
+            if (illuminantEntry == nullptr) {
+                illuminantDome = &path;
+                illuminantEntry = &entry;
+                scene.domeColorTemperature =
+                    entry.emissionSpectrum.wavelengths.empty()
+                        ? entry.domeColorTemperature
+                        : appendSpectrum(entry.emissionSpectrum);
+                scene.domeTemperatureScale = entry.domeTemperatureScale;
+            } else if (entry.domeColorTemperature !=
+                           illuminantEntry->domeColorTemperature ||
+                       entry.domeTemperatureScale !=
+                           illuminantEntry->domeTemperatureScale ||
+                       entry.emissionSpectrum.wavelengths !=
+                           illuminantEntry->emissionSpectrum.wavelengths ||
+                       entry.emissionSpectrum.values !=
+                           illuminantEntry->emissionSpectrum.values) {
+                _snapshotReports.push_back(
+                    path.GetString() + ": its illuminant differs from that of " +
+                    illuminantDome->GetString() +
+                    ", and hdClaude sums dome lights into one environment with "
+                    "one illuminant, so that dome's illuminant is used");
+            }
             // The first dome with a map supplies it. Two textured domes is not
             // a thing a renderer can composite meaningfully, so the second is
             // reported rather than silently blended.
             if (entry.domeTexture >= 0 && scene.domeTexture < 0) {
                 scene.domeTexture = entry.domeTexture;
-                scene.domeColorTemperature = entry.domeColorTemperature;
-                scene.domeTemperatureScale = entry.domeTemperatureScale;
                 std::copy(std::begin(entry.domeWorldToLight),
                           std::end(entry.domeWorldToLight),
                           std::begin(scene.domeWorldToLight));
@@ -623,18 +664,7 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
             light.lightLink = categoryOf(entry.lightLink);
             light.shadowLink = categoryOf(entry.shadowLink);
             if (!entry.emissionSpectrum.wavelengths.empty()) {
-                // Appended as [n, wavelengths, values] and referred to by its
-                // offset, negated and shifted so that zero stays D65.
-                const std::size_t offset = scene.emitterSpectra.size();
-                const std::size_t count = entry.emissionSpectrum.wavelengths.size();
-                scene.emitterSpectra.push_back(static_cast<float>(count));
-                scene.emitterSpectra.insert(scene.emitterSpectra.end(),
-                                            entry.emissionSpectrum.wavelengths.begin(),
-                                            entry.emissionSpectrum.wavelengths.end());
-                scene.emitterSpectra.insert(scene.emitterSpectra.end(),
-                                            entry.emissionSpectrum.values.begin(),
-                                            entry.emissionSpectrum.values.end());
-                light.colorTemperature = -static_cast<float>(offset + 1);
+                light.colorTemperature = appendSpectrum(entry.emissionSpectrum);
             }
             scene.lights.push_back(light);
         }

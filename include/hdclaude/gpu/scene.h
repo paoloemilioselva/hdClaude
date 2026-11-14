@@ -464,7 +464,8 @@ struct Light {
     /// Positive: a blackbody temperature in kelvin. Zero: D65, the default.
     /// Negative: a tabulated spectrum, `-(offset + 1)`, where `offset` is the
     /// spectrum's record in `Scene::emitterSpectra` -- the measured emission
-    /// an `hdclaude:spectrum` light authors (docs/spectral-rendering.md 6).
+    /// a light's `physical:illuminant` resolves to (docs/spectral-rendering.md
+    /// 6). A dome's environment uses the same encoding.
     /// One field for the three, because all three answer the same question,
     /// and every kernel that resolves a light's emission already asks it.
     ///

@@ -159,11 +159,12 @@ struct HdClaudeLightEntry {
     float domeTemperatureScale = 1.0f;
     float domeWorldToLight[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     float domeLightToWorld[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-    /// The measured emission spectrum the light authors through
-    /// `inputs:hdclaude:spectrum:*`, validated, or empty. Its place in
-    /// `Scene::emitterSpectra` is decided when the scene is snapshotted, since
-    /// that table is built afresh each time; `light.temperatureScale` already
-    /// carries its luminous scale.
+    /// The tabulated illuminant the light authors through the draft
+    /// `PhysicalLightIlluminantAPI` (`physical:illuminant`), validated, or
+    /// empty. Its place in `Scene::emitterSpectra` is decided when the scene is
+    /// snapshotted, since that table is built afresh each time; the luminous
+    /// scale is already in `light.temperatureScale`, or for a dome in
+    /// `domeTemperatureScale`.
     hdclaude::TabulatedSpectrum emissionSpectrum;
     /// What about this light is not honoured as authored, if anything.
     std::string report;
