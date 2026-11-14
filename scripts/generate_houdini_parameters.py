@@ -42,7 +42,7 @@ PLUGIN = "HdClaudeRendererPlugin"
 FOLDERS = [
     ("Sampling", ["samplesPerPixel", "samplesPerFrame", "maxBounces"]),
     ("Lighting", ["exposure", "environmentIntensity", "sunIntensity", "upAxis",
-                  "lightGeometry"]),
+                  "metersPerUnit", "lightGeometry"]),
     ("Geometry", ["subdivisionLevel", "adaptiveSubdivision", "perFaceSubdivision",
                   "subdivisionEdgePixels", "subdivisionOffScreenLevel",
                   "subdivisionFaceBudget", "subdivisionFollowsCamera",

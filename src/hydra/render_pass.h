@@ -134,6 +134,7 @@ class HDCLAUDE_API HdClaudeRenderPass final : public HdRenderPass {
     std::string _reportedCurveGeometry;
     std::string _reportedDepthStyle;
     std::string _reportedTextureQuality;
+    bool _reportedMetersPerUnit = false;
     std::string _reportedUnavailable;
     /// What the last reconstructed frame was produced by, so a change of
     /// backend, mode or preset is announced once rather than never.

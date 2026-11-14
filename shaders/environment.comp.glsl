@@ -146,7 +146,7 @@ void main()
             vec4 emission = pathThroughput.values[path] *
                             hdclaude_upsample_emission(
                                 light.radiance *
-                                    hdclaude_light_shaping(light, -direction),
+                                    hdclaude_light_shaping(light, -direction, normal),
                                 lambda, light.colorTemperature,
                                 light.temperatureScale);
 

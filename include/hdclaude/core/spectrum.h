@@ -326,6 +326,20 @@ Vec3 TabulatedReflectanceToLinearSrgb(const TabulatedSpectrum& spectrum);
 /// is not). Returns 0 for a spectrum with no luminous power at all.
 float TabulatedLuminousScale(const TabulatedSpectrum& spectrum);
 
+/// Radiance per unit luminance of light with this spectrum, in W/(m^2 sr) per
+/// nit: the spectrum's radiant integral over the luminous one, times the
+/// maximum luminous efficacy, 683 lm/W.
+///
+/// What converts a radiometric quantity the draft UsdLux physical-lighting
+/// proposal authors -- watts, or watts per square metre -- to the photometric
+/// one a UsdLux light is specified in. The radiant integral is over the
+/// spectrum's own range, outside which it is zero, which is the proposal's
+/// "integrated over the domain of the light's illuminant spectrum"; it is
+/// exact for the piecewise-linear spectrum. The luminous integral is taken
+/// through the film's colour matching functions, at 1 nm. Returns 0 for a
+/// spectrum with no luminous power.
+double TabulatedRadiantPerLuminous(const TabulatedSpectrum& spectrum);
+
 // ---------------------------------------------------------------------------
 // Illuminants as the draft UsdLux physical-lighting proposal defines them
 // ---------------------------------------------------------------------------

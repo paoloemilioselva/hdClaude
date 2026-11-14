@@ -186,7 +186,8 @@ if(HDCLAUDE_ENABLE_MATERIALX)
             "usd_depth|depth"
             "usd_houdini_parameters|houdini_parameters"
             "usd_cornell_box|cornell_box_reference"
-            "usd_physical_illuminant|physical_illuminant")
+            "usd_physical_illuminant|physical_illuminant"
+            "usd_physical_brightness|physical_brightness")
       string(REPLACE "|" ";" _usd_test "${_usd_test}")
       list(GET _usd_test 0 _name)
       list(GET _usd_test 1 _script)

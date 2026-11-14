@@ -86,6 +86,22 @@ inline constexpr std::uint32_t kEnvironmentDistributionMaxHeight = 512;
 /// sphere where the map is most oversampled.
 EnvironmentDistribution BuildEnvironmentDistribution(const TextureImage& map);
 
+/// The irradiance a dome with this map delivers to a surface facing `up`, per
+/// unit of the dome's colour, channel by channel: the cosine-weighted integral
+/// of the map over the hemisphere above that surface.
+///
+/// What the draft UsdLux `PhotometricDomeLightAPI` scales a dome by
+/// (docs/usd-proposals.md). The map is placed exactly as the environment
+/// kernel reads it -- `lightToWorld` is the dome's, column-major as
+/// `Scene::domeLightToWorld`, and the lat-long convention is
+/// `hdclaude_environment`'s -- and integrated over every texel, each taken as
+/// constant over its own solid angle. An invalid map integrates as a white one,
+/// which is pi in every channel, because the renderer then samples a
+/// placeholder as white too.
+void EnvironmentUpperHemisphereIrradiance(const TextureImage& map,
+                                          const float lightToWorld[16],
+                                          const double up[3], double out[3]);
+
 }  // namespace hdclaude
 
 #endif  // HDCLAUDE_GPU_ENVIRONMENT_DISTRIBUTION_H

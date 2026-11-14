@@ -10,6 +10,7 @@
 // prototype and material index. Nothing below it knows about OpenUSD, and
 // nothing above it knows about Vulkan.
 
+#include "hdclaude/core/photometry.h"
 #include "hdclaude/core/spectrum.h"
 #include "hdclaude/gpu/path_tracer.h"
 #include "hdclaude/gpu/scene.h"
@@ -148,6 +149,42 @@ struct HdClaudePendingMaterial {
 /// returns. Keeping both cases in one entry means the store has a single map
 /// keyed by prim path, so removal and revision bumping do not have to know
 /// which kind a path was.
+/// What a light is authored to deliver through the draft UsdLux photometric
+/// and radiometric APIs (docs/usd-proposals.md), rather than the luminance it
+/// emits.
+///
+/// Resolved at snapshot, because two of the three need the stage's metres per
+/// unit -- a power in lumens is per square metre of emitter, an illuminance at
+/// a distance in metres -- and that is a render setting the light cannot see
+/// at Sync. A dome's waits longer, for its map (Scene::pendingDomeIlluminance).
+struct HdClaudeLightBrightness {
+    enum class Target {
+        None,
+        /// Total emitted power, `value` lumens. Area lights.
+        Power,
+        /// Illuminance on a surface facing the light, `value` lux: at
+        /// `distanceMeters` on an area light's axis, perpendicular to a
+        /// distant light, facing up under a dome.
+        Illuminance,
+    };
+    Target target = Target::None;
+    /// Lumens or lux. A radiometric target arrives already converted through
+    /// the light's illuminant, since the light's luminance is what is scaled.
+    double value = 0.0;
+    double distanceMeters = 0.0;
+    /// The attribute and value as authored, for the trace and any report.
+    std::string statement;
+    /// An area light's shape as the path tracer samples it, in world units.
+    hdclaude::AreaEmitter emitter;
+
+    /// The last resolution: what a unit of luminance delivers, for the metres
+    /// per unit it was resolved at. The quadrature for a shaped light at a
+    /// distance is a million evaluations, and a snapshot is taken on every
+    /// edit to the stage.
+    mutable double cachedMetersPerUnit = 0.0;
+    mutable double cachedDelivery = 0.0;
+};
+
 struct HdClaudeLightEntry {
     hdclaude::Light light;
     bool isDome = false;
@@ -168,6 +205,9 @@ struct HdClaudeLightEntry {
     hdclaude::TabulatedSpectrum emissionSpectrum;
     /// What about this light is not honoured as authored, if anything.
     std::string report;
+    /// What the light is authored to deliver, if anything; its luminance is
+    /// scaled to deliver it when the scene is snapshotted.
+    HdClaudeLightBrightness brightness;
 
     /// The Hydra categories of the light's `collection:lightLink` and
     /// `collection:shadowLink`. Empty for a collection that includes everything,
@@ -289,6 +329,15 @@ class HdClaudeSceneStore {
     /// The `tlasChunkSize` render setting. A change republishes.
     void SetTlasChunkSize(std::uint32_t size);
 
+    /// The `metersPerUnit` and `upAxis` render settings, which a light
+    /// authored in lumens or lux needs and Hydra does not pass. A change
+    /// republishes. `zUp` false is Y up.
+    void SetStageUnits(double metersPerUnit, bool zUp);
+
+    /// Something the render pass found it could not honour in the snapshot it
+    /// was given, reported with the snapshot's own until the next one.
+    void AddSnapshotReport(std::string report);
+
     // --- Consumption, from the render pass ------------------------------------
 
     /// Bumped by every publication. The render pass compares it to decide
@@ -370,6 +419,9 @@ class HdClaudeSceneStore {
     bool _cullVolumesEnabled = true;
     bool _hostInstanceData = true;
     std::uint32_t _tlasChunkSize = 0;
+    /// USD's fallbacks, centimetres and Y up, until the render pass says.
+    double _metersPerUnit = 0.01;
+    bool _zUp = false;
     std::uint64_t _cullRevision = 1;
     /// The volumes past kMaxCullVolumes the last snapshot ignored, so the
     /// report is made when that set changes rather than on every snapshot.

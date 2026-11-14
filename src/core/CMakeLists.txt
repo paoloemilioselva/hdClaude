@@ -17,6 +17,7 @@ add_library(hdClaudeCore STATIC
     ray_visibility.cpp
     shader_cache.cpp
     sphere_mesh.cpp
+    photometry.cpp
     spectrum.cpp
     tessellation.cpp
 )

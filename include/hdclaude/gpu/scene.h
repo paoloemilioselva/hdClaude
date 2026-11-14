@@ -456,7 +456,8 @@ struct Light {
     /// Softness of the cone edge, 0 for a hard edge and 1 for a full falloff
     /// across the cone.
     float coneSoftness = 0.0f;
-    /// Focus exponent, sharpening emission about the axis. 0 is uniform.
+    /// Focus exponent, sharpening emission about the emitting surface's
+    /// normal (UsdLuxShapingAPI). 0 is uniform.
     float focus = 0.0f;
 
     /// The illuminant this light's colour is referred to.
@@ -678,6 +679,24 @@ struct Scene {
     /// rotation in every scene that means anything, but "in every scene that
     /// means anything" is not a thing to build a shader on.
     float domeLightToWorld[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+
+    /// A dome authored by the illuminance it delivers, through the draft
+    /// UsdLux `PhotometricDomeLightAPI` or `RadiometricDomeLightAPI`, whose
+    /// scale needs the map and so waits for it. Host only: the render pass
+    /// resolves these into `environmentColor` once the snapshot has its
+    /// textures, and the GPU never sees them (docs/usd-proposals.md).
+    struct PendingDomeIlluminance {
+        /// The dome's colour, before the scale; not yet in `environmentColor`.
+        float color[3] = {0.0f, 0.0f, 0.0f};
+        /// The illuminance to deliver to an upward-facing surface, in lux.
+        double lux = 0.0;
+        /// What was authored and where, for the report if it cannot be met.
+        std::string statement;
+    };
+    std::vector<PendingDomeIlluminance> pendingDomeIlluminance;
+    /// The stage's up axis in world space, which "upward-facing" means: the
+    /// `upAxis` render setting, since Hydra does not pass the stage's.
+    double upAxis[3] = {0.0, 1.0, 0.0};
 
     // --- Light linking ------------------------------------------------------
     //

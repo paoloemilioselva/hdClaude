@@ -8,8 +8,66 @@
 #include "pxr/imaging/hd/tokens.h"
 
 #include <algorithm>
+#include <cmath>
 
 PXR_NAMESPACE_OPEN_SCOPE
+
+namespace {
+
+/// Luminance of a linear Rec. 709 radiance, which is what UsdLux's
+/// `luminance(color) * intensity * 2^exposure` is: the light's illuminant is
+/// scaled to D65's luminous power (light.cpp), so its colour carries its
+/// luminance.
+double RadianceLuminance(const float* rgb)
+{
+    return 0.2126729 * rgb[0] + 0.7151522 * rgb[1] + 0.0721750 * rgb[2];
+}
+
+/// What a unit of luminance from this light delivers toward its target:
+/// lumens for a power, lux for an illuminance.
+double Delivery(const HdClaudeLightEntry& entry, double metersPerUnit)
+{
+    const HdClaudeLightBrightness& brightness = entry.brightness;
+    if (brightness.cachedMetersPerUnit == metersPerUnit) {
+        return brightness.cachedDelivery;
+    }
+    double delivery = 0.0;
+    if (entry.light.type == static_cast<std::uint32_t>(hdclaude::LightType::Distant)) {
+        // The cone the path tracer samples, whose radius is the authored one
+        // with a floor (light.cpp), so the floor is honoured too.
+        delivery = hdclaude::DistantIlluminancePerLuminance(entry.light.angularRadius);
+    } else if (brightness.target == HdClaudeLightBrightness::Target::Power) {
+        delivery = hdclaude::EmittedPowerPerLuminance(brightness.emitter) *
+                   metersPerUnit * metersPerUnit;
+    } else {
+        delivery = hdclaude::OnAxisIlluminancePerLuminance(
+            brightness.emitter, brightness.distanceMeters / metersPerUnit);
+    }
+    brightness.cachedMetersPerUnit = metersPerUnit;
+    brightness.cachedDelivery = delivery;
+    return delivery;
+}
+
+/// The factor that makes `delivered` (per unit of the light's luminance as
+/// authored) equal the target, or a negative number when nothing can.
+double BrightnessScale(double target, double luminance, double delivery)
+{
+    const double delivered = luminance * delivery;
+    if (!(delivered > 0.0) || !std::isfinite(delivered)) {
+        return -1.0;
+    }
+    return target / delivered;
+}
+
+std::string Unmet(const SdfPath& path, const std::string& statement)
+{
+    return path.GetString() + ": " + statement +
+           " cannot be met, because the light as authored delivers nothing to "
+           "scale (its colour, intensity or shaping is zero, or the surface it "
+           "is measured on is inside it); it emits as authored";
+}
+
+}  // namespace
 
 void HdClaudeSceneStore::PublishMesh(const SdfPath& id, HdClaudeMeshEntry entry)
 {
@@ -191,6 +249,22 @@ void HdClaudeSceneStore::SetHostInstanceData(bool host)
         _hostInstanceData = host;
         ++_revision;
     }
+}
+
+void HdClaudeSceneStore::SetStageUnits(double metersPerUnit, bool zUp)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (metersPerUnit != _metersPerUnit || zUp != _zUp) {
+        _metersPerUnit = metersPerUnit;
+        _zUp = zUp;
+        ++_revision;
+    }
+}
+
+void HdClaudeSceneStore::AddSnapshotReport(std::string report)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    _snapshotReports.push_back(std::move(report));
 }
 
 void HdClaudeSceneStore::SetTlasChunkSize(std::uint32_t size)
@@ -597,6 +671,9 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
     // emitted D65 whatever it authored.
     const SdfPath* illuminantDome = nullptr;
     const HdClaudeLightEntry* illuminantEntry = nullptr;
+    // Domes authored by the illuminance they deliver, held back from the
+    // environment until it is known whether there is a map to integrate.
+    std::vector<std::pair<const SdfPath*, const HdClaudeLightEntry*>> brightDomes;
     for (const auto& [path, entry] : _lights) {
         if (entry.isDome) {
             // Several domes sum into one environment, and one environment has
@@ -622,8 +699,12 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
                 scene.environmentColor[1] = 0.0f;
                 scene.environmentColor[2] = 0.0f;
             }
-            for (int i = 0; i < 3; ++i) {
-                scene.environmentColor[i] += entry.environmentColor[i];
+            if (entry.brightness.target == HdClaudeLightBrightness::Target::None) {
+                for (int i = 0; i < 3; ++i) {
+                    scene.environmentColor[i] += entry.environmentColor[i];
+                }
+            } else {
+                brightDomes.emplace_back(&path, &entry);
             }
             if (illuminantEntry == nullptr) {
                 illuminantDome = &path;
@@ -666,8 +747,58 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
             if (!entry.emissionSpectrum.wavelengths.empty()) {
                 light.colorTemperature = appendSpectrum(entry.emissionSpectrum);
             }
+            if (entry.brightness.target != HdClaudeLightBrightness::Target::None) {
+                const double scale =
+                    BrightnessScale(entry.brightness.value,
+                                    RadianceLuminance(light.radiance),
+                                    Delivery(entry, _metersPerUnit));
+                if (scale >= 0.0) {
+                    for (float& channel : light.radiance) {
+                        channel = static_cast<float>(channel * scale);
+                    }
+                    HdClaudeTrace("light <%s>: %s, at %g metres per unit: "
+                                  "luminance scaled by %g",
+                                  path.GetText(), entry.brightness.statement.c_str(),
+                                  _metersPerUnit, scale);
+                } else {
+                    _snapshotReports.push_back(Unmet(path, entry.brightness.statement));
+                    HdClaudeTrace("%s", _snapshotReports.back().c_str());
+                }
+            }
             scene.lights.push_back(light);
         }
+    }
+
+    // A dome's illuminance on an upward-facing surface is pi times its
+    // luminance when it is uniform. With a map it is the map's cosine-weighted
+    // integral over the upper hemisphere, which needs the map's texels: the
+    // render pass finishes those once the snapshot has its textures.
+    scene.upAxis[0] = 0.0;
+    scene.upAxis[1] = _zUp ? 0.0 : 1.0;
+    scene.upAxis[2] = _zUp ? 1.0 : 0.0;
+    for (const auto& [path, entry] : brightDomes) {
+        if (scene.domeTexture >= 0) {
+            hdclaude::Scene::PendingDomeIlluminance pending;
+            std::copy(std::begin(entry->environmentColor),
+                      std::end(entry->environmentColor), std::begin(pending.color));
+            pending.lux = entry->brightness.value;
+            pending.statement = path->GetString() + ": " + entry->brightness.statement;
+            scene.pendingDomeIlluminance.push_back(std::move(pending));
+            continue;
+        }
+        const double scale =
+            BrightnessScale(entry->brightness.value,
+                            RadianceLuminance(entry->environmentColor), M_PI);
+        if (scale < 0.0) {
+            _snapshotReports.push_back(Unmet(*path, entry->brightness.statement));
+            HdClaudeTrace("%s", _snapshotReports.back().c_str());
+            continue;
+        }
+        for (int i = 0; i < 3; ++i) {
+            scene.environmentColor[i] += static_cast<float>(entry->environmentColor[i] * scale);
+        }
+        HdClaudeTrace("dome light <%s>: %s: luminance scaled by %g", path->GetText(),
+                      entry->brightness.statement.c_str(), scale);
     }
 
     // The stand-in sky is a *fallback*, and a stage that lights itself must not

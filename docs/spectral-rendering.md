@@ -128,8 +128,13 @@ in a way that is hard to see and impossible to correct downstream.
 - Authored `color` is upsampled with the emission model.
 - HDR dome and area-light textures are upsampled per texel at sample time, as
   in §3.
-- `intensity`, `exposure`, `normalize`, `diffuse`, and `specular` scale the
-  spectrum, not a colour.
+- `intensity`, `exposure` and `normalize` scale the spectrum, not a colour.
+  `diffuse` and `specular` are not honoured, and are reported when authored.
+- A light authored by what it delivers -- lumens, watts, lux or W/m^2,
+  through the draft UsdLux photometric and radiometric APIs -- has its
+  luminance scaled to deliver exactly that. Watts become lumens through the
+  light's illuminant (6), integrated over its own range, so the spectrum
+  decides how many lumens a watt is ([usd-proposals.md](usd-proposals.md)).
 
 ## 5. The sensor
 

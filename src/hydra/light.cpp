@@ -196,21 +196,26 @@ VtValue ParamAnyName(HdSceneDelegate* delegate, const SdfPath& id,
 /// whichever illuminant it has -- the proposal's definition.
 ///
 /// The schema is a proposal and not registered, so whether it is applied is
-/// read from whether `physical:illuminant` has a value. Returns false when it
-/// does not, and the light keeps UsdLux's own colour temperature. An
+/// read from whether `physical:illuminant` has a value -- or from `implied`,
+/// when the light authors one of the photometric or radiometric APIs, which
+/// inherit this one, and then the illuminant is the schema's fallback,
+/// "white". Returns false when it is not applied, and the light keeps UsdLux's
+/// own colour temperature. An
 /// illuminant that is authored and unusable is reported and not used, and the
 /// light falls back to its colour against D65: the colour is the portable
 /// statement of the light, the one every other renderer reads.
 bool ReadPhysicalIlluminant(HdSceneDelegate* delegate, const SdfPath& id,
-                            hdclaude::TabulatedSpectrum* spectrum,
+                            bool implied, hdclaude::TabulatedSpectrum* spectrum,
                             std::string* report)
 {
     const VtValue illuminantValue = ParamAnyName(delegate, id, "physical:illuminant");
-    if (illuminantValue.IsEmpty()) {
+    if (illuminantValue.IsEmpty() && !implied) {
         return false;
     }
     std::string illuminant;
-    if (illuminantValue.IsHolding<TfToken>()) {
+    if (illuminantValue.IsEmpty()) {
+        illuminant = "white";
+    } else if (illuminantValue.IsHolding<TfToken>()) {
         illuminant = illuminantValue.UncheckedGet<TfToken>().GetString();
     } else if (illuminantValue.IsHolding<std::string>()) {
         illuminant = illuminantValue.UncheckedGet<std::string>();
@@ -327,6 +332,224 @@ float DistantSizeFactor(float angleDegrees)
                : (2.0f - sin2) * static_cast<float>(M_PI);
 }
 
+/// The draft photometric and radiometric APIs' attributes, by light kind.
+///
+/// An area light's API has a power and an illuminance at a distance; a dome's
+/// and a distant light's have only an illuminance. The fallbacks are the
+/// draft's.
+struct BrightnessAttribute {
+    const char* name;
+    float fallback;
+};
+constexpr BrightnessAttribute kAreaPhotometric[] = {
+    {"photometric:power", 1600.0f},
+    {"photometric:illuminance", 0.0f},
+    {"photometric:illuminance:distance", 0.0f}};
+constexpr BrightnessAttribute kAreaRadiometric[] = {
+    {"radiometric:power", 2.34f},
+    {"radiometric:irradiance", 0.0f},
+    {"radiometric:irradiance:distance", 0.0f}};
+constexpr BrightnessAttribute kDomePhotometric[] = {{"photometric:illuminance", 10000.0f}};
+constexpr BrightnessAttribute kDomeRadiometric[] = {{"radiometric:irradiance", 14.64f}};
+
+/// Every attribute either kind of API could author, on any light.
+constexpr const char* kBrightnessNames[] = {
+    "photometric:power", "photometric:illuminance", "photometric:illuminance:distance",
+    "radiometric:power", "radiometric:irradiance", "radiometric:irradiance:distance"};
+
+/// Whether the light authors any of the photometric or radiometric APIs'
+/// attributes, which is how an unregistered applied schema is recognised.
+bool AuthorsBrightness(HdSceneDelegate* delegate, const SdfPath& id)
+{
+    for (const char* name : kBrightnessNames) {
+        if (!ParamAnyName(delegate, id, name).IsEmpty()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// One of those attributes: its value if authored as a number, its fallback
+/// if not authored. False, with a report, if it is authored as something else.
+bool BrightnessValue(HdSceneDelegate* delegate, const SdfPath& id,
+                     const BrightnessAttribute& attribute, float* value,
+                     bool* authored, std::string* report)
+{
+    const VtValue v = ParamAnyName(delegate, id, attribute.name);
+    *authored = !v.IsEmpty();
+    if (v.IsEmpty()) {
+        *value = attribute.fallback;
+        return true;
+    }
+    if (v.IsHolding<float>()) {
+        *value = v.UncheckedGet<float>();
+        return true;
+    }
+    if (v.IsHolding<double>()) {
+        *value = static_cast<float>(v.UncheckedGet<double>());
+        return true;
+    }
+    Unhonoured(report, std::string(attribute.name) + " is a " + v.GetTypeName() +
+                           " where the proposal declares a float; the light emits "
+                           "as authored");
+    return false;
+}
+
+/// What a light is authored to deliver through the draft UsdLux
+/// `PhotometricAreaLightAPI`, `RadiometricAreaLightAPI`,
+/// `Photometric/RadiometricDomeLightAPI` or
+/// `Photometric/RadiometricDistantLightAPI` (docs/usd-proposals.md).
+///
+/// None is registered, so an API counts as applied when any of its
+/// attributes has a value, and its unauthored attributes take the draft's
+/// fallbacks. Where the draft decides, this follows it: the photometric API
+/// wins over the radiometric one, and an area light's illuminance counts only
+/// when its distance is not zero. Where it is silent, this decides, and
+/// usd-proposals.md says so: at a non-zero distance the illuminance wins over
+/// the power, as the distance's own documentation reads ("When non-zero, the
+/// light's brightness will be such that ...").
+///
+/// A radiometric target is converted to the photometric one through the
+/// light's illuminant -- the spectrum it is "integrated over the domain of" --
+/// so the luminance is scaled the same way for both.
+HdClaudeLightBrightness ReadBrightness(HdSceneDelegate* delegate, const SdfPath& id,
+                                       bool area,
+                                       const hdclaude::TabulatedSpectrum& illuminant,
+                                       std::string* report)
+{
+    HdClaudeLightBrightness brightness;
+    const auto applied = [&](const BrightnessAttribute* attributes, std::size_t count) {
+        for (std::size_t i = 0; i < count; ++i) {
+            if (!ParamAnyName(delegate, id, attributes[i].name).IsEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    };
+    // A dome or distant light has no power, and no distance to measure at.
+    if (!area) {
+        for (const char* name : kBrightnessNames) {
+            const std::string text(name);
+            const bool areaOnly = text.find("power") != std::string::npos ||
+                                  text.find(":distance") != std::string::npos;
+            if (areaOnly && !ParamAnyName(delegate, id, name).IsEmpty()) {
+                Unhonoured(report, text + " applies to area lights only, and is "
+                                          "not used on a dome or distant light");
+            }
+        }
+    }
+
+    const bool photometric = area ? applied(kAreaPhotometric, 3)
+                                  : applied(kDomePhotometric, 1);
+    const bool radiometric = area ? applied(kAreaRadiometric, 3)
+                                  : applied(kDomeRadiometric, 1);
+    if (!photometric && !radiometric) {
+        return brightness;
+    }
+    if (photometric && radiometric) {
+        Unhonoured(report, "the radiometric API is not used, because the "
+                           "photometric one is authored too and takes precedence");
+    }
+    const char* powerUnits = photometric ? "lm" : "W";
+    const char* fluxUnits = photometric ? "lux" : "W/m^2";
+
+    float value = 0.0f;
+    if (area) {
+        const BrightnessAttribute* attributes =
+            photometric ? kAreaPhotometric : kAreaRadiometric;
+        float power = 0.0f, illuminance = 0.0f, distance = 0.0f;
+        bool powerAuthored = false, illuminanceAuthored = false, distanceAuthored = false;
+        if (!BrightnessValue(delegate, id, attributes[0], &power, &powerAuthored, report) ||
+            !BrightnessValue(delegate, id, attributes[1], &illuminance,
+                             &illuminanceAuthored, report) ||
+            !BrightnessValue(delegate, id, attributes[2], &distance, &distanceAuthored,
+                             report)) {
+            return brightness;
+        }
+        if (distance < 0.0f || !std::isfinite(distance)) {
+            Unhonoured(report, TfStringPrintf("%s = %g is not a distance; the light "
+                                              "emits as authored",
+                                              attributes[2].name, distance));
+            return brightness;
+        }
+        if (distance > 0.0f) {
+            if (powerAuthored) {
+                Unhonoured(report, TfStringPrintf("%s is not used, because %s is "
+                                                  "not zero",
+                                                  attributes[0].name, attributes[2].name));
+            }
+            brightness.target = HdClaudeLightBrightness::Target::Illuminance;
+            brightness.distanceMeters = distance;
+            value = illuminance;
+            brightness.statement =
+                TfStringPrintf("%s = %g %s at %s = %g m", attributes[1].name, illuminance,
+                               fluxUnits, attributes[2].name, distance);
+        } else {
+            if (illuminanceAuthored) {
+                Unhonoured(report, TfStringPrintf("%s has no effect while %s is "
+                                                  "zero, so %s is used",
+                                                  attributes[1].name, attributes[2].name,
+                                                  attributes[0].name));
+            }
+            brightness.target = HdClaudeLightBrightness::Target::Power;
+            value = power;
+            brightness.statement = TfStringPrintf(
+                "%s = %g %s%s", attributes[0].name, power, powerUnits,
+                powerAuthored ? "" : " (the draft's fallback)");
+        }
+    } else {
+        const BrightnessAttribute& attribute =
+            photometric ? kDomePhotometric[0] : kDomeRadiometric[0];
+        bool authored = false;
+        if (!BrightnessValue(delegate, id, attribute, &value, &authored, report)) {
+            return brightness;
+        }
+        brightness.target = HdClaudeLightBrightness::Target::Illuminance;
+        brightness.statement =
+            TfStringPrintf("%s = %g %s%s", attribute.name, value, fluxUnits,
+                           authored ? "" : " (the draft's fallback)");
+    }
+
+    if (value < 0.0f || !std::isfinite(value)) {
+        Unhonoured(report, brightness.statement +
+                               " is not a quantity of light; the light emits as authored");
+        return HdClaudeLightBrightness();
+    }
+    brightness.value = value;
+    if (!photometric) {
+        // Watts to lumens: the light's luminance is what gets scaled, and its
+        // radiance per nit is fixed by its spectrum.
+        const double radiantPerLuminous = hdclaude::TabulatedRadiantPerLuminous(illuminant);
+        if (!(radiantPerLuminous > 0.0)) {
+            Unhonoured(report, brightness.statement +
+                                   " cannot be met, because the illuminant has no "
+                                   "luminous power; the light emits as authored");
+            return HdClaudeLightBrightness();
+        }
+        brightness.value = value / radiantPerLuminous;
+        brightness.statement +=
+            TfStringPrintf(" (%g %s through the illuminant)", brightness.value,
+                           brightness.target == HdClaudeLightBrightness::Target::Power
+                               ? "lm"
+                               : "lux");
+    }
+    return brightness;
+}
+
+/// D65 over the whole range a light without an illuminant emits it on, at the
+/// illuminant grid: what a radiometric target is integrated over when the
+/// light's illuminant was unusable and it fell back to its colour.
+hdclaude::TabulatedSpectrum FullRangeD65()
+{
+    hdclaude::TabulatedSpectrum d65;
+    for (float lambda = hdclaude::kLambdaMin; lambda <= hdclaude::kLambdaMax;
+         lambda += 5.0f) {
+        d65.wavelengths.push_back(lambda);
+        d65.values.push_back(hdclaude::IlluminantD65(lambda));
+    }
+    return d65;
+}
+
 }  // namespace
 
 HdClaudeLight::HdClaudeLight(const TfToken& lightType, const SdfPath& id)
@@ -417,9 +640,26 @@ void HdClaudeLight::Sync(HdSceneDelegate* sceneDelegate,
     // the scene's spectrum table is assigned at snapshot; only the luminous
     // scale is known here.
     hdclaude::TabulatedSpectrum emissionSpectrum;
-    if (ReadPhysicalIlluminant(sceneDelegate, id, &emissionSpectrum, &entryReport)) {
+    const bool authorsBrightness = AuthorsBrightness(sceneDelegate, id);
+    if (ReadPhysicalIlluminant(sceneDelegate, id, authorsBrightness, &emissionSpectrum,
+                               &entryReport)) {
         colorTemperature = 0.0f;
         temperatureScale = hdclaude::TabulatedLuminousScale(emissionSpectrum);
+    }
+
+    // What the light is authored to deliver, if anything, through the draft
+    // photometric and radiometric APIs. Resolved into a scale at snapshot,
+    // where the stage's units are known (HdClaudeLightBrightness).
+    const bool areaLight = _lightType == HdPrimTypeTokens->rectLight ||
+                           _lightType == HdPrimTypeTokens->diskLight ||
+                           _lightType == HdPrimTypeTokens->sphereLight ||
+                           _lightType == HdPrimTypeTokens->cylinderLight;
+    HdClaudeLightBrightness brightness;
+    if (authorsBrightness) {
+        brightness = ReadBrightness(
+            sceneDelegate, id, areaLight,
+            emissionSpectrum.wavelengths.empty() ? FullRangeD65() : emissionSpectrum,
+            &entryReport);
     }
 
     hdclaude::Light light;
@@ -458,6 +698,7 @@ void HdClaudeLight::Sync(HdSceneDelegate* sceneDelegate,
         entry.domeColorTemperature = colorTemperature;
         entry.domeTemperatureScale = temperatureScale;
         entry.emissionSpectrum = emissionSpectrum;
+        entry.brightness = brightness;
         StoreVector(entry.environmentColor, radiance);
 
         // The map is loaded through the same pool as a material's textures, so
@@ -523,6 +764,11 @@ void HdClaudeLight::Sync(HdSceneDelegate* sceneDelegate,
         HdClaudeTrace("dome light <%s>: environment %.3f %.3f %.3f, %.0f K",
                       id.GetText(), radiance[0], radiance[1], radiance[2],
                       colorTemperature);
+        // Through the trace as well as the render stats, as an area light's
+        // report is below; a dome's reached only the stats.
+        if (!entryReport.empty()) {
+            HdClaudeTrace("light <%s>: %s", id.GetText(), entryReport.c_str());
+        }
         *dirtyBits = HdLight::Clean;
         return;
     }
@@ -637,11 +883,35 @@ void HdClaudeLight::Sync(HdSceneDelegate* sceneDelegate,
                                  "light emits its colour uniformly");
     }
 
+    // The emitter as the path tracer samples it, for the snapshot to integrate
+    // what a unit of its luminance delivers.
+    if (brightness.target != HdClaudeLightBrightness::Target::None && areaLight) {
+        hdclaude::AreaEmitter& emitter = brightness.emitter;
+        emitter.shape = _lightType == HdPrimTypeTokens->rectLight
+                            ? hdclaude::EmitterShape::Rect
+                        : _lightType == HdPrimTypeTokens->diskLight
+                            ? hdclaude::EmitterShape::Disk
+                        : _lightType == HdPrimTypeTokens->sphereLight
+                            ? hdclaude::EmitterShape::Sphere
+                            : hdclaude::EmitterShape::Cylinder;
+        for (int i = 0; i < 3; ++i) {
+            emitter.position[i] = light.position[i];
+            emitter.direction[i] = light.direction[i];
+            emitter.uAxis[i] = light.uAxis[i];
+            emitter.vAxis[i] = light.vAxis[i];
+        }
+        emitter.radius = light.radius;
+        emitter.shaping.coneCosAngle = light.coneCosAngle;
+        emitter.shaping.coneSoftness = light.coneSoftness;
+        emitter.shaping.focus = light.focus;
+    }
+
     HdClaudeLightEntry entry;
     entry.light = light;
     entry.lightLink = lightLink;
     entry.shadowLink = shadowLink;
     entry.report = entryReport;
+    entry.brightness = std::move(brightness);
     const std::size_t spectrumSamples = emissionSpectrum.wavelengths.size();
     entry.emissionSpectrum = std::move(emissionSpectrum);
     param->SceneStore()->PublishLight(id, std::move(entry));

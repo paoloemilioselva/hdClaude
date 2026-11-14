@@ -43,6 +43,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (environmentIntensity)
                          (sunIntensity)
                          (upAxis)
+                         (metersPerUnit)
                          (exposure)
                          (depthStyle)
                          (reconstruction)
@@ -129,6 +130,7 @@ const std::vector<std::pair<TfToken, std::string>>& HdClaudeEnvironmentSettings(
         {_tokens->reconstructionModel, "HDCLAUDE_RECONSTRUCTION_MODEL"},
         {_tokens->reconstructionAutoExposure, "HDCLAUDE_DLSS_AUTO_EXPOSURE"},
         {_tokens->upAxis, "HDCLAUDE_UP_AXIS"},
+        {_tokens->metersPerUnit, "HDCLAUDE_METERS_PER_UNIT"},
         {_tokens->depthStyle, "HDCLAUDE_DEPTH_STYLE"},
         // The twelve the audit found.
         {_tokens->device, "HDCLAUDE_DEVICE"},
@@ -851,6 +853,16 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         // a Y-up sun in it shines sideways along the floor.
         {"Up axis", _tokens->upAxis,
          VtValue(std::string(TfGetenv("HDCLAUDE_UP_AXIS", "Y")))},
+
+        // How long the stage's unit is, in metres, for the same reason: Hydra
+        // does not pass `metersPerUnit` either. Only a light authored by what
+        // it delivers reads it -- a power in lumens is per square metre of
+        // emitter, an illuminance at a distance in metres (the draft UsdLux
+        // photometric APIs, docs/usd-proposals.md) -- and everything else is
+        // in the stage's own units already. USD's fallback, centimetres, by
+        // default.
+        {"Meters per unit", _tokens->metersPerUnit,
+         VtValue(float(TfGetenvDouble("HDCLAUDE_METERS_PER_UNIT", 0.01)))},
 
         // Exposure, in stops, applied to the resolved image. Zero by default,
         // so the AOV carries the radiance the renderer computed and nothing is

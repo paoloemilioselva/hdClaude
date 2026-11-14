@@ -170,6 +170,28 @@
         disablewhen "{ upAxis_control == block } { upAxis_control == none }"
     }
     parm {
+        name    "metersPerUnit_control"
+        label   "Meters per unit"
+        type    string
+        default { "none" }
+        menujoin {
+            [ "import loputils" ]
+            [ "return loputils.createEditPropertiesControlMenu(kwargs, 'float')" ]
+            language python
+        }
+        parmtag { "sidefx::look" "icon" }
+    }
+    parm {
+        name    "metersPerUnit"
+        label   "Meters per unit"
+        type    float
+        size    1
+        default { 0.009999999776482582 }
+        parmtag { "spare_category" "Lighting" }
+        parmtag { "usdvaluetype" "float" }
+        disablewhen "{ metersPerUnit_control == block } { metersPerUnit_control == none }"
+    }
+    parm {
         name    "lightGeometry_control"
         label   "Light geometry"
         type    string

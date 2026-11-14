@@ -7,6 +7,7 @@
 #include "hdclaude/core/environment.h"
 #include "hdclaude/core/display.h"
 #include "hdclaude/core/image_metrics.h"
+#include "hdclaude/core/photometry.h"
 #include "hdclaude/core/quad_tessellation.h"
 #include "hdclaude/core/ray_visibility.h"
 #include "hdclaude/core/sphere_mesh.h"
@@ -868,6 +869,188 @@ void TestResampleTo5nmFollowsAstmE308()
     for (float value : step.values) {
         CHECK(value >= 0.0f);
     }
+}
+
+/// The shaping twin is UsdLuxShapingAPI as its documentation writes it:
+/// unshaped is one everywhere; the cone is hard at softness 0 and, softer,
+/// falls off as `1 - smoothstep` in the off-axis *angle* from
+/// `cutoff * (1 - softness)` to the cutoff; the focus is the cosine to the
+/// surface's normal, in absolute value, to the power.
+void TestShapingAttenuationFollowsUsdLux()
+{
+    const double pi = 3.14159265358979323846;
+    EmitterShaping none;
+    CHECK_NEAR(ShapingAttenuation(none, -0.5f, 0.1f), 1.0, 0.0);
+
+    EmitterShaping cone;
+    cone.coneCosAngle = 0.5f;   // 60 degrees
+    CHECK_NEAR(ShapingAttenuation(cone, 0.4f, 1.0f), 0.0, 0.0);
+    CHECK_NEAR(ShapingAttenuation(cone, 0.6f, 1.0f), 1.0, 0.0);
+    CHECK_NEAR(ShapingAttenuation(cone, 0.51f, 1.0f), 1.0, 0.0);
+
+    cone.coneSoftness = 1.0f;   // smooth from the axis to 60 degrees
+    const double cutoff = std::acos(0.5);
+    const double t = std::acos(0.75) / cutoff;
+    CHECK_NEAR(ShapingAttenuation(cone, 0.75f, 1.0f), 1.0 - t * t * (3.0 - 2.0 * t), 1e-6);
+    cone.coneSoftness = 0.5f;   // flat to 30 degrees, then smooth to 60
+    CHECK_NEAR(ShapingAttenuation(cone, static_cast<float>(std::cos(25.0 * pi / 180.0)), 1.0f),
+               1.0, 1e-6);
+    const double u = (45.0 - 30.0) / 30.0;
+    CHECK_NEAR(ShapingAttenuation(cone, static_cast<float>(std::cos(45.0 * pi / 180.0)), 1.0f),
+               1.0 - u * u * (3.0 - 2.0 * u), 1e-5);
+
+    // A cone wider than a hemisphere lights directions behind the axis.
+    EmitterShaping wide;
+    wide.coneCosAngle = static_cast<float>(std::cos(120.0 * pi / 180.0));
+    CHECK_NEAR(ShapingAttenuation(wide, -0.3f, 1.0f), 1.0, 0.0);
+
+    EmitterShaping focus;
+    focus.focus = 2.0f;
+    CHECK_NEAR(ShapingAttenuation(focus, 0.9f, 0.5f), 0.25, 1e-6);
+    CHECK_NEAR(ShapingAttenuation(focus, -0.9f, -0.5f), 0.25, 1e-6);
+}
+
+/// Power per unit luminance against closed forms: pi times the area unshaped;
+/// for a shaped face the cosine-weighted integral of its cone and focus; and
+/// for a sphere or cylinder, whose focus is about each point's normal, the
+/// integral of that normal's cosine over the surface.
+void TestEmittedPowerMatchesClosedForms()
+{
+    const double pi = 3.14159265358979323846;
+    AreaEmitter rect;
+    rect.uAxis[0] = 1.0;
+    rect.vAxis[1] = 1.5;   // 2 x 3
+    CHECK_NEAR(EmitterArea(rect), 6.0, 1e-12);
+    CHECK_NEAR(EmittedPowerPerLuminance(rect), pi * 6.0, 1e-9);
+
+    // A hard cone: the projected solid angle of the cap, pi sin^2.
+    const double cf = static_cast<float>(std::cos(40.0 * pi / 180.0));
+    rect.shaping.coneCosAngle = static_cast<float>(cf);
+    CHECK_NEAR(EmittedPowerPerLuminance(rect) / (6.0 * pi * (1.0 - cf * cf)), 1.0, 1e-6);
+
+    // Fully soft: 2 pi * integral of (1 - smoothstep(0, cutoff, theta)) cos sin,
+    // by a midpoint sum in the angle, independent of the Simpson the
+    // implementation uses.
+    rect.shaping.coneSoftness = 1.0f;
+    const double cutoff = std::acos(cf);
+    double soft = 0.0;
+    constexpr int kSteps = 200000;
+    for (int i = 0; i < kSteps; ++i) {
+        const double theta = (i + 0.5) * cutoff / kSteps;
+        const double x = theta / cutoff;
+        soft += (1.0 - x * x * (3.0 - 2.0 * x)) * std::cos(theta) * std::sin(theta);
+    }
+    soft *= 2.0 * pi * cutoff / kSteps;
+    CHECK_NEAR(EmittedPowerPerLuminance(rect) / (6.0 * soft), 1.0, 1e-6);
+
+    AreaEmitter focused = AreaEmitter{};
+    focused.shaping.focus = 3.0f;
+    CHECK_NEAR(EmittedPowerPerLuminance(focused) / (EmitterArea(focused) * 2.0 * pi / 5.0),
+               1.0, 1e-6);
+
+    // A sphere with focus f: r^2 * 2 pi / (f + 2) over every direction, 4 pi.
+    AreaEmitter sphere;
+    sphere.shape = EmitterShape::Sphere;
+    sphere.radius = 0.25;
+    CHECK_NEAR(EmittedPowerPerLuminance(sphere), pi * 4.0 * pi * 0.0625, 1e-9);
+    sphere.shaping.focus = 2.0f;
+    CHECK_NEAR(EmittedPowerPerLuminance(sphere) / (0.0625 * 2.0 * pi / 4.0 * 4.0 * pi), 1.0,
+               1e-6);
+    // And cut to the hemisphere about its axis by a 90-degree cone: half.
+    sphere.shaping.coneCosAngle = 0.0f;
+    CHECK_NEAR(EmittedPowerPerLuminance(sphere) / (0.0625 * 2.0 * pi / 4.0 * 2.0 * pi), 1.0,
+               1e-6);
+
+    // A cylinder along X emitting along -Z, cut to the half-space in front of
+    // its axis by a 90-degree cone: by symmetry, half the unshaped power.
+    AreaEmitter cylinder;
+    cylinder.shape = EmitterShape::Cylinder;
+    cylinder.radius = 0.1;
+    cylinder.uAxis[0] = 0.75;
+    const double full = EmittedPowerPerLuminance(cylinder);
+    CHECK_NEAR(full, pi * 2.0 * pi * 0.1 * 1.5, 1e-9);
+    cylinder.shaping.coneCosAngle = 0.0f;
+    CHECK_NEAR(EmittedPowerPerLuminance(cylinder) / (0.5 * full), 1.0, 1e-4);
+    // Focus 1 about each point's normal: r l (pi / 2) * 2 pi * (4 / 3).
+    cylinder.shaping = EmitterShaping{};
+    cylinder.shaping.focus = 1.0f;
+    CHECK_NEAR(EmittedPowerPerLuminance(cylinder) /
+                   (0.1 * 1.5 * (pi / 2.0) * 2.0 * pi * (4.0 / 3.0)),
+               1.0, 1e-4);
+}
+
+/// Illuminance on the axis: closed forms where they exist, and the quadrature
+/// that a shaped light uses agreeing with them when the cone is too wide to
+/// cut anything the receiver sees.
+void TestOnAxisIlluminanceMatchesClosedForms()
+{
+    const double pi = 3.14159265358979323846;
+    EmitterShaping wide;
+    wide.coneCosAngle = static_cast<float>(std::cos(89.0 * pi / 180.0));
+
+    AreaEmitter disk;
+    disk.shape = EmitterShape::Disk;
+    disk.radius = 0.5;
+    const double diskExact = pi * 0.25 / (4.0 + 0.25);
+    CHECK_NEAR(OnAxisIlluminancePerLuminance(disk, 2.0), diskExact, 1e-12);
+    disk.shaping = wide;
+    CHECK_NEAR(OnAxisIlluminancePerLuminance(disk, 2.0) / diskExact, 1.0, 1e-4);
+
+    AreaEmitter rect;
+    rect.uAxis[0] = 0.5;
+    rect.vAxis[1] = 0.25;
+    const double rectExact = OnAxisIlluminancePerLuminance(rect, 1.0);
+    // Far away it is a point: area over distance squared.
+    CHECK_NEAR(OnAxisIlluminancePerLuminance(rect, 100.0) / (0.5 / 1e4), 1.0, 1e-4);
+    // Close up it is a plane: pi.
+    CHECK_NEAR(OnAxisIlluminancePerLuminance(rect, 1e-4), pi, 1e-3);
+    rect.shaping = wide;
+    CHECK_NEAR(OnAxisIlluminancePerLuminance(rect, 1.0) / rectExact, 1.0, 1e-4);
+
+    AreaEmitter sphere;
+    sphere.shape = EmitterShape::Sphere;
+    sphere.radius = 0.5;
+    const double sphereExact = pi * (0.5 / 3.0) * (0.5 / 3.0);
+    CHECK_NEAR(OnAxisIlluminancePerLuminance(sphere, 3.0), sphereExact, 1e-12);
+    CHECK_NEAR(OnAxisIlluminancePerLuminance(sphere, 0.4), 0.0, 0.0);
+    sphere.shaping = wide;
+    CHECK_NEAR(OnAxisIlluminancePerLuminance(sphere, 3.0) / sphereExact, 1.0, 1e-3);
+
+    // A cylinder far away is its silhouette, 2 r l, over distance squared.
+    AreaEmitter cylinder;
+    cylinder.shape = EmitterShape::Cylinder;
+    cylinder.radius = 0.1;
+    cylinder.uAxis[0] = 0.5;
+    CHECK_NEAR(OnAxisIlluminancePerLuminance(cylinder, 100.0) / (0.2 / 1e4), 1.0, 1e-3);
+    CHECK_NEAR(OnAxisIlluminancePerLuminance(cylinder, 0.05), 0.0, 0.0);
+
+    CHECK_NEAR(DistantIlluminancePerLuminance(0.01), pi * std::sin(0.01) * std::sin(0.01),
+               1e-15);
+    CHECK_NEAR(DistantIlluminancePerLuminance(2.0), pi, 1e-12);
+}
+
+/// Radiance per nit: an equal-energy spectrum over 380-780 nm against the CIE
+/// ybar integral over that range, 106.857 (CIE 015), and a narrow band at
+/// 555 nm against the maximum luminous efficacy itself. Within 1%, the film's
+/// fit of the colour matching functions.
+void TestRadiantPerLuminousMatchesCie()
+{
+    TabulatedSpectrum flat;
+    for (float l = 380.0f; l <= 780.0f; l += 5.0f) {
+        flat.wavelengths.push_back(l);
+        flat.values.push_back(1.0f);
+    }
+    const double expected = 400.0 / (683.0 * 106.857);
+    CHECK_NEAR(TabulatedRadiantPerLuminous(flat) / expected, 1.0, 0.01);
+    TabulatedSpectrum doubled = flat;
+    for (float& v : doubled.values) {
+        v *= 2.0f;
+    }
+    CHECK_NEAR(TabulatedRadiantPerLuminous(doubled) / TabulatedRadiantPerLuminous(flat),
+               1.0, 1e-9);
+    const TabulatedSpectrum band{{554.0f, 555.0f, 556.0f}, {0.0f, 1.0f, 0.0f}};
+    CHECK_NEAR(TabulatedRadiantPerLuminous(band) * 683.0, 1.0, 0.01);
+    CHECK_NEAR(TabulatedRadiantPerLuminous({{900.0f, 950.0f}, {1.0f, 1.0f}}), 0.0, 0.0);
 }
 
 /// The dispersion curve has to reproduce the two numbers that defined it.
@@ -3464,6 +3647,10 @@ int main()
     TestTabulatedLuminousScaleMatchesD65();
     TestIlluminantDReproducesD65();
     TestResampleTo5nmFollowsAstmE308();
+    TestShapingAttenuationFollowsUsdLux();
+    TestEmittedPowerMatchesClosedForms();
+    TestOnAxisIlluminanceMatchesClosedForms();
+    TestRadiantPerLuminousMatchesCie();
     TestDisplayTransformLeavesTheDiffuseRangeAlone();
     TestDisplayTransformCompressesRatherThanClips();
     TestDisplayTransformSanitisesAndExposes();

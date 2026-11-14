@@ -60,11 +60,11 @@ float FromSrgb(float encoded)
 /// The sRGB decode matters: an sRGB-encoded map is decoded by the hardware
 /// sampler, so a distribution built from the raw bytes would be a distribution
 /// over different numbers than the ones being integrated.
-float Luminance(const TextureImage& map, std::uint32_t x, std::uint32_t y)
+void TexelRgb(const TextureImage& map, std::uint32_t x, std::uint32_t y, float rgb[3])
 {
     const std::size_t index =
         (static_cast<std::size_t>(y) * map.width + x) * 4;
-    float rgb[3] = {0.0f, 0.0f, 0.0f};
+    rgb[0] = rgb[1] = rgb[2] = 0.0f;
 
     if (map.format == TexelFormat::Rgba16Sfloat) {
         for (int c = 0; c < 3; ++c) {
@@ -78,7 +78,12 @@ float Luminance(const TextureImage& map, std::uint32_t x, std::uint32_t y)
             rgb[c] = map.format == TexelFormat::Rgba8Srgb ? FromSrgb(unit) : unit;
         }
     }
+}
 
+float Luminance(const TextureImage& map, std::uint32_t x, std::uint32_t y)
+{
+    float rgb[3];
+    TexelRgb(map, x, y, rgb);
     const float luminance =
         0.2126f * rgb[0] + 0.7152f * rgb[1] + 0.0722f * rgb[2];
     // A map holding a NaN or a negative -- both of which real EXRs do -- must
@@ -88,6 +93,77 @@ float Luminance(const TextureImage& map, std::uint32_t x, std::uint32_t y)
 }
 
 }  // namespace
+
+void EnvironmentUpperHemisphereIrradiance(const TextureImage& map,
+                                          const float lightToWorld[16],
+                                          const double up[3], double out[3])
+{
+    constexpr double kPiD = 3.14159265358979323846;
+    if (!map.Valid()) {
+        out[0] = out[1] = out[2] = kPiD;
+        return;
+    }
+    // A world direction is the light frame's rows weighted by its components:
+    // the storage is column-major of a row-vector matrix, as the kernel reads
+    // it. Each direction is normalised after, so a dome transform that also
+    // scales still places the map as the kernel does.
+    double rows[3][3];
+    for (int k = 0; k < 3; ++k) {
+        for (int c = 0; c < 3; ++c) {
+            rows[k][c] = lightToWorld[k * 4 + c];
+        }
+    }
+    const double upLength = std::sqrt(up[0] * up[0] + up[1] * up[1] + up[2] * up[2]);
+    if (!(upLength > 0.0)) {
+        out[0] = out[1] = out[2] = 0.0;
+        return;
+    }
+
+    std::vector<double> cosPhi(map.width), sinPhi(map.width);
+    for (std::uint32_t x = 0; x < map.width; ++x) {
+        // u = (atan2(z, x) + pi/2) / 2pi, so the azimuth is 2 pi u - pi/2.
+        const double u = (x + 0.5) / map.width;
+        const double phi = 2.0 * kPiD * u - 0.5 * kPiD;
+        cosPhi[x] = std::cos(phi);
+        sinPhi[x] = std::sin(phi);
+    }
+    const double cell = (kPiD / map.height) * (2.0 * kPiD / map.width);
+    double total[3] = {0.0, 0.0, 0.0};
+    for (std::uint32_t y = 0; y < map.height; ++y) {
+        // Row 0 is v = 0, the bottom; v = 1 - theta / pi.
+        const double v = (y + 0.5) / map.height;
+        const double theta = (1.0 - v) * kPiD;
+        const double sinTheta = std::sin(theta);
+        const double cosTheta = std::cos(theta);
+        for (std::uint32_t x = 0; x < map.width; ++x) {
+            const double d[3] = {sinTheta * cosPhi[x], cosTheta, sinTheta * sinPhi[x]};
+            double w[3];
+            for (int c = 0; c < 3; ++c) {
+                w[c] = d[0] * rows[0][c] + d[1] * rows[1][c] + d[2] * rows[2][c];
+            }
+            const double length = std::sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
+            if (!(length > 0.0)) {
+                continue;
+            }
+            const double cosine =
+                (w[0] * up[0] + w[1] * up[1] + w[2] * up[2]) / (length * upLength);
+            if (cosine <= 0.0) {
+                continue;
+            }
+            float rgb[3];
+            TexelRgb(map, x, y, rgb);
+            const double weight = cosine * sinTheta * cell;
+            for (int c = 0; c < 3; ++c) {
+                if (std::isfinite(rgb[c]) && rgb[c] > 0.0f) {
+                    total[c] += rgb[c] * weight;
+                }
+            }
+        }
+    }
+    out[0] = total[0];
+    out[1] = total[1];
+    out[2] = total[2];
+}
 
 EnvironmentDistribution BuildEnvironmentDistribution(const TextureImage& map)
 {

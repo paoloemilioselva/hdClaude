@@ -724,7 +724,7 @@ struct Light {
 
     float coneCosAngle;   // cosine of the shaping cone, -1 when unshaped
     float coneSoftness;   // 0 hard edge, 1 falloff across the whole cone
-    float focus;          // focus exponent about the axis, 0 for uniform
+    float focus;          // focus exponent about the surface normal, 0 for none
     /// Blackbody temperature in kelvin, or zero. A temperature is a spectrum,
     /// so it is carried as one rather than resolved to a tint on the host.
     float colorTemperature;
@@ -2489,46 +2489,60 @@ vec4 hdclaude_lane_extinction(vec3 sigma, vec4 lambda)
     return -log(max(transmittance, vec4(1.0e-8))) * peak;
 }
 
-/// UsdLuxShapingAPI falloff for a direction leaving the light.
+/// UsdLuxShapingAPI falloff for a direction leaving the light from a point
+/// whose surface normal is `surfaceNormal`.
 ///
 /// Applied to the emitted radiance rather than to the density: shaping changes
 /// how much light leaves in a direction, not how the sampler chose it. Folding
 /// it into the density instead would make a spot light's estimator wrong
 /// wherever the cone cuts off.
-float hdclaude_light_shaping(Light light, vec3 outgoing)
+///
+/// As UsdLuxShapingAPI's documentation writes it, term by term:
+///
+///   cone     zero beyond the cone angle off the light's axis. Inside it,
+///            `1 - smoothstep(smoothStart, cutoff, offAxis)` in the *angle*,
+///            with `smoothStart = cutoff * (1 - softness)`: softness 0 is a
+///            hard edge, 1 a falloff across the whole cone.
+///   focus    `|emissionDirection . surfaceNormal|^focus` -- about the emitting
+///            point's own normal, which is the axis for a rect or a disk and
+///            not for a sphere or a cylinder.
+///
+/// Until 2026-11-15 the softness ran the other way, smoothstepped in the
+/// cosine, so a spot light at the default softness of 0 fell off across its
+/// whole cone; the focus was about the axis; and everything behind the light's
+/// axis was dark whatever the cone said. include/hdclaude/core/photometry.h is
+/// the host twin, which the photometric power is integrated through, and the
+/// two must change together.
+float hdclaude_light_shaping(Light light, vec3 outgoing, vec3 surfaceNormal)
 {
     if (light.coneCosAngle <= -1.0 && light.focus <= 0.0)
     {
         return 1.0;
     }
 
-    float cosTheta = dot(normalize(light.direction), normalize(outgoing));
-    if (cosTheta <= 0.0)
-    {
-        return 0.0;
-    }
-
+    vec3 w = normalize(outgoing);
     float attenuation = 1.0;
 
     if (light.coneCosAngle > -1.0)
     {
+        float cosTheta = dot(normalize(light.direction), w);
         if (cosTheta < light.coneCosAngle)
         {
             return 0.0;
         }
-        // Softness widens an inner cone inward from the edge, and the falloff
-        // runs smoothly between the two. Softness 0 leaves a hard edge.
-        float inner = mix(1.0, light.coneCosAngle,
-                          clamp(light.coneSoftness, 0.0, 1.0));
-        if (inner > light.coneCosAngle)
+        float softness = clamp(light.coneSoftness, 0.0, 1.0);
+        float cutoff = acos(clamp(light.coneCosAngle, -1.0, 1.0));
+        float smoothStart = cutoff * (1.0 - softness);
+        if (cutoff > smoothStart)
         {
-            attenuation *= smoothstep(light.coneCosAngle, inner, cosTheta);
+            float offAxis = acos(clamp(cosTheta, -1.0, 1.0));
+            attenuation *= 1.0 - smoothstep(smoothStart, cutoff, offAxis);
         }
     }
 
     if (light.focus > 0.0)
     {
-        attenuation *= pow(cosTheta, light.focus);
+        attenuation *= pow(abs(dot(surfaceNormal, w)), light.focus);
     }
     return attenuation;
 }
@@ -2644,7 +2658,7 @@ LightSample hdclaude_sample_light(uint index, vec3 position, vec2 u)
 
     result.direction = direction;
     result.distance = distance;
-    result.radiance = light.radiance * hdclaude_light_shaping(light, -direction);
+    result.radiance = light.radiance * hdclaude_light_shaping(light, -direction, normal);
     // Uniform area density 1/A converted to solid angle: d^2 / (cos * A).
     result.pdf = distanceSquared / (cosLight * light.area);
     return result;

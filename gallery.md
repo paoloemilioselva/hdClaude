@@ -179,7 +179,7 @@ and a device-loss investigation cannot start without it. hdCodex spent days on a
 | StandardShaderBall BubbleGum | 2026-09-21 | 79.980 s (1m 19.980s) | 1.4 GiB | `399cb9aeb5537de51c713177ad508c4989955e06b3e0ef073d785cd9c60cf266` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | StandardShaderBall Honey | 2026-09-21 | 39.213 s (0m 39.213s) | 1.4 GiB | `5df354f3977772083e47bfefeac9b70579b7ca9ad51a5dfb438b25118b0a9a67` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | Pixar's KitchenSet | 2026-09-21 | 177.299 s (2m 57.299s) | 1.3 GiB | `00b231edeea1963a6330dc4334268fcf15aa2c1ef9d7d0b7105969923d2d0508` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
-| Collective Project 001 | 2026-09-21 | 34.132 s (0m 34.132s) | 1.1 GiB | `69fa080b3bf559dc8184d71f2c4601fbe76d2015a43d08d6b928b5f98b08ee23` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
+| Collective Project 001 | 2026-11-15 | 14.625 s (0m 14.625s) | 1.1 GiB | `e7d8556e0aca39ce0a746cc9cd1344a4afb5941ecda150f8721ea2bdf16a03a6` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | OpenPBR Playground | 2026-09-21 | 216.149 s (3m 36.149s) | 12.7 GiB | `37af1840a9a5f061f9fc8ebb34e5bcbef5087cf5ae52e2a7429611db138fdef2` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | Subdivision Feature Matrix | 2026-09-21 | 14.818 s (0m 14.818s) | 832.0 MiB | `5027c7a8b083f04ddd18f927de952bc2fbcf907bce7348346912b3a61854acb2` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 2 |
 | New Zealand Height Map | 2026-09-21 | 11.812 s (0m 11.812s) | 480.0 MiB | `e1801d60c65f221bbbc27bec010774632b2fbc62447498566a69e6e2f886afb6` | NVIDIA GeForce RTX 5060 Ti | 1024 px wide, 1024 spp, 32/update, 8 bounces, subdiv 6 |
@@ -553,6 +553,14 @@ unconditionally and has no volume node at all, so hdClaude's hand-off filled
 every transmissive material of that kind with the default subsurface medium --
 a dense scattering interior nobody authored. The concentric rings behind the
 lens are what the fix looks like.
+
+The spotlight is softer and dimmer than it was until 2026-11-15, and so is
+everything its bounce lights. It is a rect light shaped to a 45-degree cone
+at softness 0.75, and hdClaude read the softness backwards: its pool had a
+hard edge, fading only over its last six degrees. UsdLuxShapingAPI fades it
+from a quarter of the cone angle outward, from 11 degrees to 45. Rendered with
+only the old shaping function restored, this frame matches the earlier
+baseline to an RMS of 0.0001, so the shaping is the whole of the change.
 
 ### OpenPBR Playground
 

@@ -1,5 +1,7 @@
 #include "hdclaude/core/spectrum.h"
 
+#include "hdclaude/core/photometry.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -796,6 +798,43 @@ float TabulatedLuminousScale(const TabulatedSpectrum& spectrum)
     const double tabulated = LuminousIntegral(
         [&spectrum](float lambda) { return EvaluateTabulated(spectrum, lambda); });
     return tabulated > 0.0 ? static_cast<float>(reference / tabulated) : 0.0f;
+}
+
+double TabulatedRadiantPerLuminous(const TabulatedSpectrum& spectrum)
+{
+    const std::vector<float>& l = spectrum.wavelengths;
+    const std::vector<float>& v = spectrum.values;
+    if (l.size() < 2 || v.size() != l.size()) {
+        return 0.0;
+    }
+    double radiant = 0.0;
+    for (std::size_t i = 0; i + 1 < l.size(); ++i) {
+        radiant += 0.5 * (static_cast<double>(v[i]) + v[i + 1]) *
+                   (static_cast<double>(l[i + 1]) - l[i]);
+    }
+    // Each interval in steps of at most 1 nm, at their midpoints, so a narrow
+    // table is integrated over exactly its own range -- and only where the
+    // film integrates, since a luminance is what the film measures.
+    double luminous = 0.0;
+    for (std::size_t i = 0; i + 1 < l.size(); ++i) {
+        const double a = std::max(static_cast<double>(l[i]), static_cast<double>(kLambdaMin));
+        const double b = std::min(static_cast<double>(l[i + 1]), static_cast<double>(kLambdaMax));
+        if (!(b > a)) {
+            continue;
+        }
+        const int steps = std::max(1, static_cast<int>(std::ceil(b - a)));
+        const double h = (b - a) / steps;
+        for (int k = 0; k < steps; ++k) {
+            const double lambda = a + h * (k + 0.5);
+            const double t = (lambda - l[i]) / (static_cast<double>(l[i + 1]) - l[i]);
+            const double value = v[i] + (static_cast<double>(v[i + 1]) - v[i]) * t;
+            luminous += value * CieXyzBar(static_cast<float>(lambda)).y * h;
+        }
+    }
+    if (!(luminous > 0.0)) {
+        return 0.0;
+    }
+    return radiant / (kMaximumLuminousEfficacy * luminous);
 }
 
 // ---------------------------------------------------------------------------

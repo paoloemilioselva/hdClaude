@@ -86,6 +86,16 @@
         }
     }
     parm {
+        name    "metersPerUnit"
+        label   "Meters per unit"
+        type    float
+        size    1
+        default { 0.009999999776482582 }
+        parmtag { "spare_category" "Lighting" }
+        parmtag { "uiscope" "viewport" }
+        parmtag { "usdvaluetype" "float" }
+    }
+    parm {
         name    "lightGeometry"
         label   "Light geometry"
         type    toggle

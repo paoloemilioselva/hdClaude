@@ -10,6 +10,7 @@
 #include "sphere_scene_index.h"
 
 #include "hdclaude/core/sphere_mesh.h"
+#include "hdclaude/gpu/environment_distribution.h"
 #include "render_buffer.h"
 #include "render_delegate.h"
 #include "render_param.h"
@@ -48,6 +49,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (environmentIntensity)
                          (sunIntensity)
                          (upAxis)
+                         (metersPerUnit)
                          (exposure)
                          (depthStyle)
                          (reconstruction)
@@ -827,6 +829,28 @@ void HdClaudeRenderPass::_Execute(
     store->SetTlasChunkSize(static_cast<std::uint32_t>(std::max(
         0, _renderDelegate->GetRenderSetting<int>(_tokens->tlasChunkSize, 0))));
 
+    // The stage's units and up axis, which a light authored in lumens or lux
+    // needs (docs/usd-proposals.md) and which Hydra does not pass a delegate.
+    // A value that is no length is said once and replaced by USD's own
+    // fallback, centimetres, rather than guessed at.
+    {
+        double metersPerUnit = _renderDelegate->GetRenderSetting<double>(
+            _tokens->metersPerUnit, 0.01);
+        if (!(metersPerUnit > 0.0) || !std::isfinite(metersPerUnit)) {
+            if (!_reportedMetersPerUnit) {
+                _reportedMetersPerUnit = true;
+                TF_WARN("hdClaude: metersPerUnit = %g is not a length, so lights "
+                        "authored in lumens or lux are resolved at 0.01 metres per "
+                        "unit, USD's fallback.",
+                        metersPerUnit);
+            }
+            metersPerUnit = 0.01;
+        }
+        const std::string upAxis = _renderDelegate->GetRenderSetting<std::string>(
+            _tokens->upAxis, std::string("Y"));
+        store->SetStageUnits(metersPerUnit, upAxis == "Z" || upAxis == "z");
+    }
+
     Framing framing;
     framing.camera = cameraResult.camera;
     framing.width = width;
@@ -991,6 +1015,47 @@ void HdClaudeRenderPass::_Execute(
         // than duplicated per material.
         if (HdClaudeTexturePool* pool = _renderDelegate->TexturePool()) {
             scene.textures = pool->Images();
+        }
+
+        // A dome authored by its illuminance, with a map: the map's integral
+        // over the upper hemisphere decides its scale, and the map is only
+        // here (HdClaudeSceneStore::Snapshot).
+        if (!scene.pendingDomeIlluminance.empty()) {
+            static const hdclaude::TextureImage kNoMap;
+            const hdclaude::TextureImage* map = &kNoMap;
+            if (scene.domeTexture >= 0 &&
+                static_cast<std::size_t>(scene.domeTexture) < scene.textures.size() &&
+                scene.textures[scene.domeTexture]) {
+                map = scene.textures[scene.domeTexture].get();
+            }
+            double irradiance[3];
+            hdclaude::EnvironmentUpperHemisphereIrradiance(
+                *map, scene.domeLightToWorld, scene.upAxis, irradiance);
+            for (const auto& pending : scene.pendingDomeIlluminance) {
+                const double delivered = 0.2126729 * pending.color[0] * irradiance[0] +
+                                         0.7151522 * pending.color[1] * irradiance[1] +
+                                         0.0721750 * pending.color[2] * irradiance[2];
+                if (!(delivered > 0.0) || !std::isfinite(delivered)) {
+                    const std::string report =
+                        pending.statement +
+                        " cannot be met, because the dome and its map deliver nothing "
+                        "to an upward-facing surface; it emits as authored";
+                    HdClaudeTrace("%s", report.c_str());
+                    store->AddSnapshotReport(report);
+                    for (int i = 0; i < 3; ++i) {
+                        scene.environmentColor[i] += pending.color[i];
+                    }
+                    continue;
+                }
+                const double scale = pending.lux / delivered;
+                for (int i = 0; i < 3; ++i) {
+                    scene.environmentColor[i] += static_cast<float>(pending.color[i] * scale);
+                }
+                HdClaudeTrace("%s: the map delivers %g lux per unit luminance upward; "
+                              "luminance scaled by %g",
+                              pending.statement.c_str(), delivered, scale);
+            }
+            scene.pendingDomeIlluminance.clear();
         }
         HdClaudeTrace("snapshot: %zu prototypes, %zu instances, %zu triangles, "
                       "%zu materials, %zu lights, %zu textures, "

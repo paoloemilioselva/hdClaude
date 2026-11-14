@@ -8706,3 +8706,50 @@ change turned up:
   `prepend apiSchemas = ["PhysicalLightIlluminantAPI"]` composes and renders
   with no warning from OpenUSD 26.03, so authoring the draft's schema costs a
   scene nothing in any other renderer.
+
+---
+
+## 2026-11-15 -- Lights authored in lumens and lux, and a spot light that was backwards
+
+The draft UsdLux physical-lighting proposal's photometric and radiometric APIs
+are implemented: an area light by its power or by the illuminance it puts on a
+surface at a distance, a distant or dome light by its illuminance, in
+photometric or radiometric units ([usd-proposals.md](usd-proposals.md)). The
+light's luminance is scaled by the target over what a unit of it delivers, and
+what it delivers is integrated from the light the path tracer emits, in
+`include/hdclaude/core/photometry.h`. `usd_physical_brightness` renders each
+case and measures it, within 0.6%. What the work turned up:
+
+- **Spot lights were wrong three ways.** The power integral's host twin of
+  `hdclaude_light_shaping` was written from UsdLux's documentation, and its
+  tests failed against closed forms. Read side by side, the shader's softness
+  was inverted, since `mix(1, cosCutoff, softness)` puts the inner edge on the
+  axis at softness 0. A spot at UsdLux's default softness of 0 therefore fell
+  off across its whole cone, and softness 1 was the hard edge. The falloff was
+  also smoothstepped in the cosine where UsdLux writes the angle, and the focus
+  was taken about the light's axis where UsdLux writes the emitting surface's
+  normal. That makes no difference on a rect or disk, and a different light
+  on a sphere or cylinder. A cone wider than 90 degrees was also cut at 90,
+  which UsdLux's formula does not do. All of it now follows the formulas
+  quoted in `UsdLuxShapingAPI`'s header, and the host twin is integrated
+  through them. Collective Project 001's spot, a rect at 45 degrees and
+  softness 0.75, is the one gallery light that authors shaping, and its edge
+  now fades from 11 degrees rather than from 39.
+- **Hydra passes neither `metersPerUnit` nor the up axis.** A power in lumens
+  is per square metre of emitter, and a dome's lux are measured facing up, so
+  both are render settings (`metersPerUnit`, `upAxis`). The Z-up dome case
+  reads 1.9 times its target with the up axis left at Y, so the test catches
+  a wrong axis.
+- **The scale is resolved at snapshot, not at Sync.** A light does not see
+  render settings, and a change to the units must not need every light
+  resynced. The store holds the units, a change republishes, and a
+  shaped light's quadrature, a million evaluations, is cached per light
+  against the units it was resolved at. A dome with a map waits one step
+  longer, for the snapshot's textures, and the render pass finishes it.
+- **The draft's formula and its definition disagree** for anything but an
+  unshaped flat light, and its photometric and radiometric fallbacks disagree
+  by a factor of three for its own default illuminant. Both are recorded to
+  raise. hdClaude implements the definition, "exactly" the target.
+- **A dome's light report went only to the render stats.** An area light's
+  also went to the trace, which is the one channel a terminal sees. Domes now
+  match, and a target that cannot be met is traced as well.

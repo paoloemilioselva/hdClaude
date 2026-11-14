@@ -66,6 +66,14 @@ IF "%~1"=="" (
   ECHO   HDCLAUDE_EXPOSURE              default 0     stops, applied after resolve
   ECHO   HDCLAUDE_ENVIRONMENT_INTENSITY default 1     stand-in sky, unlit stages
   ECHO   HDCLAUDE_SUN_INTENSITY         default 1     stand-in sun, unlit stages
+  ECHO   HDCLAUDE_UP_AXIS               Y ^(default^) or Z, the stage's up axis,
+  ECHO                                  which Hydra does not pass: it aims the
+  ECHO                                  stand-in sun, and is what a dome's lux
+  ECHO                                  are measured facing
+  ECHO   HDCLAUDE_METERS_PER_UNIT       default 0.01, USD's fallback. The
+  ECHO                                  stage's metersPerUnit, which Hydra does
+  ECHO                                  not pass either: a light authored in
+  ECHO                                  lumens, or in lux at a distance, needs it
   ECHO   HDCLAUDE_LIGHT_GEOMETRY        default off. Off removes every light's
   ECHO                                  own shape whatever the asset authored;
   ECHO                                  on hands the choice back to each light.

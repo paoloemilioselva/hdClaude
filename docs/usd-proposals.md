@@ -37,8 +37,8 @@ registered schema replaces reading attributes by name.
 | Schema | What it adds | hdClaude |
 | --- | --- | --- |
 | `PhysicalLightIlluminantAPI` | `token physical:illuminant` (white, blackbody, illuminant D, custom) and `float2[] physical:customIlluminant` (nm, radiance) | **Implemented** 2026-11-15 on every UsdLux light, domes included. See [spectral-rendering.md](spectral-rendering.md) 6 and `usd_physical_illuminant` |
-| `PhotometricAreaLightAPI`, `RadiometricAreaLightAPI` | Power in lumens or watts, or illuminance or irradiance at a distance, via `HdLight::ComputePowerScaleFactor` | Not implemented. Planned next |
-| `Photometric/RadiometricDomeLightAPI`, `Photometric/RadiometricDistantLightAPI` | Illuminance in lux or W/m², via `HdLight::ComputeIlluminanceScaleFactor` | Not implemented. Planned with the above |
+| `PhotometricAreaLightAPI`, `RadiometricAreaLightAPI` | Power in lumens or watts, or illuminance or irradiance at a distance, via `HdLight::ComputePowerScaleFactor` | **Implemented** 2026-11-15 on rect, disk, sphere and cylinder lights, shaped or not. See `usd_physical_brightness` |
+| `Photometric/RadiometricDomeLightAPI`, `Photometric/RadiometricDistantLightAPI` | Illuminance in lux or W/m², via `HdLight::ComputeIlluminanceScaleFactor` | **Implemented** 2026-11-15, domes with and without a map |
 | `PhysicalCameraResponsivityAPI` | `float2[] physical:responsivity:r/g/b` on a `Camera` | Not implemented. The film uses the CIE 1931 observer, which remains the default |
 | `PhysicalColorFilterArrayAPI` | A raw sensor's colour filter array and its filters | Not implemented. No raw output is planned |
 
@@ -71,6 +71,64 @@ registered schema replaces reading attributes by name.
 - **`enableColorTemperature` with the schema.** Ignored, and reported unless
   the illuminant is blackbody or illuminant D, which read
   `colorTemperature` themselves.
+
+**The photometric and radiometric APIs, as implemented.** A light's
+luminance is scaled by the target over what that luminance delivers, which is
+the reciprocal the draft's `Compute...ScaleFactor()` methods return. What it
+delivers is integrated from the light as the path tracer emits it: its shape
+and world size, its UsdLuxShapingAPI cone and focus, and a dome's map. So the
+light then delivers the authored number, and `usd_physical_brightness`
+measures that in a render, to within 0.6%. Its intensity, exposure, colour
+luminance and `normalize` cancel, as the draft's formula has them cancel.
+Hydra does not tell a delegate the stage's `metersPerUnit` or up axis, so
+both are render settings, `metersPerUnit` (USD's fallback, 0.01, by default)
+and `upAxis`.
+
+**What hdClaude decided where those APIs are silent:**
+- **Whether one is applied.** As for the illuminant: an API counts as applied
+  when any of its attributes has a value, and its unauthored attributes take
+  the draft's fallbacks. Applying one implies `PhysicalLightIlluminantAPI`,
+  which they inherit, so its illuminant is "white" unless authored.
+- **Power or illuminance on an area light.** The draft says the illuminance
+  "only has effect when" the distance is non-zero, and not which wins when both
+  could apply. The distance's own documentation says "When non-zero, the
+  light's brightness will be such that...", so a non-zero distance wins, and
+  an authored power is reported as unused. An illuminance authored with no
+  distance is reported as having no effect.
+- **"A surface directly facing the light at" a distance.** Taken to be on the
+  light's axis, at that distance from its centre, facing back along the axis.
+  A sphere or cylinder whose surface would be at or inside that point is
+  reported. *To raise:* the draft should say where the distance is measured
+  from.
+- **The formula against the definition.** The draft defines
+  `k = 1 / (L(lambda) T D A)`, and also says `ComputePowerScaleFactor` makes the
+  emitted power "exactly" the target. The two agree only if `D` includes the
+  cosine to the emitting surface (`pi` for an unshaped flat light) and the
+  light is flat; for a sphere or cylinder, `D A` is not its power. hdClaude
+  implements the definition. *To raise.*
+- **Radiometric targets and colour.** Watts are converted to lumens through
+  the light's illuminant, integrated over the illuminant's own range (the
+  draft's "domain"). The colour enters only through its luminance, as the
+  draft's `L = luminance(color) ...` says, so a saturated colour's own spectral
+  shape does not change the watts. For a white light that is exact.
+- **The draft's fallbacks disagree with each other.** 1600 lm against 2.34 W
+  is 684 lm/W, the efficacy of monochromatic light at 555 nm, and 10000 lux
+  against 14.64 W/m^2 is 683 lm/W. The "white" illuminant both APIs default to
+  is about 205 lm/W, so a light left at the radiometric fallbacks delivers
+  about a third of the light it would at the photometric ones. *To raise.*
+- **A dome's "upward-facing patch".** The stage's up axis, from the `upAxis`
+  setting. A uniform dome delivers pi times its luminance; a map's integral
+  is taken over the upper hemisphere in the map's own placement, texel by
+  texel. hdClaude's `environmentIntensity` setting still scales the
+  environment after, as it scales any dome.
+- **A distant light's illuminance** is the projected solid angle of the cone
+  hdClaude samples, pi sin^2 of its half-angle, capped at pi once the cone
+  covers the surface's hemisphere. UsdLux's `normalize` uses
+  `(2 - sin^2) pi` beyond a hemisphere, which no surface can receive; the
+  APIs ask for what a surface receives.
+- **Textures and IES on area lights.** The draft's `T` is the light's texture
+  integral. hdClaude does not sample an area light's texture or IES profile
+  (both reported), so it integrates the light it renders, which has neither.
 
 ## Physical cameras
 
