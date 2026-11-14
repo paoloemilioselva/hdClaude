@@ -670,6 +670,106 @@ void TestBlackbodyScaleKeepsLuminanceConstant()
     }
 }
 
+/// A tabulated spectrum is what its samples say and nothing more: linear
+/// between them, exact at them, and zero outside them -- including a hair
+/// outside, where an off-by-one in the search would extrapolate the end value.
+void TestTabulatedSpectrumIsPiecewiseLinear()
+{
+    const TabulatedSpectrum spectrum{{400.0f, 500.0f, 600.0f, 700.0f},
+                                     {0.0f, 8.0f, 15.6f, 18.4f}};
+    CHECK_NEAR(EvaluateTabulated(spectrum, 400.0f), 0.0, 1e-6);
+    CHECK_NEAR(EvaluateTabulated(spectrum, 500.0f), 8.0, 1e-6);
+    CHECK_NEAR(EvaluateTabulated(spectrum, 700.0f), 18.4, 1e-6);
+    CHECK_NEAR(EvaluateTabulated(spectrum, 450.0f), 4.0, 1e-5);
+    CHECK_NEAR(EvaluateTabulated(spectrum, 625.0f), 15.6 + 0.25 * 2.8, 1e-5);
+    CHECK_NEAR(EvaluateTabulated(spectrum, 399.99f), 0.0, 0.0);
+    CHECK_NEAR(EvaluateTabulated(spectrum, 700.01f), 0.0, 0.0);
+    CHECK_NEAR(EvaluateTabulated(spectrum, 360.0f), 0.0, 0.0);
+    CHECK_NEAR(EvaluateTabulated(spectrum, 830.0f), 0.0, 0.0);
+    // A malformed table evaluates to nothing rather than reading past an end.
+    CHECK_NEAR(EvaluateTabulated(TabulatedSpectrum{{500.0f}, {1.0f}}, 500.0f), 0.0, 0.0);
+    CHECK_NEAR(EvaluateTabulated(TabulatedSpectrum{{400.0f, 500.0f}, {1.0f}}, 450.0f),
+               0.0, 0.0);
+}
+
+/// Every way a table can be unusable is named, and a usable one passes. A
+/// reflectance above one is refused only when the table is a reflectance: an
+/// emission of 18.4 is a perfectly good emission.
+void TestTabulatedSpectrumValidation()
+{
+    const TabulatedSpectrum good{{400.0f, 500.0f}, {0.2f, 0.8f}};
+    CHECK(ValidateTabulatedSpectrum(good, true).empty());
+    CHECK(ValidateTabulatedSpectrum(good, false).empty());
+
+    CHECK(!ValidateTabulatedSpectrum({{400.0f, 500.0f}, {0.2f}}, false).empty());
+    CHECK(!ValidateTabulatedSpectrum({{400.0f}, {0.2f}}, false).empty());
+    CHECK(!ValidateTabulatedSpectrum({{500.0f, 400.0f}, {0.2f, 0.3f}}, false).empty());
+    CHECK(!ValidateTabulatedSpectrum({{400.0f, 400.0f}, {0.2f, 0.3f}}, false).empty());
+    CHECK(!ValidateTabulatedSpectrum({{400.0f, 500.0f}, {-0.1f, 0.3f}}, false).empty());
+    CHECK(!ValidateTabulatedSpectrum({{400.0f, 500.0f}, {0.2f, 1.5f}}, true).empty());
+    CHECK(ValidateTabulatedSpectrum({{400.0f, 500.0f}, {0.2f, 1.5f}}, false).empty());
+    CHECK(!ValidateTabulatedSpectrum(
+        {{400.0f, 500.0f}, {0.2f, std::numeric_limits<float>::quiet_NaN()}}, false)
+               .empty());
+}
+
+/// The colour a tabulated reflectance stands for under D65 is the colour an
+/// upsampled one would be fitted to, by the same integral.
+///
+/// Two identities pin it. A flat reflectance across the whole range is a grey
+/// of that value exactly, which says the white adaptation is applied. And an
+/// upsampled spectrum, written out as a table at 1 nm and projected, comes back
+/// as the colour it was fitted to -- the table route and the sigmoid route are
+/// one integral, not two that happen to agree.
+void TestTabulatedReflectanceProjectsUnderD65()
+{
+    const TabulatedSpectrum flat{{kLambdaMin, kLambdaMax}, {0.5f, 0.5f}};
+    const Vec3 grey = TabulatedReflectanceToLinearSrgb(flat);
+    CHECK_NEAR(grey.x, 0.5, 1e-4);
+    CHECK_NEAR(grey.y, 0.5, 1e-4);
+    CHECK_NEAR(grey.z, 0.5, 1e-4);
+
+    const Vec3 colours[] = {{0.6f, 0.2f, 0.1f}, {0.1f, 0.45f, 0.15f}, {0.2f, 0.3f, 0.7f}};
+    for (const Vec3& colour : colours) {
+        const SpectrumFit fit = FitSpectrum(colour);
+        TabulatedSpectrum table;
+        for (float lambda = kLambdaMin; lambda <= kLambdaMax; lambda += 1.0f) {
+            table.wavelengths.push_back(lambda);
+            table.values.push_back(EvaluateSpectrum(fit, lambda));
+        }
+        const Vec3 projected = TabulatedReflectanceToLinearSrgb(table);
+        const Vec3 integrated = IntegrateSpectrum(fit);
+        CHECK_NEAR(projected.x, integrated.x, 1e-4);
+        CHECK_NEAR(projected.y, integrated.y, 1e-4);
+        CHECK_NEAR(projected.z, integrated.z, 1e-4);
+    }
+}
+
+/// A tabulated emission is scaled to D65's luminous power, so its units --
+/// which a published measurement often does not state -- cancel: the same
+/// shape at ten times the magnitude gets a tenth of the scale. A spectrum with
+/// no luminous power gets none rather than a division by zero.
+void TestTabulatedLuminousScaleMatchesD65()
+{
+    const TabulatedSpectrum light{{400.0f, 500.0f, 600.0f, 700.0f},
+                                  {0.0f, 8.0f, 15.6f, 18.4f}};
+    double reference = 0.0;
+    double luminous = 0.0;
+    const float scale = TabulatedLuminousScale(light);
+    for (float lambda = kLambdaMin; lambda <= kLambdaMax; lambda += 5.0f) {
+        const double ybar = static_cast<double>(CieXyzBar(lambda).y);
+        reference += static_cast<double>(IlluminantD65(lambda)) * ybar;
+        luminous += static_cast<double>(EvaluateTabulated(light, lambda)) * scale * ybar;
+    }
+    CHECK_NEAR(luminous / reference, 1.0, 1e-5);
+
+    TabulatedSpectrum brighter = light;
+    for (float& value : brighter.values) value *= 10.0f;
+    CHECK_NEAR(TabulatedLuminousScale(brighter) * 10.0, scale, scale * 1e-5);
+
+    CHECK_NEAR(TabulatedLuminousScale({{900.0f, 950.0f}, {1.0f, 1.0f}}), 0.0, 0.0);
+}
+
 /// The dispersion curve has to reproduce the two numbers that defined it.
 ///
 /// An Abbe number is not a free parameter of a fit; it *is* a measurement, and
@@ -3258,6 +3358,10 @@ int main()
     TestDispersionReproducesItsAbbeNumber();
     TestSubsurfaceAlbedoInversionRoundTrips();
     TestBlackbodyScaleKeepsLuminanceConstant();
+    TestTabulatedSpectrumIsPiecewiseLinear();
+    TestTabulatedSpectrumValidation();
+    TestTabulatedReflectanceProjectsUnderD65();
+    TestTabulatedLuminousScaleMatchesD65();
     TestDisplayTransformLeavesTheDiffuseRangeAlone();
     TestDisplayTransformCompressesRatherThanClips();
     TestDisplayTransformSanitisesAndExposes();

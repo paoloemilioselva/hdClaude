@@ -702,6 +702,103 @@ Vec3 IntegrateSpectrum(const SpectrumFit& fit)
 }
 
 // ---------------------------------------------------------------------------
+// Tabulated spectra
+// ---------------------------------------------------------------------------
+
+std::string ValidateTabulatedSpectrum(const TabulatedSpectrum& spectrum,
+                                      bool reflectance)
+{
+    const std::size_t count = spectrum.wavelengths.size();
+    if (count != spectrum.values.size()) {
+        return "has " + std::to_string(count) + " wavelengths but " +
+               std::to_string(spectrum.values.size()) + " values";
+    }
+    if (count < 2) {
+        return "has " + std::to_string(count) +
+               " samples; a spectrum needs at least two";
+    }
+    for (std::size_t i = 0; i < count; ++i) {
+        const float lambda = spectrum.wavelengths[i];
+        const float value = spectrum.values[i];
+        if (!std::isfinite(lambda) || !std::isfinite(value)) {
+            return "sample " + std::to_string(i) + " is not finite";
+        }
+        if (i > 0 && !(lambda > spectrum.wavelengths[i - 1])) {
+            return "wavelength " + std::to_string(i) + " (" +
+                   std::to_string(lambda) +
+                   " nm) does not increase on the one before it";
+        }
+        if (value < 0.0f) {
+            return "value " + std::to_string(i) + " is negative (" +
+                   std::to_string(value) + ")";
+        }
+        if (reflectance && value > 1.0f) {
+            return "reflectance " + std::to_string(i) + " exceeds one (" +
+                   std::to_string(value) +
+                   "), which would reflect more light than arrives";
+        }
+    }
+    return {};
+}
+
+float EvaluateTabulated(const TabulatedSpectrum& spectrum, float lambda)
+{
+    const std::vector<float>& x = spectrum.wavelengths;
+    const std::vector<float>& y = spectrum.values;
+    if (x.size() < 2 || x.size() != y.size() || lambda < x.front() ||
+        lambda > x.back()) {
+        return 0.0f;
+    }
+    // The first sample strictly above lambda; the segment ends there.
+    const auto upper = std::upper_bound(x.begin(), x.end(), lambda);
+    if (upper == x.end()) {
+        return y.back();  // lambda is exactly the last sample
+    }
+    const std::size_t high = static_cast<std::size_t>(upper - x.begin());
+    const std::size_t low = high - 1;
+    const float t = (lambda - x[low]) / (x[high] - x[low]);
+    return y[low] + (y[high] - y[low]) * t;
+}
+
+Vec3 TabulatedReflectanceToLinearSrgb(const TabulatedSpectrum& spectrum)
+{
+    // The integral IntegrateSigmoidRaw takes of a sigmoid, taken of the table
+    // instead, with the same grid, the same normalisation and the same white
+    // adaptation -- so the two are metamers under D65 by construction rather
+    // than by agreeing on a convention in two places.
+    double normalisation = 0.0;
+    Vec3d xyz;
+    for (float lambda = kLambdaMin; lambda <= kLambdaMax;
+         lambda += kIntegrationStep) {
+        const double illuminant = static_cast<double>(IlluminantD65(lambda));
+        const Vec3 bar = CieXyzBar(lambda);
+        normalisation += illuminant * static_cast<double>(bar.y);
+        const double weight =
+            static_cast<double>(EvaluateTabulated(spectrum, lambda)) * illuminant;
+        xyz.x += static_cast<double>(bar.x) * weight;
+        xyz.y += static_cast<double>(bar.y) * weight;
+        xyz.z += static_cast<double>(bar.z) * weight;
+    }
+    if (!(normalisation > 0.0)) {
+        return {};
+    }
+    const Vec3d scale = WhiteAdaptation();
+    return XyzToLinearSrgb(
+        Vec3{static_cast<float>(xyz.x / normalisation * scale.x),
+             static_cast<float>(xyz.y / normalisation * scale.y),
+             static_cast<float>(xyz.z / normalisation * scale.z)});
+}
+
+float TabulatedLuminousScale(const TabulatedSpectrum& spectrum)
+{
+    static const double reference =
+        LuminousIntegral([](float lambda) { return IlluminantD65(lambda); });
+    const double tabulated = LuminousIntegral(
+        [&spectrum](float lambda) { return EvaluateTabulated(spectrum, lambda); });
+    return tabulated > 0.0 ? static_cast<float>(reference / tabulated) : 0.0f;
+}
+
+// ---------------------------------------------------------------------------
 // The chromaticity table
 // ---------------------------------------------------------------------------
 

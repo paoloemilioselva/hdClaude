@@ -13,6 +13,7 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace hdclaude {
@@ -269,6 +270,61 @@ float EvaluateSpectrum(const SpectrumFit& fit, float lambda);
 /// The other half of the round trip, and the one that says whether the fit
 /// converged.
 Vec3 IntegrateSpectrum(const SpectrumFit& fit);
+
+// ---------------------------------------------------------------------------
+// Tabulated spectra
+// ---------------------------------------------------------------------------
+
+/// A spectrum given as measured samples rather than as a colour.
+///
+/// Neither OpenUSD nor MaterialX has a type for a spectrum, so a measured one
+/// -- the Cornell box's walls and light are the motivating case -- reaches the
+/// renderer through hdClaude's own attributes (docs/spectral-rendering.md 6).
+/// What it means is fixed here, once, for the host and for the GPU:
+///
+/// - **Piecewise linear** between samples, which is what a table of
+///   measurements says and nothing more.
+/// - **Zero outside the sampled range.** A measurement says nothing about the
+///   wavelengths it did not measure, and zero is the only extension that
+///   invents no energy. It is also pbrt-v4's `PiecewiseLinearSpectrum`, so a
+///   scene authored against that convention means the same thing here.
+///
+/// Wavelengths are in nanometres and strictly increasing.
+struct TabulatedSpectrum {
+    std::vector<float> wavelengths;
+    std::vector<float> values;
+};
+
+/// Why `spectrum` cannot be used, or empty when it can.
+///
+/// A reflectance must also lie in [0, 1] at every sample, since a surface that
+/// reflects more than it receives creates energy. Reported, never clamped: the
+/// fix belongs in the scene (docs/spectral-rendering.md 6).
+std::string ValidateTabulatedSpectrum(const TabulatedSpectrum& spectrum,
+                                      bool reflectance);
+
+/// The spectrum at one wavelength: linear between samples, zero outside them.
+float EvaluateTabulated(const TabulatedSpectrum& spectrum, float lambda);
+
+/// The linear sRGB a reflectance spectrum integrates to under D65.
+///
+/// Computed exactly as `IntegrateSpectrum` integrates an upsampled one, white
+/// adaptation included, so the colour returned here upsamples to a metamer of
+/// the measured spectrum under D65 -- the colour a renderer without spectral
+/// input would have to be given, and the reference a material's response is
+/// evaluated at before the spectrum replaces it.
+Vec3 TabulatedReflectanceToLinearSrgb(const TabulatedSpectrum& spectrum);
+
+/// What to multiply an emission spectrum by so it carries the luminous power of
+/// D65.
+///
+/// The same promise `BlackbodyLuminousScale` keeps for a colour temperature: a
+/// tabulated spectrum replaces the illuminant a light's colour is referred to,
+/// so it changes what the light emits across the spectrum and not how bright
+/// it is. That also makes the spectrum's own units irrelevant, which matters
+/// because a measured emission is often published in none (the Cornell box's
+/// is not). Returns 0 for a spectrum with no luminous power at all.
+float TabulatedLuminousScale(const TabulatedSpectrum& spectrum);
 
 // ---------------------------------------------------------------------------
 // The chromaticity table
