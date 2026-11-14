@@ -8753,3 +8753,42 @@ case and measures it, within 0.6%. What the work turned up:
 - **A dome's light report went only to the render stats.** An area light's
   also went to the trace, which is the one channel a terminal sees. Domes now
   match, and a target that cannot be met is traced as well.
+
+---
+
+## 2026-11-15 -- The stage's units, read from the stage
+
+The lumens-and-lux work took the stage's `metersPerUnit` and up axis from
+render settings, because the delegate API passes neither. Hydra 2.0 was the
+next place to look. What it offers:
+
+- **`HdSceneGlobalsSchema`**, the scene globals a delegate can read, holds the
+  primary camera, the active render settings and render pass prims, the start
+  and end time codes, time codes per second, the current frame and a scene
+  state id. It holds no stage metrics.
+- **`UsdImagingDataSourceStageGlobals`**, the "stage globals", is the context
+  the stage scene index hands each adapter: the current time, and bookkeeping
+  for what is time-varying or depends on an asset path. It never leaves the
+  scene index.
+- **An adapter is handed the `UsdPrim`.** So it can read the stage, and an
+  API schema adapter registered with an empty `apiSchemaName` is *keyless*:
+  UsdImaging runs it on every prim (`UsdImagingAdapterRegistry`, which sorts
+  empty names into `_keylessApiSchemaAdapterTypes`). Its container is
+  overlaid on the prim adapter's recursively, so two entries it puts in a
+  light's `light` container arrive at `HdLight::Sync` through
+  `GetLightParamValue` like the light's own parameters. The emulated scene
+  delegate reads exactly that container.
+
+So `usdImagingHdClaude` is a keyless adapter that publishes
+`hdClaude:stageMetersPerUnit` and `hdClaude:stageUpAxis` on every prim with
+`LightAPI`, and nothing on any other. It is its own module, because UsdImaging
+loads an adapter's library in every session, Storm's included. A keyed adapter
+on `LightAPI` was not an option: UsdImaging's own `UsdImagingLightAPIAdapter`
+holds that key, and a registry map keeps one adapter per key.
+
+`usd_physical_brightness` now runs its centimetre stage under a
+`metersPerUnit` setting of 1, which would be 10^4 out, and its Z-up dome
+under an `upAxis` of Y. Both deliver their targets, and both settings are
+reported as contradicting the stage. The stage's metadata is read when a light
+is imaged; editing it mid-session is not seen until the light is imaged again,
+since UsdImaging does not invalidate prims on layer metadata.

@@ -191,6 +191,9 @@ if(HDCLAUDE_BUILD_HYDRA_PLUGIN)
         "MaterialX is the only shading path (see docs/architecture.md 1.1).")
   endif()
   add_subdirectory(src/hydra)
+  # The stage's metres per unit and up axis, published on lights by a
+  # UsdImaging adapter, because Hydra passes a delegate neither.
+  add_subdirectory(src/usdImaging)
   if(HDCLAUDE_BUILD_CULL_VOLUMES)
     add_subdirectory(extensions/cullVolume)
   endif()

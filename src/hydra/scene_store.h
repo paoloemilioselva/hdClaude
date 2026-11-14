@@ -155,8 +155,11 @@ struct HdClaudePendingMaterial {
 ///
 /// Resolved at snapshot, because two of the three need the stage's metres per
 /// unit -- a power in lumens is per square metre of emitter, an illuminance at
-/// a distance in metres -- and that is a render setting the light cannot see
-/// at Sync. A dome's waits longer, for its map (Scene::pendingDomeIlluminance).
+/// a distance in metres -- and a dome's its up axis. Both come from the stage
+/// when hdClaude's UsdImaging adapter published them on the light
+/// (src/usdImaging/stageMetricsAdapter.cpp), and from the `metersPerUnit` and
+/// `upAxis` render settings when nothing did. A dome's waits longer, for its
+/// map (Scene::pendingDomeIlluminance).
 struct HdClaudeLightBrightness {
     enum class Target {
         None,
@@ -176,6 +179,10 @@ struct HdClaudeLightBrightness {
     std::string statement;
     /// An area light's shape as the path tracer samples it, in world units.
     hdclaude::AreaEmitter emitter;
+    /// The stage's metres per unit, or 0 when no adapter published it.
+    double stageMetersPerUnit = 0.0;
+    /// The stage's up axis: 0 for Y, 1 for Z, -1 when not published.
+    int stageUpAxis = -1;
 
     /// The last resolution: what a unit of luminance delivers, for the metres
     /// per unit it was resolved at. The quadrature for a shaped light at a
@@ -329,10 +336,13 @@ class HdClaudeSceneStore {
     /// The `tlasChunkSize` render setting. A change republishes.
     void SetTlasChunkSize(std::uint32_t size);
 
-    /// The `metersPerUnit` and `upAxis` render settings, which a light
-    /// authored in lumens or lux needs and Hydra does not pass. A change
-    /// republishes. `zUp` false is Y up.
-    void SetStageUnits(double metersPerUnit, bool zUp);
+    /// The `metersPerUnit` and `upAxis` render settings: what a light
+    /// authored in lumens or lux falls back on when the stage's own were not
+    /// published on it. `explicit` says the setting was set rather than left
+    /// at its default, so that one contradicting the stage is reported. A
+    /// change republishes. `zUp` false is Y up.
+    void SetStageUnits(double metersPerUnit, bool metersExplicit, bool zUp,
+                       bool upExplicit);
 
     /// Something the render pass found it could not honour in the snapshot it
     /// was given, reported with the snapshot's own until the next one.
@@ -421,7 +431,9 @@ class HdClaudeSceneStore {
     std::uint32_t _tlasChunkSize = 0;
     /// USD's fallbacks, centimetres and Y up, until the render pass says.
     double _metersPerUnit = 0.01;
+    bool _metersExplicit = false;
     bool _zUp = false;
+    bool _upExplicit = false;
     std::uint64_t _cullRevision = 1;
     /// The volumes past kMaxCullVolumes the last snapshot ignored, so the
     /// report is made when that set changes rather than on every snapshot.

@@ -858,9 +858,11 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         // does not pass `metersPerUnit` either. Only a light authored by what
         // it delivers reads it -- a power in lumens is per square metre of
         // emitter, an illuminance at a distance in metres (the draft UsdLux
-        // photometric APIs, docs/usd-proposals.md) -- and everything else is
-        // in the stage's own units already. USD's fallback, centimetres, by
-        // default.
+        // photometric APIs, docs/usd-proposals.md) -- and such a light gets
+        // the stage's own from hdClaude's UsdImaging adapter
+        // (src/usdImaging). This is what stands in where no adapter ran, and
+        // one set against the stage is reported. USD's fallback, centimetres,
+        // by default.
         {"Meters per unit", _tokens->metersPerUnit,
          VtValue(float(TfGetenvDouble("HDCLAUDE_METERS_PER_UNIT", 0.01)))},
 

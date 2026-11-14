@@ -80,9 +80,19 @@ and world size, its UsdLuxShapingAPI cone and focus, and a dome's map. So the
 light then delivers the authored number, and `usd_physical_brightness`
 measures that in a render, to within 0.6%. Its intensity, exposure, colour
 luminance and `normalize` cancel, as the draft's formula has them cancel.
-Hydra does not tell a delegate the stage's `metersPerUnit` or up axis, so
-both are render settings, `metersPerUnit` (USD's fallback, 0.01, by default)
-and `upAxis`.
+Hydra does not tell a delegate the stage's `metersPerUnit` or up axis:
+`HdSceneGlobalsSchema` carries the camera, the render settings and pass, the
+time codes and the current frame, and nothing of the stage's metrics. A
+UsdImaging adapter, though, is handed the prim and so the stage. hdClaude's
+keyless adapter (`src/usdImaging/stageMetricsAdapter.cpp`) publishes
+`UsdGeomGetStageMetersPerUnit` and `UsdGeomGetStageUpAxis` on every light as
+`hdClaude:stageMetersPerUnit` and `hdClaude:stageUpAxis`. The
+`metersPerUnit` (default 0.01, USD's fallback) and `upAxis` render settings
+stand in where nothing published them -- a host that does not image through
+UsdImaging. A setting that was set and contradicts the stage is reported,
+and the stage's value is used. *To raise:* the stage's metrics belong in
+`HdSceneGlobalsSchema`, where every delegate could read them without an
+adapter of its own.
 
 **What hdClaude decided where those APIs are silent:**
 - **Whether one is applied.** As for the illuminant: an API counts as applied
@@ -116,8 +126,8 @@ and `upAxis`.
   against 14.64 W/m^2 is 683 lm/W. The "white" illuminant both APIs default to
   is about 205 lm/W, so a light left at the radiometric fallbacks delivers
   about a third of the light it would at the photometric ones. *To raise.*
-- **A dome's "upward-facing patch".** The stage's up axis, from the `upAxis`
-  setting. A uniform dome delivers pi times its luminance; a map's integral
+- **A dome's "upward-facing patch".** The stage's up axis, as published on
+  the dome (or the `upAxis` setting where it was not). A uniform dome delivers pi times its luminance; a map's integral
   is taken over the upper hemisphere in the map's own placement, texel by
   texel. hdClaude's `environmentIntensity` setting still scales the
   environment after, as it scales any dome.

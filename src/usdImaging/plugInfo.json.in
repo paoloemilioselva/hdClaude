@@ -1,0 +1,19 @@
+{
+  "Plugins": [
+    {
+      "Info": {
+        "Types": {
+          "HdClaudeStageMetricsAdapter": {
+            "bases": ["UsdImagingAPISchemaAdapter"],
+            "apiSchemaName": ""
+          }
+        }
+      },
+      "LibraryPath": "../$<TARGET_FILE_NAME:usdImagingHdClaude>",
+      "Name": "usdImagingHdClaude",
+      "ResourcePath": "resources",
+      "Root": "..",
+      "Type": "library"
+    }
+  ]
+}

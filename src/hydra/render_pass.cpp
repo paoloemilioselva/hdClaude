@@ -829,9 +829,10 @@ void HdClaudeRenderPass::_Execute(
     store->SetTlasChunkSize(static_cast<std::uint32_t>(std::max(
         0, _renderDelegate->GetRenderSetting<int>(_tokens->tlasChunkSize, 0))));
 
-    // The stage's units and up axis, which a light authored in lumens or lux
-    // needs (docs/usd-proposals.md) and which Hydra does not pass a delegate.
-    // A value that is no length is said once and replaced by USD's own
+    // The units and up axis a light authored in lumens or lux falls back on
+    // (docs/usd-proposals.md) when the stage's own were not published on it
+    // by hdClaude's UsdImaging adapter: Hydra passes a delegate neither. A
+    // value that is no length is said once and replaced by USD's own
     // fallback, centimetres, rather than guessed at.
     {
         double metersPerUnit = _renderDelegate->GetRenderSetting<double>(
@@ -848,7 +849,13 @@ void HdClaudeRenderPass::_Execute(
         }
         const std::string upAxis = _renderDelegate->GetRenderSetting<std::string>(
             _tokens->upAxis, std::string("Y"));
-        store->SetStageUnits(metersPerUnit, upAxis == "Z" || upAxis == "z");
+        // Set, as opposed to left at the default, so that a setting that
+        // contradicts the stage can be told from one nobody touched.
+        const bool metersExplicit = !TfGetenv("HDCLAUDE_METERS_PER_UNIT").empty() ||
+                                    std::fabs(metersPerUnit - 0.01) > 1e-9;
+        const bool zUp = upAxis == "Z" || upAxis == "z";
+        const bool upExplicit = !TfGetenv("HDCLAUDE_UP_AXIS").empty() || zUp;
+        store->SetStageUnits(metersPerUnit, metersExplicit, zUp, upExplicit);
     }
 
     Framing framing;

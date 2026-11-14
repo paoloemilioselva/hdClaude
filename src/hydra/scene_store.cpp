@@ -251,12 +251,16 @@ void HdClaudeSceneStore::SetHostInstanceData(bool host)
     }
 }
 
-void HdClaudeSceneStore::SetStageUnits(double metersPerUnit, bool zUp)
+void HdClaudeSceneStore::SetStageUnits(double metersPerUnit, bool metersExplicit,
+                                       bool zUp, bool upExplicit)
 {
     std::lock_guard<std::mutex> lock(_mutex);
-    if (metersPerUnit != _metersPerUnit || zUp != _zUp) {
+    if (metersPerUnit != _metersPerUnit || metersExplicit != _metersExplicit ||
+        zUp != _zUp || upExplicit != _upExplicit) {
         _metersPerUnit = metersPerUnit;
+        _metersExplicit = metersExplicit;
         _zUp = zUp;
+        _upExplicit = upExplicit;
         ++_revision;
     }
 }
@@ -674,6 +678,29 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
     // Domes authored by the illuminance they deliver, held back from the
     // environment until it is known whether there is a map to integrate.
     std::vector<std::pair<const SdfPath*, const HdClaudeLightEntry*>> brightDomes;
+
+    // The stage's metrics where the adapter published them, the settings
+    // where it did not. A setting that was set and says otherwise is wrong
+    // about this stage, and is said once a snapshot rather than once a light.
+    bool reportedMeters = false;
+    const auto metersFor = [&](const HdClaudeLightEntry& entry, const char** source) {
+        const double stage = entry.brightness.stageMetersPerUnit;
+        if (!(stage > 0.0)) {
+            *source = "the metersPerUnit setting";
+            return _metersPerUnit;
+        }
+        *source = "the stage's";
+        if (_metersExplicit && !reportedMeters &&
+            std::fabs(_metersPerUnit - stage) > 1e-6 * stage) {
+            reportedMeters = true;
+            _snapshotReports.push_back(TfStringPrintf(
+                "the metersPerUnit render setting is %g and the stage's metersPerUnit "
+                "is %g; lights authored in lumens or lux use the stage's",
+                _metersPerUnit, stage));
+            HdClaudeTrace("%s", _snapshotReports.back().c_str());
+        }
+        return stage;
+    };
     for (const auto& [path, entry] : _lights) {
         if (entry.isDome) {
             // Several domes sum into one environment, and one environment has
@@ -748,18 +775,20 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
                 light.colorTemperature = appendSpectrum(entry.emissionSpectrum);
             }
             if (entry.brightness.target != HdClaudeLightBrightness::Target::None) {
+                const char* source = "";
+                const double metersPerUnit = metersFor(entry, &source);
                 const double scale =
                     BrightnessScale(entry.brightness.value,
                                     RadianceLuminance(light.radiance),
-                                    Delivery(entry, _metersPerUnit));
+                                    Delivery(entry, metersPerUnit));
                 if (scale >= 0.0) {
                     for (float& channel : light.radiance) {
                         channel = static_cast<float>(channel * scale);
                     }
-                    HdClaudeTrace("light <%s>: %s, at %g metres per unit: "
+                    HdClaudeTrace("light <%s>: %s, at %g metres per unit (%s): "
                                   "luminance scaled by %g",
                                   path.GetText(), entry.brightness.statement.c_str(),
-                                  _metersPerUnit, scale);
+                                  metersPerUnit, source, scale);
                 } else {
                     _snapshotReports.push_back(Unmet(path, entry.brightness.statement));
                     HdClaudeTrace("%s", _snapshotReports.back().c_str());
@@ -773,9 +802,27 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
     // luminance when it is uniform. With a map it is the map's cosine-weighted
     // integral over the upper hemisphere, which needs the map's texels: the
     // render pass finishes those once the snapshot has its textures.
+    // Up is the stage's, from the first dome the adapter published it on --
+    // the domes of one stage share it -- and the setting's otherwise.
+    bool zUp = _zUp;
+    for (const auto& [path, entry] : brightDomes) {
+        const int stageUp = entry->brightness.stageUpAxis;
+        if (stageUp < 0) {
+            continue;
+        }
+        if (_upExplicit && (stageUp == 1) != _zUp) {
+            _snapshotReports.push_back(TfStringPrintf(
+                "the upAxis render setting is %s and the stage's upAxis is %s; a "
+                "dome authored in lux uses the stage's",
+                _zUp ? "Z" : "Y", stageUp == 1 ? "Z" : "Y"));
+            HdClaudeTrace("%s", _snapshotReports.back().c_str());
+        }
+        zUp = stageUp == 1;
+        break;
+    }
     scene.upAxis[0] = 0.0;
-    scene.upAxis[1] = _zUp ? 0.0 : 1.0;
-    scene.upAxis[2] = _zUp ? 1.0 : 0.0;
+    scene.upAxis[1] = zUp ? 0.0 : 1.0;
+    scene.upAxis[2] = zUp ? 1.0 : 0.0;
     for (const auto& [path, entry] : brightDomes) {
         if (scene.domeTexture >= 0) {
             hdclaude::Scene::PendingDomeIlluminance pending;

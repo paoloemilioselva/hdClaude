@@ -660,6 +660,16 @@ void HdClaudeLight::Sync(HdSceneDelegate* sceneDelegate,
             sceneDelegate, id, areaLight,
             emissionSpectrum.wavelengths.empty() ? FullRangeD65() : emissionSpectrum,
             &entryReport);
+        // The stage's metrics, where hdClaude's UsdImaging adapter published
+        // them (src/usdImaging/stageMetricsAdapter.cpp). Absent through any
+        // other scene delegate, and the render settings stand in.
+        brightness.stageMetersPerUnit = Param<double>(
+            sceneDelegate, id, TfToken("hdClaude:stageMetersPerUnit"), 0.0);
+        const TfToken stageUp = Param<TfToken>(
+            sceneDelegate, id, TfToken("hdClaude:stageUpAxis"), TfToken());
+        brightness.stageUpAxis = stageUp == TfToken("Z")   ? 1
+                                 : stageUp == TfToken("Y") ? 0
+                                                           : -1;
     }
 
     hdclaude::Light light;

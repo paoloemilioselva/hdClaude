@@ -10,9 +10,12 @@ against the authored number and nothing hdClaude computes:
 
   power          The emitter seen directly: an unshaped emitter of power P and
                  area A has luminance P / (pi A). The rect is authored in
-                 centimetres, so the metersPerUnit setting is what makes it
-                 right; its intensity, exposure and normalize are authored too,
-                 and the power overrides all three.
+                 centimetres, so the stage's metersPerUnit is what makes it
+                 right -- read from the stage through hdClaude's UsdImaging
+                 adapter, over a metersPerUnit setting of 1 that says
+                 otherwise and is reported. Its intensity, exposure and
+                 normalize are authored too, and the power overrides all
+                 three.
   radiometric    Watts through a custom illuminant: lumens are watts over the
                  illuminant's radiance per nit, integrated independently here.
   illuminance    A Lambertian floor of albedo 0.5 reads 0.5 E / pi. The spot is
@@ -23,7 +26,9 @@ against the authored number and nothing hdClaude computes:
   dome           A plain dome, and a dome with a lopsided map on a Z-up stage,
                  turned so the map's pole is +Z: the map's integral over the
                  upper hemisphere is about the stage's up axis, which a Y-up
-                 integral would miss by a factor of two.
+                 integral would miss by a factor of two. The axis comes from
+                 the stage, with no setting; then again under an upAxis
+                 setting of Y, which is reported and does not win.
   reported       A power on a dome, an illuminance with no distance, and both
                  APIs on one light are each reported by name.
 
@@ -287,18 +292,23 @@ def case_dome_map(path):
     return ALBEDO * 1500.0 / math.pi
 
 
+# The settings a case runs under are only ever ones that contradict the
+# stage: the stage's own metrics reach the delegate through hdClaude's
+# UsdImaging adapter, and a setting that disagrees is reported, not used.
 CASES = [
     # name, builder, settings, reports expected
-    ("power", case_power, {"HDCLAUDE_METERS_PER_UNIT": "0.01"},
-     ["radiometric API is not used"]),
-    ("radiometric", case_radiometric, {"HDCLAUDE_METERS_PER_UNIT": "1"}, []),
-    ("sphere", case_sphere, {"HDCLAUDE_METERS_PER_UNIT": "1"},
-     ["photometric:illuminance has no effect while"]),
-    ("spot", case_spot, {"HDCLAUDE_METERS_PER_UNIT": "1", "HDCLAUDE_LIGHT_GEOMETRY": "0"}, []),
+    ("power", case_power, {"HDCLAUDE_METERS_PER_UNIT": "1"},
+     ["radiometric API is not used",
+      "the metersPerUnit render setting is 1 and the stage's metersPerUnit is 0.01"]),
+    ("radiometric", case_radiometric, {}, []),
+    ("sphere", case_sphere, {}, ["photometric:illuminance has no effect while"]),
+    ("spot", case_spot, {"HDCLAUDE_LIGHT_GEOMETRY": "0"}, []),
     ("distant", case_distant, {}, []),
     ("distant_radiometric", case_distant_radiometric, {}, []),
     ("dome", case_dome, {}, ["photometric:power applies to area lights only"]),
-    ("dome_map_zup", case_dome_map, {"HDCLAUDE_UP_AXIS": "Z"}, []),
+    ("dome_map_zup", case_dome_map, {}, []),
+    ("dome_map_zup_setting_y", case_dome_map, {"HDCLAUDE_UP_AXIS": "Y"},
+     ["the upAxis render setting is Y and the stage's upAxis is Z"]),
 ]
 
 
@@ -308,6 +318,9 @@ def render(stage_path, output, settings):
     env["HDCLAUDE_SAMPLES_PER_FRAME"] = "64"
     env["HDCLAUDE_LIGHT_GEOMETRY"] = "1"
     env["HDCLAUDE_TRACE"] = "1"
+    # Whatever the caller's shell had, only the case's own settings apply.
+    for name in ("HDCLAUDE_METERS_PER_UNIT", "HDCLAUDE_UP_AXIS"):
+        env.pop(name, None)
     env.update(settings)
     if os.path.exists(output):
         os.remove(output)
