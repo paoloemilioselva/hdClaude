@@ -88,9 +88,9 @@ compile.bat dev-dlss       :: with the optional NVIDIA DLSS backend
 ```
 
 `compile.bat` forwards to `compile.py`, the build driver on every platform; on
-Linux run `python3 compile.py` with the same arguments. The Linux build is
-scripted but has not yet been compiled -- see
-[docs/building.md](docs/building.md#linux).
+Linux run `python3 compile.py` with the same arguments. On Linux hdClaude is
+used in production, built with GCC from a fresh clone into a rez package --
+see [docs/building.md](docs/building.md#linux).
 
 Third-party dependencies are **not committed**. They are referenced by pinned
 tag in [cmake/Dependencies.cmake](cmake/Dependencies.cmake) and fetched by CMake

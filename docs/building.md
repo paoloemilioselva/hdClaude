@@ -1,8 +1,9 @@
 # Building hdClaude
 
-Last revised 2026-10-15. Platform of record: Windows 11, MSVC 2022, Ninja.
-Linux (GCC or Clang, Ninja) is supported by the build scripts but **has never
-been compiled** — see [Linux](#linux).
+Last revised 2026-11-15. Platforms: Windows 11 with MSVC 2022 and Ninja, the
+platform of record for the gallery's timings; and Linux with GCC, where
+hdClaude is used in production, built from a fresh clone into a rez package
+-- see [Linux](#linux).
 
 ## Dependency policy
 
@@ -164,7 +165,10 @@ machine with a compiler.
 
 Built and run on Ubuntu 22.04 with GCC 11.2, against OpenUSD 26.05 and a
 separately packaged MaterialX 1.39.4 in a rez environment, through
-`compile.py`. What the port consists of:
+`compile.py`. This is a production use, not a port kept for completeness: the
+delegate is packaged for rez by cloning the repository and building it, so a
+clean clone must build there with nothing but the pinned fetches -- the same
+rule the dependency policy states for Windows. What the port consists of:
 
 - **`setup_usd_env.sh`**, sourced (`. ./setup_usd_env.sh`), is the counterpart
   of `setup_usd_env.bat` and does the same things in the same order. It takes

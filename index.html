@@ -252,6 +252,7 @@ footer { font: 400 0.8rem/1.6 var(--mono); color: var(--muted); border-top: 1px 
     <span>OpenUSD <b>26.03</b></span>
     <span>MaterialX <b>1.39.3</b></span>
     <span>Vulkan <b>1.3</b>, ray query</span>
+    <span>Windows <b>and</b> Linux</span>
     <span>Reference GPU <b>RTX 5060 Ti</b></span>
     <span>Licence <b>MIT</b></span>
   </div>
@@ -756,6 +757,7 @@ footer { font: 400 0.8rem/1.6 var(--mono); color: var(--muted); border-top: 1px 
       <div class="row"><span class="f">Frame contract and history reset<span class="muted">Jitter, motion vectors, per-slot resources</span></span><span class="pill wip">Partial</span></div>
       <div class="row"><span class="f">Native reconstruction<span class="muted">A spatiotemporal filter for any Vulkan GPU</span></span><span class="pill ns">Planned</span></div>
       <div class="row"><span class="f">Zero-copy AOVs for Hgi hosts<span class="muted">External-memory interop</span></span><span class="pill ns">Planned</span></div>
+      <div class="row"><span class="f">Windows and Linux<span class="muted">Windows with MSVC. Linux with GCC, in production as a rez package built from a fresh clone. DLSS is Windows-only</span></span><span class="pill ok">Shipped</span></div>
       <div class="row"><span class="f">One configuration surface<span class="muted">Every setting is both a Hydra render setting and an environment variable. Houdini parameter files are generated</span></span><span class="pill ok">Shipped</span></div>
       <div class="row"><span class="f">Gated gallery<span class="muted">Each scene is compared with its baseline on RMS, worst pixel, black frames and non-finite samples</span></span><span class="pill ok">Shipped</span></div>
     </div>
@@ -852,10 +854,9 @@ footer { font: 400 0.8rem/1.6 var(--mono); color: var(--muted); border-top: 1px 
 <!-- END GENERATED phases -->
   </div>
   <div class="next">
-    <div><h3>Native reconstruction</h3><p>A denoiser that works on any Vulkan 1.3 GPU, so real-time viewing does not depend on NVIDIA hardware.</p></div>
+    <div><h3>Native reconstruction</h3><p>A denoiser that works on any Vulkan 1.3 GPU, so real-time viewing works without NVIDIA hardware, and on Linux, where DLSS is not built.</p></div>
     <div><h3>Physical cameras</h3><p>Camera responsivity curves from the physical-camera proposal complete the chain from light emitted in lumens to a sensor's response.</p></div>
     <div><h3>Dispersion</h3><p>Wavelength-dependent refraction with hero-wavelength MIS, the last spectral effect the transport does not yet carry.</p></div>
-    <div><h3>Linux</h3><p>The build is scripted for Linux but has not yet been compiled there.</p></div>
   </div>
 </section>
 
