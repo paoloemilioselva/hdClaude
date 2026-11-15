@@ -1,0 +1,928 @@
+<!doctype html>
+<!--
+  hdClaude's landing page, served by GitHub Pages from the repository root.
+
+  Keep it current in the same commit as the change it describes. Two kinds of
+  content live here:
+
+  - Between <!- - BEGIN GENERATED name - -> and <!- - END GENERATED name - ->:
+    figures derived from gallery.md, docs/roadmap.md and tests/CMakeLists.txt.
+    Never edit these by hand. Run `python scripts/generate_landing_page.py`;
+    ctest's usd_landing_page fails while they are stale, and
+    render_gallery.ps1 regenerates them whenever it rewrites gallery.md.
+  - Everything else is written by hand: the pipeline walkthrough, the
+    capability list and its states, the evidence prose, the next steps and
+    the standards table. A commit that ships, changes or retires something
+    they describe updates them too. docs/roadmap.md's "How to resume" says
+    so.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>hdClaude</title>
+<meta name="description" content="hdClaude: a spectral, wavefront GPU path tracer for OpenUSD Hydra, whose materials are MaterialX's own generated code.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a single reading column for the brief, widening to a two-pane slide frame (text | diagram) for the pipeline walkthrough. Four hero-wavelength ticks are the recurring motif. */
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --sunk: #eceef2;
+  --fg: #14171c;
+  --muted: #5a6270;
+  --line: #d5dae2;
+  --accent: #1d5f8a;
+  --accent-soft: #e3eef6;
+  --ok: #24744a;   --ok-soft: #e2f1e8;
+  --wip: #8a5a00;  --wip-soft: #f8edd6;
+  --ns: #6b7280;   --ns-soft: #eceef1;
+  --l450: #3b5bdb; --l520: #2b8a3e; --l590: #d08700; --l650: #c92a2a;
+  --display: "Archivo", "Segoe UI", system-ui, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1216; --surface: #171b21; --sunk: #1d222a; --fg: #e5e8ed; --muted: #9aa3b1; --line: #2c333d;
+    --accent: #6cb6e0; --accent-soft: #17303f;
+    --ok: #6fcf97; --ok-soft: #16302a; --wip: #e8b44f; --wip-soft: #352a14; --ns: #9aa3b1; --ns-soft: #232830;
+    --l450: #748ffc; --l520: #69db7c; --l590: #ffc94d; --l650: #ff8787;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1216; --surface: #171b21; --sunk: #1d222a; --fg: #e5e8ed; --muted: #9aa3b1; --line: #2c333d;
+  --accent: #6cb6e0; --accent-soft: #17303f;
+  --ok: #6fcf97; --ok-soft: #16302a; --wip: #e8b44f; --wip-soft: #352a14; --ns: #9aa3b1; --ns-soft: #232830;
+  --l450: #748ffc; --l520: #69db7c; --l590: #ffc94d; --l650: #ff8787;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--fg);
+  font: 400 16px/1.6 var(--body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 72px;
+}
+.wrap { max-width: 1120px; margin: 0 auto; display: grid; gap: 64px; }
+.col { max-width: 72ch; }
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+h1 { font-size: clamp(2.3rem, 5vw, 3.6rem); font-weight: 800; line-height: 1.04; }
+h2 { font-size: clamp(1.5rem, 3vw, 2rem); font-weight: 700; line-height: 1.15; }
+h3 { font-size: 1.08rem; font-weight: 700; line-height: 1.3; }
+p { margin: 0; }
+code, .mono { font-family: var(--mono); font-size: 0.86em; }
+code { background: var(--sunk); padding: 0.05em 0.35em; border-radius: 3px; overflow-wrap: anywhere; }
+a { color: var(--accent); }
+.eyebrow { font: 500 0.75rem/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+.lede { font-size: 1.15rem; line-height: 1.55; color: var(--fg); max-width: 64ch; }
+.muted { color: var(--muted); }
+section { display: grid; gap: 24px; min-width: 0; }
+.sechead { display: grid; gap: 10px; max-width: 72ch; }
+
+/* wavelength ticks */
+.ticks { display: inline-flex; gap: 5px; align-items: flex-end; height: 18px; }
+.ticks i { display: block; width: 4px; border-radius: 1px; }
+.ticks i:nth-child(1) { background: var(--l450); height: 10px; }
+.ticks i:nth-child(2) { background: var(--l520); height: 16px; }
+.ticks i:nth-child(3) { background: var(--l590); height: 13px; }
+.ticks i:nth-child(4) { background: var(--l650); height: 18px; }
+
+/* header */
+header { display: grid; gap: 22px; }
+.brand { display: flex; align-items: center; gap: 12px; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px 22px; font: 400 0.82rem/1.4 var(--mono); color: var(--muted); }
+.meta b { color: var(--fg); font-weight: 500; }
+.docs { display: flex; flex-wrap: wrap; gap: 6px 18px; font: 500 0.9rem/1.4 var(--body); }
+.docs a { text-decoration: none; border-bottom: 1px solid currentColor; padding-bottom: 1px; }
+.docs a:hover { color: var(--fg); }
+
+/* bottom line */
+.bottom { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.bottom > div { background: var(--surface); padding: 20px 22px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.bottom .k { font: 500 0.72rem/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); }
+.bottom p { font-size: 0.95rem; color: var(--muted); }
+.bottom h3 { color: var(--fg); }
+
+/* figures */
+.figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px 28px; }
+.fig { display: grid; gap: 4px; border-top: 2px solid var(--fg); padding-top: 12px; min-width: 0; }
+.fig .v { font: 700 2rem/1.1 var(--display); font-variant-numeric: tabular-nums; }
+.fig .v small { font-size: 0.95rem; font-weight: 600; color: var(--muted); margin-left: 2px; }
+.fig .l { font-size: 0.9rem; color: var(--muted); }
+
+/* stepper */
+.deck { border: 1px solid var(--line); background: var(--surface); border-radius: 10px; overflow: hidden; display: grid; min-width: 0; }
+.rail { display: flex; gap: 0; overflow-x: auto; border-bottom: 1px solid var(--line); background: var(--sunk); scrollbar-width: thin; }
+.rail button {
+  flex: 1 0 auto; appearance: none; border: 0; background: transparent; color: var(--muted);
+  font: 500 0.8rem/1 var(--mono); padding: 14px 14px 12px; cursor: pointer; border-bottom: 2px solid transparent;
+  display: flex; gap: 6px; align-items: baseline; white-space: nowrap;
+}
+.rail button .no { font-size: 0.7rem; opacity: 0.75; }
+.rail button:hover { color: var(--fg); }
+.rail button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); background: var(--surface); }
+.rail button:focus-visible, .nav button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.slide { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.25fr); gap: 32px; padding: 30px 30px 26px; align-items: start; }
+.slide .txt { display: grid; gap: 14px; min-width: 0; }
+.slide .stage { font: 500 0.75rem/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); }
+.slide ul { margin: 0; padding-left: 1.1em; display: grid; gap: 6px; font-size: 0.95rem; }
+.slide .where { font: 400 0.78rem/1.5 var(--mono); color: var(--muted); border-top: 1px dashed var(--line); padding-top: 10px; overflow-wrap: anywhere; }
+.diagram { min-width: 0; overflow-x: auto; }
+.diagram svg { width: 100%; height: auto; display: block; min-width: 520px; }
+.nav { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 30px 18px; border-top: 1px solid var(--line); }
+.nav button { appearance: none; border: 1px solid var(--line); background: var(--surface); color: var(--fg); font: 500 0.85rem/1 var(--body); padding: 9px 14px; border-radius: 6px; cursor: pointer; }
+.nav button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.nav button:disabled { opacity: 0.4; cursor: default; }
+.nav .count { font: 400 0.8rem/1 var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 20px; font: 400 0.78rem/1.3 var(--mono); color: var(--muted); }
+.legend span { display: inline-flex; gap: 8px; align-items: center; }
+.sw { width: 14px; height: 10px; border-radius: 2px; border: 1.2px solid var(--line); background: var(--surface); display: inline-block; }
+.sw.hc { border-color: var(--accent); background: var(--accent-soft); }
+
+/* svg diagram styling */
+.d text { font-family: var(--mono); font-size: 12px; fill: var(--fg); }
+.d .sub { fill: var(--muted); font-size: 10.5px; }
+.d .ttl { font-family: var(--display); font-weight: 700; font-size: 13px; }
+.d .lbl { fill: var(--muted); font-size: 10px; letter-spacing: 0.08em; }
+.d .acc { fill: var(--accent); }
+.d .n { fill: var(--surface); stroke: var(--line); stroke-width: 1.3; }
+.d .n.hc { fill: var(--accent-soft); stroke: var(--accent); }
+.d .n.sunk { fill: var(--sunk); stroke: var(--line); }
+.d .zone { fill: none; stroke: var(--line); stroke-width: 1.2; stroke-dasharray: 4 4; }
+.d .a { stroke: var(--muted); stroke-width: 1.4; fill: none; marker-end: url(#ah); }
+.d .a.hc { stroke: var(--accent); marker-end: url(#ahc); }
+.d .a.dash { stroke-dasharray: 5 4; }
+.ahp { fill: var(--muted); }
+.ahc { fill: var(--accent); }
+.d .w1 { fill: var(--l450); } .d .w2 { fill: var(--l520); } .d .w3 { fill: var(--l590); } .d .w4 { fill: var(--l650); }
+
+/* feature matrix */
+.matrix { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 28px 36px; }
+.group { display: grid; gap: 4px; align-content: start; min-width: 0; }
+.group h3 { padding-bottom: 8px; border-bottom: 1px solid var(--fg); margin-bottom: 4px; }
+.row { display: grid; grid-template-columns: 1fr auto; gap: 4px 14px; padding: 8px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
+.row .f { font-size: 0.93rem; min-width: 0; }
+.row .f .muted { display: block; font-size: 0.82rem; line-height: 1.45; }
+.pill { font: 500 0.68rem/1 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; padding: 4px 7px; border-radius: 99px; white-space: nowrap; }
+.pill.ok { color: var(--ok); background: var(--ok-soft); }
+.pill.wip { color: var(--wip); background: var(--wip-soft); }
+.pill.ns { color: var(--ns); background: var(--ns-soft); }
+
+/* evidence */
+.evidence { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 36px; align-items: start; }
+.tbl { overflow-x: auto; min-width: 0; }
+table { border-collapse: collapse; width: 100%; font-size: 0.88rem; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 7px 10px 7px 0; border-bottom: 1px solid var(--line); vertical-align: baseline; }
+th { font: 500 0.7rem/1.2 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+td.num, th.num { text-align: right; padding-right: 0; padding-left: 10px; }
+td.mono { font-family: var(--mono); font-size: 0.78rem; white-space: nowrap; }
+.bar { display: inline-block; height: 6px; background: var(--accent); border-radius: 1px; vertical-align: middle; margin-left: 8px; }
+.checks { display: grid; gap: 18px; }
+.check { display: grid; gap: 4px; padding-left: 14px; border-left: 2px solid var(--line); }
+.check b { font-family: var(--display); font-size: 1rem; }
+.check p { font-size: 0.92rem; color: var(--muted); }
+
+/* gallery */
+.gallery { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 12px; }
+.gallery figure { margin: 0; display: grid; gap: 6px; min-width: 0; }
+.gallery img { width: 100%; height: 100%; object-fit: cover; border-radius: 4px; display: block; aspect-ratio: 3 / 2; background: var(--sunk); }
+.gallery figcaption { font: 400 0.76rem/1.35 var(--mono); color: var(--muted); }
+.gallery figcaption b { color: var(--fg); font-weight: 500; }
+.g-a { grid-column: span 4; } .g-b { grid-column: span 4; } .g-c { grid-column: span 4; }
+.g-a img, .g-b img, .g-c img { aspect-ratio: 1 / 1; }
+.g-d { grid-column: span 6; } .g-e { grid-column: span 6; }
+.g-f { grid-column: span 4; } .g-g { grid-column: span 4; } .g-h { grid-column: span 4; }
+
+/* roadmap */
+.phases { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.ph { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; display: grid; gap: 6px; background: var(--surface); align-content: start; }
+.ph .no { font: 500 0.72rem/1 var(--mono); color: var(--muted); }
+.ph .t { font-size: 0.84rem; line-height: 1.35; }
+.ph.ok { border-top: 3px solid var(--ok); }
+.ph.wip { border-top: 3px solid var(--wip); }
+.ph.ns { border-top: 3px solid var(--ns); opacity: 0.85; }
+.ph.def { border-top: 3px dashed var(--ns); opacity: 0.7; }
+.ph.def .t { text-decoration: line-through; }
+.ph.blk { border-top: 3px solid var(--l650); }
+.next { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px 32px; }
+.next div { display: grid; gap: 6px; }
+.next p { font-size: 0.93rem; color: var(--muted); }
+
+.proposals td:first-child { min-width: 180px; }
+footer { font: 400 0.8rem/1.6 var(--mono); color: var(--muted); border-top: 1px solid var(--line); padding-top: 18px; }
+
+@media (max-width: 860px) {
+  .slide { grid-template-columns: minmax(0, 1fr); padding: 22px 18px; gap: 20px; }
+  .nav { padding: 12px 18px 16px; }
+  .evidence { grid-template-columns: minmax(0, 1fr); }
+  .g-a, .g-b, .g-c { grid-column: span 6; }
+  .g-c { grid-column: span 12; }
+  .g-d, .g-e { grid-column: span 12; }
+  .g-f, .g-g, .g-h { grid-column: span 6; }
+  .g-h { grid-column: span 12; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .slide:not([hidden]) { animation: rise 0.28s ease-out; }
+  @keyframes rise { from { opacity: 0.35; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ahp"/></marker>
+    <marker id="ahc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ahc"/></marker>
+  </defs>
+</svg>
+
+<div class="wrap">
+
+<header>
+  <div class="brand"><span class="ticks" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span class="eyebrow">Executive brief · <!-- BEGIN GENERATED asof-header -->15 November 2026<!-- END GENERATED asof-header --></span></div>
+  <h1>hdClaude</h1>
+  <p class="lede">A spectral, wavefront GPU path tracer that plugs into OpenUSD's Hydra. Any USD stage opened in usdview, usdrecord or Houdini Solaris can be rendered by it. Its materials are MaterialX's own generated code, compiled and run on the GPU, and its light is carried as wavelengths rather than RGB.</p>
+  <div class="meta">
+    <span>OpenUSD <b>26.03</b></span>
+    <span>MaterialX <b>1.39.3</b></span>
+    <span>Vulkan <b>1.3</b>, ray query</span>
+    <span>Reference GPU <b>RTX 5060 Ti</b></span>
+    <span>Licence <b>MIT</b></span>
+  </div>
+  <nav class="docs" aria-label="Documentation">
+    <a href="https://github.com/paoloemilioselva/hdClaude">Source</a>
+    <a href="https://github.com/paoloemilioselva/hdClaude/blob/main/docs/architecture.md">Architecture</a>
+    <a href="https://github.com/paoloemilioselva/hdClaude/blob/main/docs/roadmap.md">Roadmap</a>
+    <a href="https://github.com/paoloemilioselva/hdClaude/blob/main/gallery.md">Gallery</a>
+    <a href="https://github.com/paoloemilioselva/hdClaude/blob/main/docs/usd-proposals.md">USD proposals</a>
+    <a href="https://github.com/paoloemilioselva/hdClaude/blob/main/docs/building.md">Building</a>
+  </nav>
+</header>
+
+<section aria-labelledby="bl">
+  <div class="sechead">
+    <span class="eyebrow">The bottom line</span>
+    <h2 id="bl">Four design commitments set it apart</h2>
+  </div>
+  <div class="bottom">
+    <div>
+      <span class="k">Materials</span>
+      <h3>MaterialX is executed, never reinterpreted</h3>
+      <p>No hand-written OpenPBR or Standard Surface code path. A bound material is generated by MaterialX into GLSL, compiled to SPIR-V and run. A material either renders exactly as authored or is reported as an error. There is no approximate middle state.</p>
+    </div>
+    <div>
+      <span class="k">Light</span>
+      <h3>Spectral transport throughout</h3>
+      <p>Each path carries four wavelengths. RGB appears only where an asset authors it and where the film resolves the image. Measured spectra, blackbody temperatures and lights authored in lumens or lux are honoured as physics, not as tints.</p>
+    </div>
+    <div>
+      <span class="k">Scale</span>
+      <h3>Wavefront, one dispatch per material</h3>
+      <p>Hits are sorted by material and each material runs as its own GPU program. A 400-node procedural shader on one object costs nothing on the rest of the frame.</p>
+    </div>
+    <div>
+      <span class="k">Real time</span>
+      <h3>Reconstruction that never touches the reference</h3>
+      <p>Interactive frames can go through NVIDIA DLSS Super Resolution, DLAA or Ray Reconstruction. It is optional and found at runtime. Final-quality renders never pass through it.</p>
+    </div>
+  </div>
+  <div class="figures">
+<!-- BEGIN GENERATED figures -->
+<div class="fig"><span class="v">0.57<small>%</small></span><span class="l">worst error against an independent radiosity solution of the measured Cornell box</span></div>
+<div class="fig"><span class="v">22</span><span class="l">MaterialX closure nodes with importance sampling, validated for energy on the GPU</span></div>
+<div class="fig"><span class="v">14</span><span class="l">gallery scenes rendered, timed and gated against baselines after every change</span></div>
+<div class="fig"><span class="v">27</span><span class="l">test suites, from unit tests to end-to-end USD renders</span></div>
+<!-- END GENERATED figures -->
+  </div>
+</section>
+
+<section aria-labelledby="pipe">
+  <div class="sechead">
+    <span class="eyebrow">How a frame is made</span>
+    <h2 id="pipe">From USD stage to pixels in nine steps</h2>
+    <p class="muted">Steps 1 to 3 run inside OpenUSD, with small hdClaude additions. Steps 4 to 9 are hdClaude. Use the tabs, the buttons, or the arrow keys.</p>
+  </div>
+  <div class="legend" aria-hidden="true">
+    <span><i class="sw"></i>OpenUSD, MaterialX or Vulkan</span>
+    <span><i class="sw hc"></i>hdClaude's own code</span>
+  </div>
+
+  <div class="deck" id="deck">
+    <div class="rail" role="tablist" aria-label="Pipeline steps">
+      <button role="tab" id="t1" aria-controls="s1" aria-selected="true"><span class="no">1</span>Compose</button>
+      <button role="tab" id="t2" aria-controls="s2" aria-selected="false" tabindex="-1"><span class="no">2</span>Image</button>
+      <button role="tab" id="t3" aria-controls="s3" aria-selected="false" tabindex="-1"><span class="no">3</span>Filter</button>
+      <button role="tab" id="t4" aria-controls="s4" aria-selected="false" tabindex="-1"><span class="no">4</span>Sync</button>
+      <button role="tab" id="t5" aria-controls="s5" aria-selected="false" tabindex="-1"><span class="no">5</span>Compile</button>
+      <button role="tab" id="t6" aria-controls="s6" aria-selected="false" tabindex="-1"><span class="no">6</span>Build</button>
+      <button role="tab" id="t7" aria-controls="s7" aria-selected="false" tabindex="-1"><span class="no">7</span>Frame</button>
+      <button role="tab" id="t8" aria-controls="s8" aria-selected="false" tabindex="-1"><span class="no">8</span>Trace</button>
+      <button role="tab" id="t9" aria-controls="s9" aria-selected="false" tabindex="-1"><span class="no">9</span>Resolve</button>
+    </div>
+
+    <!-- 1 Compose -->
+    <div class="slide" role="tabpanel" id="s1" aria-labelledby="t1">
+      <div class="txt">
+        <span class="stage">Step 1 · OpenUSD</span>
+        <h3>The stage is composed</h3>
+        <p>USD composes layers, references and payloads into one stage. hdClaude asks only for what the stage declares, using standard schemas.</p>
+        <ul>
+          <li>Geometry: meshes with subdivision and subsets, curves, point instancers, Gaussian splat fields.</li>
+          <li>MaterialX and UsdPreviewSurface materials.</li>
+          <li>UsdLux lights, including the draft physical-lighting APIs for spectra, lumens and lux.</li>
+          <li>Cameras with physical exposure.</li>
+          <li>Stage metadata: <code>metersPerUnit</code> and <code>upAxis</code>.</li>
+        </ul>
+        <p class="where">Always rendered with purpose <b>render</b>. Production assets put their real geometry there, and proxy geometry would describe a different scene.</p>
+      </div>
+      <div class="diagram">
+        <svg class="d" viewBox="0 0 600 340" role="img" aria-label="A stack of layers composing into a stage whose prims include meshes, curves, instancers, splats, materials, lights and a camera">
+          <text x="10" y="18" class="lbl">LAYER STACK</text>
+          <rect class="n" x="10" y="30" width="190" height="44" rx="5"/><text x="22" y="50">session layer</text><text x="22" y="65" class="sub">viewer overrides</text>
+          <rect class="n" x="10" y="84" width="190" height="44" rx="5"/><text x="22" y="104">root layer</text><text x="22" y="119" class="sub">shot.usda</text>
+          <rect class="n" x="10" y="138" width="190" height="44" rx="5"/><text x="22" y="158">references</text><text x="22" y="173" class="sub">assets, materials</text>
+          <rect class="n" x="10" y="192" width="190" height="44" rx="5"/><text x="22" y="212">payloads</text><text x="22" y="227" class="sub">heavy geometry, loaded on demand</text>
+          <path class="a" d="M205 133 L262 133"/>
+          <text x="214" y="124" class="sub">compose</text>
+          <text x="270" y="18" class="lbl">COMPOSED STAGE</text>
+          <rect class="n" x="270" y="30" width="320" height="270" rx="6"/>
+          <text x="286" y="56" class="ttl">/World</text>
+          <text x="302" y="80">Mesh</text><text x="420" y="80" class="sub">subdivisionScheme, GeomSubsets</text>
+          <text x="302" y="102">BasisCurves</text><text x="420" y="102" class="sub">hair, whiskers</text>
+          <text x="302" y="124">PointInstancer</text><text x="420" y="124" class="sub">1,636 placements in ALab</text>
+          <text x="302" y="146">ParticleField</text><text x="420" y="146" class="sub">3D Gaussian splats</text>
+          <text x="302" y="168">Material</text><text x="420" y="168" class="sub">MaterialX, UsdPreviewSurface</text>
+          <text x="302" y="190">RectLight</text><text x="420" y="190" class="sub">ShapingAPI, illuminant, lumens</text>
+          <text x="302" y="212">DomeLight</text><text x="420" y="212" class="sub">HDR map, lux</text>
+          <text x="302" y="234">Camera</text><text x="420" y="234" class="sub">exposure:iso, :time, :fStop</text>
+          <line x1="286" y1="252" x2="574" y2="252" stroke="var(--line)" stroke-dasharray="3 3"/>
+          <text x="286" y="274" class="sub">metadata</text><text x="356" y="274">metersPerUnit = 0.01</text>
+          <text x="356" y="290">upAxis = "Z"</text>
+          <rect class="n sunk" x="10" y="256" width="190" height="44" rx="5"/><text x="22" y="276">purpose = render</text><text x="22" y="291" class="sub">never the proxy stand-in</text>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 2 Image -->
+    <div class="slide" role="tabpanel" id="s2" aria-labelledby="t2" hidden>
+      <div class="txt">
+        <span class="stage">Step 2 · UsdImaging</span>
+        <h3>Prims become Hydra data sources</h3>
+        <p>UsdImaging's stage scene index runs an adapter for each prim and for each applied API schema. Their containers are overlaid into one description of the prim that Hydra can read.</p>
+        <ul>
+          <li>hdClaude adds one small adapter of its own. It runs on every prim but only writes onto lights.</li>
+          <li>It publishes the stage's metres per unit and up axis, which Hydra does not pass to renderers.</li>
+          <li>A light authored in lumens or lux needs both: lumens are per square metre of emitter, and a dome's lux are measured facing up.</li>
+        </ul>
+        <p class="where">src/usdImaging/stageMetricsAdapter.cpp · its own module, so Storm sessions never load the path tracer</p>
+      </div>
+      <div class="diagram">
+        <svg class="d" viewBox="0 0 600 340" role="img" aria-label="A USD prim passes through its prim adapter, API schema adapters and hdClaude's keyless stage-metrics adapter; their outputs overlay into one Hydra data source">
+          <rect class="n" x="10" y="140" width="120" height="54" rx="5"/><text x="22" y="162">UsdPrim</text><text x="22" y="178" class="sub">/World/key</text>
+          <text x="160" y="22" class="lbl">ADAPTERS</text>
+          <rect class="n" x="160" y="34" width="200" height="54" rx="5"/><text x="172" y="56">prim adapter</text><text x="172" y="72" class="sub">UsdImagingRectLightAdapter</text>
+          <rect class="n" x="160" y="104" width="200" height="54" rx="5"/><text x="172" y="126">API schema adapters</text><text x="172" y="142" class="sub">LightAPI, ShapingAPI, ...</text>
+          <rect class="n hc" x="160" y="174" width="200" height="70" rx="5"/><text x="172" y="196">stage-metrics adapter</text><text x="172" y="212" class="sub">keyless: runs on every prim</text><text x="172" y="228" class="sub">reads the prim's stage</text>
+          <path class="a" d="M130 160 L156 62"/><path class="a" d="M130 166 L156 131"/><path class="a hc" d="M130 174 L156 206"/>
+          <path class="a" d="M360 62 L394 140"/><path class="a" d="M360 131 L394 152"/><path class="a hc" d="M360 208 L394 176"/>
+          <text x="400" y="22" class="lbl">OVERLAY → ONE CONTAINER</text>
+          <rect class="n" x="400" y="34" width="190" height="272" rx="6"/>
+          <text x="414" y="58" class="ttl">light</text>
+          <text x="414" y="82">intensity</text><text x="414" y="102">exposure</text><text x="414" y="122">color</text>
+          <text x="414" y="142">shaping:cone:angle</text><text x="414" y="162">physical:illuminant</text><text x="414" y="182">photometric:power</text>
+          <rect x="406" y="200" width="178" height="52" rx="4" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1"/>
+          <text x="414" y="222" class="acc" font-size="11">hdClaude:stageMetersPerUnit</text>
+          <text x="414" y="240" class="acc" font-size="11">hdClaude:stageUpAxis</text>
+          <text x="414" y="276" class="sub">read in HdLight::Sync like</text><text x="414" y="292" class="sub">any other light parameter</text>
+          <rect class="n sunk" x="10" y="262" width="350" height="44" rx="5"/><text x="22" y="282">Other prims get nothing from it</text><text x="22" y="297" class="sub">meshes, materials and cameras are untouched</text>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 3 Filter -->
+    <div class="slide" role="tabpanel" id="s3" aria-labelledby="t3" hidden>
+      <div class="txt">
+        <span class="stage">Step 3 · Hydra scene indices</span>
+        <h3>The scene is filtered for this renderer</h3>
+        <p>Hydra passes the scene through a chain of scene indices before a delegate sees it. OpenUSD ships several of these conversions but inserts them for no renderer, so hdClaude registers its own chain. Without them, prims vanish silently.</p>
+        <ul>
+          <li><b>Implicit surfaces</b>: spheres, cubes, cones and capsules become meshes whose density follows their size.</li>
+          <li><b>NURBS curves</b> become the linear curves the delegate receives. Without this, a stoat's whiskers disappeared with no warning.</li>
+          <li><b>Light linking</b>: UsdLux collections are resolved into the categories a delegate reads.</li>
+          <li><b>Retessellation</b> re-syncs geometry when a setting changes what a prim is, such as its subdivision level.</li>
+        </ul>
+        <p class="where">src/hydra/*_scene_index_plugin.cpp · src/hydra/sphere_scene_index.cpp</p>
+      </div>
+      <div class="diagram">
+        <svg class="d" viewBox="0 0 600 340" role="img" aria-label="A chain of scene indices from the stage scene index through OpenUSD's filters and hdClaude's four plugins to the render index">
+          <rect class="n" x="10" y="30" width="170" height="54" rx="5"/><text x="22" y="52">stage scene index</text><text x="22" y="68" class="sub">from step 2</text>
+          <path class="a" d="M180 57 L212 57"/>
+          <rect class="n" x="216" y="30" width="170" height="54" rx="5"/><text x="228" y="52">OpenUSD filters</text><text x="228" y="68" class="sub">flatten, instancing, purpose</text>
+          <path class="a" d="M386 57 L418 57"/>
+          <rect class="n" x="422" y="30" width="168" height="54" rx="5"/><text x="434" y="52">render index</text><text x="434" y="68" class="sub">per-renderer chain</text>
+          <text x="10" y="122" class="lbl">HDCLAUDE'S PLUGINS, INSERTED FOR "CLAUDE GPU PATH TRACER" ONLY</text>
+          <rect class="zone" x="4" y="132" width="592" height="140" rx="8"/>
+          <rect class="n hc" x="16" y="146" width="132" height="110" rx="5"/><text x="26" y="168">implicit</text><text x="26" y="184">surfaces</text><text x="26" y="208" class="sub">Sphere, Cube,</text><text x="26" y="222" class="sub">Cone, Capsule</text><text x="26" y="236" class="sub">→ Mesh</text>
+          <path class="a hc" d="M148 201 L160 201"/>
+          <rect class="n hc" x="162" y="146" width="132" height="110" rx="5"/><text x="172" y="168">NURBS</text><text x="172" y="184">curves</text><text x="172" y="208" class="sub">nurbsCurves</text><text x="172" y="222" class="sub">→ basisCurves</text>
+          <path class="a hc" d="M294 201 L306 201"/>
+          <rect class="n hc" x="308" y="146" width="132" height="110" rx="5"/><text x="318" y="168">light</text><text x="318" y="184">linking</text><text x="318" y="208" class="sub">collections</text><text x="318" y="222" class="sub">→ categories</text>
+          <path class="a hc" d="M440 201 L452 201"/>
+          <rect class="n hc" x="454" y="146" width="132" height="110" rx="5"/><text x="464" y="168">retessel-</text><text x="464" y="184">lation</text><text x="464" y="208" class="sub">setting change</text><text x="464" y="222" class="sub">→ dirty geometry</text>
+          <path class="a hc" d="M506 132 L506 88"/>
+          <rect class="n sunk" x="10" y="290" width="580" height="40" rx="5"/><text x="22" y="314">Without these, a stage whose only geometry is a UsdGeomSphere renders an empty frame</text>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 4 Sync -->
+    <div class="slide" role="tabpanel" id="s4" aria-labelledby="t4" hidden>
+      <div class="txt">
+        <span class="stage">Step 4 · Render delegate</span>
+        <h3>Sync turns prims into a scene snapshot</h3>
+        <p>Hydra calls <code>Sync</code> on each prim it has marked dirty. hdClaude's adapters read the prim's values, check them against the schema, and write them into a scene store. The store then publishes an immutable, numbered snapshot for the GPU.</p>
+        <ul>
+          <li>Only dirty prims are re-read. Moving a light does not rebuild a mesh.</li>
+          <li>Invalid or mismatched input is reported with a <code>TF_RUNTIME_ERROR</code> and in the render stats. It is never silently fixed.</li>
+          <li>The Hydra layer never includes a Vulkan header, and the GPU layer never includes a USD one. Each can be tested without the other.</li>
+        </ul>
+        <p class="where">src/hydra/{mesh,basis_curves,particle_field,light,camera,material,instancer}.cpp → scene_store.cpp</p>
+      </div>
+      <div class="diagram">
+        <svg class="d" viewBox="0 0 600 340" role="img" aria-label="Rprims, sprims and bprims sync into the scene store, which publishes a numbered immutable snapshot to the GPU, with reports going to errors and stats">
+          <text x="10" y="18" class="lbl">HYDRA PRIM TYPES</text>
+          <rect class="n" x="10" y="28" width="180" height="78" rx="5"/><text x="22" y="48" class="ttl">rprims</text><text x="22" y="68">mesh · basisCurves</text><text x="22" y="86">particleField</text>
+          <rect class="n" x="10" y="116" width="180" height="96" rx="5"/><text x="22" y="136" class="ttl">sprims</text><text x="22" y="156">rect · disk · sphere</text><text x="22" y="172">cylinder · distant · dome</text><text x="22" y="192">camera · material</text><text x="22" y="206" class="sub">extComputation (skinning)</text>
+          <rect class="n" x="10" y="222" width="180" height="50" rx="5"/><text x="22" y="242" class="ttl">bprims</text><text x="22" y="262">renderBuffer (AOVs)</text>
+          <path class="a hc" d="M190 67 L250 130"/><path class="a hc" d="M190 164 L250 164"/>
+          <text x="196" y="122" class="sub">Sync</text>
+          <rect class="n hc" x="254" y="98" width="160" height="132" rx="6"/>
+          <text x="266" y="122" class="ttl">scene store</text>
+          <text x="266" y="146" class="sub">validated values</text>
+          <text x="266" y="162" class="sub">light brightness</text>
+          <text x="266" y="178" class="sub">material bindings</text>
+          <text x="266" y="194" class="sub">instance tables</text>
+          <text x="266" y="214" class="sub">only dirty prims re-read</text>
+          <path class="a hc" d="M414 164 L448 164"/>
+          <rect class="n hc" x="452" y="118" width="138" height="92" rx="6"/>
+          <text x="464" y="142" class="ttl">snapshot</text><text x="464" y="162">revision n</text><text x="464" y="180" class="sub">immutable</text><text x="464" y="196" class="sub">→ GPU layer</text>
+          <path class="a dash" d="M334 230 L334 270"/>
+          <rect class="n sunk" x="214" y="274" width="376" height="54" rx="5"/>
+          <text x="226" y="296">reports: TF_RUNTIME_ERROR + render stats</text>
+          <text x="226" y="314" class="sub">e.g. "photometric:power applies to area lights only"</text>
+          <text x="254" y="78" class="lbl">NO VULKAN HERE</text>
+          <text x="452" y="100" class="lbl">NO USD BEYOND</text>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 5 Compile -->
+    <div class="slide" role="tabpanel" id="s5" aria-labelledby="t5" hidden>
+      <div class="txt">
+        <span class="stage">Step 5 · MaterialX</span>
+        <h3>Materials are generated and compiled, not interpreted</h3>
+        <p>A Hydra material network becomes a MaterialX document. MaterialX's own shader generator turns it into GLSL for hdClaude's target, <code>genglsl_pt</code>. That target inherits stock GLSL and overrides only the BSDF closures, adding the importance sampling a path tracer needs.</p>
+        <ul>
+          <li>UsdPreviewSurface is only renamed to the node definitions MaterialX already declares. Intel Sponza's 137 materials shade this way.</li>
+          <li>Arbitrary node graphs, noise and textures work because MaterialX generates them.</li>
+          <li>A material's displacement and volume outputs go through the same generator.</li>
+          <li>Compiled programs are cached under a hash of everything that could change them.</li>
+        </ul>
+        <p class="where">src/hydra/material_compiler.cpp · src/materialx/pathtracer_generator.cpp · src/gpu/glsl_compiler.cpp</p>
+      </div>
+      <div class="diagram">
+        <svg class="d" viewBox="0 0 600 340" role="img" aria-label="A Hydra material network becomes a MaterialX document, then genglsl_pt GLSL, then SPIR-V via the shader cache, then a shade pipeline; displacement and volume outputs branch off">
+          <rect class="n" x="10" y="20" width="170" height="54" rx="5"/><text x="22" y="42">Hydra network</text><text x="22" y="58" class="sub">HdMaterialNetwork2</text>
+          <path class="a hc" d="M180 47 L212 47"/>
+          <rect class="n hc" x="216" y="20" width="170" height="54" rx="5"/><text x="228" y="42">MaterialX document</text><text x="228" y="58" class="sub">UsdPreviewSurface → ND_*</text>
+          <path class="a" d="M386 47 L418 47"/>
+          <rect class="n" x="422" y="20" width="168" height="54" rx="5"/><text x="434" y="42">ShaderGenerator</text><text x="434" y="58" class="sub">MaterialX's own</text>
+          <path class="a" d="M506 74 L506 100"/>
+          <rect class="n hc" x="300" y="104" width="290" height="100" rx="6"/>
+          <text x="314" y="126" class="ttl">target genglsl_pt</text>
+          <text x="314" y="146" class="sub">&lt;targetdef name="genglsl_pt" inherit="genglsl"/&gt;</text>
+          <text x="314" y="168">22 pbrlib closure overrides</text>
+          <text x="314" y="186" class="sub">each: eval · sample · pdf</text>
+          <rect class="n" x="10" y="104" width="270" height="100" rx="6"/>
+          <text x="24" y="126" class="ttl">inherited from genglsl</text>
+          <text x="24" y="148" class="sub">image · noise3d · ramplr</text>
+          <text x="24" y="164" class="sub">tiledimage · math · user graphs</text>
+          <text x="24" y="186" class="sub">unchanged</text>
+          <path class="a" d="M446 204 L446 232"/>
+          <rect class="n" x="300" y="236" width="140" height="44" rx="5"/><text x="312" y="256">GLSL → SPIR-V</text><text x="312" y="271" class="sub">glslang</text>
+          <path class="a hc" d="M440 258 L460 258"/>
+          <rect class="n hc" x="464" y="236" width="126" height="44" rx="5"/><text x="474" y="256">shader cache</text><text x="474" y="271" class="sub">hash key</text>
+          <path class="a hc" d="M527 280 L527 296"/>
+          <rect class="n hc" x="380" y="298" width="210" height="34" rx="5"/><text x="392" y="320">shade_&lt;material&gt; pipeline</text>
+          <rect class="n sunk" x="10" y="236" width="270" height="96" rx="5"/>
+          <text x="22" y="258">same generator, other outputs</text>
+          <text x="22" y="280" class="sub">displacementshader → GPU displace pass</text>
+          <text x="22" y="298" class="sub">volume VDF/EDF → fog in traversal</text>
+          <text x="22" y="318" class="sub">no network → reported, displayColor</text>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 6 Build -->
+    <div class="slide" role="tabpanel" id="s6" aria-labelledby="t6" hidden>
+      <div class="txt">
+        <span class="stage">Step 6 · Geometry</span>
+        <h3>Prototypes and acceleration structures</h3>
+        <p>Each distinct piece of geometry becomes a prototype with its own bottom-level acceleration structure. Instances of it are entries in one top-level structure.</p>
+        <ul>
+          <li>Subdivision uses OpenSubdiv: uniform, adaptive to on-screen size, or per face. Its levels are sampled from a view once, so a camera nudge does not rebuild the scene.</li>
+          <li>Curves are intersected exactly as round cones. Gaussian splats are boxes at their 3σ support, evaluated in the traversal kernel.</li>
+          <li>Unchanged prototypes keep their structure. A moved object updates the top level in place, and skinned meshes refit in place.</li>
+          <li>Per-ray visibility rides on the instance mask. Cull volumes clip rays rather than geometry.</li>
+        </ul>
+        <p class="where">src/gpu/acceleration_structure.cpp · src/hydra/subdivision.cpp · src/core/curve_sweep.cpp · src/core/gaussian_splats.cpp</p>
+      </div>
+      <div class="diagram">
+        <svg class="d" viewBox="0 0 600 340" role="img" aria-label="Meshes, curves and splats each produce a bottom-level structure; instances of them populate a single top-level structure">
+          <text x="10" y="18" class="lbl">PROTOTYPES</text>
+          <rect class="n" x="10" y="28" width="150" height="44" rx="5"/><text x="22" y="48">mesh</text><text x="22" y="63" class="sub">+ skinning</text>
+          <path class="a hc" d="M160 50 L184 50"/>
+          <rect class="n hc" x="188" y="28" width="150" height="44" rx="5"/><text x="200" y="48">OpenSubdiv</text><text x="200" y="63" class="sub">uniform · adaptive</text>
+          <path class="a hc" d="M338 50 L362 50"/>
+          <rect class="n hc" x="366" y="28" width="94" height="44" rx="5"/><text x="376" y="48">displace</text><text x="376" y="63" class="sub">MaterialX</text>
+          <rect class="n" x="10" y="90" width="150" height="44" rx="5"/><text x="22" y="110">basisCurves</text><text x="22" y="125" class="sub">round-cone spans</text>
+          <rect class="n" x="10" y="152" width="150" height="44" rx="5"/><text x="22" y="172">particleField</text><text x="22" y="187" class="sub">Gaussian splats</text>
+          <text x="486" y="18" class="lbl">BLAS</text>
+          <rect class="n hc" x="486" y="28" width="104" height="44" rx="5"/><text x="496" y="48">triangles</text><text x="496" y="63" class="sub">fingerprinted</text>
+          <rect class="n hc" x="486" y="90" width="104" height="44" rx="5"/><text x="496" y="110">AABBs</text><text x="496" y="125" class="sub">cone test</text>
+          <rect class="n hc" x="486" y="152" width="104" height="44" rx="5"/><text x="496" y="172">AABBs</text><text x="496" y="187" class="sub">3σ kernel</text>
+          <path class="a hc" d="M460 50 L482 50"/><path class="a hc" d="M160 112 L482 112"/><path class="a hc" d="M160 174 L482 174"/>
+          <path class="a" d="M538 196 L538 226"/>
+          <rect class="n hc" x="10" y="230" width="580" height="100" rx="6"/>
+          <text x="24" y="254" class="ttl">TLAS: one per scene</text>
+          <text x="24" y="276">native instances · PointInstancer · nested instancers</text>
+          <text x="24" y="298" class="sub">instance mask → per-ray-kind visibility (camera, indirect, shadow)</text>
+          <text x="24" y="316" class="sub">transform-only change → updated in place, no BLAS rebuild</text>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 7 Frame -->
+    <div class="slide" role="tabpanel" id="s7" aria-labelledby="t7" hidden>
+      <div class="txt">
+        <span class="stage">Step 7 · Frame contract</span>
+        <h3>One entry point decides what a frame invalidates</h3>
+        <p>Every frame starts with <code>BeginFrame</code> and a full description: camera, extents, mode, scene revision, sample range and settings. A single function compares it with the last frame and decides what must be reset.</p>
+        <ul>
+          <li>The predecessor renderer let three setters each guess what the others implied, and four shipped defects came from that. This design rules it out.</li>
+          <li>Reference and interactive rendering never share a buffer.</li>
+          <li>The interactive preview traces fewer samples and bounces with the same four-wavelength estimator. It is not a cheaper, different estimator, which a temporal reconstructor would lock in as bias.</li>
+        </ul>
+        <p class="where">BeginFrame(FrameDescription) / EndFrame(FrameHandle) · InvalidateFor · src/gpu/path_tracer.cpp</p>
+      </div>
+      <div class="diagram">
+        <svg class="d" viewBox="0 0 600 340" role="img" aria-label="A frame description goes into InvalidateFor, which feeds either the reference accumulation or the interactive frame path">
+          <rect class="n hc" x="10" y="20" width="230" height="150" rx="6"/>
+          <text x="24" y="44" class="ttl">FrameDescription</text>
+          <text x="24" y="68">camera</text><text x="24" y="86">extents</text><text x="24" y="104">mode</text>
+          <text x="24" y="122">scene revision</text><text x="24" y="140">sample range</text><text x="24" y="158">settings</text>
+          <path class="a hc" d="M240 95 L292 95"/>
+          <rect class="n hc" x="296" y="58" width="190" height="74" rx="6"/>
+          <text x="310" y="84" class="ttl">InvalidateFor</text><text x="310" y="104" class="sub">one decision, one place</text><text x="310" y="120" class="sub">→ accumulationReset</text>
+          <path class="a" d="M350 132 L170 206"/><path class="a" d="M430 132 L440 206"/>
+          <rect class="n" x="10" y="210" width="280" height="120" rx="6"/>
+          <text x="24" y="234" class="ttl">Reference</text>
+          <text x="24" y="256">RGBA32F running average</text>
+          <text x="24" y="276" class="sub">the renderer owns history</text>
+          <text x="24" y="294" class="sub">full samples and bounces</text>
+          <text x="24" y="314" class="sub">never reconstructed</text>
+          <rect class="n" x="310" y="210" width="280" height="120" rx="6"/>
+          <text x="324" y="234" class="ttl">Interactive</text>
+          <text x="324" y="256">noisy RGBA16F + guides</text>
+          <text x="324" y="276" class="sub">the backend owns history</text>
+          <text x="324" y="294" class="sub">fewer samples and bounces</text>
+          <text x="324" y="314" class="sub">same 4-wavelength estimator</text>
+          <g transform="translate(520,30)"><rect class="w1" x="0" y="14" width="6" height="16" rx="1"/><rect class="w2" x="10" y="4" width="6" height="26" rx="1"/><rect class="w3" x="20" y="9" width="6" height="21" rx="1"/><rect class="w4" x="30" y="0" width="6" height="30" rx="1"/></g>
+          <text x="502" y="80" class="sub">4 lanes in both</text>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 8 Trace -->
+    <div class="slide" role="tabpanel" id="s8" aria-labelledby="t8" hidden>
+      <div class="txt">
+        <span class="stage">Step 8 · Wavefront integrator</span>
+        <h3>Each bounce: trace, sort, shade per material</h3>
+        <p>Path state lives in GPU memory. Each bounce is a sequence of compute kernels over queues. All of them launch from counts the GPU wrote itself, so the CPU never waits to read a queue length.</p>
+        <ul>
+          <li><b>raygen</b> draws four correlated hero wavelengths per path and keeps them for its whole life.</li>
+          <li><b>extend</b> finds the closest hit with Vulkan ray query, and walks fog volumes by spectral tracking.</li>
+          <li><b>sort</b> groups hits by material with a counting sort. Each <b>shade</b> dispatch then runs exactly one MaterialX program.</li>
+          <li><b>shadow</b> traces next-event rays to the lights in one batch. Escaped rays see the dome.</li>
+        </ul>
+        <p class="where">Measured at 512²: 8.7 ms with no heavy material, 18.6 ms with one, 29.1 ms with two. One heavy shader no longer costs the whole frame.</p>
+      </div>
+      <div class="diagram">
+        <svg class="d" viewBox="0 0 600 340" role="img" aria-label="The wavefront loop: raygen, extend, sort, per-material shade dispatches, shadow rays, environment for escaped rays, and compaction back into extend for the next bounce">
+          <rect class="n hc" x="10" y="40" width="120" height="70" rx="6"/>
+          <text x="22" y="64" class="ttl">raygen</text><text x="22" y="82" class="sub">jitter, camera</text>
+          <g transform="translate(22,90)"><rect class="w1" x="0" y="6" width="5" height="9" rx="1"/><rect class="w2" x="8" y="1" width="5" height="14" rx="1"/><rect class="w3" x="16" y="4" width="5" height="11" rx="1"/><rect class="w4" x="24" y="0" width="5" height="15" rx="1"/></g>
+          <text x="60" y="103" class="sub">4 λ</text>
+          <path class="a hc" d="M130 75 L162 75"/>
+          <rect class="zone" x="150" y="16" width="440" height="230" rx="8"/>
+          <text x="162" y="34" class="lbl">PER BOUNCE · INDIRECT DISPATCH</text>
+          <rect class="n hc" x="166" y="44" width="120" height="62" rx="6"/>
+          <text x="178" y="68" class="ttl">extend</text><text x="178" y="86" class="sub">ray query</text><text x="178" y="100" class="sub">+ fog tracking</text>
+          <path class="a hc" d="M286 75 L312 75"/>
+          <rect class="n hc" x="316" y="44" width="110" height="62" rx="6"/>
+          <text x="328" y="68" class="ttl">sort</text><text x="328" y="86" class="sub">counting sort</text><text x="328" y="100" class="sub">by material</text>
+          <path class="a hc" d="M426 60 L456 52"/><path class="a hc" d="M426 75 L456 92"/><path class="a hc" d="M426 92 L456 132"/>
+          <rect class="n hc" x="460" y="36" width="118" height="32" rx="5"/><text x="470" y="57">shade[gold]</text>
+          <rect class="n hc" x="460" y="76" width="118" height="32" rx="5"/><text x="470" y="97">shade[glass]</text>
+          <rect class="n hc" x="460" y="116" width="118" height="32" rx="5"/><text x="470" y="137">shade[brick]</text>
+          <path class="a hc" d="M519 148 L519 176"/>
+          <rect class="n hc" x="398" y="180" width="180" height="54" rx="6"/>
+          <text x="410" y="202" class="ttl">shadow</text><text x="410" y="220" class="sub">batched NEE to lights</text>
+          <path class="a hc dash" d="M460 210 L240 210 L226 112"/>
+          <text x="250" y="200" class="sub">compact · next bounce</text>
+          <path class="a" d="M226 106 L226 128 L92 128 L92 178"/>
+          <text x="100" y="146" class="sub">escaped</text>
+          <rect class="n" x="10" y="182" width="130" height="52" rx="6"/>
+          <text x="22" y="204" class="ttl">environment</text><text x="22" y="222" class="sub">dome, sampled</text>
+          <path class="a hc" d="M488 234 L488 276"/><path class="a" d="M75 234 L75 276"/>
+          <rect class="n hc" x="10" y="280" width="580" height="50" rx="6"/>
+          <text x="24" y="302" class="ttl">film</text><text x="24" y="320" class="sub">spectral radiance per wavelength → step 9</text>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 9 Resolve -->
+    <div class="slide" role="tabpanel" id="s9" aria-labelledby="t9" hidden>
+      <div class="txt">
+        <span class="stage">Step 9 · Film and delivery</span>
+        <h3>Wavelengths become an image, once</h3>
+        <p>The virtual sensor integrates CIE XYZ from the four wavelengths and converts to linear sRGB at the film, the only place RGB is made. The camera's authored exposure is applied there, and the image stays scene-linear all the way to the EXR.</p>
+        <ul>
+          <li>Readback to Hydra is double-buffered. Copying one frame overlaps tracing the next.</li>
+          <li>Render buffers deliver colour, depth and ids, so picking works in usdview.</li>
+          <li>Interactive frames can go to DLSS Super Resolution, DLAA or Ray Reconstruction. Its guides come from what the MaterialX closures report about themselves.</li>
+          <li>A native reconstruction fallback for any Vulkan GPU is planned but not started.</li>
+        </ul>
+        <p class="where">shaders/film.comp.glsl · guides.comp.glsl · src/hydra/render_buffer.cpp · src/gpu/ngx_support.cpp</p>
+      </div>
+      <div class="diagram">
+        <svg class="d" viewBox="0 0 600 340" role="img" aria-label="Spectral samples are integrated to CIE XYZ, converted to linear sRGB, exposed, accumulated and read back into Hydra render buffers; an interactive branch sends noisy frames and guides to DLSS">
+          <g transform="translate(14,28)"><rect class="w1" x="0" y="16" width="8" height="20" rx="1"/><rect class="w2" x="12" y="6" width="8" height="30" rx="1"/><rect class="w3" x="24" y="11" width="8" height="25" rx="1"/><rect class="w4" x="36" y="0" width="8" height="36" rx="1"/></g>
+          <text x="10" y="82" class="sub">radiance at</text><text x="10" y="96" class="sub">4 wavelengths</text>
+          <path class="a hc" d="M70 50 L100 50"/>
+          <rect class="n hc" x="104" y="22" width="130" height="56" rx="6"/><text x="116" y="46">CIE XYZ</text><text x="116" y="64" class="sub">the sensor, once</text>
+          <path class="a hc" d="M234 50 L262 50"/>
+          <rect class="n hc" x="266" y="22" width="150" height="56" rx="6"/><text x="278" y="46">linear sRGB</text><text x="278" y="64" class="sub">D65-referred, exposed</text>
+          <path class="a hc" d="M416 50 L444 50"/>
+          <rect class="n hc" x="448" y="22" width="142" height="56" rx="6"/><text x="460" y="46">RGBA32F</text><text x="460" y="64" class="sub">reference average</text>
+          <path class="a hc" d="M519 78 L519 108"/>
+          <rect class="n hc" x="380" y="112" width="210" height="56" rx="6"/><text x="392" y="136">double-buffered readback</text><text x="392" y="154" class="sub">overlaps the next frame</text>
+          <path class="a" d="M485 168 L485 196"/>
+          <rect class="n" x="380" y="200" width="210" height="56" rx="6"/><text x="392" y="224">HdRenderBuffer AOVs</text><text x="392" y="242" class="sub">color · depth · primId</text>
+          <path class="a" d="M485 256 L485 282"/>
+          <rect class="n" x="380" y="286" width="210" height="44" rx="6"/><text x="392" y="306">usdrecord EXR · usdview</text><text x="392" y="321" class="sub">Houdini Solaris</text>
+          <path class="a dash" d="M170 78 L170 128"/>
+          <text x="178" y="108" class="sub">interactive mode</text>
+          <rect class="n hc" x="10" y="132" width="330" height="64" rx="6"/>
+          <text x="24" y="154">noisy frame + guides</text>
+          <text x="24" y="172" class="sub">albedo, normals, roughness from closures</text>
+          <text x="24" y="188" class="sub">depth, motion vectors, jitter</text>
+          <path class="a" d="M175 196 L175 222"/>
+          <rect class="n" x="10" y="226" width="330" height="56" rx="6"/>
+          <text x="24" y="248">NVIDIA DLSS (optional, runtime)</text>
+          <text x="24" y="266" class="sub">Super Resolution · DLAA · Ray Reconstruction</text>
+          <rect class="n sunk" x="10" y="292" width="330" height="38" rx="6"/>
+          <text x="24" y="315" class="sub">native fallback for any Vulkan GPU: not started</text>
+          <path class="a" d="M340 254 L376 228"/>
+        </svg>
+      </div>
+    </div>
+
+    <div class="nav">
+      <button id="prev" type="button">← Previous</button>
+      <span class="count" id="count" aria-live="polite">Step 1 of 9</span>
+      <button id="next" type="button">Next →</button>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="feat">
+  <div class="sechead">
+    <span class="eyebrow">Capabilities</span>
+    <h2 id="feat">What it renders today</h2>
+    <p class="muted"><b>Shipped</b> means built, tested and in the gallery. <b>Partial</b> means it works for part of the feature and the rest is in progress. States follow the project's phase tracker.</p>
+  </div>
+  <div class="matrix">
+    <div class="group">
+      <h3>Geometry</h3>
+      <div class="row"><span class="f">Meshes, subsets, instancing<span class="muted">Native instances, PointInstancer and nested instancers, with prototypes reused</span></span><span class="pill ok">Shipped</span></div>
+      <div class="row"><span class="f">Subdivision<span class="muted">OpenSubdiv Catmull-Clark, Loop and bilinear. Creases, corners and holes are kept. Uniform, adaptive or per-face, within a face budget</span></span><span class="pill ok">Shipped</span></div>
+      <div class="row"><span class="f">Skinned deformation<span class="muted">UsdSkel through Hydra extComputation, refitted in place</span></span><span class="pill ok">Shipped</span></div>
+      <div class="row"><span class="f">Curves<span class="muted">Exact round-cone intersection, or swept tubes. NURBS curves are converted</span></span><span class="pill ok">Shipped</span></div>
+      <div class="row"><span class="f">Implicit prims<span class="muted">Sphere, cube, cone, cylinder, capsule and plane</span></span><span class="pill ok">Shipped</span></div>
+      <div class="row"><span class="f">Cull volumes<span class="muted">Geometry culled per ray kind inside a region</span></span><span class="pill ok">Shipped</span></div>
+      <div class="row"><span class="f">Gaussian splats<span class="muted">UsdVolParticleField3DGaussianSplat, path traced</span></span><span class="pill wip">Partial</span></div>
+      <div class="row"><span class="f">GPU displacement<span class="muted">Run by the material's own generated program</span></span><span class="pill wip">Partial</span></div>
+      <div class="row"><span class="f">Per-ray visibility<span class="muted">RenderMan and Karma visibility attributes</span></span><span class="pill wip">Partial</span></div>
+    </div>
+    <div class="group">
+      <h3>Materials</h3>
+      <div class="row"><span class="f">MaterialX, executed<span class="muted">standard_surface and open_pbr_surface compile; any node graph generates</span></span><span class="pill ok">Shipped</span></div>
+      <div class="row"><span class="f">Importance-sampled closures<span class="muted">All 22 pbrlib overrides, with energy and probability mass checked on the GPU</span></span><span class="pill ok">Shipped</span></div>
+      <div class="row"><span class="f">UsdPreviewSurface<span class="muted">Shaded through MaterialX's own definition, not a special case</span></span><span class="pill ok">Shipped</span></div>
+      <div class="row"><span class="f">Textures<span class="muted">Float and DDS textures, with quality levels that keep each image's mean</span></span><span class="pill ok">Shipped</span></div>
+      <div class="row"><span class="f">Fog volumes<span class="muted">Volume-only MaterialX on a mesh, spectral tracking</span></span><span class="pill wip">Partial</span></div>
+      <div class="row"><span class="f">Dispersion<span class="muted">Wavelength-dependent IOR with hero-wavelength MIS</span></span><span class="pill ns">Planned</span></div>
+    </div>
+    <div class="group">
+      <h3>Light and spectra</h3>
+      <div class="row"><span class="f">UsdLux analytic lights<span class="muted">Rect, disk, sphere, cylinder and distant, sampled by next-event estimation</span></span><span class="pill ok">Shipped</span></div>
+      <div class="row"><span class="f">Dome lights<span class="muted">HDR maps, importance-sampled where the light is</span></span><span class="pill ok">Shipped</span></div>
+      <div class="row"><span class="f">Shaping and light linking<span class="muted">Cone and focus follow UsdLux's own formulas. lightLink and shadowLink collections are honoured</span></span><span class="pill ok">Shipped</span></div>
+      <div class="row"><span class="f">Physical units<span class="muted">Lumens, watts and lux through the draft UsdLux photometric and radiometric APIs, delivered within 0.6%</span></span><span class="pill ok">Shipped</span></div>
+      <div class="row"><span class="f">Measured spectra<span class="muted">Light illuminants and blackbody temperatures; material reflectance spectra</span></span><span class="pill ok">Shipped</span></div>
+      <div class="row"><span class="f">Camera exposure<span class="muted">UsdGeomCamera exposure:iso, :time, :fStop and :responsivity</span></span><span class="pill ok">Shipped</span></div>
+      <div class="row"><span class="f">Camera responsivity curves<span class="muted">From the physical-camera proposal</span></span><span class="pill ns">Deferred</span></div>
+    </div>
+    <div class="group">
+      <h3>Interactive and workflow</h3>
+      <div class="row"><span class="f">DLSS SR, DLAA, Ray Reconstruction<span class="muted">Optional, discovered at runtime, with closure-derived guides</span></span><span class="pill ok">Shipped</span></div>
+      <div class="row"><span class="f">Frame contract and history reset<span class="muted">Jitter, motion vectors, per-slot resources</span></span><span class="pill wip">Partial</span></div>
+      <div class="row"><span class="f">Native reconstruction<span class="muted">A spatiotemporal filter for any Vulkan GPU</span></span><span class="pill ns">Planned</span></div>
+      <div class="row"><span class="f">Zero-copy AOVs for Hgi hosts<span class="muted">External-memory interop</span></span><span class="pill ns">Planned</span></div>
+      <div class="row"><span class="f">One configuration surface<span class="muted">Every setting is both a Hydra render setting and an environment variable. Houdini parameter files are generated</span></span><span class="pill ok">Shipped</span></div>
+      <div class="row"><span class="f">Gated gallery<span class="muted">Each scene is compared with its baseline on RMS, worst pixel, black frames and non-finite samples</span></span><span class="pill ok">Shipped</span></div>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="ev">
+  <div class="sechead">
+    <span class="eyebrow">Evidence</span>
+    <h2 id="ev">Correct against an answer, not only plausible</h2>
+    <p class="muted">The Cornell box is built from Cornell's published measurements: its geometry, its light's emission and its paints' reflectance spectra. Every surface is flat and Lambertian, so the radiosity equation can be solved for it independently, per nanometre from 400 to 700. The render is then compared with that solution window by window.</p>
+  </div>
+  <div class="evidence">
+    <div class="tbl">
+      <table>
+        <thead><tr><th>Window</th><th class="num">Reference</th><th class="num">Render</th><th class="num">Off by</th></tr></thead>
+        <tbody>
+<!-- BEGIN GENERATED cornell -->
+<tr><td>Light, seen directly</td><td class="num mono">66.704, 35.196, 8.800</td><td class="num mono">66.575, 35.243, 8.783</td><td class="num">0.19%<span class="bar" style="width:13px"></span></td></tr>
+<tr><td>Ceiling</td><td class="num mono">0.3285, 0.1219, 0.0261</td><td class="num mono">0.3295, 0.1213, 0.0258</td><td class="num">0.49%<span class="bar" style="width:34px"></span></td></tr>
+<tr><td>Back wall</td><td class="num mono">0.8952, 0.4594, 0.1076</td><td class="num mono">0.8965, 0.4615, 0.1078</td><td class="num">0.44%<span class="bar" style="width:31px"></span></td></tr>
+<tr><td>Red wall</td><td class="num mono">0.4645, 0.0205, 0.0006</td><td class="num mono">0.4665, 0.0205, 0.0006</td><td class="num">0.43%<span class="bar" style="width:30px"></span></td></tr>
+<tr><td>Green wall</td><td class="num mono">0.1305, 0.2123, 0.0024</td><td class="num mono">0.1306, 0.2117, 0.0024</td><td class="num">0.29%<span class="bar" style="width:20px"></span></td></tr>
+<tr><td>Floor</td><td class="num mono">0.6713, 0.3134, 0.0772</td><td class="num mono">0.6691, 0.3128, 0.0770</td><td class="num">0.33%<span class="bar" style="width:23px"></span></td></tr>
+<tr><td>Short block, top</td><td class="num mono">0.6009, 0.3160, 0.0753</td><td class="num mono">0.6043, 0.3158, 0.0751</td><td class="num">0.57%<span class="bar" style="width:40px"></span></td></tr>
+<tr><td>Tall block, front</td><td class="num mono">0.2703, 0.1370, 0.0301</td><td class="num mono">0.2698, 0.1368, 0.0300</td><td class="num">0.47%<span class="bar" style="width:33px"></span></td></tr>
+<!-- END GENERATED cornell -->
+        </tbody>
+      </table>
+      <p class="muted" style="font-size:0.84rem;margin-top:10px">Linear sRGB. <!-- BEGIN GENERATED cornell-note -->"Off by" is the worst channel carrying at least a tenth of the window's brightest. The pass threshold is 1.5%. As a control, the same box with its paints reduced to RGB colours misses by up to 5.39%, which shows the comparison can tell whether the measured spectra were used.<!-- END GENERATED cornell-note --></p>
+    </div>
+    <div class="checks">
+      <div class="check"><b>Lights deliver what they are authored to</b><p>Nine end-to-end cases cover power, radiometric power, spheres, spots, distant lights and domes, including a lopsided dome map on a Z-up stage. All land within 0.6% of the authored lumens or lux. A wrong up axis would be 1.9× off, so the test can tell.</p></div>
+      <div class="check"><b>Closures conserve energy</b><p>Each of the 22 closure overrides is integrated on the GPU for energy and probability mass. A dielectric seen from inside reflects 0.0859 against a closed form's 0.0860 at 35° of internal incidence.</p></div>
+      <div class="check"><b>Specs are the standard</b><p>Behaviour is checked against the USD, MaterialX, CIE and UsdLux definitions, not against another renderer's picture. When a spot light was found to follow the formulas wrongly, it was fixed to the specification and the affected gallery image was re-baselined, with the reason recorded.</p></div>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="gal">
+  <div class="sechead">
+    <span class="eyebrow">Gallery</span>
+    <h2 id="gal">Production and reference scenes</h2>
+    <p class="muted">1024 px wide, 1024 samples per pixel, eight bounces, on an RTX 5060 Ti. Each image is gated against its committed baseline after every change that affects rendering.</p>
+  </div>
+  <div class="gallery">
+<!-- BEGIN GENERATED gallery -->
+<figure class="g-a"><img alt="The Cornell box, lit warm orange by its measured ceiling light, with red and green side walls and two white blocks" src="gallery/cornell_box.jpg" width="1024" height="1024" loading="lazy" decoding="async"><figcaption><b>Cornell Box</b> · measured spectra · 18.1 s</figcaption></figure>
+<figure class="g-b"><img alt="A glass MaterialX shader ball holding the highlights of five rect lights" src="gallery/shader_ball_glass.jpg" width="1024" height="1024" loading="lazy" decoding="async"><figcaption><b>StandardShaderBall Glass</b> · 35.4 s</figcaption></figure>
+<figure class="g-c"><img alt="A gold MaterialX shader ball reflecting its studio lights" src="gallery/shader_ball_gold.jpg" width="1024" height="1024" loading="lazy" decoding="async"><figcaption><b>StandardShaderBall Gold</b> · 31.6 s</figcaption></figure>
+<figure class="g-d"><img alt="Pixar&#x27;s Kitchen Set interior with cabinets, table and clutter" src="gallery/pixar_kitchen.jpg" width="1024" height="611" loading="lazy" decoding="async"><figcaption><b>Pixar&#x27;s KitchenSet</b> · Z-up stage, instanced props · 2 min 57 s</figcaption></figure>
+<figure class="g-e"><img alt="The OpenChessSet board and pieces lit by an HDR dome" src="gallery/chess_board.jpg" width="1024" height="611" loading="lazy" decoding="async"><figcaption><b>OpenChessSet</b> · lit by its dome alone · 28.7 s</figcaption></figure>
+<figure class="g-f"><img alt="The OpenPBR playground scene with many material variations" src="gallery/openpbr_playground.jpg" width="1024" height="768" loading="lazy" decoding="async"><figcaption><b>OpenPBR Playground</b> · 3 min 36 s</figcaption></figure>
+<figure class="g-g"><img alt="Collective Project 001 interior lit by a shaped spot light" src="gallery/collectiveproject001.jpg" width="1024" height="682" loading="lazy" decoding="async"><figcaption><b>Collective Project 001</b> · UsdLux spot shaping · 14.6 s</figcaption></figure>
+<figure class="g-h"><img alt="Cull volumes cutting a column into rings and slicing it on a slant" src="gallery/cull_volumes.jpg" width="1024" height="682" loading="lazy" decoding="async"><figcaption><b>Cull Volumes</b> · per-ray-kind culling · 8.9 s</figcaption></figure>
+<!-- END GENERATED gallery -->
+  </div>
+</section>
+
+<section aria-labelledby="rm">
+  <div class="sechead">
+    <span class="eyebrow">Roadmap</span>
+    <h2 id="rm">Where the project stands</h2>
+    <p class="muted">A phase is complete only when its exit gate passes and the evidence is recorded. The foundation, the MaterialX target and the DLSS path are complete. Most of the remaining work is breadth, such as splats, fog, displacement and interactivity, on top of a core that already holds.</p>
+  </div>
+  <div class="legend" aria-hidden="true">
+    <span><i class="sw" style="border-color:var(--ok);background:var(--ok-soft)"></i>Complete</span>
+    <span><i class="sw" style="border-color:var(--wip);background:var(--wip-soft)"></i>In progress</span>
+    <span><i class="sw" style="border-color:var(--ns);background:var(--ns-soft)"></i>Not started</span>
+  </div>
+  <div class="phases">
+<!-- BEGIN GENERATED phases -->
+<div class="ph ok"><span class="no">Phase 0</span><span class="t">Repository, build system, environment, documentation</span></div>
+<div class="ph ok"><span class="no">Phase 1</span><span class="t">Core library</span></div>
+<div class="ph ok"><span class="no">Phase 2</span><span class="t">Vulkan context, memory, resource rules, validation gate</span></div>
+<div class="ph wip"><span class="no">Phase 3</span><span class="t">Geometry pipeline</span></div>
+<div class="ph ok"><span class="no">Phase 4</span><span class="t"><code>genglsl_pt</code> MaterialX target</span></div>
+<div class="ph wip"><span class="no">Phase 5</span><span class="t">Wavefront integrator</span></div>
+<div class="ph wip"><span class="no">Phase 6</span><span class="t">Spectral transport, lights, MIS, film</span></div>
+<div class="ph wip"><span class="no">Phase 7</span><span class="t">Hydra delegate</span></div>
+<div class="ph wip"><span class="no">Phase 8</span><span class="t">Gallery correctness against the specifications</span></div>
+<div class="ph wip"><span class="no">Phase 9</span><span class="t">Interactive contract</span></div>
+<div class="ph wip"><span class="no">Phase 10</span><span class="t">Temporal foundation</span></div>
+<div class="ph ns"><span class="no">Phase 11</span><span class="t">Renderer-native reconstruction fallback (any Vulkan device)</span></div>
+<div class="ph ok"><span class="no">Phase 12</span><span class="t">NVIDIA NGX bootstrap and runtime support query</span></div>
+<div class="ph ok"><span class="no">Phase 13</span><span class="t">DLSS Super Resolution and DLAA</span></div>
+<div class="ph ok"><span class="no">Phase 14</span><span class="t">DLSS Ray Reconstruction</span></div>
+<div class="ph def"><span class="no">Phase 15 · deferred</span><span class="t">SER in <code>extend</code></span></div>
+<div class="ph wip"><span class="no">Phase 16</span><span class="t">GPU displacement through the generated MaterialX program</span></div>
+<div class="ph ns"><span class="no">Phase 17</span><span class="t">External-memory AOV interop for Hgi hosts</span></div>
+<div class="ph wip"><span class="no">Phase 18</span><span class="t">Gaussian splats</span></div>
+<div class="ph wip"><span class="no">Phase 19</span><span class="t">Fog volumes</span></div>
+<div class="ph wip"><span class="no">Phase 20</span><span class="t">Per-ray-kind visibility from RenderMan and Karma attributes</span></div>
+<!-- END GENERATED phases -->
+  </div>
+  <div class="next">
+    <div><h3>Native reconstruction</h3><p>A denoiser that works on any Vulkan 1.3 GPU, so real-time viewing does not depend on NVIDIA hardware.</p></div>
+    <div><h3>Physical cameras</h3><p>Camera responsivity curves from the physical-camera proposal complete the chain from light emitted in lumens to a sensor's response.</p></div>
+    <div><h3>Dispersion</h3><p>Wavelength-dependent refraction with hero-wavelength MIS, the last spectral effect the transport does not yet carry.</p></div>
+    <div><h3>Linux</h3><p>The build is scripted for Linux but has not yet been compiled there.</p></div>
+  </div>
+</section>
+
+<section aria-labelledby="std">
+  <div class="sechead">
+    <span class="eyebrow">Standards</span>
+    <h2 id="std">Built on OpenUSD's direction, not around it</h2>
+    <p class="muted">Where USD has no standard yet, hdClaude follows the open proposals as drafted, so scenes authored today keep working as the proposals land. Where a draft is vague, hdClaude's choices are recorded and the open questions are queued for the authors.</p>
+  </div>
+  <div class="tbl">
+    <table class="proposals">
+      <thead><tr><th>Proposal</th><th>Status</th><th>In hdClaude</th></tr></thead>
+      <tbody>
+        <tr><td>UsdLux physical lighting</td><td>Draft</td><td>Spectral illuminants, plus photometric and radiometric power and illuminance, are implemented. Four discrepancies in the draft are queued for its authors.</td></tr>
+        <tr><td>Physical cameras</td><td>Branch</td><td>Exposure is already in OpenUSD's UsdGeomCamera and is applied. Responsivity curves are deferred.</td></tr>
+        <tr><td>Stage metrics in Hydra</td><td>To raise</td><td>Metres per unit and up axis reach lights through hdClaude's own adapter. They belong in Hydra's scene globals, so every renderer can read them.</td></tr>
+        <tr><td>Material spectra</td><td>None yet</td><td>hdClaude reads its own <code>hdclaude:spectrum:*</code> attributes until a MaterialX proposal exists.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<footer>
+  hdClaude · OpenUSD Hydra render delegate · MIT licence · Figures from the project's gallery, test suite and phase tracker as of <!-- BEGIN GENERATED asof-footer -->15 November 2026<!-- END GENERATED asof-footer -->. Timings are wall-clock on one NVIDIA GeForce RTX 5060 Ti.
+</footer>
+
+</div>
+
+<script>
+(function () {
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('.rail [role="tab"]'));
+  var panels = tabs.map(function (t) { return document.getElementById(t.getAttribute('aria-controls')); });
+  var prev = document.getElementById('prev'), next = document.getElementById('next'), count = document.getElementById('count');
+  var current = 0;
+  function show(i, focus) {
+    if (i < 0 || i >= tabs.length) return;
+    current = i;
+    tabs.forEach(function (t, k) {
+      var on = k === i;
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+      t.tabIndex = on ? 0 : -1;
+      panels[k].hidden = !on;
+    });
+    prev.disabled = i === 0;
+    next.disabled = i === tabs.length - 1;
+    count.textContent = 'Step ' + (i + 1) + ' of ' + tabs.length;
+    if (focus) tabs[i].focus();
+    try { tabs[i].scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (e) {}
+  }
+  tabs.forEach(function (t, k) {
+    t.addEventListener('click', function () { show(k, false); });
+    t.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowRight') { e.preventDefault(); show(Math.min(current + 1, tabs.length - 1), true); }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); show(Math.max(current - 1, 0), true); }
+      else if (e.key === 'Home') { e.preventDefault(); show(0, true); }
+      else if (e.key === 'End') { e.preventDefault(); show(tabs.length - 1, true); }
+    });
+  });
+  prev.addEventListener('click', function () { show(current - 1, false); });
+  next.addEventListener('click', function () { show(current + 1, false); });
+  document.getElementById('deck').addEventListener('keydown', function (e) {
+    if (e.target.closest && e.target.closest('.rail')) return;
+    if (e.key === 'ArrowRight') show(current + 1, false);
+    if (e.key === 'ArrowLeft') show(current - 1, false);
+  });
+  show(0, false);
+})();
+</script>
+</body>
+</html>

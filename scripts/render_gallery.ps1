@@ -321,6 +321,15 @@ function Update-GalleryMarkdown($timings) {
     }
     $updated = [Text.RegularExpressions.Regex]::Replace($source, $pattern, $table)
     [IO.File]::WriteAllText($galleryMarkdown, $updated, [Text.UTF8Encoding]::new($false))
+
+    # The landing page quotes these timings and this scene count, so it is
+    # regenerated with the table rather than left for ctest's
+    # usd_landing_page to catch.
+    $generator = Join-Path $projectRoot 'scripts\generate_landing_page.py'
+    & python $generator
+    if ($LASTEXITCODE -ne 0) {
+        throw 'scripts/generate_landing_page.py could not regenerate index.html'
+    }
 }
 
 $timings = Read-Timings

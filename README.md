@@ -3,6 +3,11 @@
 An out-of-tree OpenUSD Hydra render delegate: a **spectral, wavefront GPU path
 tracer** whose shading is **MaterialX-generated code, compiled and executed**.
 
+**[Project overview](https://paoloemilioselva.github.io/hdClaude/)**: what
+hdClaude renders today, the evidence that it is right, and the USD → Hydra →
+GPU pipeline step by step. It is [`index.html`](index.html), served by GitHub
+Pages from the repository root.
+
 > **Status: under construction.** The design is settled and recorded; the
 > renderer is being built phase by phase. See
 > [docs/roadmap.md](docs/roadmap.md) for what works today. Nothing in this

@@ -185,6 +185,7 @@ if(HDCLAUDE_ENABLE_MATERIALX)
             "usd_ribbon_curves|ribbon_curves"
             "usd_depth|depth"
             "usd_houdini_parameters|houdini_parameters"
+            "usd_landing_page|landing_page"
             "usd_cornell_box|cornell_box_reference"
             "usd_physical_illuminant|physical_illuminant"
             "usd_physical_brightness|physical_brightness")

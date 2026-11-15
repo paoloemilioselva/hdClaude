@@ -17,6 +17,12 @@ and the evidence is recorded here.
 4. Work one reviewable phase boundary at a time.
 5. Re-render and commit the full gallery after every render-affecting change.
 6. Record timing, image, validation, and hardware evidence in the phase entry.
+7. Keep the landing page, [`index.html`](../index.html), true in the same
+   commit. Its figures are generated from this tracker, `gallery.md` and the
+   test list by `scripts/generate_landing_page.py` (ctest's
+   `usd_landing_page` fails while they are stale). Its prose is not: a change
+   that ships, changes or retires a capability, a pipeline step or a claim the
+   page makes updates the page's capability list, walkthrough or evidence too.
 
 ## Phase tracker
 
@@ -396,6 +402,7 @@ reversed.
 | 2026-11-15 | The stage's `metersPerUnit` and up axis reach lights through a keyless UsdImaging adapter of hdClaude's own; the render settings only stand in where no adapter ran | Hydra 2.0's scene globals hold the camera, render settings, time codes and current frame, and no stage metrics, and the delegate API passes neither. An adapter is handed the prim, and so the stage. A setting is a value a user can get wrong for a stage that already says; one that contradicts the stage is reported rather than obeyed. The metrics belong in `HdSceneGlobalsSchema`, recorded to raise in [usd-proposals.md](usd-proposals.md) |
 | 2026-11-15 | UsdLuxShapingAPI's cone and focus follow UsdLux's own formulas | Checking the power integral against closed forms showed the shader's cone softness ran backwards -- 0 fell off across the whole cone and 1 was a hard edge -- and was smoothstepped in the cosine rather than the angle, its focus was about the light's axis rather than the emitting point's normal, and a cone wider than 90 degrees was cut at 90. Collective Project 001's spot (45 degrees, softness 0.75) is the one gallery light affected |
 | 2026-11-15 | A dome's colour temperature, or illuminant, comes from the first dome whether or not it has a map | It was read only from a dome with a map, so a plain-coloured dome with `enableColorTemperature` emitted D65. `usd_physical_illuminant` covers both |
+| 2026-11-15 | The project's landing page is `index.html` at the repository root, served by GitHub Pages; its figures are generated from the records they summarise and checked by ctest, its prose is kept current by hand in the commit that changes what it describes | GitHub's repository page renders only `README.md`, which cannot carry the page's diagrams or its stepped walkthrough, so the README links to the page. A figure typed by hand goes stale silently; one regenerated from `gallery.md`, the phase tracker and `tests/CMakeLists.txt`, and failing a test when it is not, cannot. Gallery images are the committed baselines themselves, so an accepted re-render updates the page with no copy to forget |
 | 2026-11-12 | Curves with normals are ribbons, built as a triangle strip in either curve mode | UsdGeomBasisCurves images curves with widths and normals "as ribbons oriented in the direction of the interpolated normal vectors", their widths the ribbon's width; hdClaude drew every curve as a tube, so the Moana island's palm fronds, pandanus leaves and beach grass shaded as clouds of cylinders. A ribbon is flat, so a span of one is exactly a quad across the curve along cross(N, T), facing N: the strip Storm draws, two triangles a span against a swept tube's twelve, built as a mesh so it is intersected, two-sided and shaded with N as every mesh is. Normals carry their own interpolation -- vertex through the basis, varying linearly per segment with the segment-plus-one count the schema warns about, uniform, constant -- and a count matching none is refused by name. A point whose normal is zero or along the curve is given no width and counted in the prim's warning, rather than an orientation the asset did not author |
 
 ## Open questions
