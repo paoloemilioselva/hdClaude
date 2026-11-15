@@ -10,6 +10,7 @@ a pair of markers
 
 and is rewritten here from the record it summarises:
 
+    version   the project version, from CMakeLists.txt's project()
     asof-*    the newest date in the roadmap's decision log and gallery.md's
               timing table
     figures   the Cornell box's worst error (gallery.md), the closure count
@@ -44,6 +45,7 @@ PAGE = os.path.join(ROOT, "index.html")
 GALLERY_MD = os.path.join(ROOT, "gallery.md")
 ROADMAP_MD = os.path.join(ROOT, "docs", "roadmap.md")
 TESTS_CMAKE = os.path.join(ROOT, "tests", "CMakeLists.txt")
+ROOT_CMAKE = os.path.join(ROOT, "CMakeLists.txt")
 
 # The gallery strip: which scenes, in what order, and what the caption says
 # besides the wall time. The title is the one gallery.md's timing table uses.
@@ -80,7 +82,7 @@ STATE_CLASS = {
 
 # Regions that sit inside a line of text; every other region is a block whose
 # markers are on lines of their own.
-INLINE_REGIONS = {"asof-header", "asof-footer", "cornell-note"}
+INLINE_REGIONS = {"version", "asof-header", "asof-footer", "cornell-note"}
 
 
 class SourceError(Exception):
@@ -244,6 +246,13 @@ def decision_dates(roadmap_md):
     return dates
 
 
+def project_version(cmake):
+    m = re.search(r"^project\(hdClaude VERSION (\d+\.\d+\.\d+)\b", cmake, re.M)
+    if not m:
+        raise SourceError("CMakeLists.txt no longer declares project(hdClaude VERSION x.y.z)")
+    return m.group(1)
+
+
 def test_count(cmake):
     literal = set(re.findall(r"add_test\(NAME ([A-Za-z0-9_]+)", cmake))
     scripted = set(re.findall(r'"(usd_[A-Za-z0-9_]+)\|[A-Za-z0-9_]+"', cmake))
@@ -320,6 +329,7 @@ def regions():
             % (STATE_CLASS[state], label, inline_markdown(name)))
 
     return {
+        "version": project_version(read(ROOT_CMAKE)),
         "asof-header": asof,
         "asof-footer": asof,
         "figures": figures,
