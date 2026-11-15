@@ -259,9 +259,9 @@ does not load there.
   grid, the handles or the tumble pivot still sit wrong against hdClaude's
   surfaces, start Houdini with `HDCLAUDE_TRACE=1`: it prints the camera, the
   AOVs Houdini binds and the depth each frame writes.
-- **Shader cache.** The package sets `HDCLAUDE_SHADER_CACHE` to
-  `shader-cache` inside the install. Without it, the cache would land in
-  whatever directory Houdini was started from, which is often not writable.
+- **Shader cache.** The package leaves `HDCLAUDE_SHADER_CACHE` unset, so
+  Houdini uses the same per-user cache as usdview and every other host (see
+  [Shader caches](#shader-caches)).
 - **No tests and no tools.** The test and gallery scripts run against the
   standalone OpenUSD, so the preset turns `BUILD_TESTING` off and skips the
   image tools.
@@ -305,12 +305,32 @@ live from the environment when it starts:
 
 | Variable | What it holds | When unset |
 |---|---|---|
-| `HDCLAUDE_SHADER_CACHE` | compiled SPIR-V for the kernels and every material, one file per entry | `shader-cache/` under the directory the application was launched from |
+| `HDCLAUDE_SHADER_CACHE` | compiled SPIR-V for the kernels and every material, one file per entry | `%LOCALAPPDATA%\hdClaude\shader-cache` on Windows, `$XDG_CACHE_HOME/hdClaude/shader-cache` (default `~/.cache/hdClaude/shader-cache`) on Linux |
 | `HDCLAUDE_PIPELINE_CACHE` | the driver's compiled pipelines, one file | `pipeline.cache` in the SPIR-V cache directory |
 
-The fallback is deliberately visible: a launch with nothing configured creates
-`shader-cache/` where it started, which is how an unset variable gets noticed.
-`setup_usd_env.bat`/`.sh` do not set either one.
+The default does not depend on the directory a host was started from, so
+usdview, Houdini, husk and scripts all share one cache, and nothing needs to
+set either variable: not `setup_usd_env.bat`/`.sh`, not the Houdini package.
+Sharing is safe across builds and versions because an entry is addressed by
+everything that produced it -- source, generator, compiler, ABI -- so a
+different build simply misses. The one place that sets `HDCLAUDE_SHADER_CACHE`
+is the test suite: each ctest test uses `shader-cache/` in its build tree, so a
+kernel that no longer compiles cannot pass on an entry a host session stored,
+and tests do not write into the user's cache.
+
+Every SPIR-V cache miss prints one line to stderr before the compile starts:
+
+```
+hdClaude: compiling <module> (not in the shader cache <directory>)
+```
+
+A cold scene with a thousand materials prints a thousand lines, and a slow
+load whose output has stopped on one of them is waiting on that compile. A
+second run of the same scene prints nothing; if it still prints, either the
+key changed (a new build, MaterialX or kernel) or the process is reading a
+different directory from the one that was filled, which the line names. The
+driver's own pipeline compile, which `HDCLAUDE_PIPELINE_CACHE` saves, is not
+reported: Vulkan does not say whether a pipeline came from the cache.
 
 Both are meant for local disk. SPIR-V entries are named by a hash of
 everything that produces them and written to a per-process temporary that is

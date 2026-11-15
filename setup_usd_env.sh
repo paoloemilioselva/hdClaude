@@ -16,7 +16,7 @@
 #   USDEXTRA                install prefix for hdClaude's own plugin
 #   HDCLAUDE_VALIDATION_LAYER_DIR  directory holding VkLayer_khronos_validation.json
 #   HDCLAUDE_SHADER_CACHE   SPIR-V cache directory; unset, the renderer uses
-#                           shader-cache/ under the directory it was launched from
+#                           ${XDG_CACHE_HOME:-~/.cache}/hdClaude/shader-cache
 #   HDCLAUDE_PIPELINE_CACHE driver pipeline-cache file; unset, pipeline.cache in
 #                           the SPIR-V cache directory
 #   HDCLAUDE_SKIP_PYTHON    set to 1 to skip the Python conformance check

@@ -43,9 +43,6 @@ endif()
 set(HDCLAUDE_DEPS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/_deps" CACHE PATH
     "Directory for fetched third-party dependencies. Never committed.")
 
-set(HDCLAUDE_SHADER_CACHE_DIR "shader-cache" CACHE STRING
-    "Default runtime SPIR-V cache directory")
-
 if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT AND NOT HDCLAUDE_HOUDINI_VERSION)
   if(DEFINED ENV{USDEXTRA})
     set(CMAKE_INSTALL_PREFIX "$ENV{USDEXTRA}" CACHE PATH "hdClaude install prefix" FORCE)

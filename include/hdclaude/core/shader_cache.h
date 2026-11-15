@@ -74,12 +74,15 @@ class ShaderCache {
 };
 
 /// Where this process keeps its caches: HDCLAUDE_SHADER_CACHE when it is set,
-/// else `shader-cache` under the directory the application was launched from.
+/// else `hdClaude/shader-cache` in the user's cache folder --
+/// `%LOCALAPPDATA%\hdClaude\shader-cache` on Windows,
+/// `$XDG_CACHE_HOME/hdClaude/shader-cache` (default `~/.cache/...`) elsewhere.
 ///
-/// The fallback is deliberately visible rather than tucked into a temporary
-/// directory: a launch with nothing configured makes a folder where it was
-/// started, which is how an unset variable gets noticed. Read once, so a
-/// variable changed while running cannot split one process across two caches.
+/// The default is per user and independent of the working directory, so every
+/// host shares one cache and nothing has to set the variable; the key makes
+/// sharing safe across builds, since each entry is addressed by everything
+/// that produced it. Read once, so a variable changed while running cannot
+/// split one process across two caches.
 const std::filesystem::path& DefaultShaderCacheDirectory();
 
 /// The process-wide SPIR-V cache, in DefaultShaderCacheDirectory().

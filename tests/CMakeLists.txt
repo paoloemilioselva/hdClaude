@@ -212,3 +212,14 @@ if(HDCLAUDE_ENABLE_MATERIALX)
     add_dependencies(hdClaudeClosureValidationTests hdClaudeValidationLayers)
   endif()
 endif()
+
+# Every test gets a cache of its own build tree. Left to the default, a test
+# would read the user's cache, which a host session filled -- so a kernel or
+# material that no longer compiles could pass here on an entry compiled before
+# it broke -- and would write test-only entries into it. Appended last, after
+# every set_tests_properties above, because ENVIRONMENT set there replaces.
+get_property(_hdclaude_tests DIRECTORY PROPERTY TESTS)
+if(_hdclaude_tests)
+  set_property(TEST ${_hdclaude_tests} APPEND PROPERTY ENVIRONMENT
+      "HDCLAUDE_SHADER_CACHE=${CMAKE_CURRENT_BINARY_DIR}/shader-cache")
+endif()

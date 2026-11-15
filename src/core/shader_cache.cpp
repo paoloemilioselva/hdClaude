@@ -47,6 +47,39 @@ std::string UniqueSuffix()
            std::to_string(counter.fetch_add(1, std::memory_order_relaxed));
 }
 
+/// The user's cache root, by the platform's convention: %LOCALAPPDATA% on
+/// Windows, $XDG_CACHE_HOME or ~/.cache elsewhere. Every host -- usdview,
+/// Houdini, husk, a script -- resolves the same folder whatever directory it
+/// was started from, so a material compiled in one is a hit in the others.
+/// The system temporary directory is the last resort for an environment with
+/// no home at all.
+std::filesystem::path UserCacheRoot()
+{
+#ifdef _WIN32
+    const std::string local = EnvironmentValue("LOCALAPPDATA");
+    if (!local.empty()) {
+        return std::filesystem::path(local);
+    }
+    const std::string profile = EnvironmentValue("USERPROFILE");
+    if (!profile.empty()) {
+        return std::filesystem::path(profile) / "AppData" / "Local";
+    }
+#else
+    // The XDG specification says a relative value is invalid and is ignored.
+    const std::string xdg = EnvironmentValue("XDG_CACHE_HOME");
+    if (!xdg.empty() && std::filesystem::path(xdg).is_absolute()) {
+        return std::filesystem::path(xdg);
+    }
+    const std::string home = EnvironmentValue("HOME");
+    if (!home.empty()) {
+        return std::filesystem::path(home) / ".cache";
+    }
+#endif
+    std::error_code error;
+    std::filesystem::path temporary = std::filesystem::temp_directory_path(error);
+    return error ? std::filesystem::path(".") : temporary;
+}
+
 }  // namespace
 
 std::string ShaderCacheKey::Digest() const
@@ -193,9 +226,7 @@ const std::filesystem::path& DefaultShaderCacheDirectory()
         if (!configured.empty()) {
             return std::filesystem::path(configured);
         }
-        std::error_code error;
-        std::filesystem::path launched = std::filesystem::current_path(error);
-        return (error ? std::filesystem::path(".") : launched) / "shader-cache";
+        return UserCacheRoot() / "hdClaude" / "shader-cache";
     }();
     return directory;
 }

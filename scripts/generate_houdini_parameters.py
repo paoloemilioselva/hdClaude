@@ -26,12 +26,15 @@ Usage, in the standalone OpenUSD environment with the plugin installed:
 
 Defaults are the delegate's built-in ones: every HDCLAUDE_* variable is
 cleared first, because the delegate takes its defaults from the environment.
+The cache locations are kept: they are not render settings, and clearing them
+would send the test suite's compiles into the user's own cache.
 """
 
 import os
 import sys
 
-for _name in [n for n in os.environ if n.startswith("HDCLAUDE_")]:
+_KEPT = {"HDCLAUDE_SHADER_CACHE", "HDCLAUDE_PIPELINE_CACHE"}
+for _name in [n for n in os.environ if n.startswith("HDCLAUDE_") and n not in _KEPT]:
     del os.environ[_name]
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))

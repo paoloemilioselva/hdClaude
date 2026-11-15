@@ -1,6 +1,7 @@
 #include "hdclaude/gpu/glsl_compiler.h"
 
 #include <atomic>
+#include <cstdio>
 #include <mutex>
 
 #include <glslang/Public/ResourceLimits.h>
@@ -172,6 +173,15 @@ GlslCompileResult GlslCompiler::CompileCached(const std::string& source,
         result.spirv = std::move(*cached);
         return result;
     }
+
+    // A miss is said out loud, once per module, before the work starts: a scene
+    // that takes minutes to appear is otherwise indistinguishable from one that
+    // is loading, and the last line printed names the module being compiled. A
+    // warm cache prints nothing, so a second run that still prints is evidence
+    // the key changed or the cache is not where this process thinks it is.
+    std::fprintf(stderr, "hdClaude: compiling %s (not in the shader cache %s)\n",
+                 options.moduleName.c_str(), cache.Directory().string().c_str());
+    std::fflush(stderr);
 
     GlslCompileResult result = Compile(source, options);
     if (result.ok) {

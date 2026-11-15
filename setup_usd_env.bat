@@ -15,7 +15,7 @@ REM   USDEXTRA                install prefix for hdClaude's own plugin
 REM   HDCLAUDE_VALIDATION_LAYER_DIR  directory holding the validation layer
 REM   HDCLAUDE_DLSS_SDK       NVIDIA DLSS SDK root
 REM   HDCLAUDE_SHADER_CACHE   SPIR-V cache directory; unset, the renderer uses
-REM                           shader-cache\ under the directory it was launched from
+REM                           %LOCALAPPDATA%\hdClaude\shader-cache
 REM   HDCLAUDE_PIPELINE_CACHE driver pipeline-cache file; unset, pipeline.cache in
 REM                           the SPIR-V cache directory
 REM   HDCLAUDE_SKIP_PYTHON    set to 1 to skip the Python conformance check

@@ -1,8 +1,7 @@
 {
     "env": [
         { "HDCLAUDE_ROOT": "@HDCLAUDE_PACKAGE_ROOT@" },
-        { "HDCLAUDE_DEPTH_STYLE": "linear" },
-        { "HDCLAUDE_SHADER_CACHE": "$HDCLAUDE_ROOT/shader-cache" }
+        { "HDCLAUDE_DEPTH_STYLE": "linear" }
     ],
     "hpath": "$HDCLAUDE_ROOT"
 }

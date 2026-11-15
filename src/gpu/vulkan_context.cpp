@@ -841,8 +841,8 @@ std::filesystem::path VulkanContext::PipelineCachePath()
         return configured;
     }
     // Beside the SPIR-V cache rather than in the system temporary directory, so
-    // HDCLAUDE_SHADER_CACHE alone says where a machine keeps both -- and so an
-    // unconfigured launch shows both in the folder it started from.
+    // HDCLAUDE_SHADER_CACHE alone says where a machine keeps both, and an
+    // unconfigured launch keeps both in the user's cache folder.
     std::error_code error;
     std::filesystem::create_directories(DefaultShaderCacheDirectory(), error);
     return DefaultShaderCacheDirectory() / "pipeline.cache";
