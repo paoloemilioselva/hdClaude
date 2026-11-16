@@ -8792,3 +8792,31 @@ under an `upAxis` of Y. Both deliver their targets, and both settings are
 reported as contradicting the stage. The stage's metadata is read when a light
 is imaged; editing it mid-session is not seen until the light is imaged again,
 since UsdImaging does not invalidate prims on layer metadata.
+
+## 2026-11-16 -- A Houdini session that hung on texture upload
+
+A Houdini scene of 79 MaterialX materials stopped responding for over an hour.
+It was not shading: the SPIR-V compiles had all finished in the first four
+minutes. The UI thread was in `PathTracer::UploadTextures`
+(`path_tracer.cpp:902`, from `SetScene` at `:1196`), allocating one texture's
+image through VMA, and the NVIDIA driver was yielding in a loop inside
+`vkAllocateMemory`. The card's 16 GB were full -- 15.2 GB of it Houdini's,
+unchanged over 20 s, the GPU idle -- and the process had committed 73.6 GB of
+a 31 GB machine. Killing it returned the card to 0.7 GB and the system to 13 GB
+committed. How it was found is section 11 of `docs/debugging-a-render.md`.
+
+What hdClaude does that brings this on:
+
+- **No budget.** Nothing compares the scene's textures with the memory the
+  device has free (`VK_EXT_memory_budget`), so an over-large scene is not
+  reported; on this driver it does not even fail, it waits.
+- **Every texture at full size, uncompressed, without mipmaps.** `UploadTexture`
+  creates RGBA8 or RGBA16F images at the authored resolution: an 8K map is
+  256 MB, or 512 MB in half float. `HDCLAUDE_TEXTURE_QUALITY` (`medium` caps
+  an edge at 1024, `low` at 256) is the only limit, and it defaults to `high`.
+- **Host copies probably kept.** The 73.6 GB committed is most likely decoded
+  texels held after upload; that is unmeasured.
+
+The same console showed 79 of the materials as `hdclaude_usd_full`: the module
+label is `HdMtlxCreateNameFromPath`, which in this build is the prim's leaf
+name, so the compile message cannot tell same-named materials apart.

@@ -184,3 +184,34 @@ where a `max = 1.0` in an otherwise dim EXR comes from.
   for a defect that was never there. So a number that is going into a document
   is re-run from a clean tree first -- `git status` before the measurement, not
   only before the commit.
+
+## 11. A host that seems stuck: read what it is doing before guessing
+
+A scene that "loads forever" in Houdini has three usual suspects -- shader
+compilation, scene processing, GPU memory -- and each looks the same from the
+outside. On 2026-11-16 a Houdini session had sat for an hour, and the answer
+took four measurements, none of which disturbed the process:
+
+1. **Threads, not the process.** Per-thread CPU over five seconds
+   (`Get-Process -Id <pid>` and each thread's `TotalProcessorTime`, sampled
+   twice) showed one thread at 100% and the other 96 idle: a single-threaded
+   loop, not a parallel compile.
+2. **What hdClaude said.** Every SPIR-V cache miss prints
+   `hdClaude: compiling <module>`. Houdini's "Houdini Console" is its own dialog
+   (class `#32770`), not a Windows console -- `AttachConsole` fails with
+   error 6 -- but UI Automation reads its edit control's text. The last line
+   was a compile, and the newest file in the shader cache was an hour old, so
+   compilation had finished long before.
+3. **The stack.** No debugger was installed. A small DbgHelp program --
+   `SuspendThread`, `GetThreadContext`, `StackWalk64`, `ResumeThread`, eight
+   samples 0.7 s apart -- symbolises against the RelWithDebInfo PDB in
+   `build/houdini-22.0/plugin/usd/hdClaude.pdb`. All eight samples were
+   identical: `PathTracer::UploadTexture` -> `vmaCreateImage` ->
+   `vkAllocateMemory`, with the NVIDIA driver in a `SwitchToThread` loop.
+4. **Memory, the machine's and the card's.** `nvidia-smi` showed 15.9 of
+   16.3 GB in use with the GPU at 0%; the `GPU Process Memory` performance
+   counters attributed 15.2 GB to Houdini, unchanged over 20 s; and the system
+   was at 85 of 87 GB committed, 73.6 GB of it Houdini's.
+
+So the driver was waiting for VRAM that would never be freed: a livelock, not
+a slow load. See the implementation note of the same day.
