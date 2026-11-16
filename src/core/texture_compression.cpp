@@ -658,44 +658,63 @@ void EncodeBc7Block(const std::uint8_t rgba[64], std::uint8_t block[16])
     std::memcpy(block, fiveError < sixError ? five : six, 16);
 }
 
-// --- BC6H, mode 11, unsigned ---------------------------------------------------
+// --- BC6H, mode 11, unsigned and signed ---------------------------------------
 
 namespace {
 
 /// Mode 11's endpoint, stored in ten bits, as the decoder widens it to the
-/// sixteen it interpolates in (unquantize, for an unsigned format).
-int Bc6hUnquantise(int code)
+/// sixteen it interpolates in (unquantize). Signed codes are ten-bit two's
+/// complement, and keep one bit fewer of magnitude.
+int Bc6hUnquantise(int code, bool isSigned)
 {
-    if (code == 0) {
-        return 0;
+    if (!isSigned) {
+        if (code == 0) {
+            return 0;
+        }
+        if (code == 1023) {
+            return 0xFFFF;
+        }
+        return ((code << 16) + 0x8000) >> 10;
     }
-    if (code == 1023) {
-        return 0xFFFF;
+    const bool negative = code < 0;
+    const int magnitude = negative ? -code : code;
+    int widened = 0;
+    if (magnitude == 0) {
+        widened = 0;
+    } else if (magnitude >= 511) {
+        widened = 0x7FFF;
+    } else {
+        widened = ((magnitude << 15) + 0x4000) >> 9;
     }
-    return ((code << 16) + 0x8000) >> 10;
+    return negative ? -widened : widened;
 }
 
-/// The half-float bit pattern a texel decodes to.
-int Bc6hDecode(int unquantised0, int unquantised1, int index)
+/// What a texel decodes to, as a signed integer: the half bit pattern for an
+/// unsigned block, and the pattern's magnitude carrying the value's sign for a
+/// signed one -- the line along which the format interpolates.
+int Bc6hDecode(int unquantised0, int unquantised1, int index, bool isSigned)
 {
     const int interpolated =
         (unquantised0 * (64 - kWeights4[index]) + unquantised1 * kWeights4[index] + 32) >>
         6;
-    return (interpolated * 31) >> 6;
+    if (!isSigned) {
+        return (interpolated * 31) >> 6;
+    }
+    return interpolated < 0 ? -(((-interpolated) * 31) >> 5) : (interpolated * 31) >> 5;
 }
 
-float Bc6hIndices(const float* halfBits, const int code0[3], const int code1[3],
-                  int indices[16])
+float Bc6hIndices(const float* targets, const int code0[3], const int code1[3],
+                  bool isSigned, int indices[16])
 {
     int u0[3], u1[3];
     for (int c = 0; c < 3; ++c) {
-        u0[c] = Bc6hUnquantise(code0[c]);
-        u1[c] = Bc6hUnquantise(code1[c]);
+        u0[c] = Bc6hUnquantise(code0[c], isSigned);
+        u1[c] = Bc6hUnquantise(code1[c], isSigned);
     }
     float palette[16][3];
     for (int k = 0; k < 16; ++k) {
         for (int c = 0; c < 3; ++c) {
-            palette[k][c] = static_cast<float>(Bc6hDecode(u0[c], u1[c], k));
+            palette[k][c] = static_cast<float>(Bc6hDecode(u0[c], u1[c], k, isSigned));
         }
     }
     float error = 0.0f;
@@ -704,7 +723,7 @@ float Bc6hIndices(const float* halfBits, const int code0[3], const int code1[3],
         for (int k = 0; k < 16; ++k) {
             float d = 0.0f;
             for (int c = 0; c < 3; ++c) {
-                const float delta = halfBits[i * 3 + c] - palette[k][c];
+                const float delta = targets[i * 3 + c] - palette[k][c];
                 d += delta * delta;
             }
             if (d < best) {
@@ -717,39 +736,50 @@ float Bc6hIndices(const float* halfBits, const int code0[3], const int code1[3],
     return error;
 }
 
-/// An endpoint in the decoder's sixteen-bit interpolation space -- the half
-/// bit pattern scaled by 64/31, which the decoder's final step undoes -- as
-/// the nearest ten-bit code.
-void QuantiseBc6h(const float e[3], int code[3])
+/// An endpoint in the decoder's interpolation space as the nearest ten-bit
+/// code: unquantize is close to 64 code + 32 in both forms.
+void QuantiseBc6h(const float e[3], bool isSigned, int code[3])
 {
     for (int c = 0; c < 3; ++c) {
-        code[c] = std::clamp(static_cast<int>(std::lround((e[c] - 32.0f) / 64.0f)), 0,
-                             1023);
+        if (!isSigned) {
+            code[c] = std::clamp(static_cast<int>(std::lround((e[c] - 32.0f) / 64.0f)), 0,
+                                 1023);
+        } else {
+            const float magnitude = std::abs(e[c]);
+            const int stored = std::clamp(
+                static_cast<int>(std::lround((magnitude - 32.0f) / 64.0f)), 0, 511);
+            code[c] = e[c] < 0.0f ? -stored : stored;
+        }
     }
 }
 
 }  // namespace
 
-void EncodeBc6hBlock(const std::uint16_t rgb[48], std::uint8_t block[16])
+void EncodeBc6hBlock(const std::uint16_t rgb[48], std::uint8_t block[16],
+                     bool isSigned)
 {
     // Fitted in the decoder's interpolation space, where its arithmetic is
     // linear; the error is measured on the half bit patterns it decodes to,
     // which is close to a relative error in the value -- what an HDR texel's
-    // precision is about.
-    float halfBits[48];
+    // precision is about. For a signed block the pattern's magnitude carries
+    // the value's sign, which is the line the signed format interpolates on.
+    float targets[48];
     float points[48];
+    const float scale = isSigned ? 32.0f / 31.0f : 64.0f / 31.0f;
     for (int i = 0; i < 48; ++i) {
-        halfBits[i] = static_cast<float>(std::min<std::uint16_t>(rgb[i], 0x7BFF));
-        points[i] = halfBits[i] * (64.0f / 31.0f);
+        const int magnitude = std::min<int>(rgb[i] & 0x7FFF, 0x7BFF);
+        const bool negative = isSigned && (rgb[i] & 0x8000) != 0;
+        targets[i] = static_cast<float>(negative ? -magnitude : magnitude);
+        points[i] = targets[i] * scale;
     }
 
     float e0[4], e1[4];
     AxisEndpoints(points, 16, 3, e0, e1);
     int code0[3], code1[3];
-    QuantiseBc6h(e0, code0);
-    QuantiseBc6h(e1, code1);
+    QuantiseBc6h(e0, isSigned, code0);
+    QuantiseBc6h(e1, isSigned, code1);
     int indices[16];
-    float error = Bc6hIndices(halfBits, code0, code1, indices);
+    float error = Bc6hIndices(targets, code0, code1, isSigned, indices);
 
     for (int iteration = 0; iteration < 2; ++iteration) {
         float weights[16];
@@ -760,10 +790,10 @@ void EncodeBc6hBlock(const std::uint16_t rgb[48], std::uint8_t block[16])
         float r1[4] = {e1[0], e1[1], e1[2], 0.0f};
         RefitEndpoints(points, weights, 16, 3, r0, r1);
         int t0[3], t1[3];
-        QuantiseBc6h(r0, t0);
-        QuantiseBc6h(r1, t1);
+        QuantiseBc6h(r0, isSigned, t0);
+        QuantiseBc6h(r1, isSigned, t1);
         int trial[16];
-        const float trialError = Bc6hIndices(halfBits, t0, t1, trial);
+        const float trialError = Bc6hIndices(targets, t0, t1, isSigned, trial);
         if (!(trialError < error)) {
             break;
         }
@@ -775,6 +805,8 @@ void EncodeBc6hBlock(const std::uint16_t rgb[48], std::uint8_t block[16])
         std::memcpy(e1, r1, sizeof(r1));
     }
 
+    const int lowest = isSigned ? -511 : 0;
+    const int highest = isSigned ? 511 : 1023;
     for (int pass = 0; pass < 2; ++pass) {
         bool improved = false;
         for (int which = 0; which < 2; ++which) {
@@ -783,12 +815,12 @@ void EncodeBc6hBlock(const std::uint16_t rgb[48], std::uint8_t block[16])
                     int t0[3] = {code0[0], code0[1], code0[2]};
                     int t1[3] = {code1[0], code1[1], code1[2]};
                     int* t = which == 0 ? t0 : t1;
-                    if (t[c] + step < 0 || t[c] + step > 1023) {
+                    if (t[c] + step < lowest || t[c] + step > highest) {
                         continue;
                     }
                     t[c] += step;
                     int trial[16];
-                    const float trialError = Bc6hIndices(halfBits, t0, t1, trial);
+                    const float trialError = Bc6hIndices(targets, t0, t1, isSigned, trial);
                     if (trialError < error) {
                         error = trialError;
                         std::memcpy(code0, t0, sizeof(t0));
@@ -817,10 +849,10 @@ void EncodeBc6hBlock(const std::uint16_t rgb[48], std::uint8_t block[16])
     BitWriter bits{block};
     bits.Put(0x03, 5);   // mode 11: ten-bit endpoints, one region, no transform
     for (int c = 0; c < 3; ++c) {
-        bits.Put(static_cast<std::uint32_t>(code0[c]), 10);
+        bits.Put(static_cast<std::uint32_t>(code0[c]) & 0x3FFu, 10);
     }
     for (int c = 0; c < 3; ++c) {
-        bits.Put(static_cast<std::uint32_t>(code1[c]), 10);
+        bits.Put(static_cast<std::uint32_t>(code1[c]) & 0x3FFu, 10);
     }
     bits.Put(static_cast<std::uint32_t>(indices[0]), 3);
     for (int i = 1; i < 16; ++i) {
@@ -838,10 +870,12 @@ std::vector<std::uint8_t> EncodeBlocks(BlockEncoding encoding, const void* texel
                                   blockBytes);
     const auto* bytes = static_cast<const std::uint8_t*>(texels);
     const auto* halves = static_cast<const std::uint16_t*>(texels);
+    const bool halfFloat =
+        encoding == BlockEncoding::Bc6h || encoding == BlockEncoding::Bc6hSigned;
     const int channels = encoding == BlockEncoding::Bc4   ? 1
                          : encoding == BlockEncoding::Bc5 ? 2
-                         : encoding == BlockEncoding::Bc6h ? 3
-                                                           : 4;
+                         : halfFloat                      ? 3
+                                                          : 4;
 
     for (std::uint32_t by = 0; by < blocksHigh; ++by) {
         for (std::uint32_t bx = 0; bx < blocksWide; ++bx) {
@@ -854,7 +888,7 @@ std::vector<std::uint8_t> EncodeBlocks(BlockEncoding encoding, const void* texel
                     const std::size_t texel = static_cast<std::size_t>(y) * width + x;
                     const int i = static_cast<int>(row * 4 + column);
                     for (int c = 0; c < channels; ++c) {
-                        if (encoding == BlockEncoding::Bc6h) {
+                        if (halfFloat) {
                             gathered16[i * 3 + c] = halves[texel * 3 + c];
                         } else {
                             gathered8[i * channels + c] = bytes[texel * channels + c];
@@ -868,6 +902,9 @@ std::vector<std::uint8_t> EncodeBlocks(BlockEncoding encoding, const void* texel
                 case BlockEncoding::Bc4:  EncodeBc4Block(gathered8, block); break;
                 case BlockEncoding::Bc5:  EncodeBc5Block(gathered8, block); break;
                 case BlockEncoding::Bc6h: EncodeBc6hBlock(gathered16, block); break;
+                case BlockEncoding::Bc6hSigned:
+                    EncodeBc6hBlock(gathered16, block, true);
+                    break;
                 case BlockEncoding::Bc7:  EncodeBc7Block(gathered8, block); break;
             }
         }

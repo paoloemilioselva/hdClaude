@@ -6,15 +6,18 @@
 // endpoints and an index per texel, and what the sampler returns is the
 // nearest of the levels between them.
 //
-// Each encoder writes one mode of its format, chosen as the single-subset mode
-// with the most index precision:
+// Each encoder writes single-subset modes only:
 //
 //   BC4   one channel, 8 bytes a block      two 8-bit endpoints, 3-bit indices
 //   BC5   two channels, 16 bytes a block    two BC4 blocks
 //   BC6H  RGB half, 16 bytes a block        mode 11: 10-bit endpoints, 4-bit
-//                                           indices; unsigned values only
-//   BC7   RGBA 8-bit, 16 bytes a block      mode 6: 7-bit endpoints with a
-//                                           p-bit each, 4-bit indices
+//                                           indices; unsigned, or signed with
+//                                           a bit less magnitude
+//   BC7   RGBA 8-bit, 16 bytes a block      mode 6 (7-bit endpoints with a
+//                                           p-bit each, 4-bit indices) or
+//                                           mode 5 (colour and alpha on lines
+//                                           of their own), per block, by
+//                                           whichever decodes nearer
 //
 // Endpoints come from the block's principal axis and are then refitted to the
 // indices by least squares; indices are chosen against the exact palette the
@@ -41,18 +44,20 @@ void EncodeBc5Block(const std::uint8_t values[32], std::uint8_t block[16]);
 /// expects.
 void EncodeBc7Block(const std::uint8_t rgba[64], std::uint8_t block[16]);
 
-/// One 4x4 block of RGB half floats (their bit patterns), row by row. Every
-/// value must be finite and not negative: BC6H_UFLOAT has no sign, and the
-/// caller decides what to do with an image that does.
-void EncodeBc6hBlock(const std::uint16_t rgb[48], std::uint8_t block[16]);
+/// One 4x4 block of RGB half floats (their bit patterns), row by row, every
+/// value finite. Unsigned -- BC6H_UFLOAT -- unless `isSigned`, which is what an
+/// image holding a negative value needs; BC6H_UFLOAT has no sign, and signed
+/// blocks have one bit less magnitude.
+void EncodeBc6hBlock(const std::uint16_t rgb[48], std::uint8_t block[16],
+                     bool isSigned = false);
 
 /// A whole image, in blocks, row of blocks after row of blocks, in the same row
 /// order as `texels`. An edge that is not a multiple of four repeats its last
 /// row or column into the block, which the sampler never reads.
 ///
-/// `texels` is tightly packed with `channels` components a texel: one byte
-/// each for BC4 (1), BC5 (2) and BC7 (4), one half each for BC6H (3).
-enum class BlockEncoding : std::uint8_t { Bc4, Bc5, Bc6h, Bc7 };
+/// `texels` is tightly packed: one byte a component for BC4 (one), BC5 (two)
+/// and BC7 (four), one half a component for BC6H (three).
+enum class BlockEncoding : std::uint8_t { Bc4, Bc5, Bc6h, Bc6hSigned, Bc7 };
 std::vector<std::uint8_t> EncodeBlocks(BlockEncoding encoding, const void* texels,
                                        std::uint32_t width, std::uint32_t height);
 

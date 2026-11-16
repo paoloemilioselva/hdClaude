@@ -821,6 +821,52 @@ void TestBc6hReadsBackHdrValues()
     }
 }
 
+/// Signed BC6H for an image that goes below zero -- a displacement, or the
+/// filtering ringing of an IOR map -- in the same error bound, and a block of
+/// exact zeros decoding to zero.
+void TestBc6hSignedReadsBackNegativeValues()
+{
+    std::uint16_t rgb[48];
+    float source[48];
+    for (int i = 0; i < 16; ++i) {
+        for (int c = 0; c < 3; ++c) {
+            const float value =
+                -0.1f * std::pow(10.0f, float(i) / 15.0f) * (1.0f + 0.1f * c);
+            source[i * 3 + c] = value;
+            rgb[i * 3 + c] = GfHalf(value).bits();
+        }
+    }
+    std::uint8_t block[16];
+    hdclaude::EncodeBc6hBlock(rgb, block, true);
+    std::uint16_t decoded[48];
+    bcdec_bc6h_half(block, decoded, 12, 1);
+    double worst = 0.0;
+    int signs = 0;
+    for (int i = 0; i < 48; ++i) {
+        GfHalf half;
+        half.setBits(decoded[i]);
+        const double value = double(float(half));
+        worst = std::max(worst, std::abs(value - source[i]) / std::abs(double(source[i])));
+        signs += (value < 0.0) == (source[i] < 0.0f) ? 0 : 1;
+    }
+    std::printf("  BC6H mode 11 signed, -0.1..-1.2: worst relative error %.4f\n", worst);
+    // A decade below zero, within the bound the unsigned form keeps above it
+    // -- with one bit less magnitude to spend. Values of both signs in one
+    // block share one line through the half's log-like encoding, so a block
+    // straddling zero widely is the signed form's weak case, and not asserted.
+    CHECK(worst < 0.1);
+    CHECK_EQ(signs, 0);
+
+    std::uint16_t zeros[48] = {};
+    hdclaude::EncodeBc6hBlock(zeros, block, true);
+    bcdec_bc6h_half(block, decoded, 12, 1);
+    int nonZero = 0;
+    for (const std::uint16_t value : decoded) {
+        nonZero += (value & 0x7FFF) != 0 ? 1 : 0;
+    }
+    CHECK_EQ(nonZero, 0);
+}
+
 void TestBlocksCoverAnEdgeThatIsNotAMultipleOfFour()
 {
     // Six by five: two blocks across, two down, the last of each half used.
@@ -877,5 +923,6 @@ int main()
     TestBc7ReadsBackGradientsAndMasks();
     TestBc6hReadsBackHdrValues();
     TestBlocksCoverAnEdgeThatIsNotAMultipleOfFour();
+    TestBc6hSignedReadsBackNegativeValues();
     return hdclaude_test::Summarize("hydra");
 }
