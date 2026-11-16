@@ -93,6 +93,10 @@ class HdClaudeTexturePool {
     struct Request {
         std::string assetPath;
         HdClaudeTextureColorSpace colorSpace = HdClaudeTextureColorSpace::Auto;
+        /// Whether this material can read the image's alpha
+        /// (TextureImage::alphaRead). A slot's image is read for its alpha if
+        /// any request for it is.
+        bool readsAlpha = true;
     };
 
     /// What one AcquireAll decoded, as opposed to found already in the pool or
@@ -142,6 +146,8 @@ class HdClaudeTexturePool {
     std::vector<std::shared_ptr<const hdclaude::TextureImage>> _images;
     /// Whether each slot holds a decoded image rather than a deferred one.
     std::vector<bool> _decoded;
+    /// Whether any request for each slot reads its alpha.
+    std::vector<bool> _alphaRead;
   public:
     /// Failures, shared with every deferred image's decoder: those run on the
     /// renderer's threads, after AcquireAll has returned, and possibly after a

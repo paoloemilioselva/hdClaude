@@ -601,6 +601,28 @@
         disablewhen "{ textureMemoryLimit_control == block } { textureMemoryLimit_control == none }"
     }
     parm {
+        name    "textureCompression_control"
+        label   "Texture compression"
+        type    string
+        default { "none" }
+        menujoin {
+            [ "import loputils" ]
+            [ "return loputils.createEditPropertiesControlMenu(kwargs, 'bool')" ]
+            language python
+        }
+        parmtag { "sidefx::look" "icon" }
+    }
+    parm {
+        name    "textureCompression"
+        label   "Texture compression"
+        type    toggle
+        size    1
+        default { 0 }
+        parmtag { "spare_category" "Textures" }
+        parmtag { "usdvaluetype" "bool" }
+        disablewhen "{ textureCompression_control == block } { textureCompression_control == none }"
+    }
+    parm {
         name    "hostInstanceData_control"
         label   "Instance data in system memory"
         type    string

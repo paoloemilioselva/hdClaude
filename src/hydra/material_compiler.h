@@ -54,6 +54,10 @@ class HdClaudeMaterialCompiler {
     struct TextureRequest {
         std::string path;
         HdClaudeTextureColorSpace colorSpace = HdClaudeTextureColorSpace::Auto;
+        /// Whether the image node can hand its alpha to anything: a `color4`
+        /// or `vector4` image, or a multi-output one -- `UsdUVTexture` -- whose
+        /// `a` or `rgba` output is connected. True when it cannot be told.
+        bool readsAlpha = true;
     };
 
     /// A measured reflectance a material's colour input carries, once it has

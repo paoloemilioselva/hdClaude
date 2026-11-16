@@ -83,6 +83,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (sphereAxial)
                          (textureQuality)
                          (textureMemoryLimit)
+                         (textureCompression)
                          (diffuseAlbedo)
                          (specularAlbedo)
                          (roughness));
@@ -111,6 +112,7 @@ const std::vector<std::pair<TfToken, std::string>>& HdClaudeEnvironmentSettings(
         {_tokens->tlasChunkSize, "HDCLAUDE_TLAS_CHUNK_SIZE"},
         {_tokens->textureQuality, "HDCLAUDE_TEXTURE_QUALITY"},
         {_tokens->textureMemoryLimit, "HDCLAUDE_TEXTURE_MEMORY_LIMIT"},
+        {_tokens->textureCompression, "HDCLAUDE_TEXTURE_COMPRESSION"},
         {_tokens->curveGeometry, "HDCLAUDE_CURVE_GEOMETRY"},
         {_tokens->curveSides, "HDCLAUDE_CURVE_SIDES"},
         {_tokens->curveSegmentSamples, "HDCLAUDE_CURVE_SEGMENT_SAMPLES"},
@@ -308,6 +310,12 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
                 << '\n'
                 << "textureBytesOverBudget "
                 << stages.textureBytesOverBudget.load(std::memory_order_relaxed)
+                << '\n'
+                << "texturesCompressed "
+                << stages.texturesCompressed.load(std::memory_order_relaxed)
+                << '\n'
+                << "texturesNotCompressed "
+                << stages.texturesNotCompressed.load(std::memory_order_relaxed)
                 << '\n'
                 << "cameraRays "
                 << stages.cameraRays.load(std::memory_order_relaxed) << '\n'
@@ -1016,6 +1024,13 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         {"Texture memory limit (MB)", _tokens->textureMemoryLimit,
          VtValue(TfGetenvInt("HDCLAUDE_TEXTURE_MEMORY_LIMIT", 0))},
 
+        // Off by default, because it changes what is sampled: block
+        // compression keeps a texture in a quarter to an eighth of the
+        // memory, and is lossy (docs/implementation-notes.md, 2026-11-16).
+        // The dome's map is never compressed.
+        {"Texture compression", _tokens->textureCompression,
+         VtValue(TfGetenvBool("HDCLAUDE_TEXTURE_COMPRESSION", false))},
+
         // What the depth AOV holds, which is a question of who reads it.
         //
         // `opengl` is Hydra's: window depth in [0, 1] through the host's
@@ -1221,6 +1236,10 @@ VtDictionary HdClaudeRenderDelegate::GetRenderStats() const
         double(_stageStats.texturesOverBudget.load(std::memory_order_relaxed)));
     stats["textureBytesOverBudget"] = VtValue(double(
         _stageStats.textureBytesOverBudget.load(std::memory_order_relaxed)));
+    stats["texturesCompressed"] = VtValue(
+        double(_stageStats.texturesCompressed.load(std::memory_order_relaxed)));
+    stats["texturesNotCompressed"] = VtValue(double(
+        _stageStats.texturesNotCompressed.load(std::memory_order_relaxed)));
     stats["cameraRays"] =
         VtValue(double(_stageStats.cameraRays.load(std::memory_order_relaxed)));
     stats["tracedRays"] =

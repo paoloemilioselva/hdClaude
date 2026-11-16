@@ -571,7 +571,26 @@ enum class TexelFormat : std::uint8_t {
     Rg8Unorm,
     Rg8Srgb,
     Rg16Sfloat,
+    /// Block-compressed, 4x4 texels a block (core/texture_compression.h):
+    /// what an uncompressed form above becomes when texture compression is
+    /// on. Only the renderer makes these, at upload; nothing reads their
+    /// texels on the host.
+    Bc4Unorm,     ///< one channel, 8 bytes a block
+    Bc5Unorm,     ///< two channels
+    Bc6hUfloat,   ///< RGB half floats, none negative
+    Bc6hSfloat,   ///< RGB half floats, signed
+    Bc7Unorm,     ///< RGBA bytes
+    Bc7Srgb,      ///< RGBA bytes, sRGB-encoded colour
 };
+
+/// Whether `format` is block-compressed.
+inline constexpr bool TexelIsCompressed(TexelFormat format)
+{
+    return format == TexelFormat::Bc4Unorm || format == TexelFormat::Bc5Unorm ||
+           format == TexelFormat::Bc6hUfloat || format == TexelFormat::Bc6hSfloat ||
+           format == TexelFormat::Bc7Unorm ||
+           format == TexelFormat::Bc7Srgb;
+}
 
 /// Channels one texel of `format` holds: 1, 2 or 4.
 inline constexpr std::uint32_t TexelChannels(TexelFormat format)
@@ -583,6 +602,8 @@ inline constexpr std::uint32_t TexelChannels(TexelFormat format)
         case TexelFormat::Rg8Unorm:
         case TexelFormat::Rg8Srgb:
         case TexelFormat::Rg16Sfloat: return 2u;
+        case TexelFormat::Bc4Unorm:   return 1u;
+        case TexelFormat::Bc5Unorm:   return 2u;
         default:                      return 4u;
     }
 }
@@ -598,7 +619,7 @@ inline constexpr bool TexelIsHalf(TexelFormat format)
 inline constexpr bool TexelIsSrgb(TexelFormat format)
 {
     return format == TexelFormat::Rgba8Srgb || format == TexelFormat::R8Srgb ||
-           format == TexelFormat::Rg8Srgb;
+           format == TexelFormat::Rg8Srgb || format == TexelFormat::Bc7Srgb;
 }
 
 /// `format`'s encoding with `channels` channels (1, 2 or 4).
@@ -619,10 +640,21 @@ inline constexpr TexelFormat TexelWithChannels(TexelFormat format,
                 : (srgb ? TexelFormat::Rgba8Srgb : TexelFormat::Rgba8Unorm);
 }
 
-/// Bytes one texel of `format` occupies.
+/// Bytes one texel of an uncompressed `format` occupies.
 inline constexpr std::uint32_t TexelSize(TexelFormat format)
 {
     return TexelChannels(format) * (TexelIsHalf(format) ? 2u : 1u);
+}
+
+/// Bytes a `width` by `height` image in `format` occupies.
+inline constexpr std::size_t TextureByteSize(TexelFormat format, std::uint32_t width,
+                                             std::uint32_t height)
+{
+    if (TexelIsCompressed(format)) {
+        return static_cast<std::size_t>((width + 3u) / 4u) * ((height + 3u) / 4u) *
+               (format == TexelFormat::Bc4Unorm ? 8u : 16u);
+    }
+    return static_cast<std::size_t>(width) * height * TexelSize(format);
 }
 
 /// One decoded texture, ready to upload.
@@ -663,6 +695,12 @@ struct TextureImage {
     /// Callable from any thread, and from several at once.
     std::function<bool(TextureImage* decoded, std::string* error)> decode;
 
+    /// Whether any material samples this image's alpha. False lets texture
+    /// compression drop an alpha BC6H has no room for -- a four-channel half
+    /// image read as a colour or a float, which is what ALab's ambient
+    /// occlusion maps are. True when it is not known.
+    bool alphaRead = true;
+
     /// Whether the texels are still to be decoded.
     bool Deferred() const { return texels.empty() && static_cast<bool>(decode); }
 
@@ -672,8 +710,7 @@ struct TextureImage {
             return true;
         }
         return width > 0 && height > 0 &&
-               texels.size() == static_cast<std::size_t>(width) * height *
-                                    TexelSize(format);
+               texels.size() == TextureByteSize(format, width, height);
     }
 };
 

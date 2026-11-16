@@ -76,6 +76,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (sphereAxial)
                          (textureQuality)
                          (textureMemoryLimit)
+                         (textureCompression)
                          (diffuseAlbedo)
                          (specularAlbedo)
                          (roughness));
@@ -682,6 +683,12 @@ void HdClaudeRenderPass::_Execute(
             _textureMemoryLimit = textureMemoryLimit;
             _hasUploaded = false;
         }
+        const bool textureCompression = _renderDelegate->GetRenderSetting<bool>(
+            _tokens->textureCompression, false);
+        if (textureCompression != _textureCompression) {
+            _textureCompression = textureCompression;
+            _hasUploaded = false;
+        }
 
         // How dense a converted sphere is. The scene index that does the
         // conversion owns this, because the mesh is its answer rather than the
@@ -1101,6 +1108,14 @@ void HdClaudeRenderPass::_Execute(
         const auto publishStart = std::chrono::steady_clock::now();
         try {
             tracer->SetTextureMemoryLimit(_textureMemoryLimit);
+            tracer->SetTextureCompression(_textureCompression);
+            if (_textureCompression && !tracer->SupportsTextureCompression() &&
+                !_reportedNoCompression) {
+                _reportedNoCompression = true;
+                TF_WARN("hdClaude: Texture compression is on, and this device "
+                        "cannot sample block-compressed images; textures are "
+                        "uploaded uncompressed.");
+            }
             tracer->SetScene(scene, materials, traversal);
             HdClaudeAddMilliseconds(
                 stages.publishMilliseconds,
@@ -1130,6 +1145,10 @@ void HdClaudeRenderPass::_Execute(
                                             std::memory_order_relaxed);
             stages.textureBytesOverBudget.store(
                 tracer->TextureBytesOverBudget(), std::memory_order_relaxed);
+            stages.texturesCompressed.store(tracer->TexturesCompressed(),
+                                            std::memory_order_relaxed);
+            stages.texturesNotCompressed.store(tracer->TexturesNotCompressed(),
+                                               std::memory_order_relaxed);
             // Reported, never left for the placeholder colour to explain:
             // once for each different shortfall, so a viewport redrawing the
             // same scene does not repeat it.

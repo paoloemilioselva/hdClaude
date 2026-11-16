@@ -392,6 +392,40 @@ std::string SubstituteUdimTile(const std::string& path, int tile)
     return substituted;
 }
 
+/// Whether an image node's alpha can reach anything. A single-output image
+/// returns its own type, so only a four-component one carries alpha; a
+/// multi-output one carries it only where an input connects to an output that
+/// includes it. Anything else is assumed to, which costs only the compression
+/// of that image.
+bool ImageReadsAlpha(const mx::DocumentPtr& document, const mx::NodePtr& node)
+{
+    const std::string& type = node->getType();
+    if (type == "float" || type == "color3" || type == "vector3" ||
+        type == "vector2" || type == "integer" || type == "boolean") {
+        return false;
+    }
+    if (type != "multioutput") {
+        return true;
+    }
+    const mx::ElementPtr scope = node->getParent();
+    for (const mx::ElementPtr& element : document->traverseTree()) {
+        const mx::InputPtr input = element ? element->asA<mx::Input>() : nullptr;
+        if (!input || input->getNodeName() != node->getName()) {
+            continue;
+        }
+        // The same name in another graph is another node.
+        const mx::ElementPtr consumer = input->getParent();
+        if (!consumer || consumer->getParent() != scope) {
+            continue;
+        }
+        const std::string& output = input->getOutputString();
+        if (output.empty() || output.find('a') != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
 HdClaudeMaterialCompiler::TextureRequest ResolveTexturePath(
     const mx::DocumentPtr& document, const std::string& uniformName)
 {
@@ -420,6 +454,7 @@ HdClaudeMaterialCompiler::TextureRequest ResolveTexturePath(
                     request.path = source->getResolvedValueString();
                 }
                 request.colorSpace = ImageColorSpace(node, input);
+                request.readsAlpha = ImageReadsAlpha(document, node);
                 return request;
             }
         }

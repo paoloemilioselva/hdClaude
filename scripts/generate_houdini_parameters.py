@@ -52,7 +52,7 @@ FOLDERS = [
                   "retessellate", "curveGeometry", "curveSides",
                   "curveSegmentSamples", "sphereRadial", "sphereAxial",
                   "splatTransport", "cullVolumes"]),
-    ("Textures", ["textureQuality", "textureMemoryLimit"]),
+    ("Textures", ["textureQuality", "textureMemoryLimit", "textureCompression"]),
     ("Memory", ["hostInstanceData"]),
     ("Reconstruction", ["reconstruction", "reconstructionModel",
                         "reconstructionPreset", "reconstructionAutoExposure",

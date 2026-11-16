@@ -110,6 +110,9 @@ struct VulkanCapabilities {
     /// host application sharing the device (Houdini's viewport, usdview's GL)
     /// is invisible to that estimate.
     bool memoryBudget = false;
+    /// The textureCompressionBC feature: BC1-BC7 images can be sampled. What
+    /// texture compression needs; every desktop GPU has it.
+    bool textureCompressionBC = false;
 
     std::uint32_t subgroupSize = 0;
     /// Alignment every dynamic uniform buffer offset must be a multiple of.

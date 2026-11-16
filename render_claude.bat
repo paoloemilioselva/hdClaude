@@ -59,6 +59,9 @@ IF "%~1"=="" (
   ECHO                                  is what the GPU has free less a tenth.
   ECHO                                  A texture that does not fit shows the
   ECHO                                  placeholder colour and is reported
+  ECHO   HDCLAUDE_TEXTURE_COMPRESSION   default off; on block-compresses textures
+  ECHO                                  ^(BC4/BC5/BC6H/BC7^) at upload: a quarter
+  ECHO                                  to an eighth of the memory, and lossy
   ECHO   HDCLAUDE_CURVE_GEOMETRY        implicit ^(default^) or swept. Implicit
   ECHO                                  intersects each segment as a round cone,
   ECHO                                  exactly, and is far cheaper

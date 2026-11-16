@@ -570,16 +570,18 @@ namespace {
 /// outlives the pool if a snapshot does.
 std::shared_ptr<const hdclaude::TextureImage> DeferredImage(
     std::uint32_t slot, const std::string& assetPath,
-    HdClaudeTextureColorSpace colorSpace, std::uint32_t maxEdge,
+    HdClaudeTextureColorSpace colorSpace, std::uint32_t maxEdge, bool alphaRead,
     const std::shared_ptr<HdClaudeTexturePool::FailureLog>& failures)
 {
     auto image = std::make_shared<hdclaude::TextureImage>();
     image->debugName = assetPath;
-    image->decode = [slot, assetPath, colorSpace, maxEdge, failures](
+    image->alphaRead = alphaRead;
+    image->decode = [slot, assetPath, colorSpace, maxEdge, alphaRead, failures](
                         hdclaude::TextureImage* decoded, std::string* error) {
         std::string message;
         const bool ok =
             DecodePoolImage(assetPath, colorSpace, maxEdge, decoded, &message);
+        decoded->alphaRead = alphaRead;
         TracePoolImage(slot, assetPath, ok, *decoded, message);
         if (!ok) {
             failures->Add(assetPath + ": " + message);
@@ -644,6 +646,16 @@ std::vector<std::uint32_t> HdClaudeTexturePool::AcquireAll(
             if (found != _slots.end()) {
                 const std::uint32_t slot = found->second;
                 slots.push_back(slot);
+                // Read for its alpha now, where it was not before: a deferred
+                // image is described again, so the renderer -- which may have
+                // dropped the alpha -- uploads it again.
+                if (request.readsAlpha && !_alphaRead[slot]) {
+                    _alphaRead[slot] = true;
+                    if (!_decoded[slot]) {
+                        _images[slot] = DeferredImage(slot, key.first, key.second,
+                                                      maxEdge, true, _failures);
+                    }
+                }
                 // Deferred until now, and now wanted on the host: decoded into
                 // the same slot. Its deferred image stands until this returns.
                 if (decodeNow && !_decoded[slot] &&
@@ -657,6 +669,7 @@ std::vector<std::uint32_t> HdClaudeTexturePool::AcquireAll(
             const auto slot = static_cast<std::uint32_t>(_images.size());
             _slots[key] = slot;
             _sources.push_back(key);
+            _alphaRead.push_back(request.readsAlpha);
             slots.push_back(slot);
             // An image node with no file has nothing to defer: its one texel
             // is made at once.
@@ -666,7 +679,8 @@ std::vector<std::uint32_t> HdClaudeTexturePool::AcquireAll(
                 decodes.push_back({slot, std::move(key), {}, {}, false});
             } else {
                 _images.push_back(DeferredImage(slot, key.first, key.second,
-                                                maxEdge, _failures));
+                                                maxEdge, request.readsAlpha,
+                                                _failures));
                 _decoded.push_back(false);
                 HdClaudeTrace("texture %u: %s, deferred to its upload", slot,
                               key.first.c_str());
@@ -713,6 +727,7 @@ void HdClaudeTexturePool::Clear()
     _sources.clear();
     _images.clear();
     _decoded.clear();
+    _alphaRead.clear();
     _failures->Clear();
 }
 
@@ -752,7 +767,7 @@ bool HdClaudeTexturePool::SetMaxEdge(std::uint32_t maxEdge)
             const auto index = static_cast<std::uint32_t>(slot);
             if (!_decoded[slot]) {
                 _images[slot] = DeferredImage(index, path, _sources[slot].second,
-                                              _maxEdge, _failures);
+                                              _maxEdge, _alphaRead[slot], _failures);
                 continue;
             }
             hdclaude::TextureImage image;

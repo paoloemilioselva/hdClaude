@@ -33,6 +33,10 @@ texture memory limit at 1 MB the 4 MB checker is not uploaded, the stats count
 it, the render says so, and the frame still renders -- the placeholder where
 the checker would be.
 
+With texture compression on, the checker is uploaded as BC7 -- a byte a texel,
+a quarter of its RGBA8 form -- and the frame keeps its light and its picture:
+the checker's two greys are exactly what a block's endpoints hold.
+
 Usage: python texture_quality.py <output directory>
 Runs in the OpenUSD environment, and
 tests the plugin HDCLAUDE_PLUGIN_DIR names -- the build tree's, under
@@ -133,8 +137,10 @@ def build_stage(path, texture, color_space=None):
     stage.GetRootLayer().Save()
 
 
-def render(stage_path, output, quality, stats, limit=None, log=None):
+def render(stage_path, output, quality, stats, limit=None, log=None,
+           compression=False):
     environment = dict(os.environ)
+    environment["HDCLAUDE_TEXTURE_COMPRESSION"] = "1" if compression else "0"
     if limit is not None:
         environment["HDCLAUDE_TEXTURE_MEMORY_LIMIT"] = str(limit)
     environment["HDCLAUDE_SAMPLES_PER_PIXEL"] = "64"
@@ -295,6 +301,35 @@ def over_budget(out, stage, full):
     return failures
 
 
+def compressed(out, stage, full):
+    """Compression uploads the checker in a quarter, and changes little."""
+    image = os.path.join(out, "compressed.0001.exr")
+    if os.path.exists(image):
+        os.remove(image)
+    stats = render(stage, image, "high", os.path.join(out, "compressed.stats"),
+                   compression=True)
+    count = int(stats.get("texturesCompressed", -1))
+    uploaded = int(stats.get("textureBytesUploaded", -1))
+    print(f"  compressed: {count} texture(s), {uploaded} bytes uploaded")
+    failures = 0
+    if count != 1 or uploaded != EDGE * EDGE:
+        print(f"FAIL: with compression on the checker should upload as one BC7 "
+              f"image of {EDGE * EDGE} bytes; {count} were compressed and "
+              f"{uploaded} bytes uploaded")
+        failures += 1
+    status, report = diff("--energy", full, image)
+    kept = None
+    for line in report.splitlines():
+        if "candidate keeps" in line:
+            kept = float(line.split("keeps")[1].split("%")[0])
+    status, picture = diff(full, image)
+    print(f"  compressed keeps {kept}% of the light; against uncompressed: {picture}")
+    if kept is None or abs(kept - 100.0) > 0.5 or status != 0:
+        print("FAIL: the compressed checker does not render as the uncompressed one")
+        failures += 1
+    return failures
+
+
 def main():
     if len(sys.argv) != 2:
         raise SystemExit(__doc__)
@@ -350,6 +385,7 @@ def main():
     failures += one_channel(out)
     failures += host_setting(stage)
     failures += over_budget(out, stage, images["high"])
+    failures += compressed(out, stage, images["high"])
     print("texture quality: " + ("passed" if failures == 0 else f"{failures} failed"))
     return 1 if failures else 0
 

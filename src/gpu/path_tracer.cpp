@@ -7,6 +7,7 @@
 #include "hdclaude/gpu/environment_distribution.h"
 #include "hdclaude/core/environment.h"
 #include "hdclaude/core/spectrum.h"
+#include "hdclaude/core/texture_compression.h"
 
 #include <atomic>
 #include <cmath>
@@ -21,6 +22,113 @@
 
 namespace hdclaude {
 namespace {
+
+/// Whether a half float, as bits, is finite.
+bool FiniteHalf(std::uint16_t bits) { return (bits & 0x7C00u) != 0x7C00u; }
+
+/// Whether it is below zero; negative zero is zero.
+bool NegativeHalf(std::uint16_t bits)
+{
+    return (bits & 0x8000u) != 0 && (bits & 0x7FFFu) != 0;
+}
+
+/// `image` block-compressed into `compressed`, or false when its format or its
+/// values have no block form (see PathTracer::SetTextureCompression), with
+/// `reason` saying which.
+bool CompressTexture(const TextureImage& image, TextureImage* compressed,
+                     const char** reason)
+{
+    *reason = nullptr;
+    const std::size_t texels = static_cast<std::size_t>(image.width) * image.height;
+    const std::uint8_t* bytes = image.texels.data();
+    BlockEncoding encoding = BlockEncoding::Bc7;
+    TexelFormat format = TexelFormat::Bc7Unorm;
+    std::vector<std::uint8_t> widened;
+    std::vector<std::uint16_t> rgb;
+    const void* source = bytes;
+
+    switch (image.format) {
+        case TexelFormat::R8Unorm:
+            encoding = BlockEncoding::Bc4;
+            format = TexelFormat::Bc4Unorm;
+            break;
+        case TexelFormat::Rg8Unorm:
+            encoding = BlockEncoding::Bc5;
+            format = TexelFormat::Bc5Unorm;
+            break;
+        case TexelFormat::Rgba8Unorm:
+        case TexelFormat::Rgba8Srgb:
+            format = image.format == TexelFormat::Rgba8Srgb ? TexelFormat::Bc7Srgb
+                                                            : TexelFormat::Bc7Unorm;
+            break;
+        case TexelFormat::R8Srgb:
+        case TexelFormat::Rg8Srgb: {
+            // BC4 and BC5 have no sRGB form, so these go to BC7_SRGB, written
+            // as the four channels the image view would have shown.
+            const bool two = image.format == TexelFormat::Rg8Srgb;
+            widened.resize(texels * 4);
+            for (std::size_t i = 0; i < texels; ++i) {
+                const std::uint8_t r = bytes[two ? i * 2 : i];
+                widened[i * 4 + 0] = r;
+                widened[i * 4 + 1] = two ? bytes[i * 2 + 1] : r;
+                widened[i * 4 + 2] = two ? 0 : r;
+                widened[i * 4 + 3] = 255;
+            }
+            source = widened.data();
+            format = TexelFormat::Bc7Srgb;
+            break;
+        }
+        case TexelFormat::R16Sfloat:
+        case TexelFormat::Rg16Sfloat:
+        case TexelFormat::Rgba16Sfloat: {
+            const std::uint32_t channels = TexelChannels(image.format);
+            const auto* halves = reinterpret_cast<const std::uint16_t*>(bytes);
+            rgb.resize(texels * 3);
+            bool negative = false;
+            for (std::size_t i = 0; i < texels; ++i) {
+                std::uint16_t value[3];
+                for (std::uint32_t c = 0; c < 3; ++c) {
+                    if (channels == 1) {
+                        value[c] = halves[i];
+                    } else if (channels == 2) {
+                        value[c] = c < 2 ? halves[i * 2 + c] : 0;
+                    } else {
+                        value[c] = halves[i * 4 + c];
+                    }
+                    if (!FiniteHalf(value[c])) {
+                        *reason = "it holds an infinity or a NaN";
+                        return false;
+                    }
+                    negative = negative || NegativeHalf(value[c]);
+                    rgb[i * 3 + c] = (value[c] & 0x7FFFu) == 0 ? 0 : value[c];
+                }
+                // BC6H has no alpha: an image whose alpha is not one keeps it,
+                // unless no material reads it.
+                if (channels == 4 && image.alphaRead && halves[i * 4 + 3] != 0x3C00u) {
+                    *reason = "its alpha is not one everywhere, and BC6H has none";
+                    return false;
+                }
+            }
+            // Unsigned unless something is below zero: the signed form keeps
+            // one bit less magnitude, so it is used only where it is needed.
+            source = rgb.data();
+            encoding = negative ? BlockEncoding::Bc6hSigned : BlockEncoding::Bc6h;
+            format = negative ? TexelFormat::Bc6hSfloat : TexelFormat::Bc6hUfloat;
+            break;
+        }
+        default:
+            *reason = "its format has no block form";
+            return false;
+    }
+
+    compressed->width = image.width;
+    compressed->height = image.height;
+    compressed->format = format;
+    compressed->debugName = image.debugName;
+    compressed->alphaRead = image.alphaRead;
+    compressed->texels = EncodeBlocks(encoding, source, image.width, image.height);
+    return compressed->Valid();
+}
 
 /// Runs `function(i)` for every i below `count` on up to one thread per core,
 /// this one included. The GPU layer has no task scheduler of its own and must
@@ -869,6 +977,12 @@ VulkanImage PathTracer::UploadTexture(const TextureImage& texture)
         case TexelFormat::Rg8Unorm:     description.format = VK_FORMAT_R8G8_UNORM; break;
         case TexelFormat::Rg8Srgb:      description.format = VK_FORMAT_R8G8_SRGB; break;
         case TexelFormat::Rg16Sfloat:   description.format = VK_FORMAT_R16G16_SFLOAT; break;
+        case TexelFormat::Bc4Unorm:     description.format = VK_FORMAT_BC4_UNORM_BLOCK; break;
+        case TexelFormat::Bc5Unorm:     description.format = VK_FORMAT_BC5_UNORM_BLOCK; break;
+        case TexelFormat::Bc6hUfloat:   description.format = VK_FORMAT_BC6H_UFLOAT_BLOCK; break;
+        case TexelFormat::Bc6hSfloat:   description.format = VK_FORMAT_BC6H_SFLOAT_BLOCK; break;
+        case TexelFormat::Bc7Unorm:     description.format = VK_FORMAT_BC7_UNORM_BLOCK; break;
+        case TexelFormat::Bc7Srgb:      description.format = VK_FORMAT_BC7_SRGB_BLOCK; break;
     }
     const std::uint32_t channels = TexelChannels(texture.format);
     if (channels == 1u) {
@@ -890,7 +1004,7 @@ VulkanImage PathTracer::UploadTexture(const TextureImage& texture)
         return (properties.optimalTilingFeatures & needed) == needed;
     };
     if (TexelIsSrgb(texture.format) && channels < 4u &&
-        !filterable(description.format)) {
+        !TexelIsCompressed(texture.format) && !filterable(description.format)) {
         const std::size_t pixels =
             static_cast<std::size_t>(texture.width) * texture.height;
         widened.resize(pixels * 4u);
@@ -961,6 +1075,17 @@ void PathTracer::UploadTextures(
     if (_texturePool.size() > textures.size()) {
         _texturePool.resize(textures.size());
     }
+    // Compressed or not is a property of every image on the device, so a
+    // change of setting makes none of them reusable -- and the sizes of those
+    // that did not fit were sizes in the other form.
+    const bool compress = _textureCompression && SupportsTextureCompression();
+    if (compress != _uploadedCompressed) {
+        _uploadedTextures.clear();
+        _textureUnplaced.clear();
+        _uploadedCompressed = compress;
+    }
+    _texturesCompressed = 0;
+    _texturesNotCompressed = 0;
     _textureSlotBytes.resize(_texturePool.size(), 0);
     _textureUnplaced.resize(textures.size());
 
@@ -1082,40 +1207,77 @@ void PathTracer::UploadTextures(
         std::max<std::size_t>(1, std::thread::hardware_concurrency());
     struct Prepared {
         TextureImage image;
-        bool ok = false;
+        bool ok = false;       ///< `image` holds what to upload
+        bool failed = false;   ///< a deferred image that would not decode
+        bool compressed = false;
+        bool notCompressible = false;
+        std::uint64_t decodedBytes = 0;
     };
     for (std::size_t first = 0; first < pending.size(); first += batchSize) {
         const std::size_t count = std::min(batchSize, pending.size() - first);
         std::vector<Prepared> batch(count);
         ParallelFor(count, [&](std::size_t i) {
-            const TextureImage& source = *textures[pending[first + i]];
-            if (!source.Deferred()) {
-                return;   // uploaded from the source itself, below
+            const std::size_t slot = pending[first + i];
+            const TextureImage& source = *textures[slot];
+            const bool compressThis =
+                compress && static_cast<std::int32_t>(slot) != domeSlot;
+            Prepared& prepared = batch[i];
+            const TextureImage* image = &source;
+            if (source.Deferred()) {
+                std::string error;
+                bool decoded = false;
+                try {
+                    decoded = source.decode(&prepared.image, &error) &&
+                              prepared.image.Valid() && !prepared.image.Deferred();
+                } catch (const std::exception&) {
+                    decoded = false;
+                }
+                if (!decoded) {
+                    prepared.failed = true;
+                    return;
+                }
+                prepared.decodedBytes = prepared.image.texels.size();
+                prepared.ok = true;
+                image = &prepared.image;
             }
-            std::string error;
-            try {
-                batch[i].ok = source.decode(&batch[i].image, &error) &&
-                              batch[i].image.Valid() && !batch[i].image.Deferred();
-            } catch (const std::exception&) {
-                batch[i].ok = false;
+            if (!compressThis) {
+                return;   // uploaded as decoded, or from the source itself
+            }
+            // Compressed on the thread that decoded it, so the encode runs
+            // in parallel too, and the uncompressed copy goes at once.
+            TextureImage blocks;
+            const char* reason = nullptr;
+            if (CompressTexture(*image, &blocks, &reason)) {
+                prepared.image = std::move(blocks);
+                prepared.ok = true;
+                prepared.compressed = true;
+            } else {
+                prepared.notCompressible = true;
+                if (EnvironmentFlag("HDCLAUDE_TRACE")) {
+                    std::fprintf(stderr,
+                                 "hdClaude: texture %s left uncompressed: %s\n",
+                                 image->debugName.c_str(),
+                                 reason ? reason : "unknown");
+                }
             }
         });
 
         for (std::size_t i = 0; i < count; ++i) {
             const std::size_t slot = pending[first + i];
             const std::shared_ptr<const TextureImage>& texture = textures[slot];
-            const bool deferred = texture->Deferred();
-            if (deferred && !batch[i].ok) {
+            if (batch[i].failed) {
                 // Reported by the decoder; remembered so it is not retried
                 // until the slot holds a different image.
                 _textureUnplaced[slot] = {texture, 0};
                 continue;
             }
-            const TextureImage& image = deferred ? batch[i].image : *texture;
-            if (deferred) {
+            const TextureImage& image = batch[i].ok ? batch[i].image : *texture;
+            if (texture->Deferred()) {
                 ++_texturesDecoded;
-                _textureBytesDecoded += image.texels.size();
+                _textureBytesDecoded += batch[i].decodedBytes;
             }
+            _texturesCompressed += batch[i].compressed ? 1u : 0u;
+            _texturesNotCompressed += batch[i].notCompressible ? 1u : 0u;
             const std::uint64_t bytes = image.texels.size();
             if (!fits(bytes)) {
                 leaveOut(slot, texture, bytes);
@@ -1142,6 +1304,11 @@ void PathTracer::UploadTextures(
     if (_texturesOverBudget == 0) {
         _textureBudget = 0;
     }
+}
+
+bool PathTracer::SupportsTextureCompression() const
+{
+    return _context.Capabilities().textureCompressionBC;
 }
 
 std::vector<VkDescriptorImageInfo> PathTracer::TextureBindingsFor(

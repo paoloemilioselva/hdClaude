@@ -148,7 +148,8 @@ void AcquireTextures(HdClaudeRenderParam* param,
              {&material.surfaceTextures, &material.displaceTextures}) {
             for (const HdClaudeMaterialCompiler::TextureRequest& texture :
                  *textures) {
-                requests.push_back({texture.path, texture.colorSpace});
+                requests.push_back(
+                    {texture.path, texture.colorSpace, texture.readsAlpha});
             }
         }
     }

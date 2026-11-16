@@ -137,6 +137,8 @@ class HDCLAUDE_API HdClaudeRenderPass final : public HdRenderPass {
     /// The texture memory limit last handed to the tracer, in bytes, and the
     /// last shortfall reported against it.
     std::uint64_t _textureMemoryLimit = 0;
+    bool _textureCompression = false;
+    bool _reportedNoCompression = false;
     std::string _reportedTextureBudget;
     bool _reportedMetersPerUnit = false;
     std::string _reportedUnavailable;

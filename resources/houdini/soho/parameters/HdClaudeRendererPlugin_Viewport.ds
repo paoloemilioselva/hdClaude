@@ -289,6 +289,16 @@
         parmtag { "usdvaluetype" "int" }
     }
     parm {
+        name    "textureCompression"
+        label   "Texture compression"
+        type    toggle
+        size    1
+        default { 0 }
+        parmtag { "spare_category" "Textures" }
+        parmtag { "uiscope" "viewport" }
+        parmtag { "usdvaluetype" "bool" }
+    }
+    parm {
         name    "hostInstanceData"
         label   "Instance data in system memory"
         type    toggle

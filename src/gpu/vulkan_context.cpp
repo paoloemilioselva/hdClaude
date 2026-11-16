@@ -621,6 +621,9 @@ void VulkanContext::SelectPhysicalDevice(const VulkanContextOptions& options)
             HasExtension(extensions, kExternalMemoryExtension);
         capabilities.memoryBudget =
             HasExtension(extensions, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+        VkPhysicalDeviceFeatures features{};
+        vkGetPhysicalDeviceFeatures(candidate, &features);
+        capabilities.textureCompressionBC = features.textureCompressionBC == VK_TRUE;
 
         // Ray query and acceleration structures are hard requirements: they are
         // how the renderer traverses. Everything else in VulkanCapabilities is
@@ -813,6 +816,8 @@ void VulkanContext::CreateDevice(const VulkanContextOptions& options)
     VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     features2.features.shaderInt64 = VK_TRUE;
     features2.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
+    features2.features.textureCompressionBC =
+        _capabilities.textureCompressionBC ? VK_TRUE : VK_FALSE;
     features2.pNext = &features13;
 
     VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};

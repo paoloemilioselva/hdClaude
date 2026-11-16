@@ -81,6 +81,10 @@ struct HdClaudeStageStats {
     /// bytes they needed. See PathTracer::SetTextureMemoryLimit.
     std::atomic<std::uint64_t> texturesOverBudget{0};
     std::atomic<std::uint64_t> textureBytesOverBudget{0};
+    /// Images the last publication block-compressed, and those compression
+    /// could not take. See PathTracer::SetTextureCompression.
+    std::atomic<std::uint64_t> texturesCompressed{0};
+    std::atomic<std::uint64_t> texturesNotCompressed{0};
 
     std::atomic<std::uint64_t> cameraRays{0};
     /// One per active path per bounce, and one per shadow ray shading asked
@@ -176,6 +180,8 @@ struct HdClaudeStageStats {
         texturesReused.store(0, std::memory_order_relaxed);
         texturesOverBudget.store(0, std::memory_order_relaxed);
         textureBytesOverBudget.store(0, std::memory_order_relaxed);
+        texturesCompressed.store(0, std::memory_order_relaxed);
+        texturesNotCompressed.store(0, std::memory_order_relaxed);
         cameraRays.store(0, std::memory_order_relaxed);
         tracedRays.store(0, std::memory_order_relaxed);
         shadowRays.store(0, std::memory_order_relaxed);

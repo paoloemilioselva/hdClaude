@@ -752,6 +752,23 @@ class PathTracer {
     /// an hour (docs/implementation-notes.md, 2026-11-16).
     void SetTextureMemoryLimit(std::uint64_t bytes) { _textureMemoryLimit = bytes; }
 
+    /// Whether the next SetScene block-compresses textures as it uploads
+    /// them: BC4 and BC5 for one and two channels of bytes, BC7 for four (and
+    /// for one- and two-channel sRGB, which BC4 and BC5 have no form of), BC6H
+    /// for half floats -- signed when the image holds a negative value. Lossy,
+    /// and a quarter to an eighth of the memory. The dome's map is never
+    /// compressed: it is the scene's light, and its sampling distribution is
+    /// built from the exact texels. A half-float image holding an infinity or
+    /// a NaN, or an alpha other than one, has no BC6H form and stays as it
+    /// is. Changing it uploads every texture again.
+    void SetTextureCompression(bool compress) { _textureCompression = compress; }
+    /// Whether the device can sample block-compressed images at all.
+    bool SupportsTextureCompression() const;
+    /// Of those uploaded by the last SetScene, how many were compressed, and
+    /// how many compression could not take.
+    std::uint32_t TexturesCompressed() const { return _texturesCompressed; }
+    std::uint32_t TexturesNotCompressed() const { return _texturesNotCompressed; }
+
     /// What the last SetScene could not upload: how many textures, and the
     /// bytes they needed. Zero when everything fitted.
     std::uint32_t TexturesOverBudget() const { return _texturesOverBudget; }
@@ -983,6 +1000,12 @@ class PathTracer {
     std::uint32_t _texturesUploaded = 0;
     std::uint64_t _textureBytesUploaded = 0;
     std::uint64_t _textureMemoryLimit = 0;
+    bool _textureCompression = false;
+    /// Whether the textures on the device were compressed, so a change of
+    /// setting uploads them all again.
+    bool _uploadedCompressed = false;
+    std::uint32_t _texturesCompressed = 0;
+    std::uint32_t _texturesNotCompressed = 0;
     std::uint32_t _texturesDecoded = 0;
     std::uint64_t _textureBytesDecoded = 0;
     /// The device bytes each slot of _texturePool holds.
