@@ -733,7 +733,7 @@ PathTracer::PathTracer(const VulkanContext& context, VulkanAllocator& allocator,
 
     BuildSpectralTables();
 
-    UploadTextures({});
+    UploadTextures({}, -1);
 }
 
 PathTracer::~PathTracer()
@@ -919,26 +919,77 @@ VulkanImage PathTracer::UploadTexture(const TextureImage& texture)
 }
 
 void PathTracer::UploadTextures(
-    const std::vector<std::shared_ptr<const TextureImage>>& textures)
+    const std::vector<std::shared_ptr<const TextureImage>>& textures,
+    std::int32_t domeSlot)
 {
     // A slot holding the image it held last time keeps its GPU copy. Without
     // this every publication -- a transform dragged, a light changed --
     // uploaded every texture in the scene again, each through its own staging
     // buffer and its own synchronous submission.
-    std::vector<VulkanImage> pool;
-    pool.reserve(textures.size());
+    std::vector<VulkanImage> pool(textures.size());
     // Slots the new scene no longer has are freed before anything new is
     // allocated, for the same reason a replaced slot is.
     if (_texturePool.size() > textures.size()) {
         _texturePool.resize(textures.size());
     }
+
+    // What the pool may hold. A device allocation that cannot be met does not
+    // fail cleanly everywhere -- NVIDIA's Windows driver, with the device full,
+    // waited inside vkAllocateMemory for over an hour -- so a texture is
+    // uploaded only when it fits, checked against what the device has free
+    // now (other processes included, given VK_EXT_memory_budget) less a
+    // reserve for what SetScene builds after the textures: the geometry, its
+    // acceleration structures, and the frame's buffers. A tenth of the
+    // device, and never under 256 MB.
+    const auto& memory = _context.MemoryProperties();
+    std::uint64_t deviceBytes = 0;
+    for (std::uint32_t i = 0; i < memory.memoryHeapCount; ++i) {
+        if ((memory.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0) {
+            deviceBytes += memory.memoryHeaps[i].size;
+        }
+    }
+    const std::uint64_t reserve =
+        std::max<std::uint64_t>(256ull << 20, deviceBytes / 10);
+    std::uint64_t held = 0;
+    _texturesOverBudget = 0;
+    _textureBytesOverBudget = 0;
+    _textureBudget = _textureMemoryLimit;
+    const auto fits = [&](std::uint64_t bytes) {
+        if (_textureMemoryLimit != 0 && held + bytes > _textureMemoryLimit) {
+            return false;
+        }
+        const std::uint64_t available = _allocator.DeviceLocalBytesAvailable();
+        const std::uint64_t usable = available > reserve ? available - reserve : 0;
+        if (bytes > usable) {
+            if (_textureMemoryLimit == 0 || held + usable < _textureBudget) {
+                _textureBudget = held + usable;
+            }
+            return false;
+        }
+        return true;
+    };
+
+    // The dome's map first: when not everything fits, a scene should lose
+    // surface detail before it loses the light that illuminates all of it.
+    std::vector<std::size_t> order;
+    order.reserve(textures.size());
+    if (domeSlot >= 0 && static_cast<std::size_t>(domeSlot) < textures.size()) {
+        order.push_back(static_cast<std::size_t>(domeSlot));
+    }
     for (std::size_t slot = 0; slot < textures.size(); ++slot) {
+        if (static_cast<std::int32_t>(slot) != domeSlot) {
+            order.push_back(slot);
+        }
+    }
+
+    for (const std::size_t slot : order) {
         const std::shared_ptr<const TextureImage>& texture = textures[slot];
         if (slot < _uploadedTextures.size() && slot < _texturePool.size() &&
             texture == _uploadedTextures[slot]) {
-            pool.push_back(std::move(_texturePool[slot]));
-            if (pool.back().Valid()) {
+            pool[slot] = std::move(_texturePool[slot]);
+            if (pool[slot].Valid()) {
                 ++_texturesReused;
+                held += texture->texels.size();
             }
             continue;
         }
@@ -957,15 +1008,31 @@ void PathTracer::UploadTextures(
             // A texture that failed to decode still occupies its pool slot, so
             // every material's slot table keeps pointing at the right
             // neighbours. The slot resolves to the placeholder.
-            pool.push_back(VulkanImage());
             continue;
         }
-        pool.push_back(UploadTexture(*texture));
+        if (!fits(texture->texels.size())) {
+            // The placeholder, and the slot is left unrecorded so that a
+            // later publication tries this image again rather than keeping
+            // the placeholder as though it were the upload.
+            ++_texturesOverBudget;
+            _textureBytesOverBudget += texture->texels.size();
+            continue;
+        }
+        pool[slot] = UploadTexture(*texture);
+        held += texture->texels.size();
         ++_texturesUploaded;
         _textureBytesUploaded += texture->texels.size();
     }
     _texturePool = std::move(pool);
     _uploadedTextures = textures;
+    for (std::size_t slot = 0; slot < _texturePool.size(); ++slot) {
+        if (!_texturePool[slot].Valid()) {
+            _uploadedTextures[slot].reset();
+        }
+    }
+    if (_texturesOverBudget == 0) {
+        _textureBudget = 0;
+    }
 }
 
 std::vector<VkDescriptorImageInfo> PathTracer::TextureBindingsFor(
@@ -1246,7 +1313,7 @@ void PathTracer::SetScene(const Scene& publishedScene,
     _texturesUploaded = 0;
     _textureBytesUploaded = 0;
     _texturesReused = 0;
-    UploadTextures(publishedScene.textures);
+    UploadTextures(publishedScene.textures, publishedScene.domeTexture);
 
     // Then the displacement, before anything is built over the geometry. A
     // displacement is where the surface *is*, so an acceleration structure
@@ -1860,18 +1927,16 @@ void PathTracer::SetScene(const Scene& publishedScene,
         scene.textures[scene.domeTexture]->Valid()) {
         dome = scene.textures[scene.domeTexture];
     }
-    const bool domeChanged = dome != _uploadedDome;
-    if (domeChanged) {
-        _domeTexture = VulkanImage();
-        if (dome) {
-            _domeTexture = UploadTexture(*dome);
-            ++_texturesUploaded;
-            _textureBytesUploaded += dome->texels.size();
-        }
-        _uploadedDome = dome;
-    } else if (dome) {
-        ++_texturesReused;
+    // Bound from its slot in the pool, which already holds it: the map used to
+    // be uploaded a second time for this binding, and an HDR sky is the
+    // largest image most scenes have. A dome the pool could not fit has no
+    // image here, and the environment falls back as for a dome with no map.
+    _domeSlot = dome ? scene.domeTexture : -1;
+    if (DomeImage() == nullptr) {
+        dome.reset();   // recorded as absent, so it counts as new once it fits
     }
+    const bool domeChanged = dome != _uploadedDome;
+    _uploadedDome = dome;
     std::memcpy(_domeWorldToLight, scene.domeWorldToLight,
                 sizeof(_domeWorldToLight));
     std::memcpy(_domeLightToWorld, scene.domeLightToWorld,
@@ -1886,7 +1951,7 @@ void PathTracer::SetScene(const Scene& publishedScene,
     // density, and building a distribution over one texel would say nothing.
     if (domeChanged || !_environmentDistribution.Valid()) {
         EnvironmentDistribution distribution;
-        if (_domeTexture.Valid()) {
+        if (DomeImage() != nullptr) {
             distribution = BuildEnvironmentDistribution(*dome);
         }
 
@@ -2181,8 +2246,8 @@ void PathTracer::WriteDescriptors(VkDescriptorSet set,
 
     VkDescriptorImageInfo dome{};
     dome.sampler = _sampler;
-    dome.imageView = _domeTexture.Valid() ? _domeTexture.View()
-                                          : _placeholderTexture.View();
+    dome.imageView = DomeImage() != nullptr ? DomeImage()->View()
+                                            : _placeholderTexture.View();
     dome.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     pipeline.WriteSampledImageArray(set, 17, {dome});
 
@@ -3105,7 +3170,7 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     block.pathCount = paths;
     block.lightCount = _lightCount;
     block.materialCount = static_cast<std::uint32_t>(_shade.size());
-    block.hasDomeTexture = _domeTexture.Valid() ? 1u : 0u;
+    block.hasDomeTexture = DomeImage() != nullptr ? 1u : 0u;
     block.hasDomeLight = _hasDomeLight ? 1u : 0u;
     block.hasEnvironmentDistribution = _environmentWidth > 0 ? 1u : 0u;
     block.environmentWidth = _environmentWidth;

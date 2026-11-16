@@ -3775,12 +3775,14 @@ int main()
             CHECK_NEAR(centre.b, 0.4, 0.04);
 
             // Published again holding the same image, as a transform edit
-            // republishes: nothing is uploaded -- not the pool slot, not the
-            // dome map, not its distribution -- and the sky is the same sky.
+            // republishes: nothing is uploaded -- not the map, not its
+            // distribution -- and the sky is the same sky. One texture, not
+            // two: the dome is bound from its pool slot, where it used to be
+            // uploaded a second time for its own binding.
             tracer.SetScene(scene, {materials[0]});
             CHECK_EQ(tracer.TexturesUploaded(), 0u);
             CHECK_EQ(tracer.TextureBytesUploaded(), std::uint64_t(0));
-            CHECK_EQ(tracer.TexturesReused(), 2u);
+            CHECK_EQ(tracer.TexturesReused(), 1u);
             const Pixel kept =
                 Window(tracer.Render(kWidth, kHeight, LookDownZ(4.0f), half),
                        0.5f, 0.5f, 12);
@@ -3792,7 +3794,7 @@ int main()
             scene.textures[0] = std::make_shared<const TextureImage>(
                 MakeDome(64, 32, [](float, float) { return true; }));
             tracer.SetScene(scene, {materials[0]});
-            CHECK_EQ(tracer.TexturesUploaded(), 2u);
+            CHECK_EQ(tracer.TexturesUploaded(), 1u);
             CHECK_EQ(tracer.TexturesReused(), 0u);
             const Pixel replaced =
                 Window(tracer.Render(kWidth, kHeight, LookDownZ(4.0f), half),

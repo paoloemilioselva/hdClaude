@@ -619,6 +619,8 @@ void VulkanContext::SelectPhysicalDevice(const VulkanContextOptions& options)
             HasExtension(extensions, "VK_NV_ray_tracing_invocation_reorder");
         capabilities.externalMemory =
             HasExtension(extensions, kExternalMemoryExtension);
+        capabilities.memoryBudget =
+            HasExtension(extensions, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
 
         // Ray query and acceleration structures are hard requirements: they are
         // how the renderer traverses. Everything else in VulkanCapabilities is
@@ -759,6 +761,9 @@ void VulkanContext::CreateDevice(const VulkanContextOptions& options)
     // See docs/architecture.md 2.1.
     if (_capabilities.externalMemory) {
         deviceExtensions.push_back(kExternalMemoryExtension);
+    }
+    if (_capabilities.memoryBudget) {
+        deviceExtensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
     }
 
     const auto available = DeviceExtensionProperties(_physicalDevice);

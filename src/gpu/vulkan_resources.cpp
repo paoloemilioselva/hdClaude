@@ -96,6 +96,12 @@ VulkanAllocator::VulkanAllocator(const VulkanContext& context) : _context(contex
     info.vulkanApiVersion = VK_API_VERSION_1_3;
     info.pVulkanFunctions = &functions;
     info.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    // With the budget extension VMA reports what the operating system says is
+    // free on the device, which is what decides whether an allocation can be
+    // met; without it, an estimate from VMA's own allocations.
+    if (context.Capabilities().memoryBudget) {
+        info.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
+    }
 
     VmaAllocator allocator = VK_NULL_HANDLE;
     context.Check(vmaCreateAllocator(&info, &allocator), "vmaCreateAllocator");

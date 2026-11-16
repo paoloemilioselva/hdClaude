@@ -736,6 +736,25 @@ class PathTracer {
     std::uint64_t TextureBytesUploaded() const { return _textureBytesUploaded; }
     std::uint32_t TexturesReused() const { return _texturesReused; }
 
+    /// The most device memory the texture pool may hold, in bytes; zero for
+    /// whatever the device has free, less a reserve for what is built after
+    /// it. Read by the next SetScene.
+    ///
+    /// A texture that would not fit is not uploaded and its slot samples the
+    /// placeholder, so a scene too large for the device renders -- visibly
+    /// incomplete -- instead of asking the driver for memory it does not have.
+    /// That request does not fail cleanly on every driver: on NVIDIA's Windows
+    /// driver with the device full it waited inside vkAllocateMemory for over
+    /// an hour (docs/implementation-notes.md, 2026-11-16).
+    void SetTextureMemoryLimit(std::uint64_t bytes) { _textureMemoryLimit = bytes; }
+
+    /// What the last SetScene could not upload: how many textures, and the
+    /// bytes they needed. Zero when everything fitted.
+    std::uint32_t TexturesOverBudget() const { return _texturesOverBudget; }
+    std::uint64_t TextureBytesOverBudget() const { return _textureBytesOverBudget; }
+    /// The device memory the texture pool was allowed, for the report.
+    std::uint64_t TextureBudget() const { return _textureBudget; }
+
     /// How many kept their tree and moved its bounds to follow new vertices.
     ///
     /// The number that says whether a deforming scene is paying to be rebuilt
@@ -816,8 +835,20 @@ class PathTracer {
                              const RenderSettings& settings);
 
     void EnsureResolution(std::uint32_t width, std::uint32_t height);
+    /// `domeSlot` is uploaded first, so it is the last to be left out.
     void UploadTextures(
-        const std::vector<std::shared_ptr<const TextureImage>>& textures);
+        const std::vector<std::shared_ptr<const TextureImage>>& textures,
+        std::int32_t domeSlot);
+    /// The dome's map in the pool, or null when there is none or it did not
+    /// fit.
+    const VulkanImage* DomeImage() const
+    {
+        return _domeSlot >= 0 &&
+                       static_cast<std::size_t>(_domeSlot) < _texturePool.size() &&
+                       _texturePool[_domeSlot].Valid()
+                   ? &_texturePool[_domeSlot]
+                   : nullptr;
+    }
     /// Sample the colour matching functions and the illuminant, fit the
     /// chromaticity table, and upload all of it. Once, at construction: none of
     /// it depends on the scene.
@@ -940,12 +971,17 @@ class PathTracer {
     /// handed to a different image that would then pass for it.
     std::vector<std::shared_ptr<const TextureImage>> _uploadedTextures;
     VulkanImage _placeholderTexture;
-    VulkanImage _domeTexture;
-    /// The image `_domeTexture` and the environment distribution were built
-    /// from, for the same reason.
+    /// The pool slot holding the dome's map, -1 for none.
+    std::int32_t _domeSlot = -1;
+    /// The image the environment distribution was built from, so it is
+    /// rebuilt only when the dome's map changes.
     std::shared_ptr<const TextureImage> _uploadedDome;
     std::uint32_t _texturesUploaded = 0;
     std::uint64_t _textureBytesUploaded = 0;
+    std::uint64_t _textureMemoryLimit = 0;
+    std::uint32_t _texturesOverBudget = 0;
+    std::uint64_t _textureBytesOverBudget = 0;
+    std::uint64_t _textureBudget = 0;
     std::uint32_t _texturesReused = 0;
     float _domeWorldToLight[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     float _domeLightToWorld[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};

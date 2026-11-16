@@ -82,6 +82,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (sphereRadial)
                          (sphereAxial)
                          (textureQuality)
+                         (textureMemoryLimit)
                          (diffuseAlbedo)
                          (specularAlbedo)
                          (roughness));
@@ -109,6 +110,7 @@ const std::vector<std::pair<TfToken, std::string>>& HdClaudeEnvironmentSettings(
         {_tokens->hostInstanceData, "HDCLAUDE_HOST_INSTANCE_DATA"},
         {_tokens->tlasChunkSize, "HDCLAUDE_TLAS_CHUNK_SIZE"},
         {_tokens->textureQuality, "HDCLAUDE_TEXTURE_QUALITY"},
+        {_tokens->textureMemoryLimit, "HDCLAUDE_TEXTURE_MEMORY_LIMIT"},
         {_tokens->curveGeometry, "HDCLAUDE_CURVE_GEOMETRY"},
         {_tokens->curveSides, "HDCLAUDE_CURVE_SIDES"},
         {_tokens->curveSegmentSamples, "HDCLAUDE_CURVE_SEGMENT_SAMPLES"},
@@ -300,6 +302,12 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
                 << '\n'
                 << "texturesReused "
                 << stages.texturesReused.load(std::memory_order_relaxed)
+                << '\n'
+                << "texturesOverBudget "
+                << stages.texturesOverBudget.load(std::memory_order_relaxed)
+                << '\n'
+                << "textureBytesOverBudget "
+                << stages.textureBytesOverBudget.load(std::memory_order_relaxed)
                 << '\n'
                 << "cameraRays "
                 << stages.cameraRays.load(std::memory_order_relaxed) << '\n'
@@ -999,6 +1007,15 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         {"Texture quality", _tokens->textureQuality,
          VtValue(std::string(TfGetenv("HDCLAUDE_TEXTURE_QUALITY", "high")))},
 
+        // The most device memory, in MB, the scene's textures may take; 0 is
+        // whatever the device has free, less a tenth of it kept for the
+        // geometry built after them. A texture that does not fit is not
+        // uploaded, shows the placeholder colour, and is reported. Set it to
+        // leave room for the host's own use of the GPU -- a viewport, or
+        // another renderer -- which a device-wide figure cannot know about.
+        {"Texture memory limit (MB)", _tokens->textureMemoryLimit,
+         VtValue(TfGetenvInt("HDCLAUDE_TEXTURE_MEMORY_LIMIT", 0))},
+
         // What the depth AOV holds, which is a question of who reads it.
         //
         // `opengl` is Hydra's: window depth in [0, 1] through the host's
@@ -1200,6 +1217,10 @@ VtDictionary HdClaudeRenderDelegate::GetRenderStats() const
         _stageStats.textureBytesUploaded.load(std::memory_order_relaxed)));
     stats["texturesReused"] = VtValue(
         double(_stageStats.texturesReused.load(std::memory_order_relaxed)));
+    stats["texturesOverBudget"] = VtValue(
+        double(_stageStats.texturesOverBudget.load(std::memory_order_relaxed)));
+    stats["textureBytesOverBudget"] = VtValue(double(
+        _stageStats.textureBytesOverBudget.load(std::memory_order_relaxed)));
     stats["cameraRays"] =
         VtValue(double(_stageStats.cameraRays.load(std::memory_order_relaxed)));
     stats["tracedRays"] =

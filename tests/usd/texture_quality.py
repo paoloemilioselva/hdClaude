@@ -28,6 +28,11 @@ is decoded, and the stats' decoded bytes say whether that still holds: an
 image decoded at full size and reduced afterwards would count its full size.
 Switching to `high` mid-session must then publish the full-size image again.
 
+And a texture that does not fit is left out rather than requested: with the
+texture memory limit at 1 MB the 4 MB checker is not uploaded, the stats count
+it, the render says so, and the frame still renders -- the placeholder where
+the checker would be.
+
 Usage: python texture_quality.py <output directory>
 Runs in the OpenUSD environment, and
 tests the plugin HDCLAUDE_PLUGIN_DIR names -- the build tree's, under
@@ -128,8 +133,10 @@ def build_stage(path, texture, color_space=None):
     stage.GetRootLayer().Save()
 
 
-def render(stage_path, output, quality, stats):
+def render(stage_path, output, quality, stats, limit=None, log=None):
     environment = dict(os.environ)
+    if limit is not None:
+        environment["HDCLAUDE_TEXTURE_MEMORY_LIMIT"] = str(limit)
     environment["HDCLAUDE_SAMPLES_PER_PIXEL"] = "64"
     environment["HDCLAUDE_RECONSTRUCTION"] = "off"
     environment["HDCLAUDE_TEXTURE_QUALITY"] = quality
@@ -141,6 +148,8 @@ def render(stage_path, output, quality, stats):
     if result.returncode != 0 or not os.path.exists(output):
         print(result.stdout[-2000:], result.stderr[-2000:])
         raise SystemExit(f"FAIL: could not render at quality {quality}")
+    if log is not None:
+        log.append(result.stdout + result.stderr)
     values = {}
     with open(stats, encoding="utf-8") as report:
         for line in report:
@@ -255,6 +264,37 @@ def host_setting(stage_path):
     return failures
 
 
+def over_budget(out, stage, full):
+    """A texture over the memory limit is left out, counted and reported."""
+    image = os.path.join(out, "limited.0001.exr")
+    if os.path.exists(image):
+        os.remove(image)
+    log = []
+    stats = render(stage, image, "high", os.path.join(out, "limited.stats"),
+                   limit=1, log=log)
+    left = int(stats.get("texturesOverBudget", -1))
+    needed = int(stats.get("textureBytesOverBudget", -1))
+    uploaded = int(stats.get("textureBytesUploaded", -1))
+    reported = "did not fit" in log[0]
+    print(f"  limit 1 MB: {left} left out ({needed} bytes), {uploaded} uploaded, "
+          f"reported: {reported}")
+    failures = 0
+    if left != 1 or needed != EDGE * EDGE * 4 or uploaded != 0:
+        print(f"FAIL: under a 1 MB limit the {EDGE * EDGE * 4}-byte checker "
+              f"should be left out alone; {left} texture(s) were, needing "
+              f"{needed} bytes, and {uploaded} bytes were uploaded")
+        failures += 1
+    if not reported:
+        print("FAIL: a texture left out for memory was not reported")
+        failures += 1
+    status, _ = diff(full, image)
+    if status == 0:
+        print("FAIL: the frame without its texture matches the frame with it, "
+              "so nothing was left out")
+        failures += 1
+    return failures
+
+
 def main():
     if len(sys.argv) != 2:
         raise SystemExit(__doc__)
@@ -309,6 +349,7 @@ def main():
 
     failures += one_channel(out)
     failures += host_setting(stage)
+    failures += over_budget(out, stage, images["high"])
     print("texture quality: " + ("passed" if failures == 0 else f"{failures} failed"))
     return 1 if failures else 0
 

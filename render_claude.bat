@@ -55,6 +55,10 @@ IF "%~1"=="" (
   ECHO                                  ever enlarged, and a reduction keeps the
   ECHO                                  image's mean, so a dome light loses no
   ECHO                                  power by it
+  ECHO   HDCLAUDE_TEXTURE_MEMORY_LIMIT  MB the textures may take; 0 ^(default^)
+  ECHO                                  is what the GPU has free less a tenth.
+  ECHO                                  A texture that does not fit shows the
+  ECHO                                  placeholder colour and is reported
   ECHO   HDCLAUDE_CURVE_GEOMETRY        implicit ^(default^) or swept. Implicit
   ECHO                                  intersects each segment as a round cone,
   ECHO                                  exactly, and is far cheaper

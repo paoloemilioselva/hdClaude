@@ -279,6 +279,16 @@
         }
     }
     parm {
+        name    "textureMemoryLimit"
+        label   "Texture memory limit (MB)"
+        type    int
+        size    1
+        default { 0 }
+        parmtag { "spare_category" "Textures" }
+        parmtag { "uiscope" "viewport" }
+        parmtag { "usdvaluetype" "int" }
+    }
+    parm {
         name    "hostInstanceData"
         label   "Instance data in system memory"
         type    toggle

@@ -104,6 +104,12 @@ struct VulkanCapabilities {
     /// VK_KHR_external_memory_win32 on Windows, VK_KHR_external_memory_fd
     /// elsewhere, for the later Hgi interop phase.
     bool externalMemory = false;
+    /// VK_EXT_memory_budget: the device's memory as the operating system
+    /// accounts it, other processes included. Without it the allocator can
+    /// only estimate, from its own allocations, how much is free -- and the
+    /// host application sharing the device (Houdini's viewport, usdview's GL)
+    /// is invisible to that estimate.
+    bool memoryBudget = false;
 
     std::uint32_t subgroupSize = 0;
     /// Alignment every dynamic uniform buffer offset must be a multiple of.

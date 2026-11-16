@@ -134,6 +134,10 @@ class HDCLAUDE_API HdClaudeRenderPass final : public HdRenderPass {
     std::string _reportedCurveGeometry;
     std::string _reportedDepthStyle;
     std::string _reportedTextureQuality;
+    /// The texture memory limit last handed to the tracer, in bytes, and the
+    /// last shortfall reported against it.
+    std::uint64_t _textureMemoryLimit = 0;
+    std::string _reportedTextureBudget;
     bool _reportedMetersPerUnit = false;
     std::string _reportedUnavailable;
     /// What the last reconstructed frame was produced by, so a change of

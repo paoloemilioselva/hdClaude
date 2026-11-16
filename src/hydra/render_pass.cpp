@@ -75,6 +75,7 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (sphereRadial)
                          (sphereAxial)
                          (textureQuality)
+                         (textureMemoryLimit)
                          (diffuseAlbedo)
                          (specularAlbedo)
                          (roughness));
@@ -670,6 +671,17 @@ void HdClaudeRenderPass::_Execute(
                 _hasUploaded = false;
             }
         }
+        // A changed limit republishes, so textures it now admits -- or no
+        // longer admits -- are uploaded or dropped at once.
+        const std::uint64_t textureMemoryLimit =
+            static_cast<std::uint64_t>(std::max(
+                0, _renderDelegate->GetRenderSetting<int>(
+                       _tokens->textureMemoryLimit, 0)))
+            << 20;
+        if (textureMemoryLimit != _textureMemoryLimit) {
+            _textureMemoryLimit = textureMemoryLimit;
+            _hasUploaded = false;
+        }
 
         // How dense a converted sphere is. The scene index that does the
         // conversion owns this, because the mesh is its answer rather than the
@@ -1088,6 +1100,7 @@ void HdClaudeRenderPass::_Execute(
 
         const auto publishStart = std::chrono::steady_clock::now();
         try {
+            tracer->SetTextureMemoryLimit(_textureMemoryLimit);
             tracer->SetScene(scene, materials, traversal);
             HdClaudeAddMilliseconds(
                 stages.publishMilliseconds,
@@ -1106,6 +1119,31 @@ void HdClaudeRenderPass::_Execute(
                                               std::memory_order_relaxed);
             stages.texturesReused.store(tracer->TexturesReused(),
                                         std::memory_order_relaxed);
+            stages.texturesOverBudget.store(tracer->TexturesOverBudget(),
+                                            std::memory_order_relaxed);
+            stages.textureBytesOverBudget.store(
+                tracer->TextureBytesOverBudget(), std::memory_order_relaxed);
+            // Reported, never left for the placeholder colour to explain:
+            // once for each different shortfall, so a viewport redrawing the
+            // same scene does not repeat it.
+            if (tracer->TexturesOverBudget() != 0) {
+                const double gb = 1024.0 * 1024.0 * 1024.0;
+                const std::string report = TfStringPrintf(
+                    "hdClaude: %u of %zu textures (%.2f GB) did not fit in the "
+                    "%.2f GB of device memory textures could use, and show the "
+                    "placeholder colour. Lower the Texture quality setting "
+                    "(medium caps an edge at 1024 px, low at 256 px), raise the "
+                    "Texture memory limit if one is set, or free GPU memory.",
+                    tracer->TexturesOverBudget(), scene.textures.size(),
+                    tracer->TextureBytesOverBudget() / gb,
+                    tracer->TextureBudget() / gb);
+                if (report != _reportedTextureBudget) {
+                    _reportedTextureBudget = report;
+                    TF_WARN("%s", report.c_str());
+                }
+            } else {
+                _reportedTextureBudget.clear();
+            }
             HdClaudeTrace(
                 "scene published; %u prototype(s) displaced, %u reused; "
                 "%u texture(s) uploaded (%llu bytes), %u kept",
