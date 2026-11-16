@@ -547,6 +547,15 @@ inline constexpr std::uint32_t kTextureCapacity = 1024;
 /// only part of it that lights anything, and they live entirely above 1.0. A
 /// dome light whose map has been clamped is a dome light with no highlights,
 /// no sun, and a flat grey sky.
+///
+/// An image keeps the channels it was authored with -- one, two, or four, a
+/// three-channel source gaining an opaque alpha -- because a one-channel map
+/// widened to four occupies four times the memory to say nothing more. Most of
+/// a production asset's maps are one channel (roughness, metalness, masks,
+/// displacement): ALab ships 3,584 of them. What the sampler returns does not
+/// depend on how many were kept: the image view swizzles a one-channel texture
+/// to (r, r, r, 1) and a two-channel one to (r, g, 0, 1), the values the
+/// four-channel form held, so no material reads a different number.
 enum class TexelFormat : std::uint8_t {
     /// Eight bits a channel, linear.
     Rgba8Unorm,
@@ -554,12 +563,65 @@ enum class TexelFormat : std::uint8_t {
     Rgba8Srgb,
     /// Half a channel. What a float or half source is kept in.
     Rgba16Sfloat,
+    /// The one- and two-channel forms of the three above.
+    R8Unorm,
+    R8Srgb,
+    R16Sfloat,
+    Rg8Unorm,
+    Rg8Srgb,
+    Rg16Sfloat,
 };
+
+/// Channels one texel of `format` holds: 1, 2 or 4.
+inline constexpr std::uint32_t TexelChannels(TexelFormat format)
+{
+    switch (format) {
+        case TexelFormat::R8Unorm:
+        case TexelFormat::R8Srgb:
+        case TexelFormat::R16Sfloat:  return 1u;
+        case TexelFormat::Rg8Unorm:
+        case TexelFormat::Rg8Srgb:
+        case TexelFormat::Rg16Sfloat: return 2u;
+        default:                      return 4u;
+    }
+}
+
+/// Whether `format` stores half floats; otherwise it stores bytes.
+inline constexpr bool TexelIsHalf(TexelFormat format)
+{
+    return format == TexelFormat::Rgba16Sfloat ||
+           format == TexelFormat::R16Sfloat || format == TexelFormat::Rg16Sfloat;
+}
+
+/// Whether the sampler sRGB-decodes `format`'s colour channels.
+inline constexpr bool TexelIsSrgb(TexelFormat format)
+{
+    return format == TexelFormat::Rgba8Srgb || format == TexelFormat::R8Srgb ||
+           format == TexelFormat::Rg8Srgb;
+}
+
+/// `format`'s encoding with `channels` channels (1, 2 or 4).
+inline constexpr TexelFormat TexelWithChannels(TexelFormat format,
+                                               std::uint32_t channels)
+{
+    const bool half = TexelIsHalf(format);
+    const bool srgb = TexelIsSrgb(format);
+    if (channels == 1u) {
+        return half ? TexelFormat::R16Sfloat
+                    : (srgb ? TexelFormat::R8Srgb : TexelFormat::R8Unorm);
+    }
+    if (channels == 2u) {
+        return half ? TexelFormat::Rg16Sfloat
+                    : (srgb ? TexelFormat::Rg8Srgb : TexelFormat::Rg8Unorm);
+    }
+    return half ? TexelFormat::Rgba16Sfloat
+                : (srgb ? TexelFormat::Rgba8Srgb : TexelFormat::Rgba8Unorm);
+}
 
 /// Bytes one texel of `format` occupies.
 inline constexpr std::uint32_t TexelSize(TexelFormat format)
 {
-    return format == TexelFormat::Rgba16Sfloat ? 8u : 4u;
+    return TexelChannels(format) * (TexelIsHalf(format) ? 2u : 1u);
 }
 
 /// One decoded texture, ready to upload.
@@ -570,8 +632,9 @@ inline constexpr std::uint32_t TexelSize(TexelFormat format)
 struct TextureImage {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
-    /// Tightly packed RGBA in `format`, `width * height * TexelSize(format)`
-    /// bytes, **bottom row first**: row 0 is v = 0, which is where USD and
+    /// Tightly packed texels of `TexelChannels(format)` components in
+    /// `format`, `width * height * TexelSize(format)` bytes, **bottom row
+    /// first**: row 0 is v = 0, which is where USD and
     /// MaterialX put the origin of a texture and what the sampler reads as
     /// v = 0.
     std::vector<std::uint8_t> texels;

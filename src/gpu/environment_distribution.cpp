@@ -62,22 +62,26 @@ float FromSrgb(float encoded)
 /// over different numbers than the ones being integrated.
 void TexelRgb(const TextureImage& map, std::uint32_t x, std::uint32_t y, float rgb[3])
 {
+    // The texel as the sampler returns it: a one-channel map is grey, a
+    // two-channel one (r, g, 0), exactly as the image view swizzles them.
+    const std::uint32_t channels = TexelChannels(map.format);
     const std::size_t index =
-        (static_cast<std::size_t>(y) * map.width + x) * 4;
-    rgb[0] = rgb[1] = rgb[2] = 0.0f;
-
-    if (map.format == TexelFormat::Rgba16Sfloat) {
-        for (int c = 0; c < 3; ++c) {
+        (static_cast<std::size_t>(y) * map.width + x) * channels;
+    float stored[3] = {0.0f, 0.0f, 0.0f};
+    const std::uint32_t read = channels < 3u ? channels : 3u;
+    for (std::uint32_t c = 0; c < read; ++c) {
+        if (TexelIsHalf(map.format)) {
             std::uint16_t bits = 0;
             std::memcpy(&bits, map.texels.data() + (index + c) * 2, sizeof(bits));
-            rgb[c] = FromHalf(bits);
-        }
-    } else {
-        for (int c = 0; c < 3; ++c) {
+            stored[c] = FromHalf(bits);
+        } else {
             const float unit = map.texels[index + c] * (1.0f / 255.0f);
-            rgb[c] = map.format == TexelFormat::Rgba8Srgb ? FromSrgb(unit) : unit;
+            stored[c] = TexelIsSrgb(map.format) ? FromSrgb(unit) : unit;
         }
     }
+    rgb[0] = stored[0];
+    rgb[1] = channels == 1u ? stored[0] : stored[1];
+    rgb[2] = channels == 1u ? stored[0] : stored[2];
 }
 
 float Luminance(const TextureImage& map, std::uint32_t x, std::uint32_t y)

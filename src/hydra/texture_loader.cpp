@@ -218,30 +218,33 @@ bool Widen(const HioImageSharedPtr& image, hdclaude::TextureImage* out,
         }
     }
 
+    // One and two channels are kept as they are; three gain an opaque alpha,
+    // because no three-channel format is guaranteed to be sampleable. The
+    // image view turns a one-channel texture into grey -- a greyscale
+    // roughness or mask map means grey, not red -- so storing one component
+    // instead of four changes the memory and nothing the sampler returns.
+    const size_t stored = channels <= 2 ? channels : 4;
+    out->format = hdclaude::TexelWithChannels(out->format,
+                                              static_cast<std::uint32_t>(stored));
     const size_t texel = hdclaude::TexelSize(out->format);
     out->texels.assign(static_cast<size_t>(width) * height * texel, 0);
 
     const size_t pixels = static_cast<size_t>(width) * height;
     for (size_t i = 0; i < pixels; ++i) {
-        for (size_t c = 0; c < 4; ++c) {
+        for (size_t c = 0; c < stored; ++c) {
             // The component this channel reads, or none: alpha defaults to
-            // opaque, and a single-channel image reads as grey rather than as
-            // red, which is what a greyscale roughness or mask map means.
-            const char* source = nullptr;
-            if (c < channels) {
-                source = raw.data() + (i * channels + c) * bytesPerComponent;
-            } else if (c < 3 && channels == 1) {
-                source = raw.data() + i * bytesPerComponent;
-            }
+            // opaque.
+            const char* source = c < channels
+                ? raw.data() + (i * channels + c) * bytesPerComponent
+                : nullptr;
 
             if (keepFloat) {
-                WriteHalf(out->texels.data() + (i * 4 + c) * 2,
-                          source ? FloatComponent(source, type)
-                                 : (c == 3 ? 1.0f : 0.0f));
+                WriteHalf(out->texels.data() + (i * stored + c) * 2,
+                          source ? FloatComponent(source, type) : 1.0f);
             } else {
-                out->texels[i * 4 + c] =
+                out->texels[i * stored + c] =
                     source ? Quantise(source, type)
-                           : static_cast<std::uint8_t>(c == 3 ? 255 : 0);
+                           : static_cast<std::uint8_t>(255);
             }
         }
     }
@@ -282,15 +285,16 @@ void Halve(hdclaude::TextureImage* image)
     // step and take the image's mean with it.
     const std::uint32_t width = std::max(1u, (image->width + 1u) / 2u);
     const std::uint32_t height = std::max(1u, (image->height + 1u) / 2u);
-    const bool srgb = image->format == hdclaude::TexelFormat::Rgba8Srgb;
-    const bool half = image->format == hdclaude::TexelFormat::Rgba16Sfloat;
+    const bool srgb = hdclaude::TexelIsSrgb(image->format);
+    const bool half = hdclaude::TexelIsHalf(image->format);
+    const std::uint32_t channels = hdclaude::TexelChannels(image->format);
     const std::size_t texel = hdclaude::TexelSize(image->format);
 
     std::vector<std::uint8_t> reduced(static_cast<std::size_t>(width) * height *
                                       texel);
     for (std::uint32_t y = 0; y < height; ++y) {
         for (std::uint32_t x = 0; x < width; ++x) {
-            for (std::uint32_t c = 0; c < 4; ++c) {
+            for (std::uint32_t c = 0; c < channels; ++c) {
                 float sum = 0.0f;
                 int taken = 0;
                 for (std::uint32_t dy = 0; dy < 2; ++dy) {
@@ -579,15 +583,16 @@ std::vector<std::uint32_t> HdClaudeTexturePool::AcquireAll(
                           decode.slot);
         } else if (decode.ok) {
             const char* encoding = "linear";
-            if (decode.image.format == hdclaude::TexelFormat::Rgba8Srgb) {
+            if (hdclaude::TexelIsSrgb(decode.image.format)) {
                 encoding = "sRGB";
-            } else if (decode.image.format ==
-                       hdclaude::TexelFormat::Rgba16Sfloat) {
+            } else if (hdclaude::TexelIsHalf(decode.image.format)) {
                 encoding = "linear half";
             }
-            HdClaudeTrace("texture %u: %s (%ux%u, %s)", decode.slot,
-                          assetPath.c_str(), decode.image.width,
-                          decode.image.height, encoding);
+            HdClaudeTrace("texture %u: %s (%ux%u, %u channel(s), %s)",
+                          decode.slot, assetPath.c_str(), decode.image.width,
+                          decode.image.height,
+                          hdclaude::TexelChannels(decode.image.format),
+                          encoding);
         } else {
             _failures.push_back(assetPath + ": " + decode.error);
             HdClaudeTrace("texture %u: FAILED %s (%s)", decode.slot,

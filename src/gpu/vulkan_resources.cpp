@@ -455,6 +455,7 @@ VulkanImage::VulkanImage(VulkanAllocator& allocator,
     viewInfo.image = _handle;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format = description.format;
+    viewInfo.components = description.components;
     viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.levelCount = description.mipLevels;
     viewInfo.subresourceRange.layerCount = 1;

@@ -113,6 +113,10 @@ struct ImageDescription {
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkImageUsageFlags usage = 0;
     std::uint32_t mipLevels = 1;
+    /// How the view presents the image's channels; identity unless set. A
+    /// one- or two-channel texture is swizzled here so the sampler returns
+    /// what its four-channel form would have.
+    VkComponentMapping components{};
     std::string debugName;
 };
 

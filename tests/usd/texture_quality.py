@@ -14,6 +14,13 @@ checked, because either alone would pass a reduction that quietly darkened
 every texture -- filtering sRGB-encoded values without decoding them does
 exactly that.
 
+The same checker is then written as a one-channel greyscale image. It must
+cost a quarter of the RGB image's bytes at every quality -- a one-channel map
+is kept as one channel rather than widened to four -- and render
+pixel-identically to it, because the sampler swizzles it back to grey. Both are
+declared sRGB, so the comparison goes through the one-channel sRGB format and
+its decode as well as the swizzle.
+
 Usage: python texture_quality.py <output directory>
 Runs in the OpenUSD environment, and
 tests the plugin HDCLAUDE_PLUGIN_DIR names -- the build tree's, under
@@ -39,17 +46,19 @@ EDGE = 1024
 CELL = 4
 
 
-def write_checker(path):
-    """A checkerboard, as an uncompressed TGA.
+def write_checker(path, channels=3):
+    """A checkerboard, as an uncompressed TGA: RGB, or one-channel greyscale.
 
     Two greys rather than black and white, so that a filter that averages
     sRGB-encoded values instead of decoding them first shifts the mean
     measurably rather than by a rounding step.
     """
-    header = bytes([0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    EDGE & 0xFF, EDGE >> 8, EDGE & 0xFF, EDGE >> 8, 24, 0])
-    dark = bytes([60, 60, 60])
-    light = bytes([200, 200, 200])
+    kind = 2 if channels == 3 else 3   # true-colour, or greyscale
+    header = bytes([0, 0, kind, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    EDGE & 0xFF, EDGE >> 8, EDGE & 0xFF, EDGE >> 8,
+                    8 * channels, 0])
+    dark = bytes([60] * channels)
+    light = bytes([200] * channels)
     rows = bytearray()
     for y in range(EDGE):
         row = bytearray()
@@ -60,7 +69,7 @@ def write_checker(path):
         image.write(header + bytes(rows))
 
 
-def build_stage(path, texture):
+def build_stage(path, texture, color_space=None):
     if os.path.exists(path):
         os.remove(path)
     stage = Usd.Stage.CreateNew(path)
@@ -91,6 +100,9 @@ def build_stage(path, texture):
     sampler = UsdShade.Shader.Define(stage, "/World/Material/texture")
     sampler.CreateIdAttr("UsdUVTexture")
     sampler.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(texture)
+    if color_space:
+        sampler.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set(
+            color_space)
     sampler.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(
         reader.CreateOutput("result", Sdf.ValueTypeNames.Float2))
     surface = UsdShade.Shader.Define(stage, "/World/Material/surface")
@@ -134,6 +146,41 @@ def diff(*arguments):
     tool = os.environ.get("HDCLAUDE_IMAGE_DIFF", "hdClaudeImageDiff")
     result = subprocess.run([tool, *arguments], capture_output=True, text=True)
     return result.returncode, (result.stdout + result.stderr).strip()
+
+
+def one_channel(out):
+    """A greyscale image is held in one channel and renders as its RGB twin."""
+    failures = 0
+    renders = {}
+    held = {}
+    for channels in (3, 1):
+        texture = os.path.join(out, f"checker{channels}.tga")
+        write_checker(texture, channels)
+        stage = os.path.join(out, f"card{channels}.usda")
+        build_stage(stage, texture, "sRGB")
+        for quality in ("high", "low"):
+            image = os.path.join(out, f"c{channels}_{quality}.0001.exr")
+            if os.path.exists(image):
+                os.remove(image)
+            stats = render(stage, image, quality,
+                           os.path.join(out, f"c{channels}_{quality}.stats"))
+            renders[(channels, quality)] = image
+            held[(channels, quality)] = int(stats["textureBytes"])
+    for quality, edge in (("high", EDGE), ("low", 256)):
+        rgb, grey = held[(3, quality)], held[(1, quality)]
+        print(f"  {quality}: RGB {rgb} bytes, one channel {grey} bytes")
+        if rgb != edge * edge * 4 or grey != edge * edge:
+            print(f"FAIL: at {quality} the RGB image holds {rgb} bytes and the "
+                  f"one-channel image {grey}; expected {edge * edge * 4} and "
+                  f"{edge * edge}")
+            failures += 1
+        status, report = diff(renders[(3, quality)], renders[(1, quality)])
+        print(f"  {quality}, RGB against one channel: {report}")
+        if status != 0 or not report.startswith("rms 0 ") or " worst 0 " not in report:
+            print(f"FAIL: at {quality} the one-channel texture does not render "
+                  "as its RGB twin")
+            failures += 1
+    return failures
 
 
 def main():
@@ -188,6 +235,7 @@ def main():
               "so nothing was reduced")
         failures += 1
 
+    failures += one_channel(out)
     print("texture quality: " + ("passed" if failures == 0 else f"{failures} failed"))
     return 1 if failures else 0
 

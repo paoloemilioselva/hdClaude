@@ -819,18 +819,65 @@ VulkanImage PathTracer::UploadTexture(const TextureImage& texture)
     // no linearisation of its own -- it assumes the sampler returns linear --
     // so doing it here is what makes an authored colour map mean what it says.
     //
-    // R16G16B16A16_SFLOAT is a mandatory sampled format with linear filtering,
-    // so an HDR source needs no capability query to keep its range.
+    // Every format here except the one- and two-channel sRGB ones is mandatory
+    // for sampling with linear filtering (Vulkan's required format support
+    // tables), so an HDR source keeps its range and a one-channel map stays
+    // one channel with no capability query. Those two are optional, and on a
+    // device without them the texels are widened to RGBA here, at upload, which
+    // costs that device the memory and changes nothing it samples.
+    static constexpr VkComponentSwizzle R = VK_COMPONENT_SWIZZLE_R;
+    static constexpr VkComponentSwizzle G = VK_COMPONENT_SWIZZLE_G;
+    static constexpr VkComponentSwizzle Zero = VK_COMPONENT_SWIZZLE_ZERO;
+    static constexpr VkComponentSwizzle One = VK_COMPONENT_SWIZZLE_ONE;
+    const VkComponentMapping grey{R, R, R, One};
+    const VkComponentMapping twoChannel{R, G, Zero, One};
     switch (texture.format) {
-        case TexelFormat::Rgba8Srgb:
-            description.format = VK_FORMAT_R8G8B8A8_SRGB;
-            break;
-        case TexelFormat::Rgba16Sfloat:
-            description.format = VK_FORMAT_R16G16B16A16_SFLOAT;
-            break;
-        case TexelFormat::Rgba8Unorm:
-            description.format = VK_FORMAT_R8G8B8A8_UNORM;
-            break;
+        case TexelFormat::Rgba8Srgb:    description.format = VK_FORMAT_R8G8B8A8_SRGB; break;
+        case TexelFormat::Rgba16Sfloat: description.format = VK_FORMAT_R16G16B16A16_SFLOAT; break;
+        case TexelFormat::Rgba8Unorm:   description.format = VK_FORMAT_R8G8B8A8_UNORM; break;
+        case TexelFormat::R8Unorm:      description.format = VK_FORMAT_R8_UNORM; break;
+        case TexelFormat::R8Srgb:       description.format = VK_FORMAT_R8_SRGB; break;
+        case TexelFormat::R16Sfloat:    description.format = VK_FORMAT_R16_SFLOAT; break;
+        case TexelFormat::Rg8Unorm:     description.format = VK_FORMAT_R8G8_UNORM; break;
+        case TexelFormat::Rg8Srgb:      description.format = VK_FORMAT_R8G8_SRGB; break;
+        case TexelFormat::Rg16Sfloat:   description.format = VK_FORMAT_R16G16_SFLOAT; break;
+    }
+    const std::uint32_t channels = TexelChannels(texture.format);
+    if (channels == 1u) {
+        description.components = grey;
+    } else if (channels == 2u) {
+        description.components = twoChannel;
+    }
+
+    const std::uint8_t* texels = texture.texels.data();
+    VkDeviceSize size = static_cast<VkDeviceSize>(texture.texels.size());
+    std::vector<std::uint8_t> widened;
+    const auto filterable = [this](VkFormat format) {
+        VkFormatProperties properties{};
+        vkGetPhysicalDeviceFormatProperties(_context.PhysicalDevice(), format,
+                                            &properties);
+        const VkFormatFeatureFlags needed =
+            VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+            VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+        return (properties.optimalTilingFeatures & needed) == needed;
+    };
+    if (TexelIsSrgb(texture.format) && channels < 4u &&
+        !filterable(description.format)) {
+        const std::size_t pixels =
+            static_cast<std::size_t>(texture.width) * texture.height;
+        widened.resize(pixels * 4u);
+        for (std::size_t i = 0; i < pixels; ++i) {
+            const std::uint8_t r = texels[i * channels];
+            const std::uint8_t g = channels == 2u ? texels[i * 2u + 1u] : r;
+            widened[i * 4u + 0u] = r;
+            widened[i * 4u + 1u] = g;
+            widened[i * 4u + 2u] = channels == 2u ? 0u : r;
+            widened[i * 4u + 3u] = 255u;
+        }
+        description.format = VK_FORMAT_R8G8B8A8_SRGB;
+        description.components = VkComponentMapping{};
+        texels = widened.data();
+        size = static_cast<VkDeviceSize>(widened.size());
     }
     description.usage =
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -838,15 +885,13 @@ VulkanImage PathTracer::UploadTexture(const TextureImage& texture)
 
     VulkanImage image(_allocator, description);
 
-    const VkDeviceSize size =
-        static_cast<VkDeviceSize>(texture.texels.size());
     BufferDescription staging;
     staging.size = size;
     staging.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     staging.domain = BufferDomain::HostUpload;
     staging.debugName = texture.debugName + ".staging";
     VulkanBuffer upload(_allocator, staging);
-    upload.Write(texture.texels.data(), size);
+    upload.Write(texels, size);
 
     _context.SubmitImmediate([&](VkCommandBuffer command) {
         image.RecordBarrier(command, VK_IMAGE_LAYOUT_UNDEFINED,
