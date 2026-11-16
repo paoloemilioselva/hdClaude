@@ -8869,3 +8869,57 @@ exhausts it first. The whole of ALab at `high` needs about 31 GB decoded on a
 and upload interleaved, since the GPU layer cannot re-decode. And block
 compression (BC4/BC5/BC6H/BC7) would hold ALab's disk set in about 5.9 GB of
 device memory, at the cost of a lossy encode on load.
+
+## 2026-11-16 -- Textures decoded at upload, and block compression
+
+Both open items from the entry above.
+
+**Decoded at upload, a batch at a time.** A material's image is now deferred:
+its pool slot holds a description and a decoder (`TextureImage::decode`) that
+carries everything it needs by value. `PathTracer::UploadTextures` decodes a
+batch of them in parallel -- one per hardware thread -- uploads each against
+the budget and releases it before the next batch, so the host holds a batch
+of decoded images, never the scene's. A dome's map is still decoded when the
+light acquires it, because the host reads it: its illuminance integral and
+its sampling distribution. Decode failures are logged by the decoder, once
+each; images that did not fit, or would not decode, are remembered by size,
+so a republish does not decode them only to drop them again. The whole of
+ALab at `high`, which could not be loaded on this 31 GB machine, rendered at
+16.6 GB of host memory -- 2,990 textures on the device and 2,720 (11.3 GB)
+left out and reported, because 25.5 GB of decoded texture does not fit in
+16 GB of device memory.
+
+**Block compression**, behind `Texture compression` /
+`HDCLAUDE_TEXTURE_COMPRESSION`, off by default because it is lossy. The
+encoders are hdClaude's own (`core/texture_compression.h`), single-region
+modes only: BC4 and BC5 for one and two channels of bytes; BC7 mode 6, or
+mode 5 where alpha does not follow colour, for four; BC6H mode 11 for half
+floats, signed when an image goes below zero. Each is tested by decoding with
+bcdec. Two findings shaped it:
+
+- *188 of 278 half images on ALab's characters hold a negative value* --
+  an IOR map among them, which can only be filtering ringing. Unsigned
+  BC6H alone compressed 40 of 278; the signed form was written for this.
+- *The other 50 were four-channel half EXRs with an alpha that is not one*,
+  and BC6H has no alpha. They are all ambient-occlusion maps, read as
+  colours. The compiler now marks each texture request with whether its
+  image node can hand on an alpha (`color4`/`vector4`, or a multi-output
+  node whose `a` or `rgba` is connected); the pool keeps the flag per slot,
+  and BC6H drops an alpha nothing reads.
+
+Measured on the characters at frame 1004, `high`: device textures 1.44 GB
+became 0.55 GB, 0.26 GB of it the uncompressed dome; peak device memory
+1.89 GB became 0.82 GB. At 256 samples the compressed frame keeps 99.955% of
+the light and differs from the uncompressed one by rms 0.012, 1.9% of pixels
+over the per-pixel tolerance. The whole of ALab at `high` with compression:
+all 5,709 textures on the device in 6.24 GB, none left out, 7.3 GB device and
+9.5 GB host peak, in 213 s against 208 s uncompressed. The encode is cheap
+beside the decode.
+
+**What compression costs.** BC7 reaches 46-54 dB on gradients and masks and
+38-40 dB on four unrelated sinusoids, where the partitioned modes it does
+not write would do better. BC6H holds a decade in a block within 4.6%; a
+block that spans several decades, or both signs widely, is held much worse,
+because one region interpolates along one line in the half's log-like
+encoding. Nothing is cached between sessions: each load decodes and encodes
+again.
