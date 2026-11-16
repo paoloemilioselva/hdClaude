@@ -29,6 +29,11 @@ target_include_directories(hdClaudeGpu PUBLIC
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
+# The texture upload decodes and compresses on threads of its own
+# (PathTracer::UploadTextures), and before glibc 2.34 std::thread needs
+# libpthread linked explicitly.
+find_package(Threads REQUIRED)
+
 target_link_libraries(hdClaudeGpu
     PUBLIC
         hdClaudeProjectOptions
@@ -36,6 +41,7 @@ target_link_libraries(hdClaudeGpu
         volk
         Vulkan::Headers
     PRIVATE
+        Threads::Threads
         hdClaudeVma
         glslang
         SPIRV
