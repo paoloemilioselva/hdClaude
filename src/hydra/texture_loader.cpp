@@ -515,16 +515,108 @@ bool DecodePoolImage(const std::string& assetPath,
     return false;
 }
 
+void TracePoolImage(std::uint32_t slot, const std::string& assetPath, bool ok,
+                    const hdclaude::TextureImage& image, const std::string& error)
+{
+    if (assetPath.empty()) {
+        HdClaudeTrace("texture %u: unbound image node; reads its default", slot);
+    } else if (ok) {
+        const char* encoding = "linear";
+        if (hdclaude::TexelIsSrgb(image.format)) {
+            encoding = "sRGB";
+        } else if (hdclaude::TexelIsHalf(image.format)) {
+            encoding = "linear half";
+        }
+        HdClaudeTrace("texture %u: %s (%ux%u, %u channel(s), %s)", slot,
+                      assetPath.c_str(), image.width, image.height,
+                      hdclaude::TexelChannels(image.format), encoding);
+    } else {
+        HdClaudeTrace("texture %u: FAILED %s (%s)", slot, assetPath.c_str(),
+                      error.c_str());
+    }
+}
+
 }  // namespace
+
+struct HdClaudeTexturePool::FailureLog {
+    std::mutex mutex;
+    std::vector<std::string> entries;
+
+    /// Once each: a deferred image that fails is tried again whenever the
+    /// renderer is handed it, and the report should not grow with that.
+    void Add(std::string entry)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (std::find(entries.begin(), entries.end(), entry) == entries.end()) {
+            entries.push_back(std::move(entry));
+        }
+    }
+    std::vector<std::string> Copy()
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        return entries;
+    }
+    void Clear()
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        entries.clear();
+    }
+};
+
+namespace {
+
+/// A slot's image described rather than decoded: its name, and a decoder that
+/// carries everything the decode needs by value, so it runs on any thread and
+/// outlives the pool if a snapshot does.
+std::shared_ptr<const hdclaude::TextureImage> DeferredImage(
+    std::uint32_t slot, const std::string& assetPath,
+    HdClaudeTextureColorSpace colorSpace, std::uint32_t maxEdge,
+    const std::shared_ptr<HdClaudeTexturePool::FailureLog>& failures)
+{
+    auto image = std::make_shared<hdclaude::TextureImage>();
+    image->debugName = assetPath;
+    image->decode = [slot, assetPath, colorSpace, maxEdge, failures](
+                        hdclaude::TextureImage* decoded, std::string* error) {
+        std::string message;
+        const bool ok =
+            DecodePoolImage(assetPath, colorSpace, maxEdge, decoded, &message);
+        TracePoolImage(slot, assetPath, ok, *decoded, message);
+        if (!ok) {
+            failures->Add(assetPath + ": " + message);
+        }
+        if (error) {
+            *error = message;
+        }
+        return ok;
+    };
+    return image;
+}
+
+}  // namespace
+
+HdClaudeTexturePool::HdClaudeTexturePool()
+    : _failures(std::make_shared<FailureLog>())
+{
+}
+
+HdClaudeTexturePool::~HdClaudeTexturePool() = default;
+
+std::vector<std::string> HdClaudeTexturePool::Failures() const
+{
+    return _failures->Copy();
+}
 
 std::uint32_t HdClaudeTexturePool::Acquire(const std::string& assetPath,
                                            HdClaudeTextureColorSpace colorSpace)
 {
-    return AcquireAll({{assetPath, colorSpace}}).front();
+    return AcquireAll({{assetPath, colorSpace}}, nullptr,
+                      HdClaudeTextureResidency::Decoded)
+        .front();
 }
 
 std::vector<std::uint32_t> HdClaudeTexturePool::AcquireAll(
-    const std::vector<Request>& requests, AcquireReport* report)
+    const std::vector<Request>& requests, AcquireReport* report,
+    HdClaudeTextureResidency residency)
 {
     struct Decode {
         std::uint32_t slot;
@@ -533,10 +625,12 @@ std::vector<std::uint32_t> HdClaudeTexturePool::AcquireAll(
         std::string error;
         bool ok = false;
     };
+    const bool decodeNow = residency == HdClaudeTextureResidency::Decoded;
 
     // --- Reserve, under the lock ----------------------------------------------
     // A key asked for twice in one batch is reserved once and decoded once,
-    // as it would be across two batches.
+    // as it would be across two batches. A deferred image costs nothing here
+    // but its description; the renderer decodes it when it uploads it.
     std::vector<std::uint32_t> slots;
     slots.reserve(requests.size());
     std::vector<Decode> decodes;
@@ -548,15 +642,35 @@ std::vector<std::uint32_t> HdClaudeTexturePool::AcquireAll(
             Key key = std::make_pair(request.assetPath, request.colorSpace);
             const auto found = _slots.find(key);
             if (found != _slots.end()) {
-                slots.push_back(found->second);
+                const std::uint32_t slot = found->second;
+                slots.push_back(slot);
+                // Deferred until now, and now wanted on the host: decoded into
+                // the same slot. Its deferred image stands until this returns.
+                if (decodeNow && !_decoded[slot] &&
+                    std::none_of(decodes.begin(), decodes.end(),
+                                 [slot](const Decode& d) { return d.slot == slot; })) {
+                    _decoded[slot] = true;
+                    decodes.push_back({slot, std::move(key), {}, {}, false});
+                }
                 continue;
             }
             const auto slot = static_cast<std::uint32_t>(_images.size());
             _slots[key] = slot;
             _sources.push_back(key);
-            _images.push_back(std::make_shared<const hdclaude::TextureImage>());
             slots.push_back(slot);
-            decodes.push_back({slot, std::move(key), {}, {}, false});
+            // An image node with no file has nothing to defer: its one texel
+            // is made at once.
+            if (decodeNow || key.first.empty()) {
+                _images.push_back(std::make_shared<const hdclaude::TextureImage>());
+                _decoded.push_back(true);
+                decodes.push_back({slot, std::move(key), {}, {}, false});
+            } else {
+                _images.push_back(DeferredImage(slot, key.first, key.second,
+                                                maxEdge, _failures));
+                _decoded.push_back(false);
+                HdClaudeTrace("texture %u: %s, deferred to its upload", slot,
+                              key.first.c_str());
+            }
         }
     }
 
@@ -577,26 +691,10 @@ std::vector<std::uint32_t> HdClaudeTexturePool::AcquireAll(
     // --- Publish, under the lock ----------------------------------------------
     std::lock_guard<std::mutex> lock(_mutex);
     for (Decode& decode : decodes) {
-        const std::string& assetPath = decode.key.first;
-        if (assetPath.empty()) {
-            HdClaudeTrace("texture %u: unbound image node; reads its default",
-                          decode.slot);
-        } else if (decode.ok) {
-            const char* encoding = "linear";
-            if (hdclaude::TexelIsSrgb(decode.image.format)) {
-                encoding = "sRGB";
-            } else if (hdclaude::TexelIsHalf(decode.image.format)) {
-                encoding = "linear half";
-            }
-            HdClaudeTrace("texture %u: %s (%ux%u, %u channel(s), %s)",
-                          decode.slot, assetPath.c_str(), decode.image.width,
-                          decode.image.height,
-                          hdclaude::TexelChannels(decode.image.format),
-                          encoding);
-        } else {
-            _failures.push_back(assetPath + ": " + decode.error);
-            HdClaudeTrace("texture %u: FAILED %s (%s)", decode.slot,
-                          assetPath.c_str(), decode.error.c_str());
+        TracePoolImage(decode.slot, decode.key.first, decode.ok, decode.image,
+                       decode.error);
+        if (!decode.ok) {
+            _failures->Add(decode.key.first + ": " + decode.error);
         }
         if (report) {
             ++report->decoded;
@@ -614,7 +712,8 @@ void HdClaudeTexturePool::Clear()
     _slots.clear();
     _sources.clear();
     _images.clear();
-    _failures.clear();
+    _decoded.clear();
+    _failures->Clear();
 }
 
 std::uint32_t HdClaudeTexturePool::MaxEdge() const
@@ -631,44 +730,44 @@ bool HdClaudeTexturePool::SetMaxEdge(std::uint32_t maxEdge)
     }
     _maxEdge = maxEdge;
 
-    // Every image already held is re-decoded from its own source, into the slot
-    // it already occupies. Re-decoding rather than halving what is in hand,
+    // Every image already held is replaced in the slot it already occupies:
+    // a deferred one by a new description under the new cap, which costs
+    // nothing until it is uploaded, and a decoded one by decoding it again
+    // from its source. Re-decoding rather than halving what is in hand,
     // because halving a reduced image again is not the same as reducing the
     // original that far -- and because raising the cap has to get the detail
     // back, which nothing in the pool still holds.
     //
-    // In parallel, as AcquireAll decodes, and each slot replaced the moment its
-    // image is ready: the pool's copy of the old image goes as the new one
-    // arrives, rather than a whole second set being held until the last of
-    // them is decoded. Slots are distinct elements of a vector that is not
-    // resized here, and the lock keeps AcquireAll from growing it meanwhile.
-    _failures.clear();
-    std::vector<std::string> errors(_images.size());
+    // In parallel, and each slot replaced the moment its image is ready, so a
+    // second full set is never held. Slots are distinct elements of a vector
+    // that is not resized here, and the lock keeps AcquireAll from growing it
+    // meanwhile.
+    _failures->Clear();
     WorkParallelForN(_images.size(), [&](std::size_t begin, std::size_t end) {
         for (std::size_t slot = begin; slot < end; ++slot) {
             const std::string& path = _sources[slot].first;
             if (path.empty()) {
                 continue;   // an image node with no file; its one texel stands
             }
+            const auto index = static_cast<std::uint32_t>(slot);
+            if (!_decoded[slot]) {
+                _images[slot] = DeferredImage(index, path, _sources[slot].second,
+                                              _maxEdge, _failures);
+                continue;
+            }
             hdclaude::TextureImage image;
-            if (!HdClaudeLoadTexture(path, &image, &errors[slot],
-                                     _sources[slot].second, _maxEdge)) {
-                image = hdclaude::TextureImage();
-                image.debugName = path;
-                errors[slot] = path + ": " + errors[slot];
-            } else {
-                errors[slot].clear();
+            std::string error;
+            const bool ok = DecodePoolImage(path, _sources[slot].second, _maxEdge,
+                                            &image, &error);
+            TracePoolImage(index, path, ok, image, error);
+            if (!ok) {
+                _failures->Add(path + ": " + error);
             }
             _images[slot] =
                 std::make_shared<const hdclaude::TextureImage>(std::move(image));
         }
     });
-    for (std::string& error : errors) {
-        if (!error.empty()) {
-            _failures.push_back(std::move(error));
-        }
-    }
-    HdClaudeTrace("texture quality changed: %zu images reloaded with a cap of "
+    HdClaudeTrace("texture quality changed: %zu images replaced with a cap of "
                   "%u", _images.size(), _maxEdge);
     return true;
 }

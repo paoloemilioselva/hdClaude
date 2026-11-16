@@ -735,6 +735,10 @@ class PathTracer {
     std::uint32_t TexturesUploaded() const { return _texturesUploaded; }
     std::uint64_t TextureBytesUploaded() const { return _textureBytesUploaded; }
     std::uint32_t TexturesReused() const { return _texturesReused; }
+    /// Of those uploaded, how many were deferred and decoded here, and the
+    /// bytes they decoded to.
+    std::uint32_t TexturesDecoded() const { return _texturesDecoded; }
+    std::uint64_t TextureBytesDecoded() const { return _textureBytesDecoded; }
 
     /// The most device memory the texture pool may hold, in bytes; zero for
     /// whatever the device has free, less a reserve for what is built after
@@ -979,6 +983,15 @@ class PathTracer {
     std::uint32_t _texturesUploaded = 0;
     std::uint64_t _textureBytesUploaded = 0;
     std::uint64_t _textureMemoryLimit = 0;
+    std::uint32_t _texturesDecoded = 0;
+    std::uint64_t _textureBytesDecoded = 0;
+    /// The device bytes each slot of _texturePool holds.
+    std::vector<std::uint64_t> _textureSlotBytes;
+    /// Per slot, an image that was not uploaded and why: the bytes it needed
+    /// when it did not fit, or zero when it could not be decoded. So a slot
+    /// still holding that image is not decoded again only to be dropped.
+    std::vector<std::pair<std::shared_ptr<const TextureImage>, std::uint64_t>>
+        _textureUnplaced;
     std::uint32_t _texturesOverBudget = 0;
     std::uint64_t _textureBytesOverBudget = 0;
     std::uint64_t _textureBudget = 0;

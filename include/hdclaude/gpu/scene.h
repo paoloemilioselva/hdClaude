@@ -17,6 +17,7 @@
 #include "hdclaude/core/ray_visibility.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -650,8 +651,26 @@ struct TextureImage {
     TexelFormat format = TexelFormat::Rgba8Unorm;
     std::string debugName;
 
+    /// For an image not decoded yet, how to decode it: fills `decoded` with
+    /// the image and returns true, or says why not in `error`. Empty for an
+    /// image that already holds its texels.
+    ///
+    /// Deferred because the decoded copy is needed only for as long as it
+    /// takes to upload: a scene's images, decoded together before any of them
+    /// was uploaded and then kept, are what ran a 31 GB machine out of memory
+    /// on ALab, whose images decode to more than that. The renderer decodes a
+    /// few at a time, uploads each and lets it go (PathTracer::UploadTextures).
+    /// Callable from any thread, and from several at once.
+    std::function<bool(TextureImage* decoded, std::string* error)> decode;
+
+    /// Whether the texels are still to be decoded.
+    bool Deferred() const { return texels.empty() && static_cast<bool>(decode); }
+
     bool Valid() const
     {
+        if (Deferred()) {
+            return true;
+        }
         return width > 0 && height > 0 &&
                texels.size() == static_cast<std::size_t>(width) * height *
                                     TexelSize(format);

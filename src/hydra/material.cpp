@@ -170,7 +170,9 @@ void AcquireTextures(HdClaudeRenderParam* param,
                                         std::memory_order_relaxed);
         stats->textureBytes.fetch_add(report.bytes, std::memory_order_relaxed);
     }
-    HdClaudeTrace("textures: %zu requested, %zu decoded in %.0f ms",
+    // A material's images are deferred to their upload, so this counts what
+    // was registered; the decode is the renderer's (PathTracer::UploadTextures).
+    HdClaudeTrace("textures: %zu requested, %zu decoded now, in %.0f ms",
                   requests.size(), report.decoded, textureMs);
 
     std::size_t next = 0;

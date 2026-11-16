@@ -33,6 +33,20 @@ enum class HdClaudeTextureColorSpace {
     Raw,
 };
 
+/// When a pool slot's image is decoded.
+enum class HdClaudeTextureResidency {
+    /// When the renderer uploads it, which then lets the decoded copy go: what
+    /// a material's textures are, since nothing on the host reads them. The
+    /// slot holds the image's description and how to decode it
+    /// (TextureImage::decode), so a scene's images are never all decoded at
+    /// once.
+    Deferred,
+    /// Now, and kept: for an image the host reads -- a dome's map, whose
+    /// integral sets its brightness and whose texels build its sampling
+    /// distribution.
+    Decoded,
+};
+
 /// Loads textures once each and hands out their pool indices.
 ///
 /// Materials name their textures by asset path, and several materials in a
@@ -68,6 +82,9 @@ class HdClaudeTexturePool {
     /// The same path can be asked for twice with different colour spaces --
     /// an asset may use one image as both colour and data -- so the pool is
     /// keyed on both and decodes each reading separately.
+    ///
+    /// Decoded now: this is how a light asks for its map. A slot asked for
+    /// both ways is decoded.
     std::uint32_t Acquire(
         const std::string& assetPath,
         HdClaudeTextureColorSpace colorSpace = HdClaudeTextureColorSpace::Auto);
@@ -78,21 +95,24 @@ class HdClaudeTexturePool {
         HdClaudeTextureColorSpace colorSpace = HdClaudeTextureColorSpace::Auto;
     };
 
-    /// What one AcquireAll decoded, as opposed to found already in the pool.
+    /// What one AcquireAll decoded, as opposed to found already in the pool or
+    /// deferred to the upload.
     struct AcquireReport {
         std::size_t decoded = 0;
         std::uint64_t bytes = 0;
     };
 
-    /// The pool slot for each request, in order, decoding every image not yet
-    /// in the pool in parallel.
+    /// The pool slot for each request, in order. A new image is deferred --
+    /// described, not decoded -- unless `residency` asks for it decoded, when
+    /// every such image is decoded in parallel.
     ///
     /// Slots are reserved under the pool's lock and the images decoded outside
     /// it, so the decode -- seconds for a 4096-square TIFF -- runs on every
     /// core rather than one image at a time. The pool must not be read until
     /// this returns: the reserved slots hold nothing until then.
-    std::vector<std::uint32_t> AcquireAll(const std::vector<Request>& requests,
-                                          AcquireReport* report = nullptr);
+    std::vector<std::uint32_t> AcquireAll(
+        const std::vector<Request>& requests, AcquireReport* report = nullptr,
+        HdClaudeTextureResidency residency = HdClaudeTextureResidency::Deferred);
 
     /// Every loaded image, indexed by the slot Acquire returned.
     ///
@@ -105,8 +125,9 @@ class HdClaudeTexturePool {
         return _images;
     }
 
-    /// Paths that could not be loaded, for render stats.
-    const std::vector<std::string>& Failures() const { return _failures; }
+    /// Paths that could not be loaded, for render stats. A deferred image is
+    /// added when the renderer tries to decode it, from whichever thread did.
+    std::vector<std::string> Failures() const;
 
     void Clear();
 
@@ -119,7 +140,19 @@ class HdClaudeTexturePool {
     /// the same slot.
     std::vector<Key> _sources;
     std::vector<std::shared_ptr<const hdclaude::TextureImage>> _images;
-    std::vector<std::string> _failures;
+    /// Whether each slot holds a decoded image rather than a deferred one.
+    std::vector<bool> _decoded;
+  public:
+    /// Failures, shared with every deferred image's decoder: those run on the
+    /// renderer's threads, after AcquireAll has returned, and possibly after a
+    /// snapshot holding them has outlived a Clear.
+    struct FailureLog;
+
+    HdClaudeTexturePool();
+    ~HdClaudeTexturePool();
+
+  private:
+    std::shared_ptr<FailureLog> _failures;
     std::uint32_t _maxEdge = 0;
 };
 

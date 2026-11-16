@@ -1119,6 +1119,13 @@ void HdClaudeRenderPass::_Execute(
                                               std::memory_order_relaxed);
             stages.texturesReused.store(tracer->TexturesReused(),
                                         std::memory_order_relaxed);
+            // Images are decoded where they are uploaded now, so this is
+            // where the decode is counted: texturesLoaded and textureBytes
+            // keep their meaning, images decoded and the bytes they took.
+            stages.texturesLoaded.fetch_add(tracer->TexturesDecoded(),
+                                            std::memory_order_relaxed);
+            stages.textureBytes.fetch_add(tracer->TextureBytesDecoded(),
+                                          std::memory_order_relaxed);
             stages.texturesOverBudget.store(tracer->TexturesOverBudget(),
                                             std::memory_order_relaxed);
             stages.textureBytesOverBudget.store(

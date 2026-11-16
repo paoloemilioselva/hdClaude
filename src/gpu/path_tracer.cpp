@@ -8,6 +8,7 @@
 #include "hdclaude/core/environment.h"
 #include "hdclaude/core/spectrum.h"
 
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -15,10 +16,36 @@
 #include <fstream>
 #include <sstream>
 #include <unordered_map>
+#include <thread>
 #include <unordered_set>
 
 namespace hdclaude {
 namespace {
+
+/// Runs `function(i)` for every i below `count` on up to one thread per core,
+/// this one included. The GPU layer has no task scheduler of its own and must
+/// not depend on OpenUSD's, so it starts threads for the one job that wants
+/// them: decoding a batch of textures.
+template <typename Function>
+void ParallelFor(std::size_t count, Function&& function)
+{
+    const std::size_t workers = std::min<std::size_t>(
+        count, std::max(1u, std::thread::hardware_concurrency()));
+    std::atomic<std::size_t> next{0};
+    const auto run = [&] {
+        for (std::size_t i = next.fetch_add(1); i < count; i = next.fetch_add(1)) {
+            function(i);
+        }
+    };
+    std::vector<std::thread> threads;
+    for (std::size_t t = 1; t < workers; ++t) {
+        threads.emplace_back(run);
+    }
+    run();
+    for (std::thread& thread : threads) {
+        thread.join();
+    }
+}
 
 /// The `material` TextureBindingsFor takes for the traversal kernels, which
 /// sample the opacity library's images rather than any one material's.
@@ -928,11 +955,14 @@ void PathTracer::UploadTextures(
     // uploaded every texture in the scene again, each through its own staging
     // buffer and its own synchronous submission.
     std::vector<VulkanImage> pool(textures.size());
+    std::vector<std::uint64_t> poolBytes(textures.size(), 0);
     // Slots the new scene no longer has are freed before anything new is
     // allocated, for the same reason a replaced slot is.
     if (_texturePool.size() > textures.size()) {
         _texturePool.resize(textures.size());
     }
+    _textureSlotBytes.resize(_texturePool.size(), 0);
+    _textureUnplaced.resize(textures.size());
 
     // What the pool may hold. A device allocation that cannot be met does not
     // fail cleanly everywhere -- NVIDIA's Windows driver, with the device full,
@@ -955,6 +985,8 @@ void PathTracer::UploadTextures(
     _texturesOverBudget = 0;
     _textureBytesOverBudget = 0;
     _textureBudget = _textureMemoryLimit;
+    _texturesDecoded = 0;
+    _textureBytesDecoded = 0;
     const auto fits = [&](std::uint64_t bytes) {
         if (_textureMemoryLimit != 0 && held + bytes > _textureMemoryLimit) {
             return false;
@@ -968,6 +1000,18 @@ void PathTracer::UploadTextures(
             return false;
         }
         return true;
+    };
+    const auto leaveOut = [&](std::size_t slot,
+                              const std::shared_ptr<const TextureImage>& texture,
+                              std::uint64_t bytes) {
+        // The placeholder, and the slot is left unrecorded so that a later
+        // publication tries this image again rather than keeping the
+        // placeholder as though it were the upload. Its size is remembered,
+        // so that trying again does not mean decoding it again only to find
+        // it still does not fit.
+        ++_texturesOverBudget;
+        _textureBytesOverBudget += bytes;
+        _textureUnplaced[slot] = {texture, bytes};
     };
 
     // The dome's map first: when not everything fits, a scene should lose
@@ -983,6 +1027,8 @@ void PathTracer::UploadTextures(
         }
     }
 
+    // --- What is kept, what goes, and what has to be uploaded ----------------
+    std::vector<std::size_t> pending;
     for (const std::size_t slot : order) {
         const std::shared_ptr<const TextureImage>& texture = textures[slot];
         if (slot < _uploadedTextures.size() && slot < _texturePool.size() &&
@@ -990,7 +1036,8 @@ void PathTracer::UploadTextures(
             pool[slot] = std::move(_texturePool[slot]);
             if (pool[slot].Valid()) {
                 ++_texturesReused;
-                held += texture->texels.size();
+                poolBytes[slot] = _textureSlotBytes[slot];
+                held += poolBytes[slot];
             }
             continue;
         }
@@ -1011,20 +1058,81 @@ void PathTracer::UploadTextures(
             // neighbours. The slot resolves to the placeholder.
             continue;
         }
-        if (!fits(texture->texels.size())) {
-            // The placeholder, and the slot is left unrecorded so that a
-            // later publication tries this image again rather than keeping
-            // the placeholder as though it were the upload.
-            ++_texturesOverBudget;
-            _textureBytesOverBudget += texture->texels.size();
-            continue;
+        if (_textureUnplaced[slot].first == texture) {
+            if (_textureUnplaced[slot].second == 0) {
+                continue;   // it failed to decode, and was reported then
+            }
+            if (!fits(_textureUnplaced[slot].second)) {
+                leaveOut(slot, texture, _textureUnplaced[slot].second);
+                continue;
+            }
         }
-        pool[slot] = UploadTexture(*texture);
-        held += texture->texels.size();
-        ++_texturesUploaded;
-        _textureBytesUploaded += texture->texels.size();
+        _textureUnplaced[slot] = {};
+        pending.push_back(slot);
     }
+
+    // --- Decode a batch, upload it, let it go --------------------------------
+    // A deferred image is decoded here, a few at a time -- one per hardware
+    // thread, in parallel -- and each is uploaded and released before the
+    // next batch is decoded. The host therefore holds a batch of decoded
+    // images, never the scene's: ALab decodes to more than the 31 GB of the
+    // machine it was measured on. An image that already holds its texels --
+    // a dome's map, which the host reads too -- is uploaded as it is.
+    const std::size_t batchSize =
+        std::max<std::size_t>(1, std::thread::hardware_concurrency());
+    struct Prepared {
+        TextureImage image;
+        bool ok = false;
+    };
+    for (std::size_t first = 0; first < pending.size(); first += batchSize) {
+        const std::size_t count = std::min(batchSize, pending.size() - first);
+        std::vector<Prepared> batch(count);
+        ParallelFor(count, [&](std::size_t i) {
+            const TextureImage& source = *textures[pending[first + i]];
+            if (!source.Deferred()) {
+                return;   // uploaded from the source itself, below
+            }
+            std::string error;
+            try {
+                batch[i].ok = source.decode(&batch[i].image, &error) &&
+                              batch[i].image.Valid() && !batch[i].image.Deferred();
+            } catch (const std::exception&) {
+                batch[i].ok = false;
+            }
+        });
+
+        for (std::size_t i = 0; i < count; ++i) {
+            const std::size_t slot = pending[first + i];
+            const std::shared_ptr<const TextureImage>& texture = textures[slot];
+            const bool deferred = texture->Deferred();
+            if (deferred && !batch[i].ok) {
+                // Reported by the decoder; remembered so it is not retried
+                // until the slot holds a different image.
+                _textureUnplaced[slot] = {texture, 0};
+                continue;
+            }
+            const TextureImage& image = deferred ? batch[i].image : *texture;
+            if (deferred) {
+                ++_texturesDecoded;
+                _textureBytesDecoded += image.texels.size();
+            }
+            const std::uint64_t bytes = image.texels.size();
+            if (!fits(bytes)) {
+                leaveOut(slot, texture, bytes);
+                batch[i] = {};
+                continue;
+            }
+            pool[slot] = UploadTexture(image);
+            poolBytes[slot] = bytes;
+            held += bytes;
+            ++_texturesUploaded;
+            _textureBytesUploaded += bytes;
+            batch[i] = {};
+        }
+    }
+
     _texturePool = std::move(pool);
+    _textureSlotBytes = std::move(poolBytes);
     _uploadedTextures = textures;
     for (std::size_t slot = 0; slot < _texturePool.size(); ++slot) {
         if (!_texturePool[slot].Valid()) {
@@ -1953,7 +2061,15 @@ void PathTracer::SetScene(const Scene& publishedScene,
     if (domeChanged || !_environmentDistribution.Valid()) {
         EnvironmentDistribution distribution;
         if (DomeImage() != nullptr) {
-            distribution = BuildEnvironmentDistribution(*dome);
+            // A dome's map is decoded on the host, which reads it here; one
+            // handed over deferred is decoded for this and let go.
+            TextureImage decoded;
+            std::string error;
+            const TextureImage* map = dome.get();
+            if (dome->Deferred() && dome->decode(&decoded, &error)) {
+                map = &decoded;
+            }
+            distribution = BuildEnvironmentDistribution(*map);
         }
 
         const std::vector<float> fallback{0.0f};
