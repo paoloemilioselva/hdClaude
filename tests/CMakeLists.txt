@@ -32,6 +32,23 @@ if(HDCLAUDE_ENABLE_VULKAN)
       HDCLAUDE_TRAVERSAL_KERNEL="${CMAKE_CURRENT_SOURCE_DIR}/traversal.comp.glsl")
   add_test(NAME geometry COMMAND hdClaudeGeometryTests)
 
+  # The denoiser against images whose answer is known. No GPU of hdClaude's
+  # and no OpenUSD; it loads the OIDN runtime the configure fetched, from the
+  # package itself rather than the plugin tree, so it is what the pin names.
+  if(HDCLAUDE_ENABLE_OIDN AND HDCLAUDE_OIDN_AVAILABLE)
+    add_executable(hdClaudeDenoiseTests denoise_tests.cpp)
+    target_link_libraries(hdClaudeDenoiseTests PRIVATE hdClaude::Denoise)
+    target_include_directories(hdClaudeDenoiseTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    if(WIN32)
+      set(_oidn_runtime_dir "${oidn_SOURCE_DIR}/bin")
+    else()
+      set(_oidn_runtime_dir "${oidn_SOURCE_DIR}/lib")
+    endif()
+    target_compile_definitions(hdClaudeDenoiseTests PRIVATE
+        HDCLAUDE_OIDN_RUNTIME_DIRECTORY="${_oidn_runtime_dir}")
+    add_test(NAME denoise COMMAND hdClaudeDenoiseTests)
+  endif()
+
   add_executable(hdClaudeGpuTests gpu_tests.cpp)
   target_link_libraries(hdClaudeGpuTests PRIVATE hdClaude::Gpu)
   target_include_directories(hdClaudeGpuTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -177,6 +194,7 @@ if(HDCLAUDE_ENABLE_MATERIALX)
             "usd_fog_volumes|fog_volumes"
             "usd_implicit_surfaces|implicit_surfaces"
             "usd_texture_quality|texture_quality"
+            "usd_denoising|denoising"
             "usd_picking|picking"
             "usd_incremental_sync|incremental_sync"
             "usd_material_edits|material_edits"

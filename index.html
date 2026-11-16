@@ -291,7 +291,7 @@ footer { font: 400 0.8rem/1.6 var(--mono); color: var(--muted); border-top: 1px 
     <div>
       <span class="k">Real time</span>
       <h3>Reconstruction that never touches the reference</h3>
-      <p>Interactive frames can go through NVIDIA DLSS Super Resolution, DLAA or Ray Reconstruction. It is optional and found at runtime. Final-quality renders never pass through it.</p>
+      <p>Interactive frames can go through NVIDIA DLSS Super Resolution, DLAA or Ray Reconstruction. It is optional and found at runtime. Final-quality renders never pass through it. They can be denoised instead, by Open Image Denoise, on any GPU or the CPU, when you ask for it. The film itself is never changed.</p>
     </div>
   </div>
   <div class="figures">
@@ -299,7 +299,7 @@ footer { font: 400 0.8rem/1.6 var(--mono); color: var(--muted); border-top: 1px 
 <div class="fig"><span class="v">0.57<small>%</small></span><span class="l">worst error against an independent radiosity solution of the measured Cornell box</span></div>
 <div class="fig"><span class="v">22</span><span class="l">MaterialX closure nodes with importance sampling, validated for energy on the GPU</span></div>
 <div class="fig"><span class="v">14</span><span class="l">gallery scenes rendered, timed and gated against baselines after every change</span></div>
-<div class="fig"><span class="v">27</span><span class="l">test suites, from unit tests to end-to-end USD renders</span></div>
+<div class="fig"><span class="v">29</span><span class="l">test suites, from unit tests to end-to-end USD renders</span></div>
 <!-- END GENERATED figures -->
   </div>
 </section>
@@ -755,6 +755,7 @@ footer { font: 400 0.8rem/1.6 var(--mono); color: var(--muted); border-top: 1px 
     <div class="group">
       <h3>Interactive and workflow</h3>
       <div class="row"><span class="f">DLSS SR, DLAA, Ray Reconstruction<span class="muted">Optional, discovered at runtime, with closure-derived guides</span></span><span class="pill ok">Shipped</span></div>
+      <div class="row"><span class="f">Final-frame denoising<span class="muted">Open Image Denoise, loaded at runtime, with albedo and normal averaged like the colour. Inside Houdini it uses Houdini's own copy</span></span><span class="pill ok">Shipped</span></div>
       <div class="row"><span class="f">Frame contract and history reset<span class="muted">Jitter, motion vectors, per-slot resources</span></span><span class="pill wip">Partial</span></div>
       <div class="row"><span class="f">Native reconstruction<span class="muted">A spatiotemporal filter for any Vulkan GPU</span></span><span class="pill ns">Planned</span></div>
       <div class="row"><span class="f">Zero-copy AOVs for Hgi hosts<span class="muted">External-memory interop</span></span><span class="pill ns">Planned</span></div>
@@ -855,7 +856,7 @@ footer { font: 400 0.8rem/1.6 var(--mono); color: var(--muted); border-top: 1px 
 <!-- END GENERATED phases -->
   </div>
   <div class="next">
-    <div><h3>Native reconstruction</h3><p>A denoiser that works on any Vulkan 1.3 GPU, so real-time viewing works without NVIDIA hardware, and on Linux, where DLSS is not built.</p></div>
+    <div><h3>Native reconstruction</h3><p>A real-time reconstruction that works on any Vulkan 1.3 GPU, so interactive viewing works without NVIDIA hardware, and on Linux, where DLSS is not built. Final frames already have a denoiser that runs anywhere.</p></div>
     <div><h3>Physical cameras</h3><p>Camera responsivity curves from the physical-camera proposal complete the chain from light emitted in lumens to a sensor's response.</p></div>
     <div><h3>Dispersion</h3><p>Wavelength-dependent refraction with hero-wavelength MIS, the last spectral effect the transport does not yet carry.</p></div>
   </div>

@@ -376,4 +376,60 @@
         parmtag { "uiscope" "viewport" }
         parmtag { "usdvaluetype" "string" }
     }
+    parm {
+        name    "denoiser"
+        label   "Denoiser"
+        type    string
+        size    1
+        default { "off" }
+        parmtag { "spare_category" "Denoising" }
+        parmtag { "uiscope" "viewport" }
+        parmtag { "usdvaluetype" "string" }
+        menu {
+            "off" "off"
+            "oidn" "oidn"
+        }
+    }
+    parm {
+        name    "denoiserQuality"
+        label   "Denoiser quality"
+        type    string
+        size    1
+        default { "high" }
+        parmtag { "spare_category" "Denoising" }
+        parmtag { "uiscope" "viewport" }
+        parmtag { "usdvaluetype" "string" }
+        menu {
+            "high" "high"
+            "balanced" "balanced"
+            "fast" "fast"
+        }
+    }
+    parm {
+        name    "denoiserDevice"
+        label   "Denoiser device"
+        type    string
+        size    1
+        default { "default" }
+        parmtag { "spare_category" "Denoising" }
+        parmtag { "uiscope" "viewport" }
+        parmtag { "usdvaluetype" "string" }
+        menu {
+            "default" "default"
+            "cpu" "cpu"
+            "cuda" "cuda"
+            "hip" "hip"
+            "sycl" "sycl"
+        }
+    }
+    parm {
+        name    "denoiserStart"
+        label   "Denoise from sample"
+        type    int
+        size    1
+        default { 16 }
+        parmtag { "spare_category" "Denoising" }
+        parmtag { "uiscope" "viewport" }
+        parmtag { "usdvaluetype" "int" }
+    }
 }

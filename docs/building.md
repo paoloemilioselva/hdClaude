@@ -22,9 +22,15 @@ of third-party or proprietary code.
 | glslang | CMake `FetchContent` | `HDCLAUDE_VULKAN_SDK_TAG` |
 | Vulkan-ValidationLayers | CMake `ExternalProject`, opt-in | `HDCLAUDE_VULKAN_SDK_TAG` |
 | NVIDIA DLSS SDK | CMake `FetchContent`, optional | `HDCLAUDE_DLSS_TAG` |
+| Open Image Denoise | CMake `FetchContent` of the release package, by SHA-256; on by default (`HDCLAUDE_ENABLE_OIDN`) | `HDCLAUDE_OIDN_VERSION` |
 | **OpenUSD** | **external prebuilt install** | discovered by `setup_usd_env.bat` / `.sh` |
 | MaterialX | the one OpenUSD was built against | `MATERIALX_ROOT` |
 | OpenSubdiv | from inside the OpenUSD distribution | — |
+
+Open Image Denoise is loaded at run time rather than linked, and a standalone
+build installs its runtime beside the plugin; a Houdini build uses the one
+Houdini ships ([denoising.md](denoising.md) 2). A configure that cannot fetch it
+builds without the denoiser and says so.
 
 Vulkan-Headers, volk, glslang, and the validation layers are held at the same
 Vulkan SDK release tag, so the headers, the loader metadata, the SPIR-V

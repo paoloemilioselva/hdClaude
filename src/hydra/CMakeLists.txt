@@ -48,6 +48,7 @@ target_link_libraries(hdClaude
         hdClaude::Core
         hdClaude::Gpu
         hdClaude::MaterialX
+        hdClaude::Denoise
         hdClaudeBcdec
         ar
         hd
@@ -155,6 +156,26 @@ install(DIRECTORY "${CMAKE_SOURCE_DIR}/shaders/"
     DESTINATION "${_plugins}/hdClaude/resources/shaders")
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/mtlx/"
     DESTINATION "${_plugins}/hdClaude/resources/mtlx")
+
+# The Open Image Denoise runtime, beside the plugin in hdClaude/oidn, where the
+# delegate looks for it (docs/denoising.md 2) -- in the build tree, for the
+# tests, and in the install, for usdview and the rez package. Not for Houdini,
+# which ships OIDN and loads it into the same process: a second copy of a
+# library of that name is the crash cmake/OpenImageDenoise.cmake describes.
+if(HDCLAUDE_ENABLE_OIDN AND HDCLAUDE_OIDN_AVAILABLE AND NOT HDCLAUDE_HOUDINI_VERSION)
+  set(_oidn_tree "${CMAKE_BINARY_DIR}/plugin/usd/hdClaude/oidn")
+  add_custom_target(hdClaudeOidnRuntime ALL
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${_oidn_tree}"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              ${HDCLAUDE_OIDN_RUNTIME} ${HDCLAUDE_OIDN_LICENCES} "${_oidn_tree}"
+      COMMENT "hdClaude: copying Open Image Denoise ${HDCLAUDE_OIDN_VERSION} into the plugin tree"
+      VERBATIM)
+  add_dependencies(hdClaude hdClaudeOidnRuntime)
+  # Symbolic links as links: the Linux package's sonames point at the
+  # versioned files, and the loader asks for the soname.
+  install(FILES ${HDCLAUDE_OIDN_RUNTIME} ${HDCLAUDE_OIDN_LICENCES}
+      DESTINATION "${_plugins}/hdClaude/oidn")
+endif()
 
 # ---------------------------------------------------------------------------
 # Houdini.

@@ -117,6 +117,20 @@ IF "%~1"=="" (
   ECHO                                  renderer. The version is reported with
   ECHO                                  the backend's name on every frame
   ECHO.
+  ECHO Denoising, of a reference render. The film is untouched; the colour
+  ECHO AOV holds the denoised estimate only when asked for.
+  ECHO   HDCLAUDE_DENOISER              default off. off, or oidn ^(Open Image
+  ECHO                                  Denoise^)
+  ECHO   HDCLAUDE_DENOISER_QUALITY      default high. high, balanced, fast
+  ECHO   HDCLAUDE_DENOISER_DEVICE       default default ^(OIDN chooses^). cpu,
+  ECHO                                  cuda, hip, sycl
+  ECHO   HDCLAUDE_DENOISER_START        default 16. the first denoised preview's
+  ECHO                                  sample count, then each doubling; the
+  ECHO                                  finished frame always. 0, that alone
+  ECHO   HDCLAUDE_OIDN_DIR              directory holding OpenImageDenoise, to
+  ECHO                                  put a different OIDN in front of the
+  ECHO                                  one installed with hdClaude
+  ECHO.
   ECHO Diagnostics. Off unless set, and none of them changes an image.
   ECHO   HDCLAUDE_REPEAT_RENDERS        render the finished image n more
   ECHO                                  times in the same process, reporting

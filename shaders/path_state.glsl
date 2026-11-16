@@ -112,6 +112,10 @@ layout(set = 0, binding = 0, scalar) uniform FrameBlock {
     // Fog volumes in `fogVolumes`, zero when the scene has none -- which is
     // what keeps every kernel's fog work to one comparison in such a scene.
     uint  fogVolumeCount;
+    // Whether the film also sums each sample's denoising guides into
+    // `denoiseGuides`. Zero unless a denoiser asked, which is what leaves that
+    // buffer a placeholder in every other render.
+    uint  denoiseGuides;
 } frame;
 
 const uint HDCLAUDE_SPLAT_COVERAGE = 0u;
@@ -370,6 +374,14 @@ layout(set = 0, binding = 11, scalar) buffer ShadowRays { ShadowRay values[]; } 
 // today. The invariant is stated here so the requirement is not discovered by a
 // race.
 layout(set = 0, binding = 12, scalar) buffer Accumulation { vec4 values[]; } accumulation;
+
+// The denoiser's guides, summed over the samples as the film is, two vec4 a
+// pixel: the albedo and the count of samples it holds, then the shading
+// normal. Averaged the same way as the colour because OIDN asks for exactly
+// that -- a guide sharper than its image puts back the aliasing the samples
+// averaged away (docs/denoising.md 3). Written by the film kernel, one path a
+// pixel, under the same no-atomics invariant as `accumulation`.
+layout(set = 0, binding = 40, scalar) buffer DenoiseGuides { vec4 values[]; } denoiseGuides;
 
 // --- Scene ------------------------------------------------------------------
 

@@ -142,3 +142,11 @@ endif()
 if(HDCLAUDE_ENABLE_DLSS)
   include(NvidiaDLSS)
 endif()
+
+# ---------------------------------------------------------------------------
+# Open Image Denoise. Fetched as the pinned release package, loaded at run
+# time, never linked. See cmake/OpenImageDenoise.cmake and docs/denoising.md.
+# ---------------------------------------------------------------------------
+if(HDCLAUDE_ENABLE_OIDN)
+  include(OpenImageDenoise)
+endif()

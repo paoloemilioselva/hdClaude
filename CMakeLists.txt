@@ -19,6 +19,7 @@ option(HDCLAUDE_BUILD_HYDRA_PLUGIN "Build the OpenUSD Hydra render delegate" ON)
 option(HDCLAUDE_ENABLE_VULKAN      "Build the Vulkan ray-query GPU backend" ON)
 option(HDCLAUDE_ENABLE_MATERIALX   "Build the MaterialX genglsl_pt shader generator" ON)
 option(HDCLAUDE_ENABLE_DLSS        "Build the optional NVIDIA DLSS reconstruction backend" OFF)
+option(HDCLAUDE_ENABLE_OIDN        "Build the Open Image Denoise final-frame denoiser" ON)
 option(HDCLAUDE_BUILD_VALIDATION_LAYERS
        "Build the Khronos Vulkan validation layers from source" OFF)
 option(HDCLAUDE_WARNINGS_AS_ERRORS "Treat hdClaude compiler warnings as errors" OFF)
@@ -82,6 +83,10 @@ add_subdirectory(src/core)
 
 if(HDCLAUDE_ENABLE_VULKAN)
   include(Dependencies)
+
+  # The denoiser, after the dependencies because they fetch its headers. It
+  # needs no Vulkan itself; it is here because only the delegate uses it.
+  add_subdirectory(src/denoise)
 
   # ---------------------------------------------------------------------------
   # Validation layers.
@@ -227,6 +232,7 @@ if(HDCLAUDE_ENABLE_MATERIALX)
 endif()
 message(STATUS "  Cull volumes ....... ${HDCLAUDE_BUILD_CULL_VOLUMES}")
 message(STATUS "  NVIDIA DLSS ........ ${HDCLAUDE_ENABLE_DLSS}")
+message(STATUS "  Open Image Denoise . ${HDCLAUDE_ENABLE_OIDN}")
 if(HDCLAUDE_ENABLE_VULKAN)
   if(HDCLAUDE_BUILD_VALIDATION_LAYERS)
     message(STATUS "  Validation layer ... building from source")

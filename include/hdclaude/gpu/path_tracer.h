@@ -195,6 +195,17 @@ struct RenderSettings {
     /// (docs/dlss-integration.md 5b).
     bool reconstructionAutoExposure = false;
 
+    /// Sum the denoiser's guides -- albedo and normal -- over the samples, as
+    /// the film sums the colour, and read them back into the FrameResult.
+    ///
+    /// Two halves because they cost differently. Summing is what every frame of
+    /// a denoised accumulation must do, from its first sample, or the guides
+    /// cover fewer samples than the image. Reading back is 24 bytes a pixel
+    /// across the bus, and only the frames that are denoised need it. The
+    /// buffer is allocated the first time summing is asked for, and stays.
+    bool accumulateDenoiseGuides = false;
+    bool readDenoiseGuides = false;
+
     /// Whether a light's own shape is part of the scene.
     ///
     /// Off, and the default is the point of it: a `UsdLux` light is usually
@@ -527,6 +538,12 @@ struct FrameResult {
     /// nothing. From the last sample traced, like every guide, so an edge
     /// pixel names whichever surface that sample's jitter landed on.
     std::vector<std::int32_t> pick;
+
+    /// The denoiser's guides, averaged over every sample of the accumulation,
+    /// three floats a pixel each in the image's row order: the albedo, and
+    /// the shading normal. Empty unless `RenderSettings::readDenoiseGuides`.
+    std::vector<float> denoiseAlbedo;
+    std::vector<float> denoiseNormal;
 
     bool Valid() const { return width != 0 && height != 0 && !image.empty(); }
 };
@@ -1177,6 +1194,8 @@ class PathTracer {
     std::vector<float> _lastSpecularAlbedo;
     std::vector<float> _lastSpecularHitDistance;
     std::vector<std::int32_t> _lastPick;
+    std::vector<float> _lastDenoiseAlbedo;
+    std::vector<float> _lastDenoiseNormal;
 
     /// The world-to-clip the previous frame was rendered with, and whether
     /// there was one. Motion is measured against this.
@@ -1226,6 +1245,14 @@ class PathTracer {
     /// consecutive frames are meant to share, and giving each slot its own
     /// would not protect it but break it.
     VulkanBuffer _accumulation;
+
+    /// The denoiser's guides, shared like the film and for the same reason;
+    /// two vec4 a pixel once a denoiser has asked for them, a placeholder of
+    /// one before (shaders/path_state.glsl). `_denoiseGuidesPixels` is how
+    /// many pixels it holds.
+    VulkanBuffer _denoiseGuides;
+    std::uint32_t _denoiseGuidesPixels = 0;
+    VulkanBuffer _denoiseGuidesReadback;
 
     /// Everything a frame writes, and therefore everything two frames in
     /// flight must not share.

@@ -69,6 +69,10 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (repeatRenders)
                          (republishAt)
                          (dlssRuntimeDirectory)
+                         (denoiser)
+                         (denoiserQuality)
+                         (denoiserDevice)
+                         (denoiserStart)
                          (curveSides)
                          (curveSegmentSamples)
                          (subdivisionLevel)
@@ -149,6 +153,10 @@ const std::vector<std::pair<TfToken, std::string>>& HdClaudeEnvironmentSettings(
         {_tokens->repeatRenders, "HDCLAUDE_REPEAT_RENDERS"},
         {_tokens->republishAt, "HDCLAUDE_REPUBLISH_AT"},
         {_tokens->dlssRuntimeDirectory, "HDCLAUDE_DLSS_RUNTIME_DIR"},
+        {_tokens->denoiser, "HDCLAUDE_DENOISER"},
+        {_tokens->denoiserQuality, "HDCLAUDE_DENOISER_QUALITY"},
+        {_tokens->denoiserDevice, "HDCLAUDE_DENOISER_DEVICE"},
+        {_tokens->denoiserStart, "HDCLAUDE_DENOISER_START"},
     };
     return pairs;
 }
@@ -316,6 +324,12 @@ HdClaudeRenderDelegate::~HdClaudeRenderDelegate()
                 << '\n'
                 << "texturesNotCompressed "
                 << stages.texturesNotCompressed.load(std::memory_order_relaxed)
+                << '\n'
+                << "denoisedFrames "
+                << stages.denoisedFrames.load(std::memory_order_relaxed)
+                << '\n'
+                << "denoiseMilliseconds "
+                << stages.denoiseMilliseconds.load(std::memory_order_relaxed)
                 << '\n'
                 << "cameraRays "
                 << stages.cameraRays.load(std::memory_order_relaxed) << '\n'
@@ -1158,6 +1172,27 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         // the image's light; on, to reproduce that comparison.
         {"Reconstruction auto-exposure", _tokens->reconstructionAutoExposure,
          VtValue(TfGetenvBool("HDCLAUDE_DLSS_AUTO_EXPOSURE", false))},
+
+        // The final-frame denoiser (docs/denoising.md). Accepted: off, oidn.
+        // Off by default: a denoised image is an estimate of the converged one,
+        // not the converged one, and the colour AOV holds it only when asked.
+        // A reference render alone is denoised; an interactive one has a
+        // reconstruction backend for that.
+        {"Denoiser", _tokens->denoiser,
+         VtValue(std::string(TfGetenv("HDCLAUDE_DENOISER", "off")))},
+        // OIDN's quality mode. Accepted: high, balanced, fast.
+        {"Denoiser quality", _tokens->denoiserQuality,
+         VtValue(std::string(TfGetenv("HDCLAUDE_DENOISER_QUALITY", "high")))},
+        // Where OIDN runs. Accepted: default (its own choice, the fastest it
+        // supports), cpu, cuda, hip, sycl. Changing it starts OIDN again.
+        {"Denoiser device", _tokens->denoiserDevice,
+         VtValue(std::string(TfGetenv("HDCLAUDE_DENOISER_DEVICE", "default")))},
+        // The sample count of the first denoised preview, and each doubling
+        // after it, up to the finished frame, which is always denoised. 0
+        // denoises the finished frame alone -- what a batch render wants, as
+        // it keeps only that one.
+        {"Denoise from sample", _tokens->denoiserStart,
+         VtValue(TfGetenvInt("HDCLAUDE_DENOISER_START", 16))},
     };
 }
 
@@ -1240,6 +1275,10 @@ VtDictionary HdClaudeRenderDelegate::GetRenderStats() const
         double(_stageStats.texturesCompressed.load(std::memory_order_relaxed)));
     stats["texturesNotCompressed"] = VtValue(double(
         _stageStats.texturesNotCompressed.load(std::memory_order_relaxed)));
+    stats["denoisedFrames"] = VtValue(
+        double(_stageStats.denoisedFrames.load(std::memory_order_relaxed)));
+    stats["denoiseMilliseconds"] = VtValue(
+        _stageStats.denoiseMilliseconds.load(std::memory_order_relaxed));
     stats["cameraRays"] =
         VtValue(double(_stageStats.cameraRays.load(std::memory_order_relaxed)));
     stats["tracedRays"] =

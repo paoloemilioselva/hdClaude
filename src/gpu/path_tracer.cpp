@@ -244,6 +244,7 @@ std::vector<BindingDescription> KernelBindings()
     bindings.push_back(storage(37, "fogVolumes"));
     bindings.push_back(storage(38, "fogMajorants"));
     bindings.push_back(storage(39, "emitterSpectra"));
+    bindings.push_back(storage(40, "denoiseGuides"));
 
     return bindings;
 }
@@ -377,6 +378,9 @@ struct FrameBlock {
     std::uint32_t cameraRays;
     /// Fog volumes in the fog table. See shaders/fog.glsl.
     std::uint32_t fogVolumeCount;
+    /// Whether the film sums the denoiser's guides. See
+    /// RenderSettings::accumulateDenoiseGuides.
+    std::uint32_t denoiseGuides;
 };
 
 /// The radical inverse of `index` in `base`, one coordinate of a Halton
@@ -2484,6 +2488,11 @@ void PathTracer::EnsureResolution(std::uint32_t width, std::uint32_t height)
 
     // The film is shared, so it is built once outside the loop.
     _accumulation = std::move(accumulation);
+    // The denoiser's guides follow the film's extent, so a resize drops them
+    // back to the placeholder; the next denoised frame allocates them again.
+    _denoiseGuides = MakeStorage(_allocator, 32, "denoiseGuides.placeholder");
+    _denoiseGuidesPixels = 0;
+    _denoiseGuidesReadback = VulkanBuffer();
     _width = width;
     _height = height;
 
@@ -2557,6 +2566,7 @@ void PathTracer::WriteDescriptors(VkDescriptorSet set,
     pipeline.WriteBuffer(set, 37, _fogVolumes);
     pipeline.WriteBuffer(set, 38, slot.fogMajorants);
     pipeline.WriteBuffer(set, 39, _emitterSpectra);
+    pipeline.WriteBuffer(set, 40, _denoiseGuides);
 }
 
 void PathTracer::SetCullVolumes(const std::vector<CullVolume>& volumes)
@@ -3274,6 +3284,8 @@ FrameHandle PathTracer::BeginFrame(const FrameDescription& description)
     _pendingFrame.specularAlbedo = std::move(_lastSpecularAlbedo);
     _pendingFrame.specularHitDistance = std::move(_lastSpecularHitDistance);
     _pendingFrame.pick = std::move(_lastPick);
+    _pendingFrame.denoiseAlbedo = std::move(_lastDenoiseAlbedo);
+    _pendingFrame.denoiseNormal = std::move(_lastDenoiseNormal);
 
     if (plan.active) {
         // The traced image is what the backend is *given*, by way of the film
@@ -3349,6 +3361,26 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     // because it needs the descriptor-generation tracking to be authoritative.
     // The slot this frame owns. Frames alternate, so the one still being read
     // back is never the one being written.
+    // The denoiser's guides, allocated the first time they are summed, and
+    // before the sets below are written so that this frame's name the buffer
+    // rather than the placeholder. Cleared on allocation as well as on a
+    // reset: a denoiser switched on part-way through an accumulation has
+    // guides over fewer samples than the image, which the per-pixel count they
+    // carry divides out.
+    const bool allocateGuides =
+        settings.accumulateDenoiseGuides && _denoiseGuidesPixels != paths;
+    if (allocateGuides) {
+        _denoiseGuides = MakeStorage(
+            _allocator, static_cast<VkDeviceSize>(paths) * 32, "denoiseGuides");
+        BufferDescription readback;
+        readback.size = static_cast<VkDeviceSize>(paths) * 32;
+        readback.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        readback.domain = BufferDomain::HostReadback;
+        readback.debugName = "denoiseGuides.readback";
+        _denoiseGuidesReadback = VulkanBuffer(_allocator, readback);
+        _denoiseGuidesPixels = paths;
+        ++_resourceGeneration;
+    }
     _lastSlot = static_cast<std::size_t>(_frameIndex % kFrameSlots);
     FrameSlot& slot = _slots[_lastSlot];
 
@@ -3432,9 +3464,14 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     // asks not to, and its samples land on top of what is already there.
     // EnsureResolution reallocates on a resolution change, so a continued
     // accumulation can never read a film of the wrong size.
-    if (settings.resetAccumulation) {
+    if (settings.resetAccumulation || allocateGuides) {
         _context.SubmitImmediate([&](VkCommandBuffer command) {
-            vkCmdFillBuffer(command, _accumulation.Handle(), 0, VK_WHOLE_SIZE, 0);
+            if (settings.resetAccumulation) {
+                vkCmdFillBuffer(command, _accumulation.Handle(), 0, VK_WHOLE_SIZE, 0);
+            }
+            if (_denoiseGuidesPixels != 0) {
+                vkCmdFillBuffer(command, _denoiseGuides.Handle(), 0, VK_WHOLE_SIZE, 0);
+            }
         });
     }
 
@@ -3511,6 +3548,8 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
     block.linkWords = _linkWords;
     block.domeLightLink = _domeLightLink;
     block.domeShadowLink = _domeShadowLink;
+    block.denoiseGuides =
+        settings.accumulateDenoiseGuides && _denoiseGuidesPixels == paths ? 1u : 0u;
 
     const std::uint32_t pathGroups = (paths + 63) / 64;
     const std::uint32_t pixelGroupsX = (width + 7) / 8;
@@ -3866,6 +3905,15 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
         vkCmdCopyBuffer(command, slot.guidePick.Handle(),
                         slot.pickReadback.Handle(), 1, &pick);
 
+        const bool readGuides =
+            settings.readDenoiseGuides && _denoiseGuidesPixels == paths;
+        if (readGuides) {
+            VkBufferCopy denoise{};
+            denoise.size = static_cast<VkDeviceSize>(paths) * 32;
+            vkCmdCopyBuffer(command, _denoiseGuides.Handle(),
+                            _denoiseGuidesReadback.Handle(), 1, &denoise);
+        }
+
         VkBufferCopy rays{};
         rays.srcOffset = 16;
         rays.size = 16;
@@ -3913,6 +3961,24 @@ std::vector<float> PathTracer::Trace(std::uint32_t width, std::uint32_t height,
         _lastPick.assign(pixels * 2, -1);
         std::memcpy(_lastPick.data(), slot.pickReadback.MappedData(),
                     _lastPick.size() * sizeof(std::int32_t));
+
+        // The denoiser's guides, each divided by the samples it holds.
+        _lastDenoiseAlbedo.clear();
+        _lastDenoiseNormal.clear();
+        if (settings.readDenoiseGuides && _denoiseGuidesPixels == paths) {
+            const auto* sums =
+                static_cast<const float*>(_denoiseGuidesReadback.MappedData());
+            _lastDenoiseAlbedo.assign(pixels * 3, 0.0f);
+            _lastDenoiseNormal.assign(pixels * 3, 0.0f);
+            for (std::size_t i = 0; i < pixels; ++i) {
+                const float* s = sums + i * 8;
+                const float inverse = s[3] > 0.0f ? 1.0f / s[3] : 0.0f;
+                for (int c = 0; c < 3; ++c) {
+                    _lastDenoiseAlbedo[i * 3 + c] = s[c] * inverse;
+                    _lastDenoiseNormal[i * 3 + c] = s[4 + c] * inverse;
+                }
+            }
+        }
     }
 
     // This frame becomes the next frame's past.

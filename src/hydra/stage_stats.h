@@ -86,6 +86,11 @@ struct HdClaudeStageStats {
     std::atomic<std::uint64_t> texturesCompressed{0};
     std::atomic<std::uint64_t> texturesNotCompressed{0};
 
+    /// Frames the denoiser produced, and the time it took over them, guides
+    /// cleaned included. See docs/denoising.md.
+    std::atomic<std::uint64_t> denoisedFrames{0};
+    std::atomic<double> denoiseMilliseconds{0.0};
+
     std::atomic<std::uint64_t> cameraRays{0};
     /// One per active path per bounce, and one per shadow ray shading asked
     /// for, counted on the device and read back once per call. The ratio of
@@ -182,6 +187,8 @@ struct HdClaudeStageStats {
         textureBytesOverBudget.store(0, std::memory_order_relaxed);
         texturesCompressed.store(0, std::memory_order_relaxed);
         texturesNotCompressed.store(0, std::memory_order_relaxed);
+        denoisedFrames.store(0, std::memory_order_relaxed);
+        denoiseMilliseconds.store(0.0, std::memory_order_relaxed);
         cameraRays.store(0, std::memory_order_relaxed);
         tracedRays.store(0, std::memory_order_relaxed);
         shadowRays.store(0, std::memory_order_relaxed);

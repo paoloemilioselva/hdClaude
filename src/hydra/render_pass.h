@@ -4,7 +4,12 @@
 
 #include "hdclaude/gpu/path_tracer.h"
 
+#include "hdclaude/denoise/denoiser.h"
 #include "pxr/imaging/hd/renderPass.h"
+
+#include <memory>
+#include <string>
+#include <vector>
 
 #include <cstddef>
 #include <cstdint>
@@ -70,6 +75,25 @@ class HDCLAUDE_API HdClaudeRenderPass final : public HdRenderPass {
     /// binds after it finished (HdClaudeRenderBuffer::HoldsNoFrame).
     hdclaude::FrameResult _shown;
     bool _hasShown = false;
+
+    /// The denoiser, made the first time a frame is denoised and again when
+    /// its device setting changes (docs/denoising.md). Starting OIDN on a GPU
+    /// creates a context on it, which is why it is kept rather than made per
+    /// frame.
+    std::unique_ptr<hdclaude::Denoiser> _denoiser;
+    std::string _denoiserDeviceName;
+    /// The last denoised image, unexposed, and whether there is one for the
+    /// current accumulation. Shown in the frames between two denoises, so a
+    /// denoised preview does not alternate with the noisy film it came from.
+    std::vector<float> _denoised;
+    bool _hasDenoised = false;
+    /// The sample count the next denoised preview is due at.
+    std::uint32_t _nextDenoiseAt = 0;
+    /// Denoiser setting values already reported as unusable, and the state --
+    /// what runs, or why nothing does -- last announced.
+    std::string _reportedDenoiser;
+    std::string _reportedDenoiserState;
+    bool _reportedDenoiseInteractive = false;
     /// The bindings last traced, so they are traced when they change.
     std::string _tracedBindings;
     /// The cull revision whose volumes the tracer holds.

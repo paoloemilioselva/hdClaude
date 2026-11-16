@@ -57,6 +57,8 @@ FOLDERS = [
     ("Reconstruction", ["reconstruction", "reconstructionModel",
                         "reconstructionPreset", "reconstructionAutoExposure",
                         "dlssRuntimeDirectory"]),
+    ("Denoising", ["denoiser", "denoiserQuality", "denoiserDevice",
+                   "denoiserStart"]),
     ("Output", ["depthStyle"]),
     ("Diagnostics", ["device", "shaderDirectory", "statsReport",
                      "vulkanValidation", "trace", "profileKernels",
@@ -70,7 +72,7 @@ FOLDERS = [
 # is what the viewport itself reads: the package sets the depth style to the
 # one UsdRenderers.json declares, and a viewport control could only break it.
 VIEWPORT_FOLDERS = {"Sampling", "Lighting", "Geometry", "Textures",
-                    "Memory", "Reconstruction"}
+                    "Memory", "Reconstruction", "Denoising"}
 
 # The values a string setting accepts, as the delegate parses them.
 MENUS = {
@@ -84,6 +86,9 @@ MENUS = {
     "reconstructionModel": ["super-resolution", "ray-reconstruction"],
     "reconstructionPreset": ["default", "stable", "transformer",
                              "transformer-alt"],
+    "denoiser": ["off", "oidn"],
+    "denoiserQuality": ["high", "balanced", "fast"],
+    "denoiserDevice": ["default", "cpu", "cuda", "hip", "sycl"],
 }
 
 

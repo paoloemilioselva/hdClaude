@@ -8923,3 +8923,47 @@ block that spans several decades, or both signs widely, is held much worse,
 because one region interpolates along one line in the half's log-like
 encoding. Nothing is cached between sessions: each load decodes and encodes
 again.
+
+## 2026-11-16 -- DLSS back in both builds, and a denoiser
+
+**Why DLSS had stopped working.** Not the settings: no launcher sets a DLSS
+variable, and the Houdini parameters' empty `dlssRuntimeDirectory` is read by
+nothing -- `ngx_support.cpp` takes the runtime directory from the environment.
+Neither plugin had DLSS compiled in. The `houdini-22.0` preset never enabled
+it, and `dev` and `dev-dlss` install to the same `USDEXTRA`, so whichever was
+built last is what usdview loads; every `compile.py` without an argument takes
+DLSS away. `houdini-22.0-dlss` now exists beside `dev-dlss`, separate because a
+DLSS build stops at configure on Linux. Searching each installed `hdClaude.dll`
+for `nvngx_dlss` is how to tell which one is installed.
+
+**Why a denoiser.** DLSS does not clean a path-traced frame and is not meant
+to: Super Resolution and DLAA anti-alias and upscale, and over one sample a
+pixel DLAA kept 70% of the light by rejecting fireflies (roadmap phase 13).
+Ray Reconstruction denoises, temporally, for an interactive view. A final frame
+wants a single-frame denoiser, and OIDN is the one that runs on every vendor
+and on the CPU, on Windows and Linux; OptiX would be NVIDIA-only and needs CUDA
+sharing with Vulkan. docs/denoising.md has the design; what it took:
+
+- **Loaded, not linked**, through its C API. Houdini 22.0 ships OIDN 2.3.3 and
+  loads it for Karma and the compositor, and a second library of that name in
+  the process resolves its dependencies against the first. So a copy already
+  loaded wins, and a Houdini build installs none; a standalone build installs
+  the pinned 2.5.1 beside the plugin (80 MB with every device module).
+- **Averaged guides.** The renderer's guides are the last sample's, which DLSS
+  wants. OIDN wants albedo and normal averaged like the colour, so the film
+  kernel sums them into a buffer of their own while a denoiser is on.
+- **Previews on a doubling schedule**, from 16 samples, and the finished frame
+  always, with the last denoised image held between them.
+
+**What the first measurement got wrong.** The gold shader ball denoised kept
+89.6% of a 4096-sample reference's light at both 16 and 64 samples, and its
+brightest pixel came out at 1.008, which read as OIDN clamping an HDR image to
+LDR. A unit test of the library alone settled it: an HDR radiance of fifty came
+back as 49.95 on the CPU and on CUDA. A probe of the render path's inputs
+showed the colour going in at mean 0.70 with peaks of 145,798 and coming out at
+0.45 -- the reference's own mean is 0.446. The light it removed is fireflies:
+the reference still has 91 pixels above 100 at 4096 samples, caustic paths
+through the gold, and they hold a tenth of its energy. The Cornell box, which
+has few, keeps 99.5%. The first comparison was also wrong for a duller reason:
+usdrecord without `--camera` frames its own view, and the stage was mostly
+off-screen.

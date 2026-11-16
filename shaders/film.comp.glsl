@@ -53,4 +53,21 @@ void main()
     // No atomic: one path per pixel, so this invocation owns the entry. See the
     // note on the film buffer in path_state.glsl.
     accumulation.values[pixel] += vec4(rgb, 1.0);
+
+    // The denoiser's guides, from the surface guides this sample's first bounce
+    // wrote for this pixel (guides.comp.glsl, shade.comp.glsl). The albedo is
+    // the closures' diffuse and specular albedo together, which is OIDN's
+    // definition: the reflectivity a surface would have under uniform white
+    // light. A clear dielectric reports its transmission tint, about one, as
+    // OIDN asks of a delta surface. Where nothing was hit the guides hold
+    // their clear values, an albedo of one half and no normal.
+    if (frame.denoiseGuides != 0u)
+    {
+        vec4 surface = guideSurface.values[3u * pixel];
+        vec3 albedo = min(guideSurface.values[3u * pixel + 1u].rgb +
+                              guideSurface.values[3u * pixel + 2u].rgb,
+                          vec3(1.0));
+        denoiseGuides.values[2u * pixel] += vec4(albedo, 1.0);
+        denoiseGuides.values[2u * pixel + 1u] += vec4(surface.xyz, 0.0);
+    }
 }

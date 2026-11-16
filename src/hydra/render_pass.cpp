@@ -21,6 +21,8 @@
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/tf/enum.h"
 #include "pxr/base/tf/getenv.h"
+#include "pxr/base/plug/plugin.h"
+#include "pxr/base/plug/registry.h"
 #include "pxr/base/tf/hash.h"
 #include "pxr/imaging/hd/aov.h"
 #include "pxr/imaging/hd/changeTracker.h"
@@ -36,6 +38,7 @@
 #include <cmath>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -77,6 +80,10 @@ TF_DEFINE_PRIVATE_TOKENS(_tokens,
                          (textureQuality)
                          (textureMemoryLimit)
                          (textureCompression)
+                         (denoiser)
+                         (denoiserQuality)
+                         (denoiserDevice)
+                         (denoiserStart)
                          (diffuseAlbedo)
                          (specularAlbedo)
                          (roughness));
@@ -101,6 +108,32 @@ std::string Lowered(const std::string& text)
         return static_cast<char>(std::tolower(c));
     });
     return out;
+}
+
+/// The denoiser settings, parsed. A name nobody recognises is reported and
+/// read as its default, for the reason ReconstructionChoice gives.
+struct DenoiseChoice {
+    bool on = false;
+    hdclaude::DenoiserQuality quality = hdclaude::DenoiserQuality::High;
+    hdclaude::DenoiserDevice device = hdclaude::DenoiserDevice::Default;
+    std::string deviceName = "default";
+    /// The first preview's sample count; 0, the finished frame alone.
+    std::uint32_t start = 16;
+};
+
+/// Where a standalone install keeps the OIDN runtime: hdClaude/oidn, beside
+/// hdClaude/resources (src/hydra/CMakeLists.txt). Empty when the plugin
+/// cannot be found, and a directory that does not exist in a Houdini build,
+/// which ships none and loads Houdini's (docs/denoising.md 2).
+std::string DenoiserRuntimeDirectory()
+{
+    if (PlugPluginPtr plugin =
+            PlugRegistry::GetInstance().GetPluginWithName("hdClaude")) {
+        return (std::filesystem::path(plugin->GetResourcePath()).parent_path() /
+                "oidn")
+            .string();
+    }
+    return {};
 }
 
 ReconstructionChoice ParseReconstruction(const std::string& value)
@@ -794,6 +827,75 @@ void HdClaudeRenderPass::_Execute(
             presetName.c_str());
     }
 
+    // --- Denoising ------------------------------------------------------------
+    //
+    // A reference render alone. An interactive frame is one decorrelated
+    // estimate handed to a reconstruction backend, and denoising it as well
+    // would be a second network over the first's output.
+    DenoiseChoice denoise;
+    {
+        const std::string name = _renderDelegate->GetRenderSetting<std::string>(
+            _tokens->denoiser, std::string("off"));
+        const std::string lowered = Lowered(name);
+        if (lowered == "oidn" || lowered == "on" || lowered == "1") {
+            denoise.on = true;
+        } else if (!(lowered.empty() || lowered == "off" || lowered == "none" ||
+                     lowered == "0") &&
+                   _reportedDenoiser != "d:" + name) {
+            _reportedDenoiser = "d:" + name;
+            TF_WARN("hdClaude: \"%s\" is not a denoiser, so nothing is "
+                    "denoised. Use one of: off, oidn.",
+                    name.c_str());
+        }
+        const std::string quality = Lowered(
+            _renderDelegate->GetRenderSetting<std::string>(
+                _tokens->denoiserQuality, std::string("high")));
+        if (quality == "balanced") {
+            denoise.quality = hdclaude::DenoiserQuality::Balanced;
+        } else if (quality == "fast") {
+            denoise.quality = hdclaude::DenoiserQuality::Fast;
+        } else if (quality != "high" && quality != "default" && !quality.empty() &&
+                   _reportedDenoiser != "q:" + quality) {
+            _reportedDenoiser = "q:" + quality;
+            TF_WARN("hdClaude: \"%s\" is not a denoiser quality, so it is "
+                    "high. Use one of: high, balanced, fast.",
+                    quality.c_str());
+        }
+        const std::string device = Lowered(
+            _renderDelegate->GetRenderSetting<std::string>(
+                _tokens->denoiserDevice, std::string("default")));
+        using D = hdclaude::DenoiserDevice;
+        if (device == "cpu") {
+            denoise.device = D::Cpu;
+        } else if (device == "cuda") {
+            denoise.device = D::Cuda;
+        } else if (device == "hip") {
+            denoise.device = D::Hip;
+        } else if (device == "sycl") {
+            denoise.device = D::Sycl;
+        } else if (device != "default" && !device.empty() &&
+                   _reportedDenoiser != "v:" + device) {
+            _reportedDenoiser = "v:" + device;
+            TF_WARN("hdClaude: \"%s\" is not a denoiser device, so OIDN "
+                    "chooses. Use one of: default, cpu, cuda, hip, sycl.",
+                    device.c_str());
+        }
+        denoise.deviceName = denoise.device == D::Default ? "default" : device;
+        denoise.start = static_cast<std::uint32_t>(std::max(
+            0, _renderDelegate->GetRenderSetting<int>(_tokens->denoiserStart, 16)));
+        if (denoise.on && reconstruction.on) {
+            if (!_reportedDenoiseInteractive) {
+                _reportedDenoiseInteractive = true;
+                TF_WARN("hdClaude: the denoiser runs on a reference render, and "
+                        "Reconstruction \"%s\" makes this an interactive one, "
+                        "so nothing is denoised. Set Reconstruction to off to "
+                        "denoise.",
+                        reconstructionName.c_str());
+            }
+            denoise.on = false;
+        }
+    }
+
     // --- Framing --------------------------------------------------------------
     const HdClaudeCameraResult cameraResult = HdClaudeMakeRenderCamera(
         renderPassState->GetWorldToViewMatrix(),
@@ -1300,6 +1402,23 @@ void HdClaudeRenderPass::_Execute(
         _renderDelegate->GetRenderSetting<bool>(
             _tokens->reconstructionAutoExposure, false);
 
+    // Denoised at the first preview and each doubling after it, and always at
+    // the finished frame: a bounded number of denoises, log2 of the samples,
+    // however long the accumulation runs. The guides are summed from the first
+    // sample on, and read back only on a frame that is denoised.
+    if (settings.resetAccumulation) {
+        _hasDenoised = false;
+        _nextDenoiseAt = denoise.start;
+    }
+    const std::uint32_t samplesAfter =
+        settings.firstSample + settings.samplesPerPixel;
+    const bool denoiseThisFrame =
+        denoise.on &&
+        (samplesAfter >= _targetSamples ||
+         (denoise.start > 0 && samplesAfter >= _nextDenoiseAt));
+    settings.accumulateDenoiseGuides = denoise.on;
+    settings.readDenoiseGuides = denoiseThisFrame;
+
     HdClaudeTrace("tracing %ux%u, samples %u..%u of %u, %u bounces", width,
                   height, settings.firstSample,
                   settings.firstSample + settings.samplesPerPixel,
@@ -1464,6 +1583,77 @@ void HdClaudeRenderPass::_Execute(
                     settings.samplesPerPixel,
                     settings.samplesPerPixel == 1 ? "" : "s");
             }
+        }
+    }
+
+    // The denoiser, on the radiance and before exposure, as the film holds it.
+    // A failure leaves the noisy image in place and says why, once; a denoiser
+    // that cannot run is never a black frame.
+    if (denoise.on) {
+        if (denoiseThisFrame) {
+            if (!_denoiser || _denoiserDeviceName != denoise.deviceName) {
+                _denoiser = std::make_unique<hdclaude::Denoiser>(
+                    DenoiserRuntimeDirectory(), denoise.device);
+                _denoiserDeviceName = denoise.deviceName;
+            }
+            std::string state = _denoiser->Available()
+                                    ? _denoiser->Description()
+                                    : _denoiser->Unavailable();
+            bool denoised = false;
+            if (_denoiser->Available()) {
+                hdclaude::DenoiseInputs inputs;
+                inputs.width = width;
+                inputs.height = height;
+                inputs.color = image.data();
+                const std::size_t pixels = static_cast<std::size_t>(width) * height;
+                if (frame.denoiseAlbedo.size() == pixels * 3 &&
+                    frame.denoiseNormal.size() == pixels * 3) {
+                    inputs.albedo = frame.denoiseAlbedo.data();
+                    inputs.normal = frame.denoiseNormal.data();
+                }
+                const auto denoiseStart = std::chrono::steady_clock::now();
+                std::string error;
+                std::vector<float> result;
+                denoised = _denoiser->Denoise(inputs, denoise.quality, &result,
+                                              &error);
+                const double denoiseMs =
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - denoiseStart)
+                        .count();
+                if (denoised) {
+                    _denoised = std::move(result);
+                    _hasDenoised = true;
+                    HdClaudeStageStats& stages = _renderDelegate->StageStats();
+                    stages.denoisedFrames.fetch_add(1, std::memory_order_relaxed);
+                    HdClaudeAddMilliseconds(stages.denoiseMilliseconds, denoiseMs);
+                    HdClaudeTrace("denoised %ux%u at %u samples in %.1f ms", width,
+                                  height, samplesAfter, denoiseMs);
+                } else {
+                    // The film as traced, not an older preview passed off as
+                    // this frame's denoise.
+                    _hasDenoised = false;
+                    state = error;
+                }
+            }
+            // The next preview is a doubling away, counted from where this one
+            // was due rather than where it landed, so a samples-per-frame that
+            // does not divide it does not drift the schedule.
+            while (_nextDenoiseAt <= samplesAfter && denoise.start > 0) {
+                _nextDenoiseAt = std::max(_nextDenoiseAt * 2, denoise.start);
+            }
+            if (_reportedDenoiserState != state) {
+                _reportedDenoiserState = state;
+                if (denoised) {
+                    TF_STATUS("hdClaude: denoising with %s", state.c_str());
+                } else {
+                    TF_WARN("hdClaude: the denoiser did not run: %s. The image "
+                            "is the film as traced.",
+                            state.c_str());
+                }
+            }
+        }
+        if (_hasDenoised && _denoised.size() == image.size()) {
+            image = _denoised;
         }
     }
 
