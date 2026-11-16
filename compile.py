@@ -13,6 +13,8 @@ Usage:
                                  alone
   python compile.py houdini-22.0 build against the USD inside Houdini 22.0, and
                                  install it as a Houdini package
+  python compile.py houdini-22.0-dlss  the same, with the NVIDIA DLSS backend
+                                 (Windows)
   python compile.py clean        remove the build tree, then build "dev"
 
 The one build driver on every platform; compile.bat forwards to it. The build

@@ -139,7 +139,14 @@ compile.bat dev-validation :: the full delegate, building the validation layer
 compile.bat dev-dlss       :: with the optional NVIDIA DLSS backend (Windows only)
 compile.bat clean          :: remove the build tree, then build "dev"
 compile.bat houdini-22.0   :: against Houdini 22.0's USD, as a Houdini package
+compile.bat houdini-22.0-dlss :: the same, with the DLSS backend (Windows only)
 ```
+
+DLSS is compiled in or it is not: a build without it answers "this build has
+no NVIDIA DLSS SDK" to any Reconstruction setting, whatever the setting says.
+`dev` and `dev-dlss` install to the same `USDEXTRA`, and both Houdini presets
+to the same Houdini package, so the build last installed is the one usdview or
+Houdini loads -- rebuilding `dev` after `dev-dlss` takes DLSS away.
 
 `compile.bat` forwards to `compile.py`, which is the build driver on every
 platform and takes the same arguments (`python3 compile.py core-only` on Linux).
@@ -189,7 +196,8 @@ rule the dependency policy states for Windows. What the port consists of:
   `setup_usd_env.sh` both do this.
 - **The USD tests** run through `tests/usd/run_in_usd_env.sh` instead of the
   `.bat` wrappers.
-- **DLSS** is Windows-only: `dev-dlss` stops at configure on Linux, because
+- **DLSS** is Windows-only: `dev-dlss` and `houdini-22.0-dlss` stop at
+  configure on Linux, because
   `cmake/NvidiaDLSS.cmake` links only the SDK's Windows library.
 
 GCC's standard library includes fewer headers transitively than MSVC's, so a

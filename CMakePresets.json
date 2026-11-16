@@ -60,6 +60,15 @@
         "HDCLAUDE_HOUDINI_VERSION": "22.0",
         "BUILD_TESTING": "OFF"
       }
+    },
+    {
+      "name": "houdini-22.0-dlss",
+      "displayName": "Houdini 22.0 build with NVIDIA DLSS (Windows)",
+      "inherits": "houdini-22.0",
+      "binaryDir": "${sourceDir}/build/houdini-22.0-dlss",
+      "cacheVariables": {
+        "HDCLAUDE_ENABLE_DLSS": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -86,6 +95,10 @@
     {
       "name": "houdini-22.0",
       "configurePreset": "houdini-22.0"
+    },
+    {
+      "name": "houdini-22.0-dlss",
+      "configurePreset": "houdini-22.0-dlss"
     }
   ],
   "testPresets": [
