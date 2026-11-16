@@ -8820,3 +8820,52 @@ What hdClaude does that brings this on:
 The same console showed 79 of the materials as `hdclaude_usd_full`: the module
 label is `HdMtlxCreateNameFromPath`, which in this build is the prim's leaf
 name, so the compile message cannot tell same-named materials apart.
+
+## 2026-11-16 -- Texture memory: channels kept, a budget, the dome once
+
+Following the hang above. The scene was ALab, at `medium` -- which does
+nothing for it: 7,545 of its images are already exactly 1024 px, the cap
+`medium` applies. An inventory of its headers (9,665 images on disk) found
+the cost was in the *format*: 3,584 one-channel half EXRs, each widened to
+four channels of half, 8 bytes a texel to hold 2.
+
+**Channels kept.** One- and two-channel images now stay one and two channels
+(R8, R16F, RG8, RG16F, and their sRGB forms); three still gain an alpha,
+because no RGB format is guaranteed sampleable. The image view swizzles them
+to (r, r, r, 1) and (r, g, 0, 1), which is what the decoder used to write, so
+no material samples a different value. R8_SRGB and R8G8_SRGB are optional in
+Vulkan; without them the texels are widened at upload. Measured on ALab's
+characters at frame 1004 (279 images, `high`): 2.34 GB of texture became
+1.24 GB, peak device memory 3.18 GB became 2.10 GB, peak host memory 6.61 GB
+became 3.92 GB, and the frame is bit-identical -- same ray and hit hashes,
+rms 0. The whole of ALab on disk goes from 57.9 GB decoded to 36.7 GB.
+
+**The dome was uploaded twice.** Its map has a pool slot like any texture and
+was uploaded again for its own binding. It is now bound from the slot; the
+same frame's device peak fell to 1.89 GB.
+
+**A budget.** Each texture is uploaded only if it fits in the device's free
+memory (VK_EXT_memory_budget is now enabled, so other processes count) less a
+reserve of a tenth of the device for the geometry built afterwards, and
+under `Texture memory limit (MB)` when one is set. One that does not fit
+samples the placeholder and the shortfall is reported once; the dome's slot
+goes first, so a scene loses surface detail before its sky. Under a 500 MB
+limit the characters leave 224 of 283 textures out and the frame renders.
+A texture replaced by a quality change is now freed before its successor is
+allocated, and the pool re-decodes in parallel.
+
+**A wrong guess, corrected.** I first told Paolo that a host's texture
+quality reached the pool only after every image had been decoded at full
+size. It does not: materials compile, and decode, inside the render pass's
+`_Execute`, after it applies the setting. A test written to catch the
+supposed bug passed with the supposed fix disabled, which is how it was
+found; the fix was withdrawn and the test kept as a regression check.
+
+**What is still open.** The budget protects the device, not the host: every
+image is decoded before any is uploaded, and the decoded copies stay in the
+pool after upload, so a stage whose images exceed system memory still
+exhausts it first. The whole of ALab at `high` needs about 31 GB decoded on a
+31 GB machine; at `low` it needs about 2 GB. Freeing host copies needs decode
+and upload interleaved, since the GPU layer cannot re-decode. And block
+compression (BC4/BC5/BC6H/BC7) would hold ALab's disk set in about 5.9 GB of
+device memory, at the cost of a lossy encode on load.
