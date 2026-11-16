@@ -20,6 +20,7 @@ add_library(hdClaudeCore STATIC
     photometry.cpp
     spectrum.cpp
     tessellation.cpp
+    texture_compression.cpp
 )
 
 add_library(hdClaude::Core ALIAS hdClaudeCore)

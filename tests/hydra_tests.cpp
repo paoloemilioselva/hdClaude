@@ -5,6 +5,8 @@
 #include "test_support.h"
 
 #include "dds_image.h"
+#include "hdclaude/core/texture_compression.h"
+#include "bcdec.h"
 #include "instancer.h"
 #include "render_buffer.h"
 
@@ -18,7 +20,9 @@
 #include "pxr/imaging/hd/sceneDelegate.h"
 #include "pxr/imaging/hd/tokens.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
@@ -614,6 +618,239 @@ void TestDdsRefusesWhatItCannotRead()
     refused(notDds, "not a DDS");
 }
 
+
+// ---------------------------------------------------------------------------
+// Block compression: hdClaude's encoders, read back by bcdec
+// ---------------------------------------------------------------------------
+//
+// Decoded by an independent decoder, so a block the encoder packs in the wrong
+// bit order, or with the wrong mode, reads back as something else -- not as a
+// number the encoder agrees with itself about. Error bounds are the formats'
+// own: BC4 has eight levels across a block's range, BC7 mode 6 and BC6H mode 11
+// sixteen.
+
+/// A deterministic spread of values: a gradient with a ripple, so blocks are
+/// neither constant nor noise.
+std::uint8_t Pattern8(std::uint32_t x, std::uint32_t y, int channel)
+{
+    const double v = 0.5 + 0.35 * std::sin(0.21 * x + 0.13 * y + channel * 1.7) +
+                     0.1 * std::cos(0.05 * (x + 2 * y));
+    return static_cast<std::uint8_t>(std::clamp(v, 0.0, 1.0) * 255.0 + 0.5);
+}
+
+void TestBc4ReadsBackWithinItsLevels()
+{
+    // A constant block, a mask edge, and a gradient.
+    std::uint8_t constant[16];
+    std::uint8_t mask[16];
+    std::uint8_t ramp[16];
+    for (int i = 0; i < 16; ++i) {
+        constant[i] = 137;
+        mask[i] = i < 6 ? 0 : (i < 10 ? 128 : 255);
+        ramp[i] = static_cast<std::uint8_t>(40 + i * 11);
+    }
+    for (const std::uint8_t* values : {constant, mask, ramp}) {
+        std::uint8_t block[8];
+        hdclaude::EncodeBc4Block(values, block);
+        std::uint8_t decoded[16];
+        bcdec_bc4(block, decoded, 4);
+        int worst = 0;
+        for (int i = 0; i < 16; ++i) {
+            worst = std::max(worst, std::abs(int(decoded[i]) - int(values[i])));
+        }
+        // Eight levels over the ramp's 165: half a step is under 12.
+        CHECK(worst <= (values == ramp ? 12 : 0));
+    }
+}
+
+void TestBc5ReadsBackBothChannels()
+{
+    std::uint8_t values[32];
+    for (int i = 0; i < 16; ++i) {
+        values[i * 2] = Pattern8(i % 4, i / 4, 0);
+        values[i * 2 + 1] = static_cast<std::uint8_t>(255 - i * 9);
+    }
+    std::uint8_t block[16];
+    hdclaude::EncodeBc5Block(values, block);
+    std::uint8_t decoded[32];
+    bcdec_bc5(block, decoded, 8);
+    int worst = 0;
+    for (int i = 0; i < 32; ++i) {
+        worst = std::max(worst, std::abs(int(decoded[i]) - int(values[i])));
+    }
+    CHECK(worst <= 10);
+}
+
+void TestBc7ReadsBackAndKeepsAlpha()
+{
+    // A 64-square smooth RGBA image, opaque, then with a varying alpha.
+    constexpr std::uint32_t kEdge = 64;
+    for (const bool opaque : {true, false}) {
+        std::vector<std::uint8_t> texels(kEdge * kEdge * 4);
+        for (std::uint32_t y = 0; y < kEdge; ++y) {
+            for (std::uint32_t x = 0; x < kEdge; ++x) {
+                for (int c = 0; c < 4; ++c) {
+                    texels[(y * kEdge + x) * 4 + c] =
+                        c == 3 && opaque ? 255 : Pattern8(x, y, c);
+                }
+            }
+        }
+        const std::vector<std::uint8_t> blocks = hdclaude::EncodeBlocks(
+            hdclaude::BlockEncoding::Bc7, texels.data(), kEdge, kEdge);
+        CHECK_EQ(blocks.size(), std::size_t(kEdge * kEdge));
+        double squared = 0.0;
+        int alphaOff = 0;
+        for (std::uint32_t by = 0; by < kEdge / 4; ++by) {
+            for (std::uint32_t bx = 0; bx < kEdge / 4; ++bx) {
+                std::uint8_t decoded[64];
+                bcdec_bc7(blocks.data() + (by * (kEdge / 4) + bx) * 16, decoded, 16);
+                for (int row = 0; row < 4; ++row) {
+                    for (int column = 0; column < 4; ++column) {
+                        const std::size_t at =
+                            ((by * 4 + row) * kEdge + bx * 4 + column) * 4;
+                        for (int c = 0; c < 4; ++c) {
+                            const double d = double(decoded[(row * 4 + column) * 4 + c]) -
+                                             double(texels[at + c]);
+                            squared += d * d;
+                        }
+                        if (opaque && decoded[(row * 4 + column) * 4 + 3] != 255) {
+                            ++alphaOff;
+                        }
+                    }
+                }
+            }
+        }
+        const double rmse = std::sqrt(squared / double(kEdge * kEdge * 4));
+        const double psnr = 20.0 * std::log10(255.0 / std::max(rmse, 1e-9));
+        std::printf("  BC7, %s image of four unrelated channels: PSNR %.1f dB\n",
+                    opaque ? "opaque" : "translucent", psnr);
+        // The hard case for a one-region encoder: every channel its own
+        // sinusoid, so no block lies on a line. 38 dB is what modes 5 and 6
+        // reach on it; a block holding two unrelated colours needs the
+        // partitioned modes, which are not written.
+        CHECK(psnr > 38.0);
+        // Opaque stays exactly opaque.
+        CHECK_EQ(alphaOff, 0);
+    }
+}
+
+/// The cases a texture is made of: a tinted gradient, which lies on one line
+/// through colour space, and the same gradient carrying an alpha mask that has
+/// nothing to do with it -- which mode 5's separate alpha line exists for.
+void TestBc7ReadsBackGradientsAndMasks()
+{
+    constexpr std::uint32_t kEdge = 32;
+    for (const bool masked : {false, true}) {
+        std::vector<std::uint8_t> texels(kEdge * kEdge * 4);
+        for (std::uint32_t y = 0; y < kEdge; ++y) {
+            for (std::uint32_t x = 0; x < kEdge; ++x) {
+                const double s = (x + 0.5 * y) / (1.5 * kEdge);
+                std::uint8_t* texel = &texels[(y * kEdge + x) * 4];
+                texel[0] = static_cast<std::uint8_t>(30 + 200 * s);
+                texel[1] = static_cast<std::uint8_t>(60 + 150 * s);
+                texel[2] = static_cast<std::uint8_t>(20 + 90 * s);
+                texel[3] = masked ? (((x / 3 + y / 2) % 2) ? 255 : 0) : 255;
+            }
+        }
+        const std::vector<std::uint8_t> blocks = hdclaude::EncodeBlocks(
+            hdclaude::BlockEncoding::Bc7, texels.data(), kEdge, kEdge);
+        double squared = 0.0;
+        int worstAlpha = 0;
+        for (std::uint32_t by = 0; by < kEdge / 4; ++by) {
+            for (std::uint32_t bx = 0; bx < kEdge / 4; ++bx) {
+                std::uint8_t decoded[64];
+                bcdec_bc7(blocks.data() + (by * (kEdge / 4) + bx) * 16, decoded, 16);
+                for (int i = 0; i < 16; ++i) {
+                    const std::size_t at =
+                        ((by * 4 + i / 4) * kEdge + bx * 4 + i % 4) * 4;
+                    for (int c = 0; c < 3; ++c) {
+                        const double d = double(decoded[i * 4 + c]) - texels[at + c];
+                        squared += d * d;
+                    }
+                    worstAlpha = std::max(
+                        worstAlpha, std::abs(int(decoded[i * 4 + 3]) - int(texels[at + 3])));
+                }
+            }
+        }
+        const double rmse = std::sqrt(squared / double(kEdge * kEdge * 3));
+        const double psnr = 20.0 * std::log10(255.0 / std::max(rmse, 1e-9));
+        std::printf("  BC7, tinted gradient%s: colour PSNR %.1f dB, worst alpha %d\n",
+                    masked ? " under an unrelated mask" : "", psnr, worstAlpha);
+        CHECK(psnr > (masked ? 40.0 : 45.0));
+        // A mask of 0 and 255 is two of mode 5's alpha levels, so it is exact.
+        CHECK_EQ(worstAlpha, 0);
+    }
+}
+
+void TestBc6hReadsBackHdrValues()
+{
+    // A constant, and a ramp over a decade: the error is relative, as the
+    // format's precision is.
+    for (const bool constant : {true, false}) {
+        std::uint16_t rgb[48];
+        float source[48];
+        for (int i = 0; i < 16; ++i) {
+            for (int c = 0; c < 3; ++c) {
+                const float value =
+                    constant ? 1.0f
+                             : 0.1f * std::pow(10.0f, float(i) / 15.0f) * (1.0f + 0.1f * c);
+                source[i * 3 + c] = value;
+                rgb[i * 3 + c] = GfHalf(value).bits();
+            }
+        }
+        std::uint8_t block[16];
+        hdclaude::EncodeBc6hBlock(rgb, block);
+        std::uint16_t decoded[48];
+        bcdec_bc6h_half(block, decoded, 12, 0);
+        double worst = 0.0;
+        for (int i = 0; i < 48; ++i) {
+            GfHalf half;
+            half.setBits(decoded[i]);
+            const double relative =
+                std::abs(double(float(half)) - source[i]) / double(source[i]);
+            worst = std::max(worst, relative);
+        }
+        std::printf("  BC6H mode 11, %s: worst relative error %.4f\n",
+                    constant ? "constant 1.0" : "0.1..1.2 ramp", worst);
+        // A constant reads back to the half's own precision. Sixteen levels
+        // spaced in the half's log-like encoding hold a decade within a
+        // tenth; four decades in one block -- far past anything a texture
+        // holds in 4x4 texels -- would come back a third out, which is what
+        // one region and no partitions cost.
+        CHECK(worst < (constant ? 2e-3 : 0.1));
+    }
+}
+
+void TestBlocksCoverAnEdgeThatIsNotAMultipleOfFour()
+{
+    // Six by five: two blocks across, two down, the last of each half used.
+    constexpr std::uint32_t kWidth = 6, kHeight = 5;
+    std::vector<std::uint8_t> texels(kWidth * kHeight);
+    for (std::uint32_t i = 0; i < kWidth * kHeight; ++i) {
+        texels[i] = static_cast<std::uint8_t>(i * 8);
+    }
+    const std::vector<std::uint8_t> blocks = hdclaude::EncodeBlocks(
+        hdclaude::BlockEncoding::Bc4, texels.data(), kWidth, kHeight);
+    CHECK_EQ(blocks.size(), std::size_t(2 * 2 * 8));
+    int worst = 0;
+    for (std::uint32_t by = 0; by < 2; ++by) {
+        for (std::uint32_t bx = 0; bx < 2; ++bx) {
+            std::uint8_t decoded[16];
+            bcdec_bc4(blocks.data() + (by * 2 + bx) * 8, decoded, 4);
+            for (std::uint32_t row = 0; row < 4; ++row) {
+                for (std::uint32_t column = 0; column < 4; ++column) {
+                    const std::uint32_t x = bx * 4 + column, y = by * 4 + row;
+                    if (x < kWidth && y < kHeight) {
+                        worst = std::max(worst, std::abs(int(decoded[row * 4 + column]) -
+                                                         int(texels[y * kWidth + x])));
+                    }
+                }
+            }
+        }
+    }
+    CHECK(worst <= 12);
+}
+
 }  // namespace
 
 int main()
@@ -634,5 +871,11 @@ int main()
     TestDdsDecodesBc4AsLinearGrey();
     TestDdsKeepsFloatRange();
     TestDdsRefusesWhatItCannotRead();
+    TestBc4ReadsBackWithinItsLevels();
+    TestBc5ReadsBackBothChannels();
+    TestBc7ReadsBackAndKeepsAlpha();
+    TestBc7ReadsBackGradientsAndMasks();
+    TestBc6hReadsBackHdrValues();
+    TestBlocksCoverAnEdgeThatIsNotAMultipleOfFour();
     return hdclaude_test::Summarize("hydra");
 }
