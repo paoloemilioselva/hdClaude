@@ -21,6 +21,13 @@ pixel-identically to it, because the sampler swizzles it back to grey. Both are
 declared sRGB, so the comparison goes through the one-channel sRGB format and
 its decode as well as the swizzle.
 
+Last, the setting is given the way a host gives it -- through the imaging
+engine, before the first frame -- rather than through the environment. The
+render pass applies it before it compiles materials and so before any image
+is decoded, and the stats' decoded bytes say whether that still holds: an
+image decoded at full size and reduced afterwards would count its full size.
+Switching to `high` mid-session must then publish the full-size image again.
+
 Usage: python texture_quality.py <output directory>
 Runs in the OpenUSD environment, and
 tests the plugin HDCLAUDE_PLUGIN_DIR names -- the build tree's, under
@@ -183,6 +190,71 @@ def one_channel(out):
     return failures
 
 
+def host_setting(stage_path):
+    """A texture quality set by the host applies before images are decoded."""
+    from PySide6.QtCore import QSize
+    from PySide6.QtGui import QOffscreenSurface, QOpenGLContext, QSurfaceFormat
+    from PySide6.QtOpenGL import (QOpenGLFramebufferObject,
+                                  QOpenGLFramebufferObjectFormat)
+    from PySide6.QtWidgets import QApplication
+    from pxr import UsdImagingGL
+
+    application = QApplication.instance() or QApplication(sys.argv)
+    surface = QOffscreenSurface()
+    surface.setFormat(QSurfaceFormat())
+    surface.create()
+    context = QOpenGLContext()
+    context.setFormat(QSurfaceFormat())
+    context.create()
+    context.makeCurrent(surface)
+    fbo = QOpenGLFramebufferObject(QSize(1, 1), QOpenGLFramebufferObjectFormat())
+    fbo.bind()
+
+    os.environ["HDCLAUDE_SAMPLES_PER_PIXEL"] = "1"
+    os.environ.pop("HDCLAUDE_TEXTURE_QUALITY", None)
+    stage = Usd.Stage.Open(stage_path)
+    engine = UsdImagingGL.Engine()
+    if not engine.SetRendererPlugin("HdClaudeRendererPlugin"):
+        print("FAIL: the hdClaude renderer plugin did not load")
+        return 1
+    engine.SetCameraPath(Sdf.Path("/camera"))
+    engine.SetRenderViewport(Gf.Vec4d(0, 0, 64, 64))
+    params = UsdImagingGL.RenderParams()
+    params.enableLighting = True
+
+    def frame():
+        for _ in range(50):
+            engine.Render(stage.GetPseudoRoot(), params)
+            if engine.IsConverged():
+                break
+        return engine.GetRenderStats()
+
+    failures = 0
+    engine.SetRendererSetting("textureQuality", "low")
+    stats = frame()
+    decoded = int(stats.get("textureBytes", -1))
+    uploaded = int(stats.get("textureBytesUploaded", -1))
+    print(f"  host set low first: {decoded} bytes decoded, {uploaded} uploaded")
+    if decoded != 256 * 256 * 4 or uploaded != 256 * 256 * 4:
+        print(f"FAIL: with low set by the host before the first frame, "
+              f"{decoded} bytes were decoded and {uploaded} uploaded; expected "
+              f"{256 * 256 * 4} each, so the image was decoded before the cap "
+              "applied")
+        failures += 1
+
+    engine.SetRendererSetting("textureQuality", "high")
+    uploaded = int(frame().get("textureBytesUploaded", -1))
+    print(f"  host switched to high: {uploaded} bytes uploaded")
+    if uploaded != EDGE * EDGE * 4:
+        print(f"FAIL: after switching to high, {uploaded} bytes were uploaded; "
+              f"expected {EDGE * EDGE * 4}, the full-size image")
+        failures += 1
+    del engine
+    fbo.release()
+    context.doneCurrent()
+    return failures
+
+
 def main():
     if len(sys.argv) != 2:
         raise SystemExit(__doc__)
@@ -236,6 +308,7 @@ def main():
         failures += 1
 
     failures += one_channel(out)
+    failures += host_setting(stage)
     print("texture quality: " + ("passed" if failures == 0 else f"{failures} failed"))
     return 1 if failures else 0
 

@@ -636,26 +636,42 @@ bool HdClaudeTexturePool::SetMaxEdge(std::uint32_t maxEdge)
     // because halving a reduced image again is not the same as reducing the
     // original that far -- and because raising the cap has to get the detail
     // back, which nothing in the pool still holds.
+    //
+    // In parallel, as AcquireAll decodes, and each slot replaced the moment its
+    // image is ready: the pool's copy of the old image goes as the new one
+    // arrives, rather than a whole second set being held until the last of
+    // them is decoded. Slots are distinct elements of a vector that is not
+    // resized here, and the lock keeps AcquireAll from growing it meanwhile.
     _failures.clear();
-    for (std::size_t slot = 0; slot < _images.size(); ++slot) {
-        const std::string& path = _sources[slot].first;
-        if (path.empty()) {
-            continue;   // an image node with no file; its one texel stands
+    std::vector<std::string> errors(_images.size());
+    WorkParallelForN(_images.size(), [&](std::size_t begin, std::size_t end) {
+        for (std::size_t slot = begin; slot < end; ++slot) {
+            const std::string& path = _sources[slot].first;
+            if (path.empty()) {
+                continue;   // an image node with no file; its one texel stands
+            }
+            hdclaude::TextureImage image;
+            if (!HdClaudeLoadTexture(path, &image, &errors[slot],
+                                     _sources[slot].second, _maxEdge)) {
+                image = hdclaude::TextureImage();
+                image.debugName = path;
+                errors[slot] = path + ": " + errors[slot];
+            } else {
+                errors[slot].clear();
+            }
+            _images[slot] =
+                std::make_shared<const hdclaude::TextureImage>(std::move(image));
         }
-        hdclaude::TextureImage image;
-        std::string error;
-        if (!HdClaudeLoadTexture(path, &image, &error, _sources[slot].second,
-                                 _maxEdge)) {
-            image = hdclaude::TextureImage();
-            image.debugName = path;
-            _failures.push_back(path + ": " + error);
+    });
+    for (std::string& error : errors) {
+        if (!error.empty()) {
+            _failures.push_back(std::move(error));
         }
-        _images[slot] =
-            std::make_shared<const hdclaude::TextureImage>(std::move(image));
     }
     HdClaudeTrace("texture quality changed: %zu images reloaded with a cap of "
                   "%u", _images.size(), _maxEdge);
     return true;
 }
+
 
 PXR_NAMESPACE_CLOSE_SCOPE

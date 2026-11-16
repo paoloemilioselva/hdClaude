@@ -927,6 +927,11 @@ void PathTracer::UploadTextures(
     // buffer and its own synchronous submission.
     std::vector<VulkanImage> pool;
     pool.reserve(textures.size());
+    // Slots the new scene no longer has are freed before anything new is
+    // allocated, for the same reason a replaced slot is.
+    if (_texturePool.size() > textures.size()) {
+        _texturePool.resize(textures.size());
+    }
     for (std::size_t slot = 0; slot < textures.size(); ++slot) {
         const std::shared_ptr<const TextureImage>& texture = textures[slot];
         if (slot < _uploadedTextures.size() && slot < _texturePool.size() &&
@@ -936,6 +941,17 @@ void PathTracer::UploadTextures(
                 ++_texturesReused;
             }
             continue;
+        }
+        // The image this slot held is released before its replacement is
+        // allocated. Every submission waits for the device, so nothing in
+        // flight still reads it, and holding it would make a scene whose
+        // every texture changed -- a texture quality changed -- need its old
+        // and new sets on the device at once.
+        if (slot < _texturePool.size()) {
+            _texturePool[slot] = VulkanImage();
+        }
+        if (slot < _uploadedTextures.size()) {
+            _uploadedTextures[slot].reset();
         }
         if (!texture || !texture->Valid()) {
             // A texture that failed to decode still occupies its pool slot, so
