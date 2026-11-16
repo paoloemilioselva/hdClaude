@@ -670,6 +670,7 @@ PathTracer::PathTracer(const VulkanContext& context, VulkanAllocator& allocator,
         const std::string source = LoadKernel(_shaderDirectory, name);
         GlslCompileOptions options;
         options.moduleName = name;
+        options.label = std::string("kernel ") + name;
         const GlslCompileResult compiled =
             CompileKernel(_compiler, source, options);
         if (!compiled.ok) {

@@ -144,7 +144,8 @@ class HdClaudeMaterialCompiler {
         std::string* error,
         std::vector<TextureRequest>* texturePaths = nullptr,
         const std::map<std::string, std::string>* resolvedTextures = nullptr,
-        const SpectralReflectance* spectral = nullptr);
+        const SpectralReflectance* spectral = nullptr,
+        const std::string& label = std::string());
 
     /// Generate and compile a document's *displacement* terminal.
     ///
@@ -163,7 +164,8 @@ class HdClaudeMaterialCompiler {
         MaterialX::DocumentPtr document, const std::string& name,
         hdclaude::CompiledMaterial* material, std::string* error,
         std::vector<TextureRequest>* texturePaths = nullptr,
-        const std::map<std::string, std::string>* resolvedTextures = nullptr);
+        const std::map<std::string, std::string>* resolvedTextures = nullptr,
+        const std::string& label = std::string());
 
     /// Serialises generation and compilation.
     ///

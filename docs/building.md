@@ -321,8 +321,15 @@ and tests do not write into the user's cache.
 Every SPIR-V cache miss prints one line to stderr before the compile starts:
 
 ```
-hdClaude: compiling <module> (not in the shader cache <directory>)
+hdClaude: compiling <what> (not in the shader cache <directory>)
 ```
+
+`<what>` says which program and, for a material, which prim:
+`kernel extend.comp.glsl`, `material /root/remi/body_M_hrc/MATERIAL/usd_full`,
+`displacement <prim>`, `extend.opacity, the traversal library for 3 cut-out
+and 0 volume material(s)`. The prim path matters because production stages
+reuse material names -- ALab has 79 called `usd_full` -- and the label is not
+part of the cache key, so naming a program differently never makes it miss.
 
 A cold scene with a thousand materials prints a thousand lines, and a slow
 load whose output has stopped on one of them is waiting on that compile. A

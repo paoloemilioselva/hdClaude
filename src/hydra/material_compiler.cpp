@@ -1100,7 +1100,7 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
     mx::DocumentPtr document, const std::string& name, std::string* error,
     std::vector<TextureRequest>* texturePaths,
     const std::map<std::string, std::string>* resolvedTextures,
-    const SpectralReflectance* spectral)
+    const SpectralReflectance* spectral, const std::string& label)
 {
     // Caller holds _mutex: this touches the shared library document, the
     // generator, and glslang, none of which are thread-safe.
@@ -1217,6 +1217,7 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDocument(
 
         hdclaude::GlslCompileOptions options;
         options.moduleName = name;
+        options.label = label.empty() ? name : label;
         const hdclaude::GlslCompileResult compiled =
             CompileMaterialSource(_compiler, source, options);
         if (!compiled.ok) {
@@ -1234,7 +1235,8 @@ bool HdClaudeMaterialCompiler::CompileDisplacement(
     mx::DocumentPtr document, const std::string& name,
     hdclaude::CompiledMaterial* material, std::string* error,
     std::vector<TextureRequest>* texturePaths,
-    const std::map<std::string, std::string>* resolvedTextures)
+    const std::map<std::string, std::string>* resolvedTextures,
+    const std::string& label)
 {
     // Caller holds _mutex, as for CompileDocument and for the same reasons.
     if (!material) {
@@ -1310,6 +1312,7 @@ bool HdClaudeMaterialCompiler::CompileDisplacement(
 
         hdclaude::GlslCompileOptions options;
         options.moduleName = name + "_displace";
+        options.label = label.empty() ? options.moduleName : label;
         const hdclaude::GlslCompileResult compiled = CompileMaterialSource(
             _compiler, generated + _displaceKernel, options);
         if (!compiled.ok) {
@@ -1399,7 +1402,9 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDisplayColor(
     color->setConnectedNode(displayColor);
 
     std::string error;
-    hdclaude::CompiledMaterial compiled = CompileDocument(document, name, &error);
+    hdclaude::CompiledMaterial compiled = CompileDocument(
+        document, name, &error, nullptr, nullptr, nullptr,
+        "displayColor material " + name);
     if (compiled.spirv.empty() && !error.empty()) {
         TF_RUNTIME_ERROR("hdClaude: the displayColor material failed to compile: "
                          "%s",
@@ -1425,7 +1430,9 @@ hdclaude::CompiledMaterial HdClaudeMaterialCompiler::CompileDiffuse(
     input->setValue(mx::Color3(color[0], color[1], color[2]));
 
     std::string error;
-    hdclaude::CompiledMaterial compiled = CompileDocument(document, name, &error);
+    hdclaude::CompiledMaterial compiled = CompileDocument(
+        document, name, &error, nullptr, nullptr, nullptr,
+        "fallback material " + name);
     if (compiled.spirv.empty() && !error.empty()) {
         TF_RUNTIME_ERROR("hdClaude: the fallback material failed to compile: %s",
                          error.c_str());
@@ -1665,7 +1672,8 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::CompileUncached(
     std::string error;
     result.material = CompileDocument(document, name, &error,
                                       &result.texturePaths, &resolvedTextures,
-                                      spectral ? &*spectral : nullptr);
+                                      spectral ? &*spectral : nullptr,
+                                      "material " + path.GetString());
     if (result.material.spirv.empty()) {
         // A material that fails to compile names itself, the prim, and the
         // compiler message. It is not silently replaced with something that
@@ -1726,7 +1734,8 @@ HdClaudeMaterialCompiler::Result HdClaudeMaterialCompiler::CompileUncached(
                     CompileDisplacement(displaceDocument, name,
                                         &result.material, &displaceError,
                                         &result.displacementTexturePaths,
-                                        &displaceTextures);
+                                        &displaceTextures,
+                                        "displacement " + path.GetString());
                     result.displacementReason = std::move(displaceError);
                 }
             } catch (const std::exception& built) {
@@ -1859,6 +1868,10 @@ HdClaudeMaterialCompiler::Traversal HdClaudeMaterialCompiler::CompileTraversal(
                 }
                 hdclaude::GlslCompileOptions options;
                 options.moduleName = module;
+                options.label = TfStringPrintf(
+                    "%s, the traversal library for %zu cut-out and %zu volume "
+                    "material(s)",
+                    module, cutout.size(), volumes.size());
                 const hdclaude::GlslCompileResult compiled =
                     CompileMaterialSource(_compiler, source, options);
                 if (!compiled.ok) {

@@ -179,8 +179,10 @@ GlslCompileResult GlslCompiler::CompileCached(const std::string& source,
     // is loading, and the last line printed names the module being compiled. A
     // warm cache prints nothing, so a second run that still prints is evidence
     // the key changed or the cache is not where this process thinks it is.
+    const std::string& label =
+        options.label.empty() ? options.moduleName : options.label;
     std::fprintf(stderr, "hdClaude: compiling %s (not in the shader cache %s)\n",
-                 options.moduleName.c_str(), cache.Directory().string().c_str());
+                 label.c_str(), cache.Directory().string().c_str());
     std::fflush(stderr);
 
     GlslCompileResult result = Compile(source, options);

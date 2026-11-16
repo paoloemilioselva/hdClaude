@@ -31,6 +31,12 @@ struct GlslCompileOptions {
     std::string moduleName = "shader";
     /// Generate debug info and skip optimisation. Off for gallery renders.
     bool generateDebugInfo = false;
+    /// What a cache miss calls the module when it says it is compiling, when
+    /// that should say more than `moduleName`: the material's prim path, and
+    /// what kind of program it is. A generated material's `moduleName` is
+    /// the prim's name alone, which a production stage repeats -- ALab has 79
+    /// materials called `usd_full`. Empty uses `moduleName`.
+    std::string label;
 };
 
 struct GlslCompileResult {
