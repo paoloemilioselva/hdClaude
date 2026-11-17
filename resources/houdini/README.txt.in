@@ -81,6 +81,14 @@ Compiled shaders are cached on disk, so the first render of a new material
 takes longer than the ones after it.
 
 
+Render stats
+------------
+
+While hdClaude renders, Houdini's Render Stats panel shows its progress, samples, instancing counts and GPU memory
+by what holds it. The viewport's stats overlay shows the same figures in
+brief. Reading them does not slow the render.
+
+
 Uninstall
 ---------
 
