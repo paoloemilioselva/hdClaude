@@ -1,5 +1,6 @@
 #include "instancer.h"
 
+#include "stage_stats.h"
 #include "trace.h"
 
 #include "pxr/base/gf/matrix4d.h"
@@ -8,10 +9,12 @@
 #include "pxr/base/gf/rotation.h"
 #include "pxr/base/gf/vec3f.h"
 #include "pxr/base/gf/vec4f.h"
+#include "pxr/imaging/hd/renderIndex.h"
 #include "pxr/imaging/hd/sceneDelegate.h"
 #include "pxr/imaging/hd/tokens.h"
 
 #include <algorithm>
+#include <chrono>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -308,6 +311,51 @@ std::vector<std::vector<TfToken>> HdClaudeRprimCategories(
         categories.clear();
     }
     return categories;
+}
+
+std::uint32_t HdClaudeInstancingDepth(HdRenderIndex& index,
+                                      const SdfPath& instancerId)
+{
+    // Bounded, because a parent chain that loops is a broken scene and a
+    // diagnostic must not be the thing that hangs on it.
+    constexpr std::uint32_t kMaxDepth = 64;
+    std::uint32_t depth = 0;
+    SdfPath current = instancerId;
+    while (!current.IsEmpty() && depth < kMaxDepth) {
+        ++depth;
+        const HdInstancer* instancer = index.GetInstancer(current);
+        if (instancer == nullptr) {
+            break;
+        }
+        current = instancer->GetParentId();
+    }
+    return depth;
+}
+
+VtMatrix4dArray HdClaudeInstancePlacements(HdSceneDelegate* delegate,
+                                           const SdfPath& id,
+                                           const SdfPath& instancerId,
+                                           HdClaudeStageStats* stats,
+                                           std::uint32_t* depth)
+{
+    const auto start = std::chrono::steady_clock::now();
+    VtMatrix4dArray transforms;
+    HdRenderIndex& index = delegate->GetRenderIndex();
+    if (auto* claudeInstancer =
+            dynamic_cast<HdClaudeInstancer*>(index.GetInstancer(instancerId))) {
+        transforms = claudeInstancer->ComputeInstanceTransforms(id);
+    }
+    if (depth != nullptr) {
+        *depth = HdClaudeInstancingDepth(index, instancerId);
+    }
+    if (stats != nullptr) {
+        HdClaudeAddMilliseconds(
+            stats->instancingMilliseconds,
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start)
+                .count());
+    }
+    return transforms;
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

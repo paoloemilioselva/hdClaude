@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -91,7 +92,22 @@ class HDCLAUDE_API HdClaudeRenderDelegate final : public HdRenderDelegate {
     /// only moment the renderer is holding everything a frame needs at once --
     /// path state, acceleration structures, textures and film. By the
     /// destructor the interesting part has already been released.
-    void RecordFrameTiming(double milliseconds, std::uint32_t samples);
+    ///
+    /// `targetSamples` is where the accumulation will stop and
+    /// `accumulationSeconds` how long it has been running since it last
+    /// restarted: what a host's progress bar and ETA are made of.
+    void RecordFrameTiming(double milliseconds, std::uint32_t samples,
+                           std::uint32_t targetSamples = 0,
+                           double accumulationSeconds = 0.0);
+
+    /// Record what a publication made of the scene: its placements and how
+    /// they were instanced, and the device memory its structures and tables
+    /// hold. Called on the render thread after a publication succeeded, so
+    /// the allocator's breakdown is read once here rather than whenever a
+    /// host polls GetRenderStats.
+    void RecordPublication(const hdclaude::Scene& scene,
+                           const hdclaude::PathTracer& tracer,
+                           const HdClaudeInstancingSummary& instancing);
 
     /// Where the render pass records what ingestion and publication cost. The
     /// adapters reach the same object through the render param.
@@ -140,6 +156,14 @@ class HDCLAUDE_API HdClaudeRenderDelegate final : public HdRenderDelegate {
     std::string _initializationError;
     std::atomic<double> _lastFrameMilliseconds{0.0};
     std::atomic<std::uint32_t> _lastFrameSamples{0};
+    std::atomic<std::uint32_t> _targetSamples{0};
+    std::atomic<double> _accumulationSeconds{0.0};
+
+    /// The path of the rprim with the most placements. A path is not an
+    /// atomic, so it has a lock of its own, held only to copy it: never one
+    /// the render thread holds while it works.
+    mutable std::mutex _largestPlacementMutex;
+    std::string _largestPlacementPrim;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

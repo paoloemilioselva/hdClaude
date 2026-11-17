@@ -157,6 +157,18 @@ install(DIRECTORY "${CMAKE_SOURCE_DIR}/shaders/"
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/mtlx/"
     DESTINATION "${_plugins}/hdClaude/resources/mtlx")
 
+# The usdview plugin: hdClaude > Render Stats, a live panel of the delegate's
+# render stats (docs/render-stats.md). Python, found through the plugin path
+# like the delegate and imported from lib/python, which setup_usd_env puts on
+# PYTHONPATH. Not for Houdini, whose viewport has a stats panel of its own.
+if(NOT HDCLAUDE_HOUDINI_VERSION)
+  install(FILES "${CMAKE_SOURCE_DIR}/resources/usdview/plugInfo.json"
+      DESTINATION "${_plugins}/hdClaudeUsdview/resources")
+  install(DIRECTORY "${CMAKE_SOURCE_DIR}/resources/usdview/hdClaudeUsdview"
+      DESTINATION "lib/python"
+      PATTERN "__pycache__" EXCLUDE)
+endif()
+
 # The Open Image Denoise runtime, beside the plugin in hdClaude/oidn, where the
 # delegate looks for it (docs/denoising.md 2) -- in the build tree, for the
 # tests, and in the install, for usdview and the rez package. Not for Houdini,
@@ -197,6 +209,10 @@ if(HDCLAUDE_HOUDINI_VERSION)
   # Options and the Render Settings LOP. Generated, and checked by the
   # usd_houdini_parameters test (scripts/generate_houdini_parameters.py).
   install(DIRECTORY "${CMAKE_SOURCE_DIR}/resources/houdini/soho"
+      DESTINATION ".")
+  # The delegate's page in the Render Stats panel, which UsdRenderers.json
+  # names relative to itself (docs/render-stats.md).
+  install(DIRECTORY "${CMAKE_SOURCE_DIR}/resources/houdini/renderstats"
       DESTINATION ".")
   # A component of its own, because it is the one file installed outside the
   # prefix: scripts/package_houdini.py stages the rest without touching this

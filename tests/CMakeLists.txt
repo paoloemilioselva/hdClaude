@@ -197,6 +197,7 @@ if(HDCLAUDE_ENABLE_MATERIALX)
             "usd_denoising|denoising"
             "usd_picking|picking"
             "usd_incremental_sync|incremental_sync"
+            "usd_render_stats|render_stats"
             "usd_material_edits|material_edits"
             "usd_purposes|purposes"
             "usd_unusable_materials|unusable_materials"

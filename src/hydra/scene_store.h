@@ -66,6 +66,10 @@ struct HdClaudeMeshEntry {
     /// The kinds of ray that meet it (HdClaudeRayVisibility), given to every
     /// one of its placements.
     std::uint8_t rayVisibility = hdclaude::kRayAll;
+
+    /// How many instancers stand above it (HdClaudeInstancingDepth): 0 when
+    /// it is placed only by its own transform. For render stats.
+    std::uint32_t instancingDepth = 0;
 };
 
 /// Where the one material for unbound geometry is published.
@@ -105,6 +109,9 @@ struct HdClaudeSplatEntry {
 
     /// The kinds of ray that meet it. See `HdClaudeMeshEntry::rayVisibility`.
     std::uint8_t rayVisibility = hdclaude::kRayAll;
+
+    /// See `HdClaudeMeshEntry::instancingDepth`.
+    std::uint32_t instancingDepth = 0;
 };
 
 /// A material, keyed by the path of the Hydra material prim.
@@ -272,6 +279,18 @@ struct HdClaudeDrawSelection {
     bool IncludesPurpose(const TfToken& purpose) const;
 };
 
+/// What the instancing in one snapshot came to, for render stats.
+struct HdClaudeInstancingSummary {
+    /// Rprims placed by at least one instancer.
+    std::uint64_t instancedRprims = 0;
+    /// The deepest chain of instancers above any rprim.
+    std::uint32_t depth = 0;
+    /// The rprim with the most placements, and how many it has. The first
+    /// in path order when several tie, so the answer is stable.
+    std::uint64_t largestCount = 0;
+    SdfPath largestPath;
+};
+
 /// Thread-safe accumulator and snapshot source.
 class HdClaudeSceneStore {
   public:
@@ -288,7 +307,7 @@ class HdClaudeSceneStore {
                              std::vector<hdclaude::Transform3x4> transforms,
                              bool visible, SdfPath material,
                              std::vector<std::vector<TfToken>> instanceCategories,
-                             int primId);
+                             int primId, std::uint32_t instancingDepth);
 
     void PublishSplats(const SdfPath& id, HdClaudeSplatEntry entry);
     void RemoveSplats(const SdfPath& id);
@@ -388,12 +407,17 @@ class HdClaudeSceneStore {
     /// Materials that did not compile as authored, for render stats.
     std::vector<std::string> FallbackReports() const;
 
+    /// The instancing of the last snapshot: the rprims it included, as it
+    /// included them. Computed while the snapshot walked them anyway.
+    HdClaudeInstancingSummary LastInstancing() const;
+
     /// The fallback material, published once by the delegate.
     void SetFallbackMaterial(hdclaude::CompiledMaterial material);
     bool HasFallbackMaterial() const;
 
   private:
     mutable std::mutex _mutex;
+    HdClaudeInstancingSummary _lastInstancing;
     std::map<SdfPath, HdClaudeMeshEntry> _meshes;
     std::map<SdfPath, HdClaudeSplatEntry> _splats;
     /// Where each splat cloud's instances were on the last rendered snapshot,

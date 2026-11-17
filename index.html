@@ -299,7 +299,7 @@ footer { font: 400 0.8rem/1.6 var(--mono); color: var(--muted); border-top: 1px 
 <div class="fig"><span class="v">0.57<small>%</small></span><span class="l">worst error against an independent radiosity solution of the measured Cornell box</span></div>
 <div class="fig"><span class="v">22</span><span class="l">MaterialX closure nodes with importance sampling, validated for energy on the GPU</span></div>
 <div class="fig"><span class="v">14</span><span class="l">gallery scenes rendered, timed and gated against baselines after every change</span></div>
-<div class="fig"><span class="v">29</span><span class="l">test suites, from unit tests to end-to-end USD renders</span></div>
+<div class="fig"><span class="v">30</span><span class="l">test suites, from unit tests to end-to-end USD renders</span></div>
 <!-- END GENERATED figures -->
   </div>
 </section>
@@ -452,6 +452,7 @@ footer { font: 400 0.8rem/1.6 var(--mono); color: var(--muted); border-top: 1px 
         <ul>
           <li>Only dirty prims are re-read. Moving a light does not rebuild a mesh.</li>
           <li>Invalid or mismatched input is reported with a <code>TF_RUNTIME_ERROR</code> and in the render stats. It is never silently fixed.</li>
+          <li>What each publication cost is in the render stats too: placements against prototypes, instancing depth, and the device bytes each placement takes. Houdini's Render Stats panel and a usdview panel show them live, without slowing the render.</li>
           <li>The Hydra layer never includes a Vulkan header, and the GPU layer never includes a USD one. Each can be tested without the other.</li>
         </ul>
         <p class="where">src/hydra/{mesh,basis_curves,particle_field,light,camera,material,instancer}.cpp → scene_store.cpp</p>

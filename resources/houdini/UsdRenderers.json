@@ -7,6 +7,27 @@
         "needsdepth": false,
         "depthstyle": "linear",
         "defaultpurposes": [ "render" ],
-        "drawmodesupport": false
+        "drawmodesupport": false,
+        "qmlTemplate": "renderstats/HdClaude.qml",
+        "viewstats": [ "Samples",
+                "Placements",
+                "Instancing",
+                "TLAS",
+                "Per placement",
+                "Device memory" ],
+        "statsdatapaths": {
+            "Samples"                   : "hud.samples",
+            "Placements"                : "hud.placements",
+            "Instancing"                : "hud.instancing",
+            "TLAS"                      : "hud.tlas",
+            "Per placement"             : "hud.perPlacement",
+            "Device memory"             : "hud.device",
+
+            "totalClockTime"            : "accumulationSeconds",
+            "percentDone"               : "percentDone",
+            "rendererStage"             : "rendererStage",
+            "peakMemory"                : "deviceBytesPeak",
+            "totalMemory"               : "deviceBytesUsed"
+        }
     }
 }

@@ -8967,3 +8967,53 @@ through the gold, and they hold a tenth of its energy. The Cornell box, which
 has few, keeps 99.5%. The first comparison was also wrong for a duller reason:
 usdrecord without `--camera` frames its own view, and the stage was mostly
 off-screen.
+
+## 2026-11-17 -- Render stats where the render is looked at
+
+**The question was whether flattening instancing loses anything.** hdClaude
+composes every level of a nested instancer into one placement per copy, and the
+GPU sees a BLAS per prototype and a TLAS instance per placement. Traversal does
+not suffer for it: RTX hardware walks two levels, and the cost of a flat TLAS
+grows with the log of its length. Memory and update time do suffer, because
+both are linear in the flattened count. OptiX's multi-level instancing would
+mean CUDA beside Vulkan and every traversal feature written twice. A
+Vulkan-only nested level (procedural boxes and a second `rayQuery`) is the
+route to take if a stage ever needs one. Neither was worth building without a
+number that says a stage needs it, and nothing reported that number.
+
+**So the stats grew, and got somewhere to be seen.** New: prototypes against
+placements, nesting depth, instanced rprims, the rprim with the most
+placements, TLAS storage, placement array and scratch, BLAS, vertex, index,
+table and image bytes, `bytesPerPlacement`, TLAS build and instancing time, and
+progress. On the gallery they come out as follows:
+
+- Kitchen Set: 1,788 placements over 1,462 prototypes, depth 1, 384 B a
+  placement.
+- Chess set: 49 placements over 21 prototypes, depth 1, 437 B; the largest
+  instancer is the pawns, at 8.
+- Stoat: 372 placements over 372 prototypes, no instancing.
+
+On a stage this small the TLAS's fixed overhead dominates. The island's 179 B
+of TLAS a placement is what a large stage pays.
+
+- **Houdini** reads `UsdRenderers.json`: `qmlTemplate` names a page for the
+  Render Stats panel, resolved relative to the JSON (`usdrenderers.py`,
+  `relative_path_keys`), and `viewstats` with `statsdatapaths` puts lines on
+  the viewport. Karma's entry in `$HFS/houdini/UsdRenderers.json` is the
+  reference for both.
+- **usdview's HUD prints six Storm keys and nothing else** (`drawHUD`), so
+  hdClaude publishes those under Storm's meanings. The rest is an `hdClaude >
+  Render Stats` dock from a usdview plugin installed like the other plugins in
+  `USDEXTRA`. usdview's plugin API cannot reach the engine, so the panel reads
+  the private attributes usdview uses and degrades to a message when a version
+  renames them.
+
+**What keeps it free.** `GetRenderStats` only loads what the render thread
+stored. The allocator's breakdown takes a lock shared with every allocation, so
+it is read once after each publication (`RecordPublication`), never per poll.
+Image bytes got a lock-free counter of their own for the same reason.
+
+**A path to expect.** The rprim a nested point instancer multiplies is named
+`.../cube/ForInstancer<hash>`: UsdImaging appends that element. A native
+instance's rprim lives under `/UsdNiPropagatedPrototypes`. The stats report
+Hydra's path, the same one the trace prints.

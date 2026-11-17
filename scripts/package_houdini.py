@@ -57,6 +57,7 @@ REQUIRED = [
     "dso/usd_plugins/hdClaude/resources/shaders/shade.comp.glsl",
     "dso/usd_plugins/hdClaude/resources/mtlx/targets/genglsl_pt.mtlx",
     "UsdRenderers.json",
+    "renderstats/HdClaude.qml",
     "soho/parameters/HdClaudeRendererPlugin_Global.ds",
     "soho/parameters/HdClaudeRendererPlugin_Viewport.ds",
 ]

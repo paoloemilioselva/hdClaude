@@ -58,6 +58,51 @@ struct HdClaudeStageStats {
     std::atomic<std::uint64_t> instances{0};
     std::atomic<std::uint64_t> triangles{0};
 
+    // --- Instancing ----------------------------------------------------------
+    //
+    // What the last publication's flat placement list was made of. hdClaude
+    // flattens instancing, nested or not, into one placement per prototype
+    // copy (docs/architecture.md), so the cost of a heavily instanced stage is
+    // the length of that list and the bytes it takes on the device, and these
+    // are what say how close a stage is to where flattening stops being free.
+    // All written by the render thread after a publication, from counts it
+    // already had; nothing here is computed when a host asks.
+    std::atomic<std::uint64_t> prototypes{0};
+    std::atomic<std::uint64_t> splatPlacements{0};
+    /// Rprims placed by an instancer, and the deepest chain of instancers
+    /// above any of them: 1 for a point instancer or a native instance, 2 for
+    /// either inside another, and so on.
+    std::atomic<std::uint64_t> instancedRprims{0};
+    std::atomic<std::uint64_t> instancingDepth{0};
+    /// The rprim with the most placements, and how many. Its path is kept by
+    /// the delegate beside these, because a path is not an atomic.
+    std::atomic<std::uint64_t> largestPlacementCount{0};
+    /// Time the rprims spent computing their placements through their
+    /// instancers, summed over threads, as the other sync timers are.
+    std::atomic<double> instancingMilliseconds{0.0};
+
+    /// Device-local bytes the scene's structures hold after the publication,
+    /// read once from the allocator's breakdown on the render thread.
+    std::atomic<std::uint64_t> blasBytes{0};
+    std::atomic<std::uint64_t> tlasBytes{0};
+    /// The placement array the top-level build reads and shading reads each
+    /// hit's transform from: 64 bytes a placement.
+    std::atomic<std::uint64_t> tlasInstanceBytes{0};
+    /// The largest scratch one top-level build asked for. Released after the
+    /// build, so it is not in the resident total, but it is held at the
+    /// moment a stage's memory peaks.
+    std::atomic<std::uint64_t> tlasScratchBytes{0};
+    std::atomic<std::uint64_t> tlasChunks{0};
+    std::atomic<double> tlasBuildMilliseconds{0.0};
+    /// The per-placement tables shading reads beside the structure: the
+    /// instance table, motion history, light and cull links, and pick ids.
+    std::atomic<std::uint64_t> placementTableBytes{0};
+    /// Vertex data (positions, normals, uvs, curve segments, splats) and
+    /// indices of every prototype. The `primvar` and `topology` lines usdview's
+    /// GPU-stats HUD prints, under the names Storm gives them.
+    std::atomic<std::uint64_t> vertexBytes{0};
+    std::atomic<std::uint64_t> indexBytes{0};
+
     // --- Rays ----------------------------------------------------------------
     /// Camera rays, which are exactly the pixels times the samples and need no
     /// counter to know. The rays those go on to spawn -- one per bounce that
@@ -177,6 +222,21 @@ struct HdClaudeStageStats {
         publishMilliseconds.store(0.0, std::memory_order_relaxed);
         instances.store(0, std::memory_order_relaxed);
         triangles.store(0, std::memory_order_relaxed);
+        prototypes.store(0, std::memory_order_relaxed);
+        splatPlacements.store(0, std::memory_order_relaxed);
+        instancedRprims.store(0, std::memory_order_relaxed);
+        instancingDepth.store(0, std::memory_order_relaxed);
+        largestPlacementCount.store(0, std::memory_order_relaxed);
+        instancingMilliseconds.store(0.0, std::memory_order_relaxed);
+        blasBytes.store(0, std::memory_order_relaxed);
+        tlasBytes.store(0, std::memory_order_relaxed);
+        tlasInstanceBytes.store(0, std::memory_order_relaxed);
+        tlasScratchBytes.store(0, std::memory_order_relaxed);
+        tlasChunks.store(0, std::memory_order_relaxed);
+        tlasBuildMilliseconds.store(0.0, std::memory_order_relaxed);
+        placementTableBytes.store(0, std::memory_order_relaxed);
+        vertexBytes.store(0, std::memory_order_relaxed);
+        indexBytes.store(0, std::memory_order_relaxed);
         blasBuilt.store(0, std::memory_order_relaxed);
         blasReused.store(0, std::memory_order_relaxed);
         blasRefit.store(0, std::memory_order_relaxed);

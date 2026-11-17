@@ -8,6 +8,7 @@
 #ifndef HDCLAUDE_GPU_PATH_TRACER_H
 #define HDCLAUDE_GPU_PATH_TRACER_H
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -801,6 +802,38 @@ class PathTracer {
     std::uint32_t BlasRefit() const
     {
         return _accelerator ? _accelerator->LastRefitCount() : 0;
+    }
+
+    /// What the top-level structures of the last publication cost: their
+    /// storage, the placement arrays they were built over, the largest
+    /// scratch one build asked for, how many chunks, and the build time.
+    /// Read from the structures themselves, so the figures are exactly what
+    /// was allocated, wherever it was placed.
+    struct TopLevelSummary {
+        std::uint64_t storageBytes = 0;
+        std::uint64_t instanceBytes = 0;
+        std::uint64_t scratchBytes = 0;
+        std::uint32_t chunks = 0;
+        double buildMilliseconds = 0.0;
+    };
+    TopLevelSummary TopLevel() const
+    {
+        TopLevelSummary summary;
+        if (!_accelerator) {
+            return summary;
+        }
+        for (const TopLevelStructure& chunk : _accelerator->Chunks()) {
+            if (!chunk.Valid()) {
+                continue;
+            }
+            summary.storageBytes += chunk.StorageBytes();
+            summary.instanceBytes += chunk.InstanceBuffer().Size();
+            summary.scratchBytes = std::max<std::uint64_t>(
+                summary.scratchBytes, chunk.ScratchBytes());
+            ++summary.chunks;
+        }
+        summary.buildMilliseconds = _accelerator->LastTlasMilliseconds();
+        return summary;
     }
 
     /// Start the counters and both hashes over. Called between two renders of

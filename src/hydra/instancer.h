@@ -15,6 +15,7 @@
 #include "pxr/base/tf/hashmap.h"
 #include "pxr/base/vt/value.h"
 
+#include <cstdint>
 #include <vector>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -70,5 +71,25 @@ class HdClaudeInstancer : public HdInstancer {
 std::vector<std::vector<TfToken>> HdClaudeRprimCategories(
     HdSceneDelegate* delegate, const SdfPath& id, const SdfPath& instancerId,
     std::size_t instanceCount);
+
+struct HdClaudeStageStats;
+
+/// How many instancers stand above an rprim placed by `instancerId`: 0 when it
+/// is empty, 1 for a point instancer or a native instance, one more for each
+/// instancer that instances that one.
+std::uint32_t HdClaudeInstancingDepth(HdRenderIndex& index,
+                                      const SdfPath& instancerId);
+
+/// Every world-space placement of rprim `id` through `instancerId`, in the
+/// order HdClaudeInstancer::ComputeInstanceTransforms returns them, and the
+/// depth of the chain that produced them. The one place an rprim asks its
+/// instancer, so the time it takes is counted once, in `stats`
+/// (instancingMilliseconds), however many kinds of rprim ask. Empty when the
+/// instancer is not one of hdClaude's or places nothing.
+VtMatrix4dArray HdClaudeInstancePlacements(HdSceneDelegate* delegate,
+                                           const SdfPath& id,
+                                           const SdfPath& instancerId,
+                                           HdClaudeStageStats* stats,
+                                           std::uint32_t* depth);
 
 PXR_NAMESPACE_CLOSE_SCOPE

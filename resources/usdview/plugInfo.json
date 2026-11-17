@@ -1,0 +1,16 @@
+{
+    "Plugins": [
+        {
+            "Info": {
+                "Types": {
+                    "hdClaudeUsdview.HdClaudePluginContainer": {
+                        "bases": ["pxr.Usdviewq.plugin.PluginContainer"],
+                        "displayName": "hdClaude"
+                    }
+                }
+            },
+            "Name": "hdClaudeUsdview",
+            "Type": "python"
+        }
+    ]
+}

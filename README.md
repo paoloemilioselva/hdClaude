@@ -67,6 +67,7 @@ The architecture is written down before it is built, and updated as it is.
 | [Spectral rendering](docs/spectral-rendering.md) | wavelengths, upsampling, illuminants, the sensor |
 | [Wavefront integrator](docs/wavefront-integrator.md) | path state, queues, kernels, scheduling |
 | [DLSS integration](docs/dlss-integration.md) | backends, guides, frame metadata, boundaries |
+| [Render stats](docs/render-stats.md) | what a render cost, live in Houdini and usdview, at no cost to it |
 | [Lessons from hdCodex](docs/lessons-from-hdcodex.md) | defects inherited from the predecessor as rules |
 | [Implementation notes](docs/implementation-notes.md) | running log of findings that corrected the design |
 | [Building](docs/building.md) | dependencies, environment, toolchain |
@@ -128,6 +129,12 @@ set HDCLAUDE_DEVICE=5060              :: substring of the GPU to select
 
 `render_claude.bat` with no arguments prints the same list. Every name there is
 one the delegate reads; there is no setting documented that it ignores.
+
+In usdview, **hdClaude > Render Stats** opens a live panel of what the render
+cost: progress, the flattened instancing and its bytes per placement, device
+memory by what holds it, and time by stage. Set `HDCLAUDE_USDVIEW_STATS=1` to
+open it at start-up. Houdini's Render Stats panel and viewport overlay show
+the same figures ([docs/render-stats.md](docs/render-stats.md)).
 
 `render_gallery.bat` renders the versioned gallery at the settings
 [gallery.md](gallery.md) fixes, compares each image against its committed

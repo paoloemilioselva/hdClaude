@@ -2,6 +2,7 @@
 
 #include "hdclaude/core/environment.h"
 
+#include <chrono>
 #include <iterator>
 #include <unordered_set>
 
@@ -1163,6 +1164,7 @@ void TopLevelStructure::Build(
     _storage = std::move(storage);
     _instanceBuffer = std::move(instanceBuffer);
     _instanceCount = instanceCount;
+    _scratchBytes = sizes.buildScratchSize;
     _address = StructureAddress(context, _structure);
 }
 
@@ -1176,6 +1178,7 @@ void TopLevelStructure::Reset()
     _storage.Reset();
     _instanceBuffer.Reset();
     _instanceCount = 0;
+    _scratchBytes = 0;
     _context = nullptr;
 }
 
@@ -1187,7 +1190,8 @@ TopLevelStructure::TopLevelStructure(TopLevelStructure&& other) noexcept
       _address(std::exchange(other._address, 0)),
       _storage(std::move(other._storage)),
       _instanceBuffer(std::move(other._instanceBuffer)),
-      _instanceCount(std::exchange(other._instanceCount, 0))
+      _instanceCount(std::exchange(other._instanceCount, 0)),
+      _scratchBytes(std::exchange(other._scratchBytes, 0))
 {
 }
 
@@ -1201,6 +1205,7 @@ TopLevelStructure& TopLevelStructure::operator=(TopLevelStructure&& other) noexc
         _storage = std::move(other._storage);
         _instanceBuffer = std::move(other._instanceBuffer);
         _instanceCount = std::exchange(other._instanceCount, 0);
+        _scratchBytes = std::exchange(other._scratchBytes, 0);
     }
     return *this;
 }
@@ -1545,6 +1550,7 @@ void SceneAccelerator::Update(const Scene& scene, const std::vector<bool>& nonOp
                 " and more than the " + std::to_string(kMaxChunks) +
                 " the kernels trace through");
     }
+    const auto tlasStart = std::chrono::steady_clock::now();
     std::vector<TopLevelStructure> chunks(chunkCount);
     for (std::size_t c = 0; c < chunkCount; ++c) {
         const std::size_t first = c * chunkSize;
@@ -1556,6 +1562,9 @@ void SceneAccelerator::Update(const Scene& scene, const std::vector<bool>& nonOp
     }
     _chunks = std::move(chunks);
     _chunkSize = static_cast<std::uint32_t>(chunkSize);
+    _lastTlasMilliseconds = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - tlasStart)
+                                .count();
 }
 
 const BottomLevelStructure* SceneAccelerator::Blas(std::uint32_t prototype) const

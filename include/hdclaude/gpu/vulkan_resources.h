@@ -19,6 +19,7 @@
 #ifndef HDCLAUDE_GPU_VULKAN_RESOURCES_H
 #define HDCLAUDE_GPU_VULKAN_RESOURCES_H
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <mutex>
@@ -227,14 +228,34 @@ class VulkanAllocator {
     std::vector<MemoryCategory> DeviceLocalBreakdown() const;
     std::uint64_t DeviceLocalAllocatedPeak() const;
 
+    /// Device-local bytes held in images rather than buffers: textures, the
+    /// film's targets, the denoiser's guides. Lock-free, so a host polling
+    /// render stats never waits on an allocation in progress.
+    std::uint64_t DeviceLocalImageBytes() const
+    {
+        return _imageBytes.load(std::memory_order_relaxed);
+    }
+
     /// Called by VulkanBuffer and VulkanImage; not for anyone else.
     void NoteAllocation(const std::string& debugName, std::uint64_t bytes);
     void NoteRelease(const std::string& debugName, std::uint64_t bytes);
+    /// Called by VulkanImage beside NoteAllocation and NoteRelease.
+    void NoteImageBytes(std::uint64_t bytes, bool released)
+    {
+        if (released) {
+            _imageBytes.fetch_sub(
+                std::min(bytes, _imageBytes.load(std::memory_order_relaxed)),
+                std::memory_order_relaxed);
+        } else {
+            _imageBytes.fetch_add(bytes, std::memory_order_relaxed);
+        }
+    }
 
   private:
     const VulkanContext& _context;
     void* _allocator = nullptr;  // VmaAllocator
     mutable std::atomic<std::uint64_t> _spilledBytes{0};
+    std::atomic<std::uint64_t> _imageBytes{0};
 
     struct Tally {
         std::uint64_t bytes = 0;

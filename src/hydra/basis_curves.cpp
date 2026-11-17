@@ -378,12 +378,9 @@ void HdClaudeBasisCurves::Sync(HdSceneDelegate* sceneDelegate,
     if (GetInstancerId().IsEmpty()) {
         entry.transforms.push_back(ToTransform(curveTransform));
     } else {
-        VtMatrix4dArray transforms;
-        HdInstancer* instancer =
-            sceneDelegate->GetRenderIndex().GetInstancer(GetInstancerId());
-        if (auto* claudeInstancer = dynamic_cast<HdClaudeInstancer*>(instancer)) {
-            transforms = claudeInstancer->ComputeInstanceTransforms(id);
-        }
+        const VtMatrix4dArray transforms = HdClaudeInstancePlacements(
+            sceneDelegate, id, GetInstancerId(), param->StageStats(),
+            &entry.instancingDepth);
         entry.transforms.reserve(transforms.size());
         for (const GfMatrix4d& matrix : transforms) {
             entry.transforms.push_back(ToTransform(curveTransform * matrix));

@@ -1251,6 +1251,8 @@ void HdClaudeRenderPass::_Execute(
                                             std::memory_order_relaxed);
             stages.texturesNotCompressed.store(tracer->TexturesNotCompressed(),
                                                std::memory_order_relaxed);
+            _renderDelegate->RecordPublication(
+                scene, *tracer, _renderDelegate->SceneStore()->LastInstancing());
             // Reported, never left for the placeholder colour to explain:
             // once for each different shortfall, so a viewport redrawing the
             // same scene does not repeat it.
@@ -1384,6 +1386,9 @@ void HdClaudeRenderPass::_Execute(
     // by the same comparison that decided whether to reset the sample count, so
     // they cannot disagree.
     settings.resetAccumulation = (_samplesCompleted == 0);
+    if (settings.resetAccumulation) {
+        _accumulationStart = std::chrono::steady_clock::now();
+    }
     settings.reconstruct = reconstruction.on;
     settings.reconstructionQuality = reconstruction.quality;
     settings.reconstructionPreset = preset;
@@ -1735,7 +1740,11 @@ void HdClaudeRenderPass::_Execute(
 
     HdClaudeAddMilliseconds(_renderDelegate->StageStats().traceMilliseconds,
                             milliseconds);
-    _renderDelegate->RecordFrameTiming(milliseconds, _samplesCompleted);
+    _renderDelegate->RecordFrameTiming(
+        milliseconds, _samplesCompleted, _targetSamples,
+        std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                      _accumulationStart)
+            .count());
 
     // A line per traced frame, appended, for a session nobody can attach a
     // script to.

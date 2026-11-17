@@ -464,21 +464,19 @@ hdclaude::TessellationChoice HdClaudeChooseMeshTessellation(
 /// left to right, so `mesh * instance` is the mesh taken into the
 /// prototype and the prototype into the world.
 bool Placements(HdSceneDelegate* sceneDelegate, const SdfPath& id,
-                const SdfPath& instancerId,
-                std::vector<hdclaude::Transform3x4>* out)
+                const SdfPath& instancerId, HdClaudeStageStats* stats,
+                std::vector<hdclaude::Transform3x4>* out,
+                std::uint32_t* depth)
 {
     out->clear();
+    *depth = 0;
     const GfMatrix4d meshTransform = sceneDelegate->GetTransform(id);
     if (instancerId.IsEmpty()) {
         out->push_back(ToTransform(meshTransform));
         return true;
     }
-    VtMatrix4dArray transforms;
-    HdInstancer* instancer =
-        sceneDelegate->GetRenderIndex().GetInstancer(instancerId);
-    if (auto* claudeInstancer = dynamic_cast<HdClaudeInstancer*>(instancer)) {
-        transforms = claudeInstancer->ComputeInstanceTransforms(id);
-    }
+    const VtMatrix4dArray transforms = HdClaudeInstancePlacements(
+        sceneDelegate, id, instancerId, stats, depth);
     out->reserve(transforms.size());
     for (const GfMatrix4d& matrix : transforms) {
         out->push_back(ToTransform(meshTransform * matrix));
@@ -549,7 +547,9 @@ bool HdClaudeMesh::_SyncPlacementOnly(HdSceneDelegate* sceneDelegate,
     const SdfPath& id = GetId();
 
     std::vector<hdclaude::Transform3x4> transforms;
-    if (!Placements(sceneDelegate, id, GetInstancerId(), &transforms)) {
+    std::uint32_t depth = 0;
+    if (!Placements(sceneDelegate, id, GetInstancerId(), param->StageStats(),
+                    &transforms, &depth)) {
         param->SceneStore()->RemoveMesh(id);
         return true;
     }
@@ -565,7 +565,7 @@ bool HdClaudeMesh::_SyncPlacementOnly(HdSceneDelegate* sceneDelegate,
     // sync is what makes one.
     if (!param->SceneStore()->UpdateMeshPlacement(
             id, std::move(transforms), sceneDelegate->GetVisible(id),
-            std::move(material), std::move(categories), GetPrimId())) {
+            std::move(material), std::move(categories), GetPrimId(), depth)) {
         return false;
     }
     HdClaudeTrace("mesh <%s>: placement only, %zu instances", id.GetText(),
@@ -694,7 +694,8 @@ void HdClaudeMesh::Sync(HdSceneDelegate* sceneDelegate,
     // --- Instancing ------------------------------------------------------------
     // One prototype, many placements: the acceleration structure is built once
     // and instanced, which is the whole reason geometry stays object-space.
-    if (!Placements(sceneDelegate, id, GetInstancerId(), &entry.transforms)) {
+    if (!Placements(sceneDelegate, id, GetInstancerId(), param->StageStats(),
+                    &entry.transforms, &entry.instancingDepth)) {
         // An instancer with no instances draws nothing. Publishing the prim
         // at the origin instead would put a copy on screen that the stage
         // does not contain.

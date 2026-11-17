@@ -79,7 +79,8 @@ void HdClaudeSceneStore::PublishMesh(const SdfPath& id, HdClaudeMeshEntry entry)
 bool HdClaudeSceneStore::UpdateMeshPlacement(
     const SdfPath& id, std::vector<hdclaude::Transform3x4> transforms,
     bool visible, SdfPath material,
-    std::vector<std::vector<TfToken>> instanceCategories, int primId)
+    std::vector<std::vector<TfToken>> instanceCategories, int primId,
+    std::uint32_t instancingDepth)
 {
     std::lock_guard<std::mutex> lock(_mutex);
     const auto found = _meshes.find(id);
@@ -92,6 +93,7 @@ bool HdClaudeSceneStore::UpdateMeshPlacement(
     entry.material = std::move(material);
     entry.instanceCategories = std::move(instanceCategories);
     entry.primId = primId;
+    entry.instancingDepth = instancingDepth;
     ++_revision;
     return true;
 }
@@ -357,6 +359,20 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
     hdclaude::Scene scene;
     materials.clear();
 
+    HdClaudeInstancingSummary instancing;
+    const auto noteInstancing = [&instancing](const SdfPath& path,
+                                              std::uint32_t depth,
+                                              std::size_t placements) {
+        if (depth > 0) {
+            ++instancing.instancedRprims;
+        }
+        instancing.depth = std::max(instancing.depth, depth);
+        if (placements > instancing.largestCount) {
+            instancing.largestCount = placements;
+            instancing.largestPath = path;
+        }
+    };
+
     // Index 0 is the fallback, a plain grey, reached only when the
     // displayColor material itself is missing: everything else that binds no
     // usable material is shaded with its displayColor (below). A prim still
@@ -570,6 +586,7 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
         const bool matched = previous != _previousTransforms.end() &&
                              previous->second.size() == mesh.transforms.size();
 
+        noteInstancing(path, mesh.instancingDepth, mesh.transforms.size());
         const std::uint32_t meshCullLinks = cullLinksOf(path);
         for (std::size_t i = 0; i < mesh.transforms.size(); ++i) {
             hdclaude::MeshInstance instance;
@@ -620,6 +637,7 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
         const bool matched = previous != _previousSplatTransforms.end() &&
                              previous->second.size() == splats.transforms.size();
 
+        noteInstancing(path, splats.instancingDepth, splats.transforms.size());
         const std::uint32_t splatCullLinks = cullLinksOf(path);
         for (std::size_t i = 0; i < splats.transforms.size(); ++i) {
             hdclaude::SplatInstance instance;
@@ -879,8 +897,15 @@ hdclaude::Scene HdClaudeSceneStore::Snapshot(
         _pendingSplatTransforms[path] = splats.transforms;
     }
     _historyPending = true;
+    _lastInstancing = std::move(instancing);
 
     return scene;
+}
+
+HdClaudeInstancingSummary HdClaudeSceneStore::LastInstancing() const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    return _lastInstancing;
 }
 
 void HdClaudeSceneStore::CommitHistory()

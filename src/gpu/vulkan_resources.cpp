@@ -479,9 +479,10 @@ VulkanImage::VulkanImage(VulkanAllocator& allocator,
                                   "vkCreateImageView(" + description.debugName + ")");
     }
 
-    allocator.NoteAllocation(description.debugName,
-                             DeviceLocalSizeOf(ToVma(allocator.Handle()),
-                                               allocation));
+    const std::uint64_t imageBytes =
+        DeviceLocalSizeOf(ToVma(allocator.Handle()), allocation);
+    allocator.NoteAllocation(description.debugName, imageBytes);
+    allocator.NoteImageBytes(imageBytes, /*released=*/false);
     _generation = NextResourceGeneration();
 }
 
@@ -492,10 +493,10 @@ void VulkanImage::Reset()
             vkDestroyImageView(_allocator->Context().Device(), _view, nullptr);
         }
         if (_handle != VK_NULL_HANDLE) {
-            _allocator->NoteRelease(
-                _description.debugName,
-                DeviceLocalSizeOf(ToVma(_allocator->Handle()),
-                                  ToVmaAllocation(_allocation)));
+            const std::uint64_t imageBytes = DeviceLocalSizeOf(
+                ToVma(_allocator->Handle()), ToVmaAllocation(_allocation));
+            _allocator->NoteRelease(_description.debugName, imageBytes);
+            _allocator->NoteImageBytes(imageBytes, /*released=*/true);
             vmaDestroyImage(ToVma(_allocator->Handle()), _handle,
                             ToVmaAllocation(_allocation));
         }

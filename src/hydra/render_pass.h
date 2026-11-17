@@ -7,6 +7,7 @@
 #include "hdclaude/denoise/denoiser.h"
 #include "pxr/imaging/hd/renderPass.h"
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -108,6 +109,9 @@ class HDCLAUDE_API HdClaudeRenderPass final : public HdRenderPass {
     bool _hasFraming = false;
     std::uint32_t _samplesCompleted = 0;
     std::uint32_t _targetSamples = 0;
+    /// When the accumulation last started from no samples, for the elapsed
+    /// time and ETA a host shows beside its progress bar.
+    std::chrono::steady_clock::time_point _accumulationStart{};
     bool _converged = false;
 
     /// Diagnostic: how many more times to render the finished image over

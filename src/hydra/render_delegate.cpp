@@ -22,6 +22,7 @@
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/tf/getenv.h"
 #include "pxr/base/tf/staticTokens.h"
+#include "pxr/base/tf/stringUtils.h"
 #include "pxr/imaging/hd/camera.h"
 #include "pxr/imaging/hd/extComputation.h"
 #include "pxr/imaging/hd/instancer.h"
@@ -1207,10 +1208,14 @@ std::uint64_t HdClaudeRenderDelegate::DeviceBytesSpilled() const
 }
 
 void HdClaudeRenderDelegate::RecordFrameTiming(double milliseconds,
-                                               std::uint32_t samples)
+                                               std::uint32_t samples,
+                                               std::uint32_t targetSamples,
+                                               double accumulationSeconds)
 {
     _lastFrameMilliseconds.store(milliseconds, std::memory_order_relaxed);
     _lastFrameSamples.store(samples, std::memory_order_relaxed);
+    _targetSamples.store(targetSamples, std::memory_order_relaxed);
+    _accumulationSeconds.store(accumulationSeconds, std::memory_order_relaxed);
 
     // What the frame cost in device memory, kept as a high-water mark.
     //
@@ -1226,6 +1231,104 @@ void HdClaudeRenderDelegate::RecordFrameTiming(double milliseconds,
                    peak, used, std::memory_order_relaxed)) {
         }
     }
+}
+
+namespace {
+
+bool EndsWith(const std::string& text, const char* suffix)
+{
+    const std::size_t length = std::char_traits<char>::length(suffix);
+    return text.size() >= length &&
+           text.compare(text.size() - length, length, suffix) == 0;
+}
+
+/// Bytes as a person reads them, in binary units, for a viewport line that
+/// prints the text it is given.
+std::string BriefBytes(double bytes)
+{
+    static const char* const kUnits[] = {"B", "KB", "MB", "GB", "TB"};
+    int unit = 0;
+    while (bytes >= 1024.0 && unit < 4) {
+        bytes /= 1024.0;
+        ++unit;
+    }
+    return unit == 0 ? TfStringPrintf("%.0f B", bytes)
+                     : TfStringPrintf("%.1f %s", bytes, kUnits[unit]);
+}
+
+/// A count as a person reads it: 1,788 as 1788 and 5,980,000 as 5.98 M.
+std::string BriefCount(double count)
+{
+    if (count >= 1e9) {
+        return TfStringPrintf("%.2f G", count / 1e9);
+    }
+    if (count >= 1e6) {
+        return TfStringPrintf("%.2f M", count / 1e6);
+    }
+    return TfStringPrintf("%.0f", count);
+}
+
+}  // namespace
+
+void HdClaudeRenderDelegate::RecordPublication(
+    const hdclaude::Scene& scene, const hdclaude::PathTracer& tracer,
+    const HdClaudeInstancingSummary& instancing)
+{
+    constexpr auto relaxed = std::memory_order_relaxed;
+    HdClaudeStageStats& stages = _stageStats;
+    stages.prototypes.store(scene.prototypes.size() + scene.splatPrototypes.size(),
+                            relaxed);
+    stages.splatPlacements.store(scene.splatInstances.size(), relaxed);
+    stages.instancedRprims.store(instancing.instancedRprims, relaxed);
+    stages.instancingDepth.store(instancing.depth, relaxed);
+    stages.largestPlacementCount.store(instancing.largestCount, relaxed);
+    {
+        const std::lock_guard<std::mutex> lock(_largestPlacementMutex);
+        _largestPlacementPrim = instancing.largestPath.GetString();
+    }
+
+    // The top-level structures from the structures themselves: they know
+    // their sizes exactly, including an instance array placed in host memory,
+    // which the device-local breakdown below would not see.
+    const hdclaude::PathTracer::TopLevelSummary top = tracer.TopLevel();
+    stages.tlasBytes.store(top.storageBytes, relaxed);
+    stages.tlasInstanceBytes.store(top.instanceBytes, relaxed);
+    stages.tlasScratchBytes.store(top.scratchBytes, relaxed);
+    stages.tlasChunks.store(top.chunks, relaxed);
+    stages.tlasBuildMilliseconds.store(top.buildMilliseconds, relaxed);
+
+    // Everything else from the allocator's breakdown, by the categories its
+    // debug names fold into (VulkanAllocator::DeviceLocalBreakdown). One
+    // lock, here, on the thread that just did the allocating.
+    std::uint64_t blas = 0;
+    std::uint64_t vertex = 0;
+    std::uint64_t index = 0;
+    std::uint64_t tables = 0;
+    if (_allocator) {
+        for (const auto& category : _allocator->DeviceLocalBreakdown()) {
+            const std::string& name = category.name;
+            if (EndsWith(name, ".blas")) {
+                blas += category.bytes;
+            } else if (EndsWith(name, ".indices")) {
+                index += category.bytes;
+            } else if (EndsWith(name, ".positions") ||
+                       EndsWith(name, ".normals") || EndsWith(name, ".uvs") ||
+                       EndsWith(name, ".segments") ||
+                       EndsWith(name, ".segmentMaterials") ||
+                       EndsWith(name, ".splats") ||
+                       EndsWith(name, ".harmonics")) {
+                vertex += category.bytes;
+            } else if (name == "instanceTable" || name == "historyTable" ||
+                       name == "instanceLinks" || name == "instanceCullLinks" ||
+                       name == "instancePicks") {
+                tables += category.bytes;
+            }
+        }
+    }
+    stages.blasBytes.store(blas, relaxed);
+    stages.vertexBytes.store(vertex, relaxed);
+    stages.indexBytes.store(index, relaxed);
+    stages.placementTableBytes.store(tables, relaxed);
 }
 
 VtDictionary HdClaudeRenderDelegate::GetRenderStats() const
@@ -1322,11 +1425,147 @@ VtDictionary HdClaudeRenderDelegate::GetRenderStats() const
         VtValue(double(_stageStats.texturesLoaded.load(std::memory_order_relaxed)));
     stats["textureBytes"] =
         VtValue(double(_stageStats.textureBytes.load(std::memory_order_relaxed)));
+    // Asked once: it is a driver query (the memory budget), and every name
+    // below that reports it reports this one reading.
+    const double deviceUsed =
+        _allocator ? double(_allocator->DeviceLocalBytesUsed()) : 0.0;
     if (_allocator) {
-        stats["deviceBytesUsed"] =
-            VtValue(double(_allocator->DeviceLocalBytesUsed()));
+        stats["deviceBytesUsed"] = VtValue(deviceUsed);
         stats["deviceBytesAvailable"] =
             VtValue(double(_allocator->DeviceLocalBytesAvailable()));
+    }
+
+    // --- Instancing and what it costs on the device --------------------------
+    //
+    // All recorded after the last publication (RecordPublication); reading
+    // them is a load each and a copy of one path.
+    constexpr auto relaxed = std::memory_order_relaxed;
+    const HdClaudeStageStats& stages = _stageStats;
+    const double placements = double(stages.instances.load(relaxed));
+    const double prototypes = double(stages.prototypes.load(relaxed));
+    stats["prototypes"] = VtValue(prototypes);
+    stats["splatPlacements"] =
+        VtValue(double(stages.splatPlacements.load(relaxed)));
+    stats["placementsPerPrototype"] =
+        VtValue(prototypes > 0.0 ? placements / prototypes : 0.0);
+    stats["instancedRprims"] =
+        VtValue(double(stages.instancedRprims.load(relaxed)));
+    stats["instancingDepth"] =
+        VtValue(double(stages.instancingDepth.load(relaxed)));
+    stats["largestPlacementCount"] =
+        VtValue(double(stages.largestPlacementCount.load(relaxed)));
+    {
+        const std::lock_guard<std::mutex> lock(_largestPlacementMutex);
+        stats["largestPlacementPrim"] = VtValue(_largestPlacementPrim);
+    }
+    stats["instancingMs"] = VtValue(stages.instancingMilliseconds.load(relaxed));
+    stats["tlasBytes"] = VtValue(double(stages.tlasBytes.load(relaxed)));
+    stats["tlasInstanceBytes"] =
+        VtValue(double(stages.tlasInstanceBytes.load(relaxed)));
+    stats["tlasScratchBytes"] =
+        VtValue(double(stages.tlasScratchBytes.load(relaxed)));
+    stats["tlasChunks"] = VtValue(double(stages.tlasChunks.load(relaxed)));
+    stats["tlasBuildMs"] = VtValue(stages.tlasBuildMilliseconds.load(relaxed));
+    stats["blasBytes"] = VtValue(double(stages.blasBytes.load(relaxed)));
+    stats["placementTableBytes"] =
+        VtValue(double(stages.placementTableBytes.load(relaxed)));
+    stats["vertexBytes"] = VtValue(double(stages.vertexBytes.load(relaxed)));
+    stats["indexBytes"] = VtValue(double(stages.indexBytes.load(relaxed)));
+    // What one placement costs on the device, all of it: its share of the
+    // top-level structure, the 64-byte instance it was built over, and its
+    // rows in the tables shading reads. The number that says how far a flat
+    // placement list can grow before a card runs out.
+    stats["bytesPerPlacement"] = VtValue(
+        placements > 0.0
+            ? double(stages.tlasBytes.load(relaxed) +
+                     stages.tlasInstanceBytes.load(relaxed) +
+                     stages.placementTableBytes.load(relaxed)) /
+                  placements
+            : 0.0);
+    const double imageBytes =
+        _allocator ? double(_allocator->DeviceLocalImageBytes()) : 0.0;
+    stats["imageBytes"] = VtValue(imageBytes);
+
+    // --- Progress -------------------------------------------------------------
+    const std::uint32_t samples = _lastFrameSamples.load(relaxed);
+    const std::uint32_t target = _targetSamples.load(relaxed);
+    stats["targetSamples"] = VtValue(double(target));
+    stats["accumulationSeconds"] = VtValue(_accumulationSeconds.load(relaxed));
+
+    // --- Under the names hosts already display -------------------------------
+    //
+    // usdview's GPU-stats HUD prints a fixed set of Storm's keys and nothing
+    // else (Usdviewq/stageView.py, drawHUD), and Houdini's render-stats panel
+    // and viewport read a fixed set of its own (HUSD_RENDERSTATS_TOKENS, and
+    // UsdRenderers.json's statsdatapaths). Each is published under the name
+    // that host knows, with the meaning it gives it: `primvar` is vertex data
+    // and `topology` index buffers, as in Storm.
+    if (_allocator) {
+        stats["gpuMemoryUsed"] = VtValue(deviceUsed);
+        stats["totalMemory"] = VtValue(deviceUsed);
+    }
+    stats["primvar"] = VtValue(double(stages.vertexBytes.load(relaxed)));
+    stats["topology"] = VtValue(double(stages.indexBytes.load(relaxed)));
+    stats["textureMemory"] = VtValue(imageBytes);
+    stats["numCompletedSamples"] = VtValue(int(samples));
+    stats["percentDone"] = VtValue(
+        target > 0 ? 100.0 * std::min(1.0, double(samples) / double(target))
+                   : 0.0);
+    stats["totalClockTime"] = VtValue(_accumulationSeconds.load(relaxed));
+    stats["peakMemory"] = VtValue(double(_peakDeviceBytes.load(relaxed)));
+    stats["rendererStage"] = VtValue(std::string(
+        target > 0 && samples >= target ? "Converged" : "Rendering"));
+
+    // --- For panels and overlays -------------------------------------------
+    //
+    // Device memory by what holds it, as one dictionary, which is the shape
+    // Houdini's StatTable draws as a breakdown (renderstats/HdClaude.qml).
+    {
+        VtDictionary memory;
+        memory["Top-level structure"] =
+            VtValue(double(stages.tlasBytes.load(relaxed)));
+        memory["Placement array"] =
+            VtValue(double(stages.tlasInstanceBytes.load(relaxed)));
+        memory["Placement tables"] =
+            VtValue(double(stages.placementTableBytes.load(relaxed)));
+        memory["Bottom-level structures"] =
+            VtValue(double(stages.blasBytes.load(relaxed)));
+        memory["Vertices"] = VtValue(double(stages.vertexBytes.load(relaxed)));
+        memory["Indices"] = VtValue(double(stages.indexBytes.load(relaxed)));
+        memory["Images"] = VtValue(imageBytes);
+        stats["deviceMemory"] = VtValue(memory);
+    }
+    // The same figures as text, for a viewport overlay that prints what it is
+    // handed (UsdRenderers.json's viewstats). Formatted here because a host
+    // that formats a number formats it as a number, and 5.6e9 bytes is not
+    // something to read off a viewport.
+    {
+        VtDictionary hud;
+        hud["placements"] = VtValue(TfStringPrintf(
+            "%s of %s prototypes",
+            BriefCount(placements).c_str(), BriefCount(prototypes).c_str()));
+        hud["instancing"] = VtValue(TfStringPrintf(
+            "depth %llu, largest %s",
+            static_cast<unsigned long long>(stages.instancingDepth.load(relaxed)),
+            BriefCount(double(stages.largestPlacementCount.load(relaxed))).c_str()));
+        hud["tlas"] = VtValue(TfStringPrintf(
+            "%s + %s placements, %.1f ms",
+            BriefBytes(double(stages.tlasBytes.load(relaxed))).c_str(),
+            BriefBytes(double(stages.tlasInstanceBytes.load(relaxed))).c_str(),
+            stages.tlasBuildMilliseconds.load(relaxed)));
+        hud["perPlacement"] = VtValue(BriefBytes(
+            placements > 0.0
+                ? double(stages.tlasBytes.load(relaxed) +
+                         stages.tlasInstanceBytes.load(relaxed) +
+                         stages.placementTableBytes.load(relaxed)) /
+                      placements
+                : 0.0));
+        hud["device"] = VtValue(TfStringPrintf(
+            "%s used, %s peak",
+            BriefBytes(deviceUsed).c_str(),
+            BriefBytes(double(_peakDeviceBytes.load(relaxed))).c_str()));
+        hud["samples"] = VtValue(TfStringPrintf("%u / %u", samples, target));
+        stats["hud"] = VtValue(hud);
     }
     if (!_initializationError.empty()) {
         stats["error"] = VtValue(_initializationError);

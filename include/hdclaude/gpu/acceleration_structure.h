@@ -174,6 +174,11 @@ class TopLevelStructure {
     /// the instance table. Kept after the build because shading reads each
     /// placement's transform from here rather than from a second copy of it.
     const VulkanBuffer& InstanceBuffer() const { return _instanceBuffer; }
+    /// The structure's own storage, without the instances it was built over.
+    VkDeviceSize StorageBytes() const { return _storage.Size(); }
+    /// The scratch the build asked for. Released when the build finished, and
+    /// kept as a number because it is held at the moment memory peaks.
+    VkDeviceSize ScratchBytes() const { return _scratchBytes; }
 
     /// Build, replacing whatever was here.
     ///
@@ -201,6 +206,7 @@ class TopLevelStructure {
     VulkanBuffer _storage;
     VulkanBuffer _instanceBuffer;
     std::uint32_t _instanceCount = 0;
+    VkDeviceSize _scratchBytes = 0;
 };
 
 /// Owns the structures for a scene and reuses what it can across publications.
@@ -255,6 +261,10 @@ class SceneAccelerator {
     std::uint32_t LastReusedCount() const { return _lastReused; }
     /// How many kept their tree and moved its bounds to follow new vertices.
     std::uint32_t LastRefitCount() const { return _lastRefit; }
+    /// Host time the last Update spent building the top-level structures,
+    /// every chunk of them. Each build is submitted and waited for, so this
+    /// is the build itself and not just the recording of it.
+    double LastTlasMilliseconds() const { return _lastTlasMilliseconds; }
 
   private:
     const VulkanContext& _context;
@@ -272,6 +282,7 @@ class SceneAccelerator {
     std::uint32_t _lastBuilt = 0;
     std::uint32_t _lastReused = 0;
     std::uint32_t _lastRefit = 0;
+    double _lastTlasMilliseconds = 0.0;
 };
 
 }  // namespace hdclaude
