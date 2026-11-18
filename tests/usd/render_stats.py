@@ -203,6 +203,23 @@ def main():
     expect("totalClockTime", (number("totalClockTime") or 0) > 0,
            str(number("totalClockTime")))
 
+    # Every line UsdRenderers.json puts on Houdini's viewport names a key the
+    # dictionary has. A path to nothing draws an empty line, and nobody reads
+    # an empty line as a missing stat.
+    import json
+    with open(os.path.join(HERE, "..", "..", "resources", "houdini",
+                           "UsdRenderers.json"), encoding="utf-8") as f:
+        entry = json.load(f)["HdClaudeRendererPlugin"]
+    for line in entry["viewstats"]:
+        node = stats
+        for part in entry["statsdatapaths"].get(line, "").split("."):
+            node = dict(node).get(part) if hasattr(node, "get") else None
+        expect("viewport line %s has a value" % line,
+               isinstance(node, str) and node != "", repr(node))
+    expect("Textures line on a stage with no textures",
+           dict(stats.get("hud", {})).get("textures") == "0 on device",
+           repr(dict(stats.get("hud", {})).get("textures")))
+
     # The usdview panel formats this same dictionary; run its formatter on it
     # from the source tree, so a key it reads that went missing or changed
     # type fails here rather than in a viewer nobody is watching.

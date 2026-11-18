@@ -248,6 +248,42 @@ Item {
             grid.minValueWidthText: "999.9 MB"
         }
 
+        // --- Textures -----------------------------------------------------
+        //
+        // A texture that did not fit in device memory samples the placeholder
+        // colour; "Did Not Fit" is how many, and what they needed.
+        ItemGrid {
+            width: parent.width
+            cellWidth: 110
+            cellHeight: 40
+
+            SimpleTile {
+                label: "Textures"
+                BriefNumber {
+                    number: root.value("texturesUploaded") + root.value("texturesReused")
+                    color: Theme.fg
+                    size: Typography.large
+                }
+            }
+            SimpleTile {
+                label: "Did Not Fit"
+                BriefNumber {
+                    number: root.value("texturesOverBudget")
+                    color: Theme.fg
+                    size: Typography.large
+                }
+            }
+            SimpleTile {
+                label: "Needed"
+                BriefNumber {
+                    number: root.value("textureBytesOverBudget")
+                    memory: true
+                    color: Theme.fg
+                    size: Typography.large
+                }
+            }
+        }
+
         // --- Where the time went -------------------------------------------
         //
         // Totals over the render, summed across Hydra's sync threads, so a

@@ -617,7 +617,7 @@
         label   "Texture compression"
         type    toggle
         size    1
-        default { 0 }
+        default { 1 }
         parmtag { "spare_category" "Textures" }
         parmtag { "usdvaluetype" "bool" }
         disablewhen "{ textureCompression_control == block } { textureCompression_control == none }"

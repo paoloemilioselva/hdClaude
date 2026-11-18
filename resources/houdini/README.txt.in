@@ -88,6 +88,13 @@ While hdClaude renders, Houdini's Render Stats panel shows its progress, samples
 by what holds it. The viewport's stats overlay shows the same figures in
 brief. Reading them does not slow the render.
 
+Textures are block-compressed by default, which keeps each in a quarter to an
+eighth of the GPU memory so that large scenes fit. A texture that still does
+not fit is drawn in a flat magenta, and the overlay's Textures line says how
+many did not fit. Lower Texture quality, or free GPU memory, to bring them
+back. Turn Texture compression off, in the Display Options or on a Render
+Settings LOP, to render the authored texels exactly.
+
 
 Uninstall
 ---------

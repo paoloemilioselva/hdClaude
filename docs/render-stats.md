@@ -44,6 +44,12 @@ the EXR that renders are gated on.
 The overlay lines are preformatted strings under `hud`, because a host that
 formats a number formats it as a number.
 
+The overlay's Textures line (`hud.textures`) says how many textures are on the
+device and, when some did not fit in device memory, how many and the bytes
+they needed. Those textures sample the magenta placeholder. The delegate also
+reports the shortfall with `TF_WARN`, but Houdini does not print that in its
+shell, so the overlay is where a Houdini user sees it.
+
 **usdview.** View > HUD > GPU Stats prints a fixed set of Storm's keys and
 nothing else (`Usdviewq/stageView.py`, `drawHUD`). hdClaude publishes those
 keys under the meaning Storm gives them:
@@ -114,6 +120,9 @@ The alternatives were considered and set aside for now (2026-11-17):
 | `bytesPerPlacement` | (TLAS + placement array + tables) / placements |
 | `deviceMemory` | the same bytes as one dictionary, for a breakdown table |
 | `targetSamples`, `accumulationSeconds` | where the accumulation stops, and how long it has run |
+| `texturesUploaded`, `texturesReused` | textures the last publication uploaded, and kept from the one before; together, the textures on the device |
+| `texturesOverBudget`, `textureBytesOverBudget` | textures that did not fit in device memory and sample the placeholder, and the bytes they needed |
+| `texturesCompressed`, `texturesNotCompressed` | textures the last publication block-compressed, and those compression could not take |
 | `hud` | the viewport overlay's lines, as text |
 | `gpuMemoryUsed`, `primvar`, `topology`, `textureMemory`, `numCompletedSamples` | Storm's names, for usdview's HUD |
 | `percentDone`, `totalClockTime`, `peakMemory`, `totalMemory`, `rendererStage` | Houdini's names |

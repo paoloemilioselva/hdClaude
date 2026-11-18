@@ -1162,10 +1162,21 @@ void PathTracer::UploadTextures(
         const std::shared_ptr<const TextureImage>& texture = textures[slot];
         if (slot < _uploadedTextures.size() && slot < _texturePool.size() &&
             texture == _uploadedTextures[slot]) {
+            // Kept, unless a limit lowered since it was uploaded no longer
+            // admits it. The device's free memory is not asked: the image
+            // already holds its share of it.
+            const std::uint64_t bytes = _textureSlotBytes[slot];
+            if (_texturePool[slot].Valid() && _textureMemoryLimit != 0 &&
+                held + bytes > _textureMemoryLimit) {
+                _texturePool[slot] = VulkanImage();
+                _uploadedTextures[slot].reset();
+                leaveOut(slot, texture, bytes);
+                continue;
+            }
             pool[slot] = std::move(_texturePool[slot]);
             if (pool[slot].Valid()) {
                 ++_texturesReused;
-                poolBytes[slot] = _textureSlotBytes[slot];
+                poolBytes[slot] = bytes;
                 held += poolBytes[slot];
             }
             continue;

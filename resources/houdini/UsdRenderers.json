@@ -14,7 +14,8 @@
                 "Instancing",
                 "TLAS",
                 "Per placement",
-                "Device memory" ],
+                "Device memory",
+                "Textures" ],
         "statsdatapaths": {
             "Samples"                   : "hud.samples",
             "Placements"                : "hud.placements",
@@ -22,6 +23,7 @@
             "TLAS"                      : "hud.tlas",
             "Per placement"             : "hud.perPlacement",
             "Device memory"             : "hud.device",
+            "Textures"                  : "hud.textures",
 
             "totalClockTime"            : "accumulationSeconds",
             "percentDone"               : "percentDone",

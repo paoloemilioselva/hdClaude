@@ -115,6 +115,15 @@ def _render(stats):
     for name, value in sorted(memory.items(), key=lambda item: -float(item[1])):
         row("  " + name, _bytes(value))
 
+    # A texture that did not fit in device memory samples the placeholder
+    # colour, so how many did not is beside how many did.
+    section("Textures")
+    row("On device", _count(float(get("texturesUploaded", 0) or 0) +
+                            float(get("texturesReused", 0) or 0)))
+    left = float(get("texturesOverBudget", 0) or 0)
+    row("Did not fit", _count(left) + (
+        " (%s)" % _bytes(get("textureBytesOverBudget", 0)) if left else ""))
+
     section("Time")
     for label, key in (("Ingest", "ingestMs"), ("Publish", "publishMs"),
                        ("Instancing", "instancingMs"), ("Trace", "traceMs"),

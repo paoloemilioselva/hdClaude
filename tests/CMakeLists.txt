@@ -180,7 +180,11 @@ if(HDCLAUDE_ENABLE_MATERIALX)
   # install that failed -- a viewer holding the DLL is enough -- left these
   # testing whatever was installed before, and passing for it. Not for a
   # Houdini build, whose plugin is for Houdini's USD and not this one.
-  set(_usd_test_env "HDCLAUDE_IMAGE_DIFF=$<TARGET_FILE:hdClaudeImageDiff>")
+  # Texture compression off: these compare renders against each other and
+  # against baselines of the authored texels, and compression is lossy. The
+  # shipped default is on; texture_quality.py tests both.
+  set(_usd_test_env "HDCLAUDE_IMAGE_DIFF=$<TARGET_FILE:hdClaudeImageDiff>"
+                    "HDCLAUDE_TEXTURE_COMPRESSION=0")
   if(NOT HDCLAUDE_HOUDINI_VERSION)
     list(APPEND _usd_test_env
          "HDCLAUDE_PLUGIN_DIR=${CMAKE_BINARY_DIR}/plugin/usd")

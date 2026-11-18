@@ -9017,3 +9017,49 @@ Image bytes got a lock-free counter of their own for the same reason.
 `.../cube/ForInstancer<hash>`: UsdImaging appends that element. A native
 instance's rprim lives under `/UsdNiPropagatedPrototypes`. The stats report
 Hydra's path, the same one the trace prints.
+
+## 2026-11-18 -- Texture compression on by default, and a magenta viewport explained
+
+**What was seen.** ALab's mk020_0030 shot in Houdini's viewport rendered with
+a strong magenta cast. The overlay said 13.7 GB of device memory used and
+13.7 GB peak, on a 16 GB card with 591 MB free, and the shell said nothing
+but shader compiles.
+
+**Why.** It was the missing-texture placeholder. With compression off, ALab
+at `high` needs 25.5 GB of textures, and on this card 2,720 of them (11.3 GB)
+were left out (the 2026-11-16 measurement). Each one samples opaque magenta,
+and the magenta surfaces then bounce magenta light onto the textured ones, so
+the whole frame takes the cast rather than a few flat patches. The shortfall
+was reported with `TF_WARN`, which Houdini does not print in its shell, and no
+stats view showed it, so nothing on screen explained the colour.
+
+**What changed.**
+
+- **Texture compression is on by default.** The aim is that a user can open a
+  large scene without first learning a setting. ALab compressed is 6.24 GB of
+  textures with none left out, for about 5 s more load time. The cost is
+  accuracy: rms 0.012 on ALab's characters, and worse on a block whose values
+  span several decades. `HDCLAUDE_TEXTURE_COMPRESSION=0`, or the setting,
+  restores the authored texels. A split default, on in the viewport and off
+  for a final render, was considered and rejected. It would make the viewport
+  a poor preview of the final frame, and a large scene that looked fine
+  interactively would render magenta in husk.
+- **The gallery and the USD tests turn it off**, as the gallery already turns
+  light geometry on. They compare against baselines of the authored texels.
+  `usd_texture_quality` now also checks that compression is on when left
+  unset.
+- **The shortfall is on screen.** The overlay's Textures line (`hud.textures`)
+  reads `N on device`, or `N on device, K did not fit (X GB)`. Houdini's
+  Render Stats page and the usdview panel show the same counts.
+  `usd_texture_quality` sets a 1 MB limit through the engine and checks the
+  line.
+- **A lowered limit now drops what it no longer admits.** That check found
+  the limit applied only to textures being uploaded. A texture already on the
+  device was kept on reuse without being counted against the limit, so a
+  limit lowered mid-session changed nothing until the texture itself changed.
+  The comment in the render pass promised it would be dropped at once. It is
+  now.
+
+**Not done.** A texture that does not fit even compressed still shows the
+placeholder. The next step for small GPUs would be to upload such a texture at
+a lower resolution and report that, rather than leave it out.

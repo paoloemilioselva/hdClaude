@@ -293,7 +293,7 @@
         label   "Texture compression"
         type    toggle
         size    1
-        default { 0 }
+        default { 1 }
         parmtag { "spare_category" "Textures" }
         parmtag { "uiscope" "viewport" }
         parmtag { "usdvaluetype" "bool" }

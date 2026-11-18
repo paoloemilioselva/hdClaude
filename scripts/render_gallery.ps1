@@ -378,6 +378,11 @@ if (!$env:HDCLAUDE_MAX_BOUNCES) { $env:HDCLAUDE_MAX_BOUNCES = '8' }
 # is a preference rather than a defect. A user's default stays off; see
 # RenderSettings::lightGeometry.
 if (!$env:HDCLAUDE_LIGHT_GEOMETRY) { $env:HDCLAUDE_LIGHT_GEOMETRY = '1' }
+# Texture compression off, against a renderer that ships it on. The gallery
+# records what the authored texels render as, and block compression is lossy;
+# a user's default is on so that a large scene fits (RenderSettings descriptor
+# in src/hydra/render_delegate.cpp).
+if (!$env:HDCLAUDE_TEXTURE_COMPRESSION) { $env:HDCLAUDE_TEXTURE_COMPRESSION = '0' }
 if (!$env:HDCLAUDE_GALLERY_EXPOSURE) { $env:HDCLAUDE_GALLERY_EXPOSURE = '0' }
 
 foreach ($item in $selected) {

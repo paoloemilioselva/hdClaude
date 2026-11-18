@@ -139,8 +139,12 @@ def build_stage(path, texture, color_space=None):
 
 def render(stage_path, output, quality, stats, limit=None, log=None,
            compression=False):
+    """Render one frame; compression None leaves it at the delegate's default."""
     environment = dict(os.environ)
-    environment["HDCLAUDE_TEXTURE_COMPRESSION"] = "1" if compression else "0"
+    if compression is None:
+        environment.pop("HDCLAUDE_TEXTURE_COMPRESSION", None)
+    else:
+        environment["HDCLAUDE_TEXTURE_COMPRESSION"] = "1" if compression else "0"
     if limit is not None:
         environment["HDCLAUDE_TEXTURE_MEMORY_LIMIT"] = str(limit)
     environment["HDCLAUDE_SAMPLES_PER_PIXEL"] = "64"
@@ -226,6 +230,7 @@ def host_setting(stage_path):
     fbo.bind()
 
     os.environ["HDCLAUDE_SAMPLES_PER_PIXEL"] = "1"
+    os.environ["HDCLAUDE_TEXTURE_COMPRESSION"] = "0"
     os.environ.pop("HDCLAUDE_TEXTURE_QUALITY", None)
     stage = Usd.Stage.Open(stage_path)
     engine = UsdImagingGL.Engine()
@@ -263,6 +268,23 @@ def host_setting(stage_path):
     if uploaded != EDGE * EDGE * 4:
         print(f"FAIL: after switching to high, {uploaded} bytes were uploaded; "
               f"expected {EDGE * EDGE * 4}, the full-size image")
+        failures += 1
+
+    # A texture left out for memory is named on the viewport overlay, which
+    # is where Houdini shows it: its shell does not print a TF_WARN.
+    engine.SetRendererSetting("textureMemoryLimit", 1)
+    line = dict(frame().get("hud", {})).get("textures", "")
+    print(f"  host set a 1 MB limit: overlay says '{line}'")
+    if "1 did not fit" not in line:
+        print("FAIL: the overlay's Textures line does not say the texture "
+              "left out for memory did not fit")
+        failures += 1
+    engine.SetRendererSetting("textureMemoryLimit", 0)
+    line = dict(frame().get("hud", {})).get("textures", "")
+    print(f"  host lifted the limit: overlay says '{line}'")
+    if line != "1 on device":
+        print("FAIL: with the limit lifted the overlay should say the one "
+              "texture is on the device")
         failures += 1
     del engine
     fbo.release()
@@ -326,6 +348,19 @@ def compressed(out, stage, full):
     print(f"  compressed keeps {kept}% of the light; against uncompressed: {picture}")
     if kept is None or abs(kept - 100.0) > 0.5 or status != 0:
         print("FAIL: the compressed checker does not render as the uncompressed one")
+        failures += 1
+
+    # And it is the default: left unset, the checker is compressed, so a
+    # large scene fits without anyone asking for it.
+    image = os.path.join(out, "default.0001.exr")
+    if os.path.exists(image):
+        os.remove(image)
+    stats = render(stage, image, "high", os.path.join(out, "default.stats"),
+                   compression=None)
+    count = int(stats.get("texturesCompressed", -1))
+    print(f"  compression left at its default: {count} texture(s) compressed")
+    if count != 1:
+        print("FAIL: texture compression is not on by default")
         failures += 1
     return failures
 

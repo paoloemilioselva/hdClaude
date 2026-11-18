@@ -717,7 +717,7 @@ void HdClaudeRenderPass::_Execute(
             _hasUploaded = false;
         }
         const bool textureCompression = _renderDelegate->GetRenderSetting<bool>(
-            _tokens->textureCompression, false);
+            _tokens->textureCompression, true);
         if (textureCompression != _textureCompression) {
             _textureCompression = textureCompression;
             _hasUploaded = false;

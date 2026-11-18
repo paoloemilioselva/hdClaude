@@ -1039,12 +1039,16 @@ HdClaudeRenderDelegate::GetRenderSettingDescriptors() const
         {"Texture memory limit (MB)", _tokens->textureMemoryLimit,
          VtValue(TfGetenvInt("HDCLAUDE_TEXTURE_MEMORY_LIMIT", 0))},
 
-        // Off by default, because it changes what is sampled: block
-        // compression keeps a texture in a quarter to an eighth of the
-        // memory, and is lossy (docs/implementation-notes.md, 2026-11-16).
-        // The dome's map is never compressed.
+        // On by default, so that a large scene opens with every texture on
+        // the device: block compression keeps a texture in a quarter to an
+        // eighth of the memory, and at the default ALab left 2,720 of its
+        // 5,709 textures out on a 16 GB card. It is lossy -- rms 0.012 on
+        // ALab's characters -- so a render that must sample the authored
+        // texels exactly turns it off; the gallery and the tests do
+        // (docs/implementation-notes.md, 2026-11-16 and 2026-11-18). The
+        // dome's map is never compressed.
         {"Texture compression", _tokens->textureCompression,
-         VtValue(TfGetenvBool("HDCLAUDE_TEXTURE_COMPRESSION", false))},
+         VtValue(TfGetenvBool("HDCLAUDE_TEXTURE_COMPRESSION", true))},
 
         // What the depth AOV holds, which is a question of who reads it.
         //
@@ -1565,6 +1569,25 @@ VtDictionary HdClaudeRenderDelegate::GetRenderStats() const
             BriefBytes(deviceUsed).c_str(),
             BriefBytes(double(_peakDeviceBytes.load(relaxed))).c_str()));
         hud["samples"] = VtValue(TfStringPrintf("%u / %u", samples, target));
+        // Textures left out for memory sample the placeholder colour, so the
+        // line that explains a magenta viewport is on the viewport. Houdini
+        // keeps the TF_WARN that also reports it out of its shell.
+        {
+            const double onDevice =
+                double(stages.texturesUploaded.load(relaxed) +
+                       stages.texturesReused.load(relaxed));
+            const double left = double(stages.texturesOverBudget.load(relaxed));
+            hud["textures"] = VtValue(
+                left > 0.0
+                    ? TfStringPrintf(
+                          "%s on device, %s did not fit (%s)",
+                          BriefCount(onDevice).c_str(), BriefCount(left).c_str(),
+                          BriefBytes(double(stages.textureBytesOverBudget.load(
+                                         relaxed)))
+                              .c_str())
+                    : TfStringPrintf("%s on device",
+                                     BriefCount(onDevice).c_str()));
+        }
         stats["hud"] = VtValue(hud);
     }
     if (!_initializationError.empty()) {
